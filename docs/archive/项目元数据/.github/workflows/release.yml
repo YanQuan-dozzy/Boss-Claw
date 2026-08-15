@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate and build
+        working-directory: source
+        run: npm test
+
+      - name: Assemble release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="JobClaw-by-Chris-v${VERSION}"
+          STAGE="release/${NAME}"
+          mkdir -p "$STAGE"
+          cp -R source/dist/chrome-extension "$STAGE/chrome-extension"
+          cp -R desktop-bridge docs skills "$STAGE/"
+          cp README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE NOTICE ATTRIBUTION.md TRADEMARKS.md CITATION.cff CODE_OF_CONDUCT.md "$STAGE/"
+          cp 安装桌面桥接-mac.command "$STAGE/"
+          cd release
+          zip -qr "${NAME}.zip" "${NAME}"
+          sha256sum "${NAME}.zip" > "${NAME}.zip.sha256"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="JobClaw-by-Chris-v${VERSION}"
+          gh release create "$GITHUB_REF_NAME" \
+            "release/${NAME}.zip" \
+            "release/${NAME}.zip.sha256" \
+            --title "JobClaw by Chris v${VERSION}" \
+            --generate-notes

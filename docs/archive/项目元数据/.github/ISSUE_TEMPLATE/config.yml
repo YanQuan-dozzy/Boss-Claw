@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用教程与常见问题
+    url: https://github.com/Chrisbetheking/job-claw/tree/main/docs
+    about: 提交 Issue 前先查看安装、使用与排查文档
+  - name: 安全漏洞报告
+    url: https://github.com/Chrisbetheking/job-claw/security/policy
+    about: 不要在公开 Issue 中提交 API Key、简历或聊天隐私

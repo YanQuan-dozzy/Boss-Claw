@@ -1,0 +1,63 @@
+{
+  "name": "bossclaw-desktop",
+  "version": "2.0.0",
+  "description": "BossClaw 桌面版 —— 面向求职者的本地 AI 投递助手（Electron + React）",
+  "private": true,
+  "author": "BossClaw by Chris",
+  "license": "Apache-2.0",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "electron:dev": "vite build && electron .",
+    "package": "vite build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.bossclaw.desktop",
+    "productName": "BossClaw 桌面版",
+    "copyright": "Copyright © 2026 BossClaw",
+    "icon": "resources/icon.ico",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "bridge/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.5.1",
+    "antd": "^5.21.6",
+    "cloakbrowser": "^0.5.7",
+    "mammoth": "^1.8.0",
+    "playwright-core": "1.62",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9"
+  }
+}

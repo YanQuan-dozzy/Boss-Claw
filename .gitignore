@@ -1,0 +1,59 @@
+# macOS / Windows
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# Dependencies and generated output
+node_modules/
+source/node_modules/
+coverage/
+*.log
+*.tmp
+*.cache
+*.zip
+*.sha256
+
+# --- desktop-app 环境 / 产物 / 第三方依赖（clone 后由脚本自行安装）---
+desktop-app/dist/
+desktop-app/release/
+desktop-app/tmp/
+desktop-app/node_modules/
+# 第三方 cloakbrowser 源码副本（npm 包即可，无需入库）
+desktop-app/cloakbrowser/
+desktop-app/camoufox/__pycache__/
+desktop-app/debug-render.log
+desktop-app/smoke.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本地工具数据（不可上传）
+.workbuddy/
+
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.jobclaw/
+**/.jobclaw/
+
+# Local user data and private artifacts
+*resume*.pdf
+*resume*.docx
+*简历*.pdf
+*简历*.docx
+*.diagnostic.json
+*.local.json
+
+# Editors
+.vscode/
+.idea/
+*.swp

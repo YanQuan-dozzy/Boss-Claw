@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: source/package.json
+
+      - name: Run full validation
+        working-directory: source
+        run: npm test
+
+      - name: Upload installable extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobclaw-chrome-extension
+          path: source/dist/chrome-extension
+          if-no-files-found: error

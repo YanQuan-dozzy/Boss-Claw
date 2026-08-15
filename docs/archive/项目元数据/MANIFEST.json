@@ -1,0 +1,512 @@
+{
+  "version": "1.2.37",
+  "edition": "GitHub-ready beginner edition",
+  "fileCount": 101,
+  "files": [
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
+      "size": 1361,
+      "sha256": "5da6f33588a6add7e26c47a73804beadc1547b5528c7cf8417f0995dd5c350a5"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/config.yml",
+      "size": 27,
+      "sha256": "13064e7bea658e01e718b414fbb7b3b244f36411fe25ee2055c151f7b534547a"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
+      "size": 513,
+      "sha256": "cb22ecf6e4add744ea0a124cd5741c7f7315425b4fc00bd7daf97132d3c4f6b8"
+    },
+    {
+      "path": ".gitignore",
+      "size": 114,
+      "sha256": "a53f6280ba33b82b57672eac3dc104abc2a9563a9dde7f62d95b9a6b62393f70"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "size": 477,
+      "sha256": "fb6fc459e1527f7797c4082bd9c137ae2c193af6bc11095712f8f026810115f3"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "size": 459,
+      "sha256": "181d4b84dfc0aadf4722a8faaed106a9ac77e2e416746b5d35bb10adf8f7cdc1"
+    },
+    {
+      "path": "README.md",
+      "size": 13342,
+      "sha256": "cd79e9988af69561fc60aaa1580c58985f96dc21b6bb1e066163933dc7ad4c8f"
+    },
+    {
+      "path": "SECURITY.md",
+      "size": 404,
+      "sha256": "fbc26a0b92dd94bb614d869abf4c2d487e95e8d0e673fc388d3e04493ca03718"
+    },
+    {
+      "path": "VALIDATION.json",
+      "size": 1229,
+      "sha256": "349b47b9e52ed8dc2c5ef99f2342d7046a50238abce95c5b69927f8d8124f2d6"
+    },
+    {
+      "path": "build-info.json",
+      "size": 288,
+      "sha256": "2c81910ec336ff7bbf6ac01b248b47cb0c156f8478fa73b52ebf166d30d95df7"
+    },
+    {
+      "path": "chrome-extension/background.js",
+      "size": 144001,
+      "sha256": "716bed206c4cf62ff3bbaa6c6916997333d21e5fad75086a1983d59dd0c25375"
+    },
+    {
+      "path": "chrome-extension/common.js",
+      "size": 1478,
+      "sha256": "e5ef985eee5f410494114f077182f4852e6d4c805fe834131648a563ff88bc32"
+    },
+    {
+      "path": "chrome-extension/content-v37.js",
+      "size": 128382,
+      "sha256": "2b060c46892c970fb1cfba7e9169d7baf64727da5f02d68e9b1bbec23a9b1210"
+    },
+    {
+      "path": "chrome-extension/manifest.json",
+      "size": 1701,
+      "sha256": "1044d9f0956d77b3fd129caf8c09273c82d13c806afad6977e521d272106848c"
+    },
+    {
+      "path": "chrome-extension/offscreen.html",
+      "size": 162,
+      "sha256": "720682a381b3fc0cca89b9dc9a9785e2546ec721c996b3e1d948b74edc82d1e7"
+    },
+    {
+      "path": "chrome-extension/offscreen.js",
+      "size": 353,
+      "sha256": "58bb7a9b96e652771838e8e9e63323ae74fac0a86c5eec87cd176cec7db65777"
+    },
+    {
+      "path": "chrome-extension/pdf-extractor.js",
+      "size": 21117,
+      "sha256": "0c0d266127e9db109371379607a7ba658ae1cdd7fc877bae31ec412bf09cc7c5"
+    },
+    {
+      "path": "chrome-extension/sidepanel.html",
+      "size": 28982,
+      "sha256": "16115562526b70555105dad9222e22f4c33cf8dc420f020daf08632a58488a86"
+    },
+    {
+      "path": "chrome-extension/sidepanel.js",
+      "size": 80871,
+      "sha256": "b827e43e9b6b64d002f82d3f43bf61308fc6b2d1fbb1827ef095a9d8cea73743"
+    },
+    {
+      "path": "chrome-extension/styles.css",
+      "size": 47393,
+      "sha256": "86a0f8d78a00bbf230636da1bff79eecaadb72b3ce561db859bc080a4d34d930"
+    },
+    {
+      "path": "desktop-bridge/cli.js",
+      "size": 1224,
+      "sha256": "13b0460019bda766d0071761d866cb30795232657c293c5f63ca25b03d3ff77a"
+    },
+    {
+      "path": "desktop-bridge/config.json",
+      "size": 64,
+      "sha256": "ba851bd49d74dce72e80d597706a337598610aedfaba357d7672d000aa97d009"
+    },
+    {
+      "path": "desktop-bridge/resume_parser.swift",
+      "size": 4681,
+      "sha256": "dbae5de0dd03f0e55482c28f8ac22a746e96c5caf6200186a810ecba6cef5a27"
+    },
+    {
+      "path": "desktop-bridge/server.js",
+      "size": 10917,
+      "sha256": "8a6791221dbc5cf8f429e16f1f2199627f512e67311c620e0c57dc77d1251a5e"
+    },
+    {
+      "path": "docs/GitHub发布说明.md",
+      "size": 418,
+      "sha256": "ab419dc1b3450cf4ae8437563bce4b71adce9c3324e98d9b7900d388fb5a31ae"
+    },
+    {
+      "path": "docs/RC12-BASELINE.md",
+      "size": 381,
+      "sha256": "aaf67e9830e8280117a1784a7d5c6d007e2ce5804f0bc5e93f42e1b2549dc513"
+    },
+    {
+      "path": "docs/images/00-quick-start.png",
+      "size": 73516,
+      "sha256": "e1c105a9b5557cf740ef07df48ea2048a5c7a53a7254babf677c6796b9cc6ca8"
+    },
+    {
+      "path": "docs/images/01-install-extension.png",
+      "size": 93204,
+      "sha256": "dcec8bad133dfc1e8ccd804ed39574868d4fc442c2f1bd0f65d991d2a99b23b3"
+    },
+    {
+      "path": "docs/images/02-configure-ai.png",
+      "size": 179085,
+      "sha256": "fc3b57dae45d30fdb0a1b45ff151fb965b2de776b350cbf4ddbacab0b9d9c42a"
+    },
+    {
+      "path": "docs/images/03-upload-resume.png",
+      "size": 206497,
+      "sha256": "b119959594a8b8e6bdd5aaeff3f4bd54eb1ce8282eebfb40ea1e2dadf0dce534"
+    },
+    {
+      "path": "docs/images/04-edit-profile.png",
+      "size": 219824,
+      "sha256": "ccd5106a05fc780b127c56f5b75a169d1d3a2fa0952569d6d294aa9c27ec122a"
+    },
+    {
+      "path": "docs/images/05-select-directions.png",
+      "size": 163143,
+      "sha256": "6e88e01a963717c928c73734cedc646000f4c624b89386fc5bba76ae3ace89ce"
+    },
+    {
+      "path": "docs/images/06-start-task.png",
+      "size": 211598,
+      "sha256": "4aba35b19ed4543611121bed5082367ba251aac730612f6637df0b0dcc9c7f21"
+    },
+    {
+      "path": "docs/images/07-monitor-and-retry.png",
+      "size": 260387,
+      "sha256": "809243e60daf6fb6399f087f02350c9f60a197b83b5a6758a3944c77d84c9894"
+    },
+    {
+      "path": "docs/images/08-openclaw-optional.png",
+      "size": 184932,
+      "sha256": "4730da2c097e8dfd01615d0f9399232a844673eb32a72e6e735ee1f728374c0c"
+    },
+    {
+      "path": "docs/images/09-github-upload.png",
+      "size": 118736,
+      "sha256": "3523d4c6b84083a57e9d5314dec07bbb41f79e2b70d130b77f91e3c84cb47a39"
+    },
+    {
+      "path": "docs/常见问题.md",
+      "size": 987,
+      "sha256": "5d4c60478bf06f3ec3959cf587d87e9981e84d7c225128273ac6dce864d160fd"
+    },
+    {
+      "path": "docs/新手安装与使用.md",
+      "size": 1330,
+      "sha256": "3d182dc6e48ad0df7395c0a9f313fb9399866c2d44abf0fceeb76485839a379c"
+    },
+    {
+      "path": "docs/正式版验收说明.md",
+      "size": 585,
+      "sha256": "e2734fa79648a803a81bf6713fd0b52e4a0d537d5ce98bf99a75834a7e882f6e"
+    },
+    {
+      "path": "docs/隐私与安全.md",
+      "size": 1276,
+      "sha256": "6226c9ba54d5a6a8b572e27cfe4c789ad42b51f763719bb9c231c7ad59d7ece2"
+    },
+    {
+      "path": "skills/jobclaw/SKILL.md",
+      "size": 776,
+      "sha256": "2eae48c7f7d15a650d99c36408becb39101bd3d66ce79341482995dcc122ab22"
+    },
+    {
+      "path": "source/build.mjs",
+      "size": 920,
+      "sha256": "af9074384f36f7328766ea8804112a5d47a5b6fe6b9f7a505dff00e254a61bec"
+    },
+    {
+      "path": "source/dist/build-info.json",
+      "size": 246,
+      "sha256": "7e2e849cab143bdb953592de8c72d851986611776cc348b1b2301b3f68224518"
+    },
+    {
+      "path": "source/dist/chrome-extension/background.js",
+      "size": 144001,
+      "sha256": "716bed206c4cf62ff3bbaa6c6916997333d21e5fad75086a1983d59dd0c25375"
+    },
+    {
+      "path": "source/dist/chrome-extension/common.js",
+      "size": 1478,
+      "sha256": "e5ef985eee5f410494114f077182f4852e6d4c805fe834131648a563ff88bc32"
+    },
+    {
+      "path": "source/dist/chrome-extension/content-v37.js",
+      "size": 128382,
+      "sha256": "2b060c46892c970fb1cfba7e9169d7baf64727da5f02d68e9b1bbec23a9b1210"
+    },
+    {
+      "path": "source/dist/chrome-extension/manifest.json",
+      "size": 1701,
+      "sha256": "1044d9f0956d77b3fd129caf8c09273c82d13c806afad6977e521d272106848c"
+    },
+    {
+      "path": "source/dist/chrome-extension/offscreen.html",
+      "size": 162,
+      "sha256": "720682a381b3fc0cca89b9dc9a9785e2546ec721c996b3e1d948b74edc82d1e7"
+    },
+    {
+      "path": "source/dist/chrome-extension/offscreen.js",
+      "size": 353,
+      "sha256": "58bb7a9b96e652771838e8e9e63323ae74fac0a86c5eec87cd176cec7db65777"
+    },
+    {
+      "path": "source/dist/chrome-extension/pdf-extractor.js",
+      "size": 21117,
+      "sha256": "0c0d266127e9db109371379607a7ba658ae1cdd7fc877bae31ec412bf09cc7c5"
+    },
+    {
+      "path": "source/dist/chrome-extension/sidepanel.html",
+      "size": 28982,
+      "sha256": "16115562526b70555105dad9222e22f4c33cf8dc420f020daf08632a58488a86"
+    },
+    {
+      "path": "source/dist/chrome-extension/sidepanel.js",
+      "size": 80871,
+      "sha256": "b827e43e9b6b64d002f82d3f43bf61308fc6b2d1fbb1827ef095a9d8cea73743"
+    },
+    {
+      "path": "source/dist/chrome-extension/styles.css",
+      "size": 47393,
+      "sha256": "86a0f8d78a00bbf230636da1bff79eecaadb72b3ce561db859bc080a4d34d930"
+    },
+    {
+      "path": "source/package.json",
+      "size": 1653,
+      "sha256": "c31a6c8c43f92e5399dbfd2a69f362f97d7c5ba21b856e4587737711767d2422"
+    },
+    {
+      "path": "source/public/manifest.json",
+      "size": 1701,
+      "sha256": "1044d9f0956d77b3fd129caf8c09273c82d13c806afad6977e521d272106848c"
+    },
+    {
+      "path": "source/public/offscreen.html",
+      "size": 162,
+      "sha256": "720682a381b3fc0cca89b9dc9a9785e2546ec721c996b3e1d948b74edc82d1e7"
+    },
+    {
+      "path": "source/public/sidepanel.html",
+      "size": 28982,
+      "sha256": "16115562526b70555105dad9222e22f4c33cf8dc420f020daf08632a58488a86"
+    },
+    {
+      "path": "source/public/styles.css",
+      "size": 47393,
+      "sha256": "86a0f8d78a00bbf230636da1bff79eecaadb72b3ce561db859bc080a4d34d930"
+    },
+    {
+      "path": "source/src/background.js",
+      "size": 144001,
+      "sha256": "716bed206c4cf62ff3bbaa6c6916997333d21e5fad75086a1983d59dd0c25375"
+    },
+    {
+      "path": "source/src/common.js",
+      "size": 1478,
+      "sha256": "e5ef985eee5f410494114f077182f4852e6d4c805fe834131648a563ff88bc32"
+    },
+    {
+      "path": "source/src/content-v37.js",
+      "size": 128382,
+      "sha256": "2b060c46892c970fb1cfba7e9169d7baf64727da5f02d68e9b1bbec23a9b1210"
+    },
+    {
+      "path": "source/src/offscreen.js",
+      "size": 353,
+      "sha256": "58bb7a9b96e652771838e8e9e63323ae74fac0a86c5eec87cd176cec7db65777"
+    },
+    {
+      "path": "source/src/pdf-extractor.js",
+      "size": 21117,
+      "sha256": "0c0d266127e9db109371379607a7ba658ae1cdd7fc877bae31ec412bf09cc7c5"
+    },
+    {
+      "path": "source/src/sidepanel.js",
+      "size": 80871,
+      "sha256": "b827e43e9b6b64d002f82d3f43bf61308fc6b2d1fbb1827ef095a9d8cea73743"
+    },
+    {
+      "path": "source/tests/profile-fallback.mjs",
+      "size": 3425,
+      "sha256": "86e5215b3be656b0ebd441c8733e9b0e48f538b5247019840bf26bfd8d7704e0"
+    },
+    {
+      "path": "source/tests/receiver-failure.mjs",
+      "size": 3009,
+      "sha256": "55d4bd60a60c76e4ea6f32bf3d80eea9bfd9fb90c48a0e771d4690eb82745f4a"
+    },
+    {
+      "path": "source/tests/receiver-recovery.mjs",
+      "size": 3385,
+      "sha256": "f8e345ec2ae41e3d7aeb88d2e5f2504b0e49348e3677cd423472b59c4e9922e5"
+    },
+    {
+      "path": "source/tests/ui10-unlimited-v4.mjs",
+      "size": 4175,
+      "sha256": "933c9717af8ab0046a468f4e2eb48c920f64cdb6cf91e32f2dd20862789a3070"
+    },
+    {
+      "path": "source/tests/ui11-detail-recovery.mjs",
+      "size": 4838,
+      "sha256": "d77efc01af1bc3a927f83998592d9bf75ced2b420b37afe88cc708315ccfe380"
+    },
+    {
+      "path": "source/tests/ui12-profile-draft-persistence.mjs",
+      "size": 5318,
+      "sha256": "b64b618e5f5991c52d785acf7bdc5421912373e23d0b64ad8ad57e5c63a5f037"
+    },
+    {
+      "path": "source/tests/ui13-chat-entry-recovery.mjs",
+      "size": 5444,
+      "sha256": "f573c8394c27f56cf497de3f2a184567bf075b89b7f32bc313b38b8f8b38d03c"
+    },
+    {
+      "path": "source/tests/ui14-chat-domain-handoff.mjs",
+      "size": 4492,
+      "sha256": "bcd59e64d547101d461bec546c7d9d33dbd86f823b11a521388f0dcc6575d788"
+    },
+    {
+      "path": "source/tests/ui16-csp-click-context.mjs",
+      "size": 6849,
+      "sha256": "4098d0536da1fb50e0afef8e27d85502c027f99a1fe1166dd1a725d45188dbf7"
+    },
+    {
+      "path": "source/tests/ui17-runtime-isolation.mjs",
+      "size": 2092,
+      "sha256": "ad918b730c1639f5c03f1510027fde94c3feb517aede62aa957eafd6ab705414"
+    },
+    {
+      "path": "source/tests/ui17-stale-tab-refresh.mjs",
+      "size": 3559,
+      "sha256": "086bbe78c53242099a743c82917121e31991fdb37d08288b7a84cb5d3fd62e7e"
+    },
+    {
+      "path": "source/tests/ui18-retry-runtime.mjs",
+      "size": 5418,
+      "sha256": "df02720d42a815a61e05b118bca4e577d881d7ad4000acff65b0052a229c2c51"
+    },
+    {
+      "path": "source/tests/ui18-task-progress.mjs",
+      "size": 2719,
+      "sha256": "6155abcc70b7ef0911a0ad15eb950ff80bb4c8a4d61f4007afdd44b8c400d297"
+    },
+    {
+      "path": "source/tests/ui20-send-button-selection.mjs",
+      "size": 6616,
+      "sha256": "d3ba84746946541a292dd36a2d4fa2f1946462058dabc4c588e8d9069fbc0e82"
+    },
+    {
+      "path": "source/tests/ui20-strict-send-runtime.mjs",
+      "size": 4324,
+      "sha256": "0e77d307279a9277a73026a56711eb3df6ee9ab7c2015ef3c59b77422ac0f794"
+    },
+    {
+      "path": "source/tests/ui20-text-before-attachment.mjs",
+      "size": 1888,
+      "sha256": "3ad3e3041da5996b73cf867b7562305c10cf4ea9b41763938ee48ecff7c3ee48"
+    },
+    {
+      "path": "source/tests/ui21-conversation-binding.mjs",
+      "size": 4599,
+      "sha256": "e4528b3251840e5faa4f9485c1993a8ae16e0c3ac1886723cf06eae7b26d7b28"
+    },
+    {
+      "path": "source/tests/ui22-left-preview-guard.mjs",
+      "size": 3858,
+      "sha256": "e86a46d3bb0d119656b65dc1ff3b024c6996d2576b59381ed5fc73911c004649"
+    },
+    {
+      "path": "source/tests/ui22-strict-transcript-pacing.mjs",
+      "size": 1607,
+      "sha256": "9b0516c098d30533c715e55b3443b8df7aaf6eb5f163797aade82cac2dd1f268"
+    },
+    {
+      "path": "source/tests/ui24-external-application-skip.mjs",
+      "size": 1418,
+      "sha256": "b9d68e8a5315a3ea2d0b99072ef35154da02af211a5ea66c00d99804080f0293"
+    },
+    {
+      "path": "source/tests/ui24-no-false-success.mjs",
+      "size": 1045,
+      "sha256": "86e90981b8f50d9fca5dbea1199f924d76773425abc30fac0227f0644db4a5a5"
+    },
+    {
+      "path": "source/tests/ui27-main-world-chat-write.mjs",
+      "size": 2799,
+      "sha256": "8f128d2365ae7adea36e94176b698f706fba258fe6d62e30e8d83c94277ce41f"
+    },
+    {
+      "path": "source/tests/ui28-profile-generation.mjs",
+      "size": 1355,
+      "sha256": "7915c3debcf854c2da8994062c2f06e40749488912a5e13252d4fd8a4946a065"
+    },
+    {
+      "path": "source/tests/ui29-ai-profile-retry.mjs",
+      "size": 4863,
+      "sha256": "d53f9f9732c2a3d93a502637d4635ba1ef6472dc97563b0b3a1e11fd966546b5"
+    },
+    {
+      "path": "source/tests/ui30-chat-atomic-sort.mjs",
+      "size": 6805,
+      "sha256": "c06420220e46dc411c00078b12824864860c778b488ab97a596bf6d85c6f78ce"
+    },
+    {
+      "path": "source/tests/ui31-conversation-selection.mjs",
+      "size": 4296,
+      "sha256": "b2d05e84bd6168791e4addbcf96d2c8dd2e228dbdfaeef713d1ea92d48c61127"
+    },
+    {
+      "path": "source/tests/ui34-exact-cdp-target.mjs",
+      "size": 1229,
+      "sha256": "6111577107ed368d5ba870216a3bdfdce15f5125e16af238a9113a72550de786"
+    },
+    {
+      "path": "source/tests/ui34-plaintext-editor.mjs",
+      "size": 1549,
+      "sha256": "95fbfb7f33291aa038d474f19e0f9a4d753b71edcf7ace384bcea6f92d08b850"
+    },
+    {
+      "path": "source/tests/ui34-retry-lock.mjs",
+      "size": 586,
+      "sha256": "87290a4fa2f651c763518c2ace62bcc089738833a701d0a43b6f5ac0faf8a908"
+    },
+    {
+      "path": "source/tests/ui34-weak-chat-evidence.mjs",
+      "size": 4300,
+      "sha256": "c49ec05af8531d0deea6aa2791336d8edefa23fb17691c0e9d2a17b857459198"
+    },
+    {
+      "path": "source/tests/ui35-conversation-key-fallback.mjs",
+      "size": 4024,
+      "sha256": "616385ed6393e80247773b849dd88deb784d1c18ec07e669bfcce96c4a12ec37"
+    },
+    {
+      "path": "source/tests/ui36-bound-conversation-stability.mjs",
+      "size": 4682,
+      "sha256": "8bda2c6b852add4592a8c9044e4d15dff6085d0a46576babd451a16aa6a0f7af"
+    },
+    {
+      "path": "source/tests/ui37-direction-runtime.mjs",
+      "size": 7254,
+      "sha256": "0304b54c9af690640ead4b1f280ec0537b183eac90fefb6c815fa56e8b0b5a5e"
+    },
+    {
+      "path": "source/tests/ui37-direction-selection.mjs",
+      "size": 3248,
+      "sha256": "99a90be8e31a3ede404c5bb9e1059cd6c78b765810b2566eff8d794ccd33e630"
+    },
+    {
+      "path": "source/tests/ui9-applicant-modes.mjs",
+      "size": 2504,
+      "sha256": "33ba5064bab2ac53db47f94b72857ca65ccc9b4313054b260da38655c321ad66"
+    },
+    {
+      "path": "source/tests/validate.mjs",
+      "size": 7629,
+      "sha256": "70e79929b9d27ca4b810c45526bd02aa7e79f21d556129ac9ca5aad1b18d2dcd"
+    },
+    {
+      "path": "安装桌面桥接-mac.command",
+      "size": 4297,
+      "sha256": "49db7f33984c380c545cc0659f64d7658e0284b62c6ef34938bea39c8c454a65"
+    }
+  ]
+}
