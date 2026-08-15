@@ -697,34 +697,45 @@ def _chat_button_state(page) -> str:
 
 
 def _find_chat_input(page):
-    """定位可见的聊天输入框（contenteditable / textarea），排除搜索框，返回 Playwright Locator。"""
+    """定位可见的聊天输入框（contenteditable / textarea），排除搜索框，返回 Playwright Locator。
+
+    会在主页面及可能弹出的聊天窗口页面（context.pages）中查找——BOSS 点击「立即沟通」
+    后聊天可能以新标签/新窗口形式弹出。"""
+    pages = [page]
+    try:
+        for p in list(page.context.pages or []):
+            if p not in pages:
+                pages.append(p)
+    except Exception:
+        pass
     selectors = [
         '[contenteditable="true"]',
         '[contenteditable="plaintext-only"]',
         'div[contenteditable]',
         'textarea',
     ]
-    for sel in selectors:
-        try:
-            loc = page.locator(sel)
-            count = loc.count()
-            for i in range(count):
-                el = loc.nth(i)
-                try:
-                    if not el.is_visible():
+    for p in pages:
+        for sel in selectors:
+            try:
+                loc = p.locator(sel)
+                count = loc.count()
+                for i in range(count):
+                    el = loc.nth(i)
+                    try:
+                        if not el.is_visible():
+                            continue
+                    except Exception:
                         continue
-                except Exception:
-                    continue
-                ph = ''
-                try:
-                    ph = str(el.get_attribute('placeholder') or '') + str(el.get_attribute('aria-label') or '')
-                except Exception:
-                    pass
-                if '搜索' in ph or 'search' in ph.lower():
-                    continue
-                return el
-        except Exception:
-            continue
+                    ph = ''
+                    try:
+                        ph = str(el.get_attribute('placeholder') or '') + str(el.get_attribute('aria-label') or '')
+                    except Exception:
+                        pass
+                    if '搜索' in ph or 'search' in ph.lower():
+                        continue
+                    return el
+            except Exception:
+                continue
     return None
 
 
@@ -831,7 +842,7 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             save_cookies(page.context)
             return {"ok": False, "code": 500, "message": f"点击沟通按钮失败：{e}", "sent": False}
 
-        # Step 5: 等待聊天输入框出现
+        # Step 5: 等待聊天输入框出现（可能在弹出的聊天窗口页面）
         input_el = None
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -843,13 +854,23 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             save_cookies(page.context)
             return {"ok": False, "code": 500, "message": "未找到聊天输入框（沟通窗口可能未打开）", "sent": False}
 
+        # 聊天输入框所在页面（可能是弹出的新窗口），后续键盘/发送/确认都在该页执行
+        try:
+            target_page = input_el.page or page
+        except Exception:
+            target_page = page
+        try:
+            target_page.bring_to_front()
+        except Exception:
+            pass
+
         # Step 6: 真实键盘输入招呼语（聚焦输入框 → 清空 → 逐字输入）
         try:
             input_el.click()
             time.sleep(0.5)
-            page.keyboard.press('ControlOrMeta+a')
-            page.keyboard.press('Delete')
-            page.keyboard.type(greeting, delay=25)
+            target_page.keyboard.press('ControlOrMeta+a')
+            target_page.keyboard.press('Delete')
+            target_page.keyboard.type(greeting, delay=25)
             time.sleep(0.5)
             log('⌨️', '招呼语已真实输入')
         except Exception as e:
@@ -859,26 +880,26 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         # Step 7: 发送（点击「发送」按钮，否则回车）
         sent_via = 'enter'
         try:
-            send_btn = page.locator("button:has-text('发送'), [class*='send']:has-text('发送')").first
+            send_btn = target_page.locator("button:has-text('发送'), [class*='send']:has-text('发送')").first
             if send_btn.is_visible(timeout=1500):
                 send_btn.click()
                 sent_via = 'button'
                 log('🖱️', '已点击「发送」按钮')
             else:
-                page.keyboard.press('Enter')
+                target_page.keyboard.press('Enter')
                 log('⌨️', '已回车发送')
         except Exception:
             try:
-                page.keyboard.press('Enter')
+                target_page.keyboard.press('Enter')
             except Exception:
                 pass
         time.sleep(2)
 
         # Step 8: 文字气泡确认（安全不变量）
-        confirmed = _confirm_message(page, greeting)
+        confirmed = _confirm_message(target_page, greeting)
         if not confirmed:
             time.sleep(3)
-            confirmed = _confirm_message(page, greeting)
+            confirmed = _confirm_message(target_page, greeting)
         if not confirmed:
             save_cookies(page.context)
             return {"ok": False, "code": 501, "message": "未能确认文字气泡已发送，请人工核对", "sent": False}
