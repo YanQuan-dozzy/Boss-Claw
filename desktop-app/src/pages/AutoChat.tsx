@@ -3,14 +3,13 @@ import {
   Alert, Button, Card, Empty, Input, InputNumber, Segmented, Space, Switch, Tag, Typography, Upload, message, Modal, Progress,
 } from 'antd';
 import {
-  MessageOutlined, ThunderboltOutlined, QrcodeOutlined, PoweroffOutlined,
+  MessageOutlined, ThunderboltOutlined, QrcodeOutlined,
   ReloadOutlined, SafetyCertificateOutlined, StopOutlined, DeleteOutlined,
   UploadOutlined, PictureOutlined, CheckOutlined, CaretRightOutlined,
-  RobotOutlined, FilterOutlined, LockOutlined, EyeOutlined,
+  RobotOutlined, LockOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { useAppStore } from '@/store/useAppStore';
 import {
   camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxChat,
   isCamoufoxStopCode, isCamoufoxEnvCode, type CamoufoxStatus,

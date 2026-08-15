@@ -312,8 +312,6 @@ export default function Settings() {
             开启后，每次「搜索采集」会先自动把 BOSS 列表滚动到底部、触发无限加载，连续两轮没有新岗位即停止，从而收集到比首屏多得多的岗位（轮数越大收集越多，耗时也越长）。滚动间隔控制逐岗位滚动的快慢（越大越慢、越接近人工）。断点续采起始序号用于中断后从第 N 个岗位继续（0 = 从头；已入库岗位会自动按 URL 去重跳过）。
           </Paragraph>
         </div>
-
-        </div>
       </Card>
 
       <Card size="small" className="setting-card" title={<><span className="setting-card__icon"><RobotOutlined /></span> AI / LLM 配置</>} style={{ marginBottom: 12 }}>
