@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\lib\job-priority.js
+// 移植自 job-claw-main\source\src\lib\job-priority.js
 // 智能排序：综合匹配度、硬性条件、地点、薪资、新鲜度、风险提示进行排序
 import type { JobAnalysis, JobMeta, PendingItem } from './types';
 
@@ -61,7 +61,7 @@ export function computeJobPriority(item: { analysis?: JobAnalysis; job?: JobMeta
 }
 
 function pendingStatusRank(status: string): number {
-  // 对齐 F:\job-claw-main\source\src\lib\job-priority.js 的 pendingStatusRank；
+  // 对齐 job-claw-main\source\src\lib\job-priority.js 的 pendingStatusRank；
   // 扩展引入 'opened' 状态——工作台「点击立即沟通」打开聊天窗后置为 opened，
   // 排序位置：approved(0) → approved_queue(1) → pending(2) → failed(3) →
   //           opened(3.5)（已开沟通窗但未发送文字 / 未跑自动沟通，置于失败与发送之间，

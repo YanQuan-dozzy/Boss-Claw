@@ -2,7 +2,7 @@
 'use strict';
 // OpenClaw 本地桥接服务（Node 跨平台版）
 // 提供：状态、日报、控制（start/pause/stop/restore）、简历 PDF/OCR 解析（降级）
-// 移植并适配自 F:\job-claw-main\旧版本\学习逻辑\desktop-bridge\server.js
+// 移植并适配自 job-claw-main\旧版本\学习逻辑\desktop-bridge\server.js
 const http = require('http');
 const fs = require('fs');
 const path = require('path');

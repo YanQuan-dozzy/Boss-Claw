@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的岗位匹配与沟通草稿逻辑
+// 移植自 job-claw-main\source\src\background.js 的岗位匹配与沟通草稿逻辑
 import type { AppConfig, JobAnalysis, JobMeta, Profile } from './types';
 import { normalizeStringList } from './helpers';
 import { cachedCallModel } from './llm';

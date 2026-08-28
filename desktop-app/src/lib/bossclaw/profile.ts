@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的职业画像逻辑
+// 移植自 job-claw-main\source\src\background.js 的职业画像逻辑
 import type { AppConfig, Profile, ProfileDraft, HardConstraints, PrimaryDirection } from './types';
 import { uniq } from './defaults';
 import {

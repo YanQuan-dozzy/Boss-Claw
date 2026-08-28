@@ -1,7 +1,7 @@
 // 纯前端 DOCX 文本解析（零 Node 依赖，可在 Electron 渲染进程 / Vite 中直接运行）
 // DOCX 本质是 ZIP 容器：解析 ZIP 定位 word/document.xml，解压后提取 <w:t> 文本。
 // 解压使用浏览器原生 DecompressionStream('deflate-raw')（与 pdfExtractor 同方案）。
-// 逻辑对齐 F:\job-claw-main 的简历文本口径：段落 <w:p> 换行、<w:t> 提取文本。
+// 逻辑对齐 job-claw-main 的简历文本口径：段落 <w:p> 换行、<w:t> 提取文本。
 
 const ZIP_LOCAL_HEADER = 0x04034b50; // "PK\x03\x04"
 const ZIP_CENTRAL_HEADER = 0x02014b50; // "PK\x01\x02"（用于 zip64 尾部判断）
