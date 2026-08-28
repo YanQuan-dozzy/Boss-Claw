@@ -1,6 +1,6 @@
 // electron/preload/webview.cjs —— BossClaw 内置浏览器 webview 预加载（重写版）
 //
-// 重写目标（对齐 F:\boss-auto-job-main 的官方接口链路，替代脆弱的 DOM 自动化）：
+// 重写目标（对齐 boss-auto-job-main 的官方接口链路，替代脆弱的 DOM 自动化）：
 //   1. BOSS 官方 API 通道（boss-api）：在 zhipin.com 页面上下文执行 fetch，
 //      自动携带登录 cookie + 页面 JS 生成的反爬 token，稳定拿到岗位列表 / 卡片 / 投递结果。
 //      - 采集  : GET  /wapi/zpgeek/search/joblist.json?scene=1&query=..&city=..&page=..&pageSize=30
@@ -561,7 +561,7 @@ async function openChatOnly() {
   }
 }
 
-// ===== 可视化采集（对齐 F:\job-claw-main 的 cards → cardIdentity → openCard → extractJob）=====
+// ===== 可视化采集（对齐 job-claw-main 的 cards → cardIdentity → openCard → extractJob）=====
 // 逐岗位卡片平滑滚动 + 高亮动画 + 点击展开详情 + 提取完整信息。
 // 关键口径：岗位详情链接从卡片 <a href*="job_detail"> 的真实 href 提取（job-claw-main 的
 // cardIdentity / extractJob 口径），比 API 用 encryptJobId 拼 URL 更准确、含完整跳转参数。

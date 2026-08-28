@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的岗位方向计划逻辑
+// 移植自 job-claw-main\source\src\background.js 的岗位方向计划逻辑
 import type { DirectionItem, DirectionPlan, Profile } from './types';
 import { normalizeStringList, clampNumber, normalizeDirectionKey, findDirectionRule } from './helpers';
 

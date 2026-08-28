@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的 AI 提示词与输出 Schema
+// 移植自 job-claw-main\source\src\background.js 的 AI 提示词与输出 Schema
 export const PROFILE_SCHEMA = JSON.stringify({
   facts: {
     education: [],
