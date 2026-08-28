@@ -24,7 +24,7 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 📦 安装版（推荐） | [BossClaw-2.0.0-win-x64-setup.exe](BossClaw-2.0.0-win-x64-setup.exe) | 标准安装包，双击安装后从开始菜单启动 |
+| 📦 安装版（推荐） | [BossClaw-2.0.0-win-x64-setup.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest) | 标准安装包，双击安装后从开始菜单启动 |
 
 > **运行要求**：Windows 10/11（x64）；首次启动按提示在「设置」页填写求职条件与 AI API Key 即可使用。
 
@@ -244,8 +244,7 @@ Boss-claw/
 │   └── package.json           依赖与 scripts（dev / build / package）
 ├── docs/
 │   ├── 桌面版改造需求文档.md   权威需求文档（v1.2，决策已确认）
-│   └── archive/               旧版文档与项目元数据（CHANGELOG / 隐私安全 / 常见问题等）
-├── AGENTS.md                  项目约束（需求对齐 + 安全不变量 + 工程规范）
+│   └── src/                   UI 参考实现片段
 ├── start-bossclaw.cmd         Windows 一键启动脚本
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知
 └── LICENSE                    Apache License 2.0
@@ -267,11 +266,11 @@ npm run package      # 构建并打包 Windows 安装包（electron-builder --wi
 
 > 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 
-涉及业务逻辑改动时，请优先回查 [`AGENTS.md`](AGENTS.md) 与 `docs/` 下文档，对齐既定口径，禁止凭空重写。
+涉及业务逻辑改动时，请优先回查 `docs/` 下文档，对齐既定口径，禁止凭空重写。
 
 ## 反馈与联系
 
-遇到问题时，建议先查看 [`docs/archive/项目元数据/`](docs/archive/项目元数据) 下的常见问题与变更记录，再提交 Issue。提交时请包含：
+遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 `docs/` 下文档，再提交 Issue。提交时请包含：
 
 - BossClaw 版本（桌面版 v2.0.0）
 - 操作系统与 Electron 版本

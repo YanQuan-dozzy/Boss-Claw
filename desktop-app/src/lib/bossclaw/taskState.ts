@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\lib\task-state.js
+// 移植自 job-claw-main\source\src\lib\task-state.js
 // 投递任务阶段、进度与状态元数据
 // 注：在参考实现基础上扩展 'opened' 阶段（介于 open_chat 与 verify_chat_target 之间）——
 //   工作台「点击立即沟通」打开聊天窗口但尚未执行自动沟通时的状态。

@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "BossClaw 桌面版 —— 面向求职者的本地 AI 投递助手（Electron + React）",
   "private": true,
-  "author": "BossClaw by Chris",
+  "author": "YanQuan",
   "license": "Apache-2.0",
   "main": "electron/main.cjs",
   "engines": {

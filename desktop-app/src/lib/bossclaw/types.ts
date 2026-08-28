@@ -1,5 +1,5 @@
 // BossClaw 数据模型类型定义
-// 对齐 F:\job-claw-main 的运行时数据结构
+// 对齐 job-claw-main 的运行时数据结构
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -93,7 +93,7 @@ export interface AppConfig {
    */
   engineMode: 'webview' | 'cloak' | 'camoufox';
   /**
-   * Camoufox 隐身引擎（可选增强，来自 F:\boss-auto-job-main 的方案）：
+   * Camoufox 隐身引擎（可选增强，来自 boss-auto-job-main 的方案）：
    * C++ 级 Firefox 指纹伪装 + humanize 类人行为，用于降低「正常操作被误判为机器人（code 37）」的概率。
    * 仅作为可选通道；不绕过验证码/账户验证（code 35/36/32 仍立即停止交人工）。
    */

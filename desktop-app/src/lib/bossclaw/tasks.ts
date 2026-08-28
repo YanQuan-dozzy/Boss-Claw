@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的任务创建逻辑
+// 移植自 job-claw-main\source\src\background.js 的任务创建逻辑
 // 注意：本文件仅保留"搜索任务(TaskRun)创建"逻辑。岗位入库的状态流转（pending→approved→approved_queue→sent）
 // 统一由 Workbench 的 ingestJob/onJoinTask + priority.promoteApprovedToQueue 处理，采集一律进入
 // 「确认队列(pending)」、批准只进「投递队列·等待(approved)」、只有「一键投递」才提升为「投递中(approved_queue)」

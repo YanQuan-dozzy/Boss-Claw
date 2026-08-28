@@ -1,5 +1,5 @@
 // 统一简历解析入口（纯前端优先，桥接兜底）
-// 对齐 F:\job-claw-main 的解析口径，并借鉴 AI-BossJob 的「多重解析 + 明确降级提示」策略：
+// 对齐 job-claw-main 的解析口径，并借鉴 AI-BossJob 的「多重解析 + 明确降级提示」策略：
 //   PDF  → 本地 pdfExtractor（Flate/ASCIIHex/ASCII85/RunLength + ToUnicode/CMap）
 //   DOCX → 本地 docxParser（ZIP + XML，零依赖）；失败可尝试桥接 mammoth
 //   DOC  → 旧版二进制 Word，前端无法可靠提取，给出转档建议

@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\background.js 的本地规则辅助函数
+// 移植自 job-claw-main\source\src\background.js 的本地规则辅助函数
 import { uniq } from './defaults';
 import { DIRECTION_RULES, type DirectionRule } from './directionCatalog';
 

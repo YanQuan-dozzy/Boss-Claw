@@ -11,7 +11,7 @@ BossClaw 隐身引擎 —— 本地 Python 桥服务（多内核自适应）
   3. 系统 Microsoft Edge（若已安装）            → Playwright + stealth 初始化
   4. 均不可用 → /status 返回 not ready，前端提示
 
-能力（对齐 F:\boss-auto-job-main）：
+能力（对齐 boss-auto-job-main）：
   - /status  检测可用内核与引擎状态
   - /search  隐身搜索（humanize/stealth，自动处理 code 37 环境检查）
   - /send    隐身发送招呼语（friend/add.json API + 页面真实点击兜底）

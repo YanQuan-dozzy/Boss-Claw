@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\lib\conversation-identity.js
+// 移植自 job-claw-main\source\src\lib\conversation-identity.js
 // 用于自动辅助时核对「当前沟通对象」与「岗位/HR」是否一致，防止发错人。
 
 export function normalizeConversationIdentity(value: string): string {

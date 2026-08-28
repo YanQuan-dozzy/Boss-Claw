@@ -1,6 +1,6 @@
 import type { AppConfig, Profile, ProfileDraft, DirectionPlan, Stats, Workflow } from './types';
 
-// 对齐 F:\job-claw-main\source\src\common.js 的 DEFAULTS
+// 对齐 job-claw-main\source\src\common.js 的 DEFAULTS
 export const DEFAULT_CONFIG: AppConfig = {
   executionMode: 'review',
   dailyTarget: 120,

@@ -1,4 +1,4 @@
-// 移植自 F:\job-claw-main\source\src\pdf-extractor.js
+// 移植自 job-claw-main\source\src\pdf-extractor.js
 // 纯前端 PDF 文本解析（支持 Flate/ASCIIHex/ASCII85/RunLength 解码、ToUnicode、CMap）
 // 在 Electron 渲染进程（Chromium）中可直接运行。
 
