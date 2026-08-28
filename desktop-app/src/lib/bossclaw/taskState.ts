@@ -1,5 +1,9 @@
 // 移植自 F:\job-claw-main\source\src\lib\task-state.js
 // 投递任务阶段、进度与状态元数据
+// 注：在参考实现基础上扩展 'opened' 阶段（介于 open_chat 与 verify_chat_target 之间）——
+//   工作台「点击立即沟通」打开聊天窗口但尚未执行自动沟通时的状态。
+//   进度百分比：open_chat(78) → opened(80) → verify_chat_target(82)，逻辑顺序单调递增，
+//   与原进度链（open_chat → verify_chat_target 78→82）配合 auto 流程留出 "打开后人工核对" 的位置。
 import type { TaskStage } from './types';
 
 export const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'ignored', 'skipped']);
@@ -14,6 +18,7 @@ export const TASK_STAGE_META: Record<TaskStage, [string, number]> = Object.freez
   retry_queued: ['等待重新投递', 66],
   open_job: ['打开岗位页面', 70],
   open_chat: ['打开沟通窗口', 78],
+  opened: ['已打开沟通窗口，等待发送/核对', 80],
   verify_chat_target: ['核对 HR 与岗位', 82],
   fill_message: ['填写求职招呼语', 86],
   send_message: ['发送求职招呼语', 90],
@@ -51,6 +56,7 @@ const STAGE_TO_PHASE: Record<TaskStage, number> = {
   retry_queued: 2,
   open_job: 3,
   open_chat: 3,
+  opened: 3,
   verify_chat_target: 3,
   fill_message: 4,
   send_message: 4,

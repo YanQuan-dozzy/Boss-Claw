@@ -3,6 +3,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const api = {
   // 版本信息（状态栏显示）
@@ -34,7 +35,8 @@ const api = {
   bossLogin: () => ipcRenderer.invoke('jc:boss-login'),
 
   // 内置浏览器 webview 预加载脚本绝对路径（由 BrowserView 组件读取后设置到 <webview>）
-  webviewPreload: path.join(__dirname, 'webview.cjs'),
+  // 注意：webview 标签的 preload 属性协议必须是 file:（Electron 文档硬性要求，反斜杠绝对路径会被拒绝加载）
+  webviewPreload: pathToFileURL(path.join(__dirname, 'webview.cjs')).href,
 
   // CORS 无关的 URL 抓取（主进程转发，供获取 BOSS 公开接口如城市编码表）
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),

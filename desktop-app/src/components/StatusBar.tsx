@@ -19,13 +19,11 @@ export default memo(function StatusBar() {
     return { sent, skipped, awaiting };
   }, [pending]);
 
-  const electronVersion = window.electron?.versions?.electron || '31';
-
   return (
     <footer className="statusbar">
       <div className="left">
         <span className={'status-dot' + (bridge === 'connected' ? ' is-on' : '')} />
-        OpenClaw{bridge === 'connected' ? '已连接' : '未连接'} · Electron {electronVersion}
+        OpenClaw{bridge === 'connected' ? '已连接' : '未连接'}
         <span className="sep">·</span>
         <span className={'status-dot' + (bossLoggedIn === true ? ' is-on' : bossLoggedIn === false ? ' is-off' : '')} />
         BOSS {bossLoggedIn === true ? '已登录' : bossLoggedIn === false ? '未登录' : '检测中'}

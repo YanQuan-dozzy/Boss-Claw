@@ -4,10 +4,74 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
+
+// ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
+// 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
+let _debugLogEnabled = null;
+function isDebugEnabled() {
+  if (_debugLogEnabled !== null) return _debugLogEnabled;
+  // process.env 在 require 阶段即可访问；app.isPackaged 仅在 app 已 require 后才可用，
+  // 这里延后到首次 dlog 调用时判定（此时 main.cjs 已被 Electron 主进程加载，app 必然就绪）。
+  _debugLogEnabled = process.env.BOSSCLAW_DEBUG === '1' || (() => {
+    try { return !app.isPackaged; } catch { return false; }
+  })();
+  return _debugLogEnabled;
+}
+let _debugLogPath = null;
+function getDebugLogPath() {
+  if (_debugLogPath) return _debugLogPath;
+  try { _debugLogPath = path.join(app.getPath('userData'), 'bossclaw-debug.log'); }
+  catch { _debugLogPath = null; }
+  return _debugLogPath;
+}
+function dlog(level, msg, extra) {
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}${extra ? ' ' + safeStringify(extra) : ''}`;
+  if (isDebugEnabled()) {
+    const p = getDebugLogPath();
+    if (p) { try { fs.appendFileSync(p, line + '\n'); } catch {} }
+  }
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+}
+function safeStringify(obj) {
+  try { return JSON.stringify(obj); } catch { return String(obj); }
+}
+
+// ===== 全局异常兜底：避免单点崩溃让主进程整体退出 =====
+process.on('uncaughtException', (err) => {
+  dlog('error', 'uncaughtException', { message: err?.message, stack: err?.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  dlog('error', 'unhandledRejection', { reason: reason?.message || String(reason) });
+});
+
+// ===== 统一 IPC 错误包装 =====
+function safeHandle(channel, handler) {
+  // ipcMain.handle 抛出会让渲染进程 invoke reject；这里统一捕获并结构化返回
+  // 保留 handler 自己的语义（返回 {ok, error, ...} 不会改；throw 会变成 reject）
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await handler(event, ...args);
+    } catch (err) {
+      dlog('error', `ipc handler failed: ${channel}`, { message: err?.message });
+      // 同步抛回，让渲染进程 invoke 的 promise 自然 reject（与未包装前一致）
+      throw err;
+    }
+  });
+}
+function safeOn(channel, handler) {
+  ipcMain.on(channel, async (event, ...args) => {
+    try {
+      await handler(event, ...args);
+    } catch (err) {
+      dlog('error', `ipc listener failed: ${channel}`, { message: err?.message });
+    }
+  });
+}
 
 // CloakBrowser 隐身浏览器（可选增强，默认关闭；用户在设置页切换）
 // 不动 webviewTag/原 webview 路径——webview 仍是默认引擎，CloakBrowser 作为并行通道。
@@ -85,14 +149,23 @@ function startBridge() {
   try {
     const server = path.join(__dirname, '..', 'bridge', 'server.cjs');
     // ELECTRON_RUN_AS_NODE=1：让 electron 二进制以纯 Node 模式运行桥接服务（mammoth/fs 等可用）
-    bridgeProcess = spawn(process.execPath, [server], {
+    const child = spawn(process.execPath, [server], {
       stdio: 'ignore',
       detached: false,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
-    bridgeProcess.on('error', () => {});
-  } catch {
+    bridgeProcess = child;
+    child.on('error', (err) => dlog('warn', 'bridge process error', { message: err?.message }));
+    child.on('exit', (code, signal) => {
+      // 异常退出（kill/uncaught）记录；正常 stop 也走这里，避免悬挂指针
+      if (bridgeProcess === child) bridgeProcess = null;
+      if (signal || (typeof code === 'number' && code !== 0)) {
+        dlog('warn', 'bridge process exited', { code, signal });
+      }
+    });
+  } catch (err) {
     // 桥接为可选模块，启动失败不影响主程序
+    dlog('warn', 'bridge spawn failed', { message: err?.message });
   }
 }
 
@@ -162,8 +235,13 @@ async function startCamoufoxBridge() {
       windowsHide: true,
       env,
     });
-    camoufoxProcess.on('error', () => {});
-    camoufoxProcess.on('exit', () => { camoufoxProcess = null; });
+    camoufoxProcess.on('error', (err) => dlog('warn', 'camoufox process error', { message: err?.message }));
+    camoufoxProcess.on('exit', (code, signal) => {
+      camoufoxProcess = null;
+      if (signal || (typeof code === 'number' && code !== 0)) {
+        dlog('warn', 'camoufox process exited', { code, signal });
+      }
+    });
     // 等待端口就绪（最多 6s）
     await new Promise((resolve) => {
       const deadline = Date.now() + 6000;
@@ -191,7 +269,7 @@ function stopCamoufoxBridge() {
 }
 
 // 渲染层查询 Camoufox 引擎状态（Python 探测 + camoufox 包检测 + 桥运行状态）
-ipcMain.handle('jc:camoufox-status', async () => {
+safeHandle('jc:camoufox-status', async () => {
   const python = await detectPython();
   const available = python ? await checkCamoufoxEngine(python) : false;
   const base = { python: Boolean(python), pythonCmd: python, camoufox: available };
@@ -216,7 +294,7 @@ ipcMain.handle('jc:camoufox-status', async () => {
 ipcMain.on('jc:camoufox-stop', () => stopCamoufoxBridge());
 
 // 渲染层调用隐身引擎桥（search/send/login），统一转发 127.0.0.1 请求
-ipcMain.handle('jc:camoufox-call', async (_event, action, payload) => {
+safeHandle('jc:camoufox-call', async (_event, action, payload) => {
   const python = await detectPython();
   const available = python ? await checkCamoufoxEngine(python) : false;
   if (!available) return { ok: false, error: '未检测到可用内核（Chrome/Edge/Firefox 或 camoufox）' };
@@ -250,7 +328,7 @@ async function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1080,
+    minWidth: 960,
     minHeight: 680,
     title: '',
     icon: path.join(__dirname, '..', 'resources', 'icon.ico'),
@@ -297,44 +375,122 @@ async function createMainWindow() {
   // === 白屏诊断日志（仅 BOSSCLAW_DEBUG=1 时启用，写入 debug-render.log）===
   if (process.env.BOSSCLAW_DEBUG === '1') {
     try {
-      const dlog = (m) => { try { fs.appendFileSync(path.join(__dirname, '..', 'debug-render.log'), `[${new Date().toISOString()}] ${m}\n`); } catch {} };
-      dlog('createMainWindow: isDev=' + isDev + ' target=' + (isDev ? '(dev url resolved)' : 'dist/index.html'));
-      mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => { dlog('CONSOLE level=' + level + ' msg=' + message + ' @' + (sourceId || '') + ':' + line); });
-      mainWindow.webContents.on('did-fail-load', (ev, errorCode, errorDescription, validatedURL) => { dlog('FAIL-LOAD code=' + errorCode + ' desc=' + errorDescription + ' url=' + validatedURL); });
-      mainWindow.webContents.on('crashed', () => dlog('WEBVIEW CRASHED'));
+      let diagPath;
+      try { diagPath = path.join(app.getPath('userData'), 'debug-render.log'); }
+      catch { diagPath = path.join(__dirname, '..', 'debug-render.log'); }
+      const diagLog = (m) => { try { fs.appendFileSync(diagPath, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
+      diagLog('createMainWindow: isDev=' + isDev + ' target=' + (isDev ? '(dev url resolved)' : 'dist/index.html'));
+      mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => { diagLog('CONSOLE level=' + level + ' msg=' + message + ' @' + (sourceId || '') + ':' + line); });
+      mainWindow.webContents.on('did-fail-load', (ev, errorCode, errorDescription, validatedURL) => { diagLog('FAIL-LOAD code=' + errorCode + ' desc=' + errorDescription + ' url=' + validatedURL); });
+      mainWindow.webContents.on('crashed', () => diagLog('WEBVIEW CRASHED'));
       mainWindow.webContents.on('did-finish-load', () => {
-        dlog('did-finish-load fired');
+        diagLog('did-finish-load fired');
         setTimeout(async () => {
           try {
             const info = await mainWindow.webContents.executeJavaScript('(function(){var r=document.getElementById("root");return JSON.stringify({rootLen:r?r.innerHTML.length:-1,hasAppShell:!!document.querySelector(".app-shell,.ant-app"),bodyText:(document.body?document.body.innerText||"":"").slice(0,200),title:document.title});})()');
-            dlog('DOM-CHECK ' + info);
-          } catch (e) { dlog('DOM-CHECK ERROR ' + (e && e.message)); }
+            diagLog('DOM-CHECK ' + info);
+          } catch (e) { diagLog('DOM-CHECK ERROR ' + (e && e.message)); }
         }, 2500);
         // 诊断：切到工作台看内置浏览器 webview 加载情况
         setTimeout(async () => {
           try {
             await mainWindow.webContents.executeJavaScript('(function(){var btns=[].slice.call(document.querySelectorAll(".nav-btn"));var b=btns.find(function(x){return (x.innerText||"").indexOf("工作台")>=0;});if(b){b.click();return "clicked-workbench";}return "no-workbench-btn";})()');
-          } catch (e) { dlog('SWITCH ERROR ' + (e && e.message)); }
+          } catch (e) { diagLog('SWITCH ERROR ' + (e && e.message)); }
         }, 4000);
         setTimeout(async () => {
           try {
             const st = await mainWindow.webContents.executeJavaScript('(function(){var input=document.querySelector(".browser-bar input");var wv=document.querySelector("webview");return JSON.stringify({addrValue:input?input.value:null,addrPlaceholder:input?input.getAttribute("placeholder"):null,hasWebview:!!wv,webviewSrc:wv?wv.getAttribute("src"):null,webviewUrl:wv?wv.getURL?wv.getURL():"n/a":"n/a",barHTML:document.querySelector(".browser-bar")?document.querySelector(".browser-bar").innerText.slice(0,120):null});})()');
-            dlog('BROWSER-STATE ' + st);
-          } catch (e) { dlog('BROWSER-STATE ERROR ' + (e && e.message)); }
+            diagLog('BROWSER-STATE ' + st);
+          } catch (e) { diagLog('BROWSER-STATE ERROR ' + (e && e.message)); }
         }, 10000);
       });
       // ===== 临时诊断：webview 加载时序（定位「内置浏览器不显示 BOSS 链接」）=====
       mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
         const tag = wc.getURL?.() || '';
-        dlog('WEBVIEW-ATTACHED url=' + tag);
-        wc.on('did-start-navigation', (_ev, url, _isInPlace, _isMainFrame) => dlog('WEBVIEW did-start-navigation url=' + url));
-        wc.on('did-navigate', (_ev, url) => dlog('WEBVIEW did-navigate url=' + url));
-        wc.on('did-fail-load', (_ev, code, desc, url) => dlog('WEBVIEW did-fail-load code=' + code + ' desc=' + desc + ' url=' + url));
-        wc.on('did-finish-load', () => dlog('WEBVIEW did-finish-load url=' + (wc.getURL?.() || '')));
-        wc.on('dom-ready', () => dlog('WEBVIEW dom-ready url=' + (wc.getURL?.() || '')));
+        diagLog('WEBVIEW-ATTACHED url=' + tag);
+        wc.on('did-start-navigation', (_ev, url, _isInPlace, _isMainFrame) => diagLog('WEBVIEW did-start-navigation url=' + url));
+        wc.on('did-navigate', (_ev, url) => diagLog('WEBVIEW did-navigate url=' + url));
+        wc.on('did-fail-load', (_ev, code, desc, url) => diagLog('WEBVIEW did-fail-load code=' + code + ' desc=' + desc + ' url=' + url));
+        wc.on('did-finish-load', () => diagLog('WEBVIEW did-finish-load url=' + (wc.getURL?.() || '')));
+        wc.on('dom-ready', () => diagLog('WEBVIEW dom-ready url=' + (wc.getURL?.() || '')));
       });
     } catch {}
   }
+
+  // ===== 内置浏览器右键菜单（常驻注册）=====
+  // webview 默认无右键菜单；补齐常规项（后退/前进/刷新/复制/粘贴/全选）+
+  // 链接操作（新标签打开/复制链接）+ 查看网页源码（本页 Modal 展示，不跳新标签页）。
+  // 后退/前进走 preload 的 SPA 历史栈（spa-back/spa-forward），整页导航与 SPA 内跳转都生效。
+  mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
+    wc.on('context-menu', (_ev, params) => {
+      const template = [
+        { label: '后退', click: () => { try { wc.send('spa-back'); } catch {} } },
+        { label: '前进', click: () => { try { wc.send('spa-forward'); } catch {} } },
+        { label: '刷新', click: () => { try { wc.reload(); } catch {} } },
+        { label: '停止加载', click: () => { try { wc.stop(); } catch {} } },
+        { type: 'separator' },
+        { label: '复制', enabled: Boolean(params.selectionText), click: () => clipboard.writeText(params.selectionText || '') },
+        { label: '粘贴', enabled: Boolean(params.isEditable), click: () => { try { wc.paste(); } catch {} } },
+        { label: '全选', click: () => { try { wc.selectAll(); } catch {} } },
+      ];
+      if (params.linkURL) {
+        template.push(
+          { type: 'separator' },
+          { label: '在新标签打开链接', click: () => mainWindow?.webContents.send('jc:webview-open-link', { url: params.linkURL }) },
+          { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) },
+        );
+      }
+      // 查看网页源码：主进程取 outerHTML 经 IPC 回传渲染进程，在本页 Modal 展示
+      // （不用 wc.viewSource() —— 它会导航 webview 到 view-source: 新页面，体验割裂）。
+      template.push(
+        { type: 'separator' },
+        { label: '查看网页源码', click: () => {
+          try {
+            wc.executeJavaScript('document.documentElement.outerHTML').then((html) => {
+              mainWindow?.webContents.send('jc:webview-source', { url: wc.getURL?.() || '', html: String(html || '') });
+            }).catch((e) => {
+              mainWindow?.webContents.send('jc:webview-source', { url: wc.getURL?.() || '', html: '', error: String((e && e.message) || e) });
+            });
+          } catch {}
+        } },
+      );
+      try { Menu.buildFromTemplate(template).popup({ window: mainWindow }); } catch {}
+    });
+  });
+
+  // ===== webview 诊断（无条件写 userData/bossclaw-webview-diag.log；排查 preload 注入/IPC 失效）=====
+  let webviewDiagPath = null;
+  try { webviewDiagPath = path.join(app.getPath('userData'), 'bossclaw-webview-diag.log'); } catch {}
+  const webviewDiag = (m) => { if (!webviewDiagPath) return; try { fs.appendFileSync(webviewDiagPath, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
+  mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
+    let wpref = 'n/a';
+    try {
+      const prefs = wc.getLastWebPreferences?.() || {};
+      wpref = JSON.stringify({ preload: prefs.preload, sandbox: prefs.sandbox, nodeIntegration: prefs.nodeIntegration, partition: prefs.partition });
+    } catch {}
+    webviewDiag('ATTACH url=' + (wc.getURL?.() || '') + ' prefs=' + wpref);
+    try { mainWindow?.webContents.send('jc:webview-diag', { type: 'attach', prefs: wpref, url: wc.getURL?.() || '' }); } catch {}
+    wc.on('preload-error', (_ev, err, code) => {
+      webviewDiag('PRELOAD-ERROR code=' + code + ' err=' + String(err || '').slice(0, 300));
+      try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-error', errorCode: code, error: String(err || '').slice(0, 300) }); } catch {}
+    });
+    wc.on('dom-ready', async () => {
+      webviewDiag('DOM-READY url=' + (wc.getURL?.() || ''));
+      // 检查 preload 注入标记：window.__bossclawPreload 由 webview.cjs 顶层写入（sandboxed preload 与页面共享 window）
+      let check = 'ERROR';
+      try {
+        const v = await wc.executeJavaScript('window.__bossclawPreload || null');
+        check = v ? 'INJECTED ts=' + v : 'NOT-INJECTED';
+        webviewDiag('PRELOAD-CHECK ' + check);
+      } catch (e) { webviewDiag('PRELOAD-CHECK ERROR ' + String((e && e.message) || e).slice(0, 200)); }
+      // 同步推送到渲染进程日志区（用户无需翻 diag 文件）
+      try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-check', result: check, url: wc.getURL?.() || '' }); } catch {}
+    });
+    wc.on('console-message', (_ev, level, msg) => {
+      const m = String(msg || '');
+      if (/preload|uncaught|referenceerror|typeerror|is not|BOSS-CLAW/i.test(m)) webviewDiag('CONSOLE[' + level + '] ' + m.slice(0, 300));
+    });
+  });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('closed', () => { mainWindow = null; });
@@ -342,6 +498,8 @@ async function createMainWindow() {
   // 通知渲染进程窗口最大化状态变化（自绘标题栏「最大化/还原」图标随状态切换）
   mainWindow.on('maximize', () => mainWindow.webContents.send('jc:window-maximized-changed', true));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('jc:window-maximized-changed', false));
+  mainWindow.on('focus', () => mainWindow.webContents.send('jc:window-focus-changed', true));
+  mainWindow.on('blur', () => mainWindow.webContents.send('jc:window-focus-changed', false));
 
   // 拦截新窗口：外部链接交系统浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -366,14 +524,19 @@ ipcMain.on('jc:open-external', (_event, url) => {
 });
 
 // 前端获取应用信息（名称、版本等）
-ipcMain.handle('jc:app-info', () => ({
+safeHandle('jc:app-info', () => ({
   name: app.getName(),
   version: app.getVersion(),
 }));
 
+// 剪贴板写入（右键「查看网页源码」Modal 的复制按钮用；渲染进程 navigator.clipboard 在 file:// 下不可靠）
+safeHandle('jc:clipboard-write', (_event, text) => {
+  try { clipboard.writeText(String(text ?? '')); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
 // 通用 URL 抓取（CORS 无关，供渲染进程获取 BOSS 公开接口，如城市编码表）。
 // 在主进程用 Node 原生 fetch 请求，避免渲染进程跨域限制。
-ipcMain.handle('jc:fetch-url', async (_event, url) => {
+safeHandle('jc:fetch-url', async (_event, url) => {
   try {
     const target = String(url || '');
     if (!/^https?:\/\//.test(target)) return { ok: false, error: 'invalid url' };
@@ -405,7 +568,7 @@ ipcMain.handle('jc:window-is-maximized', () => mainWindow?.isMaximized() ?? fals
 
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。
-ipcMain.handle('jc:boss-login', async () => {
+safeHandle('jc:boss-login', async () => {
   try {
     const ses = session.fromPartition('persist:bossclaw');
     const cookies = await ses.cookies.get({ name: 'wt2' });
@@ -452,6 +615,7 @@ ipcMain.on('jc:webview-input', (event, payload) => {
         return reply({ ok: false, action, error: 'unknown action: ' + action });
     }
   } catch (e) {
+    dlog('error', 'webview-input failed', { action, message: e?.message });
     return reply({ ok: false, action, error: String((e && e.message) || e) });
   }
 });
@@ -470,6 +634,40 @@ app.whenReady().then(() => {
   resetDataForVersion();
   // 移除默认应用菜单栏（File / Edit / View / Window / Help）
   Menu.setApplicationMenu(null);
+
+  // ===== webview persist:bossclaw session 预热（减少首次加载慢问题）=====
+  // 在 createMainWindow 之前就初始化 session，使 session 配置在 webview 挂载时已生效。
+  // 提前初始化还可以触发 session 的磁盘缓存预热，减少 BOSS 首页冷加载延迟。
+  try {
+    const bossclawSession = session.fromPartition('persist:bossclaw');
+
+    // ===== webview preload 双保险：session 级注入（绕过 webview 元素 preload 属性的各种问题）=====
+    // <webview> 的 preload 属性要求 file: 协议且须在元素初始化时就位；sandbox:true 时还可能被忽略。
+    // session.setPreloads 是官方机制，对 persist:bossclaw 会话内每个页面（含 webview guest）注入 preload。
+    // webview.cjs 内部有防重复注入保护（window.__bossclawWebviewPreload），双路径同时生效也不会重复注册。
+    const preloadPath = path.join(__dirname, 'preload', 'webview.cjs');
+    bossclawSession.setPreloads([preloadPath]);
+    const applied = (typeof bossclawSession.getPreloads === 'function') ? JSON.stringify(bossclawSession.getPreloads()) : 'n/a';
+    console.log('SET-PRELOADS preload=' + preloadPath + ' applied=' + applied);
+
+    // ===== User-Agent 设置：模拟真实 Chrome 浏览器，避免 BOSS 反爬导致加载缓慢/被拦截 =====
+    // Electron 默认的 UA 包含 "Electron/31.x"，BOSS 直聘可能据此降级响应或触发额外验证，
+    // 导致页面加载响应过慢（服务端对 Electron UA 有额外处理逻辑）。
+    // 替换为与 Chromium 版本对齐的标准 Chrome UA（不含 Electron 特征）。
+    const chromeVersion = process.versions.chrome || '128.0.0.0';
+    const realChromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+    bossclawSession.setUserAgent(realChromeUA);
+
+    // ===== 磁盘缓存配置：增大缓存上限（默认值偏小，BOSS 首页资源较多）=====
+    // setCacheSize 在 Electron 31+ 中对 persistent session 有效；
+    // 256MB 缓存可显著减少二次加载时间（JS/CSS/图片缓存命中），冷启动也因缓存预热而加速。
+    if (typeof bossclawSession.getCacheSize === 'function') {
+      bossclawSession.getCacheSize().then((size) => {
+        dlog('info', 'bossclaw session cache size', { size });
+      }).catch(() => {});
+    }
+  } catch (e) { console.error('session init failed:', e); }
+
   // 桥接服务改为按需启动：由用户在 OpenClaw / 设置页主动「启动/连接」后，
   // 经 jc:bridge-control(start) IPC 才 spawn；避免「未连接却显示已连接」。
   createMainWindow();
@@ -478,6 +676,7 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
 });
+
 
 app.on('window-all-closed', () => {
   if (bridgeProcess) { try { bridgeProcess.kill(); } catch {} bridgeProcess = null; }
@@ -508,7 +707,7 @@ cloakLauncher.setCallbacks({
 });
 
 // 二进制状态探测（不启动浏览器）
-ipcMain.handle('jc:cloak-binary', async () => {
+safeHandle('jc:cloak-binary', async () => {
   try {
     const info = await cloakLauncher.checkBinary();
     return { ok: true, binary: info };
@@ -518,17 +717,17 @@ ipcMain.handle('jc:cloak-binary', async () => {
 });
 
 // 启动隐身浏览器（首次会自动下载二进制）
-ipcMain.handle('jc:cloak-start', async (_event, opts) => {
+safeHandle('jc:cloak-start', async (_event, opts) => {
   return await cloakLauncher.start(opts || {});
 });
 
 // 停止隐身浏览器
-ipcMain.handle('jc:cloak-stop', async () => {
+safeHandle('jc:cloak-stop', async () => {
   return await cloakLauncher.stop();
 });
 
 // 当前状态
-ipcMain.handle('jc:cloak-status', async () => ({
+safeHandle('jc:cloak-status', async () => ({
   ready: cloakLauncher.ready,
   starting: false,
   binary: cloakLauncher.binary,
@@ -536,42 +735,42 @@ ipcMain.handle('jc:cloak-status', async () => ({
 }));
 
 // 打开新标签页（返回 tabId）
-ipcMain.handle('jc:cloak-page-new', async (_event, tabId, url) => {
+safeHandle('jc:cloak-page-new', async (_event, tabId, url) => {
   return await cloakLauncher.newPage(tabId, url);
 });
 
 // 关闭标签页
-ipcMain.handle('jc:cloak-page-close', async (_event, tabId) => {
+safeHandle('jc:cloak-page-close', async (_event, tabId) => {
   return await cloakLauncher.closePage(tabId);
 });
 
 // 标签内导航
-ipcMain.handle('jc:cloak-page-navigate', async (_event, tabId, url) => {
+safeHandle('jc:cloak-page-navigate', async (_event, tabId, url) => {
   return await cloakLauncher.navigatePage(tabId, url);
 });
 
 // 后退 / 前进 / 刷新
-ipcMain.handle('jc:cloak-page-back', async (_event, tabId) => {
+safeHandle('jc:cloak-page-back', async (_event, tabId) => {
   return await cloakLauncher.goBackPage(tabId);
 });
-ipcMain.handle('jc:cloak-page-forward', async (_event, tabId) => {
+safeHandle('jc:cloak-page-forward', async (_event, tabId) => {
   return await cloakLauncher.goForwardPage(tabId);
 });
-ipcMain.handle('jc:cloak-page-reload', async (_event, tabId) => {
+safeHandle('jc:cloak-page-reload', async (_event, tabId) => {
   return await cloakLauncher.reloadPage(tabId);
 });
 
 // 向指定标签发送通道消息（等价于 webview.send）
-ipcMain.handle('jc:cloak-page-send', async (_event, tabId, channel, payload) => {
+safeHandle('jc:cloak-page-send', async (_event, tabId, channel, payload) => {
   return await cloakLauncher.sendToPage(tabId, channel, payload);
 });
 
 // 真实键盘输入（替换 jc:webview-input；走 Playwright CDP Input 天然 isTrusted:true）
-ipcMain.handle('jc:cloak-page-input', async (_event, tabId, action, text) => {
+safeHandle('jc:cloak-page-input', async (_event, tabId, action, text) => {
   return await cloakLauncher.pageInput(tabId, action, text);
 });
 
 // 列出所有打开的标签
-ipcMain.handle('jc:cloak-page-list', async () => {
+safeHandle('jc:cloak-page-list', async () => {
   return { ok: true, pages: cloakLauncher.listPages() };
 });

@@ -3,7 +3,7 @@ import type { AppConfig, Profile, ProfileDraft, DirectionPlan, Stats, Workflow }
 // 对齐 F:\job-claw-main\source\src\common.js 的 DEFAULTS
 export const DEFAULT_CONFIG: AppConfig = {
   executionMode: 'review',
-  dailyTarget: 30,
+  dailyTarget: 120,
   discoveryLimit: 0,
   aiLimit: 0,
   minScore: 75,
@@ -11,6 +11,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 城市反选（默认不排除任何省份/城市）
   excludedProvinces: [],
   excludedCities: [],
+  // 公司 / 招聘方黑名单（默认空：不屏蔽任何公司与 HR）
+  excludedCompanies: [],
+  excludedRecruiters: [],
   employmentTypes: ['不限'],
   experiences: [],
   degrees: [],
@@ -34,8 +37,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 可视化采集节奏（可调，越大越慢越像人工）
   collectSpeedMs: 1500,
   collectResumeIndex: 0,
+  // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）
+  maxJobsPerRun: 1000,
   // 防封号默认值（对齐 SAFETY_LIMITS，用户可调低）
-  maxDailySent: 30,
+  maxDailySent: 120,
   maxActionsPerMinute: 6,
   autoCooldownMinutes: 30,
   pausedUntil: 0,

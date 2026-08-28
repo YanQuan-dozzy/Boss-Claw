@@ -102,10 +102,16 @@ export const useSettingsStore = create<SettingsState>()(
       // （老用户 localStorage 中缺少 maxDailySent 等字段时回退到安全默认值）
       merge: (persisted, current) => {
         const p = (persisted || {}) as Partial<SettingsState>;
+        const pc = (p.config || {}) as Partial<AppConfig>;
+        // 迁移（2026-08-28）：每日目标/每日沟通上限旧默认值 30 → 120。
+        // 仅当两个字段都仍为旧默认 30 时视为「未手动修改」，一并升级；
+        // 任一字段被用户改过则保留其设置，不覆盖。
+        const migrateOld30 = pc.maxDailySent === 30 && pc.dailyTarget === 30;
+        const migrated = migrateOld30 ? { maxDailySent: 120, dailyTarget: 120 } : {};
         return {
           ...current,
           ...p,
-          config: { ...(current as SettingsState).config, ...(p.config || {}) },
+          config: { ...(current as SettingsState).config, ...pc, ...migrated },
         };
       },
     }

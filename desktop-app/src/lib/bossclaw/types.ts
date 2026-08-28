@@ -37,6 +37,10 @@ export interface AppConfig {
   excludedProvinces: string[];
   /** 城市反选：排除的城市（如 杭州 / 深圳），子串命中即排除 */
   excludedCities: string[];
+  /** 公司黑名单：不想投的公司名（如 腾讯科技），双向子串命中即排除（不依赖 AI 判断） */
+  excludedCompanies: string[];
+  /** 招聘方（HR）黑名单：不想沟通的招聘方姓名（如 王老师），子串命中即排除（不依赖 AI 判断） */
+  excludedRecruiters: string[];
   employmentTypes: string[];
   experiences: string[];
   degrees: string[];
@@ -62,6 +66,8 @@ export interface AppConfig {
   collectSpeedMs: number;
   /** 断点续采起始序号：0 表示从头；>0 表示跳过前 N 个岗位（已入库岗位会自动去重跳过） */
   collectResumeIndex: number;
+  /** 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）。0 表示不限 */
+  maxJobsPerRun: number;
   /** 单日投递硬上限（防封号），超过即暂停；受 SAFETY_LIMITS.MAX_SAFE_DAILY 封顶 */
   maxDailySent: number;
   /** 每分钟动作上限（防封号），远低于平台限速阈值 */
@@ -239,6 +245,7 @@ export type PendingStatus =
   | 'approved_queue'
   | 'pending'
   | 'failed'
+  | 'opened'
   | 'sent'
   | 'skipped'
   | 'rejected'
@@ -261,6 +268,8 @@ export interface PendingItem {
   retryable?: boolean;
   /** 成功投递时间戳（用于单日投递上限统计） */
   sentAt?: number;
+  /** 已打开沟通窗口时间戳（工作台「点击立即沟通」后、尚未发送文字） */
+  openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */
   riskBlocked?: boolean;
 }
@@ -275,6 +284,7 @@ export type TaskStage =
   | 'retry_queued'
   | 'open_job'
   | 'open_chat'
+  | 'opened'
   | 'verify_chat_target'
   | 'fill_message'
   | 'send_message'

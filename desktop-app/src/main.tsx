@@ -10,6 +10,8 @@ import './index.css';
 // antd v5 基础样式重置（确保 Segmented/Button 等组件有正确的胶囊/边框样式）
 import 'antd/dist/reset.css';
 
+import { ThemeProvider } from './context/ThemeContext';
+
 const root = document.getElementById('root')!;
 
 function Root() {
@@ -17,11 +19,13 @@ function Root() {
   const effective = useEffectiveTheme(theme);
 
   return (
-    <ConfigProvider locale={zhCN} theme={getTheme(effective)}>
-      <AntApp>
-        <App />
-      </AntApp>
-    </ConfigProvider>
+    <ThemeProvider>
+      <ConfigProvider locale={zhCN} theme={getTheme(effective)}>
+        <AntApp>
+          <App />
+        </AntApp>
+      </ConfigProvider>
+    </ThemeProvider>
   );
 }
 

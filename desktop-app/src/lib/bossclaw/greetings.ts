@@ -2,7 +2,7 @@
 // 安全不变量（对齐 AGENTS.md 2.1）：所有提示词与招呼语必须使用求职者第一人称口吻，
 // 仅引用真实简历事实；禁止承诺薪资、到岗时间、面试时间或不存在的能力/经历。
 import type { AppConfig, Profile } from './types';
-import { callModel, aiFailureKind } from './llm';
+import { cachedCallModel, aiFailureKind } from './llm';
 import { normalizeStringList } from './helpers';
 import { ANALYZE_SYSTEM_PROMPT } from './prompts';
 
@@ -98,16 +98,18 @@ export async function generateGreetings(
         }
       : null;
     const systemPrompt = resolveGreetingPrompt(customPrompt || '');
-    const result: any = await callModel(
+    // 简历截短至 8000 字 + 缓存：同一份简历与画像重复生成直接命中，不重复计费
+    const result: any = await cachedCallModel(
       [
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
-          content: `简历：\n${String(resumeText || '').slice(0, 12000)}\n\n职业画像：\n${JSON.stringify(profileBrief || {})}`,
+          content: `简历：\n${String(resumeText || '').slice(0, 8000)}\n\n职业画像：\n${JSON.stringify(profileBrief || {})}`,
         },
       ],
       model,
-      { maxTokens: 2000, temperature: 0.4 }
+      { maxTokens: 2000, temperature: 0.4 },
+      { scope: 'greetings' }
     );
     const rawList = Array.isArray(result?.greetings) ? result.greetings : [];
     const cleaned = rawList.map((g: unknown) => normalizeGreetingText(String(g || ''))).filter(acceptableGreeting);

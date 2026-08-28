@@ -61,12 +61,20 @@ export function computeJobPriority(item: { analysis?: JobAnalysis; job?: JobMeta
 }
 
 function pendingStatusRank(status: string): number {
+  // 对齐 F:\job-claw-main\source\src\lib\job-priority.js 的 pendingStatusRank；
+  // 扩展引入 'opened' 状态——工作台「点击立即沟通」打开聊天窗后置为 opened，
+  // 排序位置：approved(0) → approved_queue(1) → pending(2) → failed(3) →
+  //           opened(3.5)（已开沟通窗但未发送文字 / 未跑自动沟通，置于失败与发送之间，
+  //                          优先级高于「失败重试」、低于「待处理 / 投递中」——避免抢在用户处理之前被引擎再次打开） →
+  //           sent(4) → skipped(5) → rejected(6) → ignored(7)
+  // opened 不计入 priorityRank（参考实现 rerankPending：仅 approved/approved_queue/pending 计入 queueRank）。
   return (
     {
       approved: 0,
       approved_queue: 1,
       pending: 2,
       failed: 3,
+      opened: 3.5,
       sent: 4,
       skipped: 5,
       rejected: 6,
