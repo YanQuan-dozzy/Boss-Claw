@@ -1,12 +1,12 @@
 <div align="center">
 
-# BossClaw by Chris
+# BossClaw
 
 **面向求职者的本地 AI 投递助手（Electron 桌面应用）**
 
 从简历解析、职业画像和岗位方向选择，到岗位信息整理、AI 匹配排序、沟通草稿生成与投递进度管理，集中在一个本地桌面应用中完成。
 
-[快速开始](#快速开始) · [功能介绍](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [完整需求](docs/桌面版改造需求文档.md)
+[快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [完整需求](docs/桌面版改造需求文档.md)
 
 ![Version](https://img.shields.io/badge/version-v2.0.0-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
@@ -17,6 +17,18 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
 
 </div>
+
+## 下载安装
+
+**开箱即用，下载即可运行**（Windows 10/11，x64）：
+
+| 版本 | 文件 | 说明 |
+| --- | --- | --- |
+| 📦 安装版 | [BossClaw-2.0.0-win-x64-setup.exe](BossClaw-2.0.0-win-x64-setup.exe) | 标准安装包（推荐），双击安装后从开始菜单启动 |
+| 🚀 便携版 | [BossClaw-2.0.0-win-x64-portable.exe](BossClaw-2.0.0-win-x64-portable.exe) | 绿色免安装，解压即用，可放 U 盘随身携带 |
+
+> **运行要求**：Windows 10/11（x64）；首次启动按提示在「设置」页填写求职条件与 AI API Key 即可使用。
+> 安装版与便携版内容一致，按使用习惯任选其一。
 
 > BossClaw 是由用户主动控制的求职信息整理与投递辅助工具，不属于任何招聘平台的官方产品，也不代表任何平台提供授权、合作或背书。使用者应遵守适用法律、目标网站规则及账号使用要求。
 
@@ -40,7 +52,7 @@ BossClaw 将这些环节整理为一条清晰流程：
 
 BossClaw 的目标是帮助用户减少重复整理工作，而不是替代用户作出求职决定。AI 输出仅作为辅助建议，重要内容应由用户核对后使用。
 
-> **当前形态**：本项目已重构为统一的 **Electron + React 桌面应用**，代码位于 [`desktop-app/`](desktop-app/README.md)，**无需 Chrome 扩展**即可运行——启动即打开一个可视化「工作台窗口」+ 内置的 BOSS 直聘浏览器窗口。历史 Chrome 扩展等旧版本源码已按模块归档至 [`旧版本/学习逻辑/`](旧版本/学习逻辑/README.md)，仅作逻辑学习参考。
+> **当前形态**：本项目为统一的 **Electron + React 桌面应用**，代码位于 [`desktop-app/`](desktop-app/README.md)。启动即打开一个可视化「工作台窗口」+ 内置的 BOSS 直聘浏览器窗口，**无需浏览器扩展**即可运行。
 
 ## 核心功能
 
@@ -55,10 +67,13 @@ BossClaw 的目标是帮助用户减少重复整理工作，而不是替代用�
 | AI 匹配 | 分析岗位要求，给出匹配分、判断理由、技能命中、能力缺口和待确认项 |
 | 智能排序 | 综合匹配度、硬性条件、HR 活跃度、地点、薪资、新鲜度和风险提示进行排序 |
 | 沟通草稿 | 根据简历证据和岗位要求生成可编辑的应聘沟通内容与个性化打招呼语 |
+| 自动沟通 | 可选真实浏览器引擎（Camoufox），自动打开沟通窗口、输入并发送打招呼语，支持发送在线简历 |
 | 任务进度 | 每个任务和岗位均可显示独立进度、阶段、结果和异常原因 |
+| 数据统计 | 投递量、沟通量、成功率等关键指标的可视化统计 |
 | 失败恢复 | 异常任务可重新打开、单条重试、标记忽略或由用户继续处理 |
 | OpenClaw | 可选本地 Node 桥接，用于 OCR、日报、本地文件和任务状态恢复 |
-| Camoufox 隐身引擎 | 可选增强（Python 桥）：多内核自适应——优先 Camoufox 原生内核（C++ 级指纹伪装 + humanize），否则复用系统 Chrome/Edge + Playwright stealth；不下载额外内核，降低正常操作被误判为机器人的概率；隐身搜索不占内置浏览器标签 |
+| 隐身引擎 | 可选增强（Python 桥）：多内核自适应，优先 Camoufox 原生内核，否则复用系统 Chrome/Edge + Playwright stealth；不下载额外内核，降低正常操作被误判为机器人的概率；隐身搜索不占内置浏览器标签 |
+| 隐身浏览器 | 可选增强：Playwright 持久上下文 + 多 Page 的隐身浏览器模式，用于降低反检测概率 |
 | 主题 | 浅色 / 深色 / 跟随系统（antd 主题，状态持久化） |
 
 ## 架构与布局
@@ -66,7 +81,7 @@ BossClaw 的目标是帮助用户减少重复整理工作，而不是替代用�
 - **技术栈**：Electron `^31` + React 18 + TypeScript + Vite + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
 - **进程模型**：主进程（CommonJS，`electron/main.cjs`）+ 预加载脚本（`contextBridge` 安全 IPC + LLM 代理）+ React 渲染进程（Vite 构建）；`contextIsolation: true`、`nodeIntegration: false`、`webviewTag: true`。
 - **全局框架**：顶部标题栏（品牌 + 状态 + 主题切换）、左侧固定功能侧栏、底部状态栏（桥接状态 · Electron 版本 · 投递统计）。
-- **侧栏 7 入口**：首页 / 工作台 / 简历中心 / 投递方向 / 任务进度 / OpenClaw / 设置。
+- **侧栏 9 入口**：首页 / 工作台 / 简历中心 / 投递方向 / 任务进度 / 数据统计 / OpenClaw / 自动沟通 / 设置。
 - **布局规则**：「工作台」为**三栏**（侧栏 + 消息进度 + 内置浏览器），其余页面为**双栏**（侧栏 + 功能页）。
 - **内置浏览器**：Electron `<webview>` 默认加载 BOSS 直聘，支持地址栏、与中栏联动、登录态持久化（免重复登录）；外部链接经 `shell.openExternal` 打开。
 
@@ -78,6 +93,8 @@ BossClaw 的目标是帮助用户减少重复整理工作，而不是替代用�
 - Node.js 20 或更高版本
 
 ### 2. 安装依赖并启动
+
+> **已有打包成品？** 直接使用上方[「下载安装」](#下载安装)的 exe 即可，无需手动搭建环境。
 
 仓库**不含**任何运行时依赖（node_modules / Electron 二进制 / Python 包均需自行下载），首次使用请先准备环境：
 
@@ -148,6 +165,7 @@ AI 结果只是初稿。请检查个人定位、技能、项目、学历、城�
 
 - **人工确认**适合首次使用：AI 完成岗位分析和沟通草稿生成后，由用户逐条检查、修改并决定是否继续。
 - **半自动投递**：中栏批准岗位 → 浏览器跳转对应页 → AI 草稿预填沟通框 → **用户点发送**。
+- **自动沟通**：启动后按匹配优先级依次处理队列岗位，在真实浏览器中打开沟通窗口、输入并发送打招呼语，发送结果确认后才计成功。
 - **自动辅助**：启动后按匹配优先级依次投递 `approved_queue` 队列，失败自动暂停交人工核对。**全自动**为后续阶段目标。
 
 遇到安全验证、登录异常、对象不确定、页面结构异常或结果无法确认时，应立即暂停，不继续执行后续动作。自动辅助不代表平台授权，也不保证账号不会受到网站规则、频率控制或其他安全机制影响。
@@ -158,7 +176,7 @@ AI 结果只是初稿。请检查个人定位、技能、项目、学历、城�
 
 ## OpenClaw 是做什么的
 
-OpenClaw 是**可选的本地执行与恢复中心**，不是普通用户开始使用 BossClaw 的必经步骤。桌面版以 **Node 重写跨平台桥接后端**（替代仅 macOS 可编译的 swift 解析器），主进程自动拉起本地服务（`127.0.0.1:18765`），提供：
+OpenClaw 是**可选的本地执行与恢复中心**，不是普通用户开始使用 BossClaw 的必经步骤。桌面版以 **Node 重写跨平台桥接后端**，主进程自动拉起本地服务（`127.0.0.1:18765`），提供：
 
 - 扫描 PDF 或特殊字体 PDF 的本地 OCR
 - 读取本地求职日报
@@ -193,7 +211,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 - 伪造简历能力、工作经历、学历、薪资、到岗时间或面试安排
 - 干扰网站正常运行，或者将本项目用于违反适用法律和网站规则的行为
 
-> **关于可选增强「Camoufox 隐身引擎」的边界说明**：该功能（在设置页默认关闭，需用户主动启用）借鉴自开源参考项目 `boss-auto-job-main`，仅在用户明确启用后，用隐身浏览器通道替代内置浏览器执行**同等的正常求职操作**。引擎**多内核自适应、不下载额外内核**：优先 Camoufox 原生内核（C++ 级指纹伪装 + humanize 类人行为），没有则自动复用本机已装的 Chrome / Edge（Playwright + stealth 初始化脚本）。目的是降低「正常操作被误判为机器人（环境异常 code 37）」的概率，从而减少误触风控。
+> **关于可选增强「隐身引擎 / 隐身浏览器」的边界说明**：该功能（在设置页默认关闭，需用户主动启用）仅在用户明确启用后，用隐身浏览器通道替代内置浏览器执行**同等的正常求职操作**。引擎**多内核自适应、不下载额外内核**：优先 Camoufox 原生内核（C++ 级指纹伪装 + humanize 类人行为），没有则自动复用本机已装的 Chrome / Edge（Playwright + stealth 初始化脚本）。目的是降低「正常操作被误判为机器人（环境异常 code 37）」的概率，从而减少误触风控。
 > 它**不绕过**验证码 / 账户验证（code 35/36/32 仍立即停止并交人工处理），不自动换号，不突破任何平台限制；涉及风控码、首次投递验收、招呼语非空等安全不变量与 webview 通道完全一致。
 
 出现以下任一情况时，应立即停止任务并由用户处理：
@@ -220,22 +238,22 @@ BossClaw 官方版本不应实现、宣传或用于：
 ```
 Boss-claw/
 ├── desktop-app/               当前主应用（Electron + React，v2.0.0）
-│   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs）
+│   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs / cloakPreload.cjs）
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
+│   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py）
 │   ├── src/                   React 渲染进程（main / App / theme / store / components / pages / lib）
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts（dev / build / package）
 ├── docs/
 │   ├── 桌面版改造需求文档.md   权威需求文档（v1.2，决策已确认）
 │   └── archive/               旧版文档与项目元数据（CHANGELOG / 隐私安全 / 常见问题等）
-├── 旧版本/学习逻辑/            历史源码按模块归档（chrome-extension / desktop-app / desktop-bridge / source / skills）
 ├── AGENTS.md                  项目约束（需求对齐 + 安全不变量 + 工程规范）
 ├── start-bossclaw.cmd         Windows 一键启动脚本
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知
 └── LICENSE                    Apache License 2.0
 ```
 
-完整目录说明见 [`desktop-app/README.md`](desktop-app/README.md)；旧版本归档索引见 [`旧版本/学习逻辑/README.md`](旧版本/学习逻辑/README.md)。
+完整目录说明见 [`desktop-app/README.md`](desktop-app/README.md)。
 
 ## 本地开发
 
@@ -251,11 +269,11 @@ npm run package      # 构建并打包 Windows 安装包（electron-builder --wi
 
 > 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 
-涉及业务逻辑改动时，请优先回查 `旧版本/学习逻辑/` 中对应模块（`task-state` / `job-priority` / `conversation-identity` 等）与测试，对齐口径，禁止凭空重写。项目约束见 [AGENTS.md](AGENTS.md)。
+涉及业务逻辑改动时，请优先回查 [`AGENTS.md`](AGENTS.md) 与 `docs/` 下文档，对齐既定口径，禁止凭空重写。
 
 ## 反馈与联系
 
-遇到问题时，建议先查看 [常见问题](docs/archive/旧版Chrome扩展/常见问题.md)，再提交 GitHub Issue。提交时请包含：
+遇到问题时，建议先查看 [`docs/archive/项目元数据/`](docs/archive/项目元数据) 下的常见问题与变更记录，再提交 Issue。提交时请包含：
 
 - BossClaw 版本（桌面版 v2.0.0）
 - 操作系统与 Electron 版本
@@ -263,15 +281,11 @@ npm run package      # 构建并打包 Windows 安装包（electron-builder --wi
 - 已隐藏隐私信息的截图
 - 错误页面中的完整错误信息
 
-## 开源许可、署名与通知
+## 开源许可与署名
 
-BossClaw 采用 [Apache License 2.0](LICENSE) 开源。复制、修改和再分发时，请保留 `LICENSE` 与 `NOTICE`，明确标注：
+BossClaw 采用 [Apache License 2.0](LICENSE) 开源。复制、修改和再分发时，请保留 `LICENSE` 与 `NOTICE`，并清晰说明所作的实质性修改。
 
-> Based on BossClaw by Chris — https://github.com/YanQuan-dozzy/Boss-Claw.git
-
-发布二创、教程、视频、文章、商业集成或较大改编时，也请通过 GitHub Issue 通知作者。通知用于协作、署名和案例收集，不构成 Apache-2.0 之外的附加许可条件。
-
-详细署名格式见 [ATTRIBUTION.md](ATTRIBUTION.md)，品牌使用规则见 [TRADEMARKS.md](docs/archive/项目元数据/TRADEMARKS.md)。
+详细署名要求见 [ATTRIBUTION.md](ATTRIBUTION.md)。
 
 ## 免责声明
 
