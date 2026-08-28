@@ -4,7 +4,7 @@
 
 > 完整需求与决策见仓库根：[`docs/桌面版改造需求文档.md`](../docs/桌面版改造需求文档.md)（v1.2，已锁定不再讨论）。
 >
-> 模块级业务口径对齐 [`F:\job-claw-main`](../)（参考实现）。约束与安全不变量见仓库根 [`AGENTS.md`](../AGENTS.md)。
+> 约束与安全不变量见仓库根 [`AGENTS.md`](../AGENTS.md)。
 
 ---
 
@@ -91,7 +91,7 @@ npm install               # 1. 安装 Node 依赖（含 Electron 二进制）
 > .venv\Scripts\python -m camoufox fetch   # 可选：下载指纹内核(~150MB)；跳过则自动回退系统 Chrome/Edge
 > ```
 
-> **可选 — CloakBrowser**：首次启用「隐身浏览器」模式时，launcher 自动从 cloakbrowser.dev / GitHub Releases 下载 ~200MB 隐身 Chromium 到 `~/.cloakbrowser/` 并校验 Ed25519 签名。离线/受限环境可下载 `.zip` 后用 `CLOAKBROWSER_BINARY_PATH` 指向本地二进制。
+> **可选 — CloakBrowser**：首次启用「隐身浏览器」模式时，launcher 自动下载 ~200MB 隐身 Chromium 到 `~/.cloakbrowser/` 并校验 Ed25519 签名。离线/受限环境可下载 `.zip` 后用 `CLOAKBROWSER_BINARY_PATH` 指向本地二进制。
 
 ---
 
