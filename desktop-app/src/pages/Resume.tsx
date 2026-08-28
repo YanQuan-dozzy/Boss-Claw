@@ -4,7 +4,6 @@ import {
   Button,
   Card,
   Col,
-  Empty,
   Input,
   Row,
   Select,
@@ -32,6 +31,7 @@ import { generateGreetings, DEFAULT_GREETING_PROMPT, resolveGreetingPrompt } fro
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
 import { bridgeParseResume } from '@/lib/bridgeClient';
 import type { ProfileDraft } from '@/lib/bossclaw/types';
+import { EmptyState } from '@/components/feedback';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -258,38 +258,47 @@ export default function Resume() {
             }
             extra={
               <Space>
-                <Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()}>导入文件</Button>
+                <Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()}>
+                  {text.trim() ? '重新导入' : '导入文件'}
+                </Button>
                 <Button onClick={() => { setResumeText(text, resumeFileName); message.success('原文已保存'); }}>保存原文</Button>
                 <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.text" hidden onChange={onPick} />
               </Space>
             }
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
           >
-            <div
-              className={'resume-dropzone' + (dragging ? ' is-dragging' : '')}
-              role="button"
-              tabIndex={0}
-              aria-label="点击或拖拽导入简历文件"
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={onDrop}
-              onClick={() => fileRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  fileRef.current?.click();
-                }
-              }}
-            >
-              <InboxOutlined className="dz-icon" />
-              <div className="dz-title">点击或拖拽文件到此处</div>
-              <div className="dz-sub">支持 PDF / DOCX / TXT · 单个文件 ≤ 10MB · 本地解析</div>
-            </div>
+            {!text.trim() ? (
+              <div
+                className={'modern-dropzone' + (dragging ? ' is-dragging' : '')}
+                role="button"
+                tabIndex={0}
+                aria-label="点击或拖拽导入简历文件"
+                onClick={() => fileRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    fileRef.current?.click();
+                  }
+                }}
+              >
+                <InboxOutlined className="dz-icon" />
+                <div className="dz-title">点击或拖拽简历文件到此处</div>
+                <div className="dz-sub">100% 本地安全解析 · 单个文件 ≤ 10MB</div>
+                <div className="file-type-chips">
+                  <span className="file-type-chip">PDF</span>
+                  <span className="file-type-chip">DOCX</span>
+                  <span className="file-type-chip">TXT</span>
+                </div>
+              </div>
+            ) : null}
             <TextArea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              rows={14}
-              className="mt-12"
-              placeholder="在此粘贴简历正文，或点击上方/虚线区域导入 PDF / DOCX / TXT"
+              rows={text.trim() ? 18 : 6}
+              className={!text.trim() ? "mt-12" : ""}
+              placeholder="在此粘贴简历正文，或点击右上角「重新导入」导入 PDF / DOCX / TXT"
             />
           </Card>
 
@@ -337,9 +346,10 @@ export default function Resume() {
                 </Text>
               </Space>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={
-                <span>导入简历后编辑提示词，点击「生成预览」查看效果<br/><small style={{ color: '#999' }}>提示词将用于工作台每个岗位的打招呼语生成</small></span>
-              } style={{ marginTop: 16 }} />
+              <EmptyState
+                title="尚未生成招呼语预览"
+                description="导入简历后编辑提示词，点击「生成预览」查看效果。提示词将用于工作台每个岗位的打招呼语生成。"
+              />
             )}
           </Card>
         </Col>
@@ -359,7 +369,10 @@ export default function Resume() {
             }
           >
             {!draft ? (
-              <Empty description="尚未生成职业画像" />
+              <EmptyState
+                title="尚未生成职业画像"
+                description="导入简历后点击「提取画像」或先在工作台开启一次自动辅助。"
+              />
             ) : (
               <Space direction="vertical" style={{ width: '100%' }} size="small">
                 <div>

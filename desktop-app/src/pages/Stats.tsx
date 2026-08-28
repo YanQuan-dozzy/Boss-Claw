@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Card, Empty, Progress, Space, Tag, Tooltip, Typography } from 'antd';
+import { Card, Progress, Space, Tag, Tooltip, Typography } from 'antd';
 import {
   BarChartOutlined,
   AimOutlined,
@@ -17,6 +17,7 @@ import {
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { selectedDirectionItems } from '@/lib/bossclaw/directions';
+import { EmptyState } from '@/components/feedback';
 import type { Decision, PendingStatus } from '@/lib/bossclaw/types';
 
 const { Text } = Typography;
@@ -175,13 +176,21 @@ export default function Stats() {
   const target = Math.max(1, dailyTarget || 150);
   const goalPct = Math.min(100, Math.round((agg.sent / target) * 100));
 
-  const overviewCards = [
-    { icon: <TeamOutlined />, cls: 'teal', title: '岗位总数', value: agg.total, note: '全部已记录岗位' },
-    { icon: <CheckCircleFilled />, cls: 'green', title: '已投递', value: agg.sent, note: '投递成功' },
-    { icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: agg.waiting, note: '确认队列 + 投递队列 + 投递中' },
-    { icon: <CloseCircleFilled />, cls: 'red', title: '失败', value: agg.failed, note: '可重试 / 忽略' },
-    { icon: <StopOutlined />, cls: 'orange', title: '跳过 / 忽略', value: agg.skippedIgnored, note: '未投递' },
-    { icon: <AimOutlined />, cls: 'purple', title: '已确认方向', value: directionCount, note: '投递方向模板' },
+  const overviewCards: Array<{
+    icon: React.ReactNode;
+    cls: string;
+    title: string;
+    value: number;
+    note: string;
+    badge?: string;
+    pct?: number;
+  }> = [
+    { icon: <TeamOutlined />, cls: 'teal', title: '岗位总数', value: agg.total, note: '全部已记录岗位', badge: '记录' },
+    { icon: <CheckCircleFilled />, cls: 'green', title: '已投递', value: agg.sent, note: '投递成功', pct: agg.total > 0 ? Math.round((agg.sent / agg.total) * 100) : 0 },
+    { icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: agg.waiting, note: '确认 / 投递队列中', pct: agg.total > 0 ? Math.round((agg.waiting / agg.total) * 100) : 0 },
+    { icon: <CloseCircleFilled />, cls: 'red', title: '失败', value: agg.failed, note: '可重试 / 忽略', pct: agg.total > 0 ? Math.round((agg.failed / agg.total) * 100) : 0 },
+    { icon: <StopOutlined />, cls: 'orange', title: '跳过 / 忽略', value: agg.skippedIgnored, note: '未投递岗位', pct: agg.total > 0 ? Math.round((agg.skippedIgnored / agg.total) * 100) : 0 },
+    { icon: <AimOutlined />, cls: 'purple', title: '已确认方向', value: directionCount, note: '投递方向模板', badge: '模板' },
   ];
 
   return (
@@ -204,19 +213,32 @@ export default function Stats() {
 
       {agg.total === 0 && taskRuns.length === 0 ? (
         <Card>
-          <Empty description="暂无统计数据。到「工作台」加入岗位或新建任务后，这里会展示完整统计。" />
+          <EmptyState
+            title="暂无统计数据"
+            description="到「工作台」加入岗位或新建任务后，这里会展示完整统计。"
+          />
         </Card>
       ) : (
         <>
           {/* 总览指标卡 */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14, marginBottom: 20 }}>
+          <div className="stat-cards-grid">
             {overviewCards.map((c) => (
-              <div className="stat-card" key={c.title}>
-                <div className={'stat-icon ' + c.cls}>{c.icon}</div>
-                <div className="stat-body">
-                  <div className="stat-title">{c.title}</div>
-                  <div className="stat-value">{c.value}</div>
-                  <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>{c.note}</div>
+              <div className={`stat-card stat-card-${c.cls}`} key={c.title}>
+                <div className="stat-card-top-accent" />
+                <div className="stat-card-content">
+                  <div className="stat-card-header">
+                    <div className={'stat-icon ' + c.cls}>{c.icon}</div>
+                    {c.pct !== undefined ? (
+                      <span className={`stat-badge ${c.cls}`}>{c.pct}%</span>
+                    ) : c.badge ? (
+                      <span className={`stat-badge ${c.cls}`}>{c.badge}</span>
+                    ) : null}
+                  </div>
+                  <div className="stat-body">
+                    <div className="stat-title">{c.title}</div>
+                    <div className="stat-value">{c.value}</div>
+                    <div className="stat-note" title={c.note}>{c.note}</div>
+                  </div>
                 </div>
               </div>
             ))}

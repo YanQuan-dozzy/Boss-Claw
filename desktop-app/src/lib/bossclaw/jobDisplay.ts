@@ -50,8 +50,10 @@ export function formatMetaLine(
   fallback?: string | null
 ): string {
   const parts: string[] = [];
-  if (company?.trim()) parts.push(company.trim());
-  if (location?.trim()) parts.push(location.trim());
+  const comp = company?.trim();
+  const loc = location?.trim();
+  if (comp) parts.push(comp);
+  if (loc && loc !== comp) parts.push(loc);
   const validSalary = cleanSalary(salary);
   if (validSalary) parts.push(validSalary);
   if (parts.length) return parts.join(' · ');

@@ -1,14 +1,14 @@
-// electron/cloakbrowser/launcher.cjs —— CloakBrowser 隐身浏览器生命周期管理器
-// 替代 Electron <webview> 作为内置浏览器；持久上下文模式 + 多 Page。
-// 与 camoufox.py 平行运行（用户在设置切换），不取代；webviewTag 已从主进程移除。
+// electron/cloakbrowser/launcher.cjs ???CloakBrowser ????????????
+// ?? Electron <webview> ????????????????+ ??Page??
+// ??camoufox.py ??????????????????webviewTag ?????????
 //
-// 设计要点（plan §2）：
-//  - launchPersistentContext 启动一次，userDataDir 持久化登录态（wt2 cookie 等）
-//  - 每标签 = 一个 Playwright Page
-//  - 事件流：page.addInitScript 注入 cloakPreload.cjs → console.log / window.__bossclaw_emit → launcher 转发 jc:cloak-event
-//  - 输入：launcher 收到 jc:cloak-page-input → page.keyboard.type/delete/press('Enter')
+// ?????plan �2??
+//  - launchPersistentContext ?????userDataDir ???????wt2 cookie ??
+//  - ????= ???Playwright Page
+//  - ????page.addInitScript ?? cloakPreload.cjs ??console.log / window.__bossclaw_emit ??launcher ?? jc:cloak-event
+//  - ???launcher ?? jc:cloak-page-input ??page.keyboard.type/delete/press('Enter')
 //
-// 安全不变量（AGENTS.md §2.1）：不绕过验证码/账户验证；code 35/36/32 立即停止交人工。
+// ??????AGENTS.md �2.1????????/?????code 35/36/32 ?????????
 'use strict';
 
 const path = require('node:path');
@@ -18,12 +18,12 @@ let mod = null; // dynamic import cache: { launchPersistentContext, launch, bina
 
 async function loadMod() {
   if (mod) return mod;
-  // cloakbrowser 是 ESM（type:"module"）；CJS 动态 import
+  // cloakbrowser ??ESM?type:"module"??CJS ???import
   mod = await import('cloakbrowser');
   return mod;
 }
 
-// ===== 状态 =====
+// ===== ???=====
 const state = {
   ready: false,
   starting: false,
@@ -36,15 +36,15 @@ const state = {
   lastError: null,
 };
 
-/** 通知渲染层（main.cjs 注入此回调） */
-let onEvent = null;        // (event) => void — page 事件转发
-let onStatus = null;       // (status) => void — 启动/关闭状态变化
-let resolveProfileDir = null; // (dir) => string — 由 main.cjs 注入 userDataDir
+/** ??????main.cjs ?????? */
+let onEvent = null;        // (event) => void ??page ????
+let onStatus = null;       // (status) => void ????/???????
+let resolveProfileDir = null; // (dir) => string ????main.cjs ?? userDataDir
 
 function _emit(event) {
   try { onEvent && onEvent(event); } catch (e) { /* ignore */ }
 }
-function _emitStatus() {
+function _emitStatusImmediate() {
   try {
     onStatus && onStatus({
       ready: state.ready,
@@ -55,28 +55,47 @@ function _emitStatus() {
   } catch (e) { /* ignore */ }
 }
 
-/** 设置回调（main.cjs 在 require 时调用一次） */
+// _emitStatus ?? tick ????????????? UI ?? + ??????? state ???
+let _statusFlushTimer = null;
+let _statusPendingPayload = null;
+function _emitStatusDebounced() {
+  _statusPendingPayload = {
+    ready: state.ready,
+    starting: state.starting,
+    binary: state.binary,
+    lastError: state.lastError,
+  };
+  if (_statusFlushTimer) return;
+  _statusFlushTimer = setTimeout(() => {
+    _statusFlushTimer = null;
+    const p = _statusPendingPayload;
+    _statusPendingPayload = null;
+    try { onStatus && onStatus(p); } catch (e) { /* ignore */ }
+  }, 80);
+}
+
+/** ?????main.cjs ??require ?????? */
 function setCallbacks({ onEvent: oe, onStatus: osCb, resolveProfileDir: rpd }) {
   if (oe) onEvent = oe;
   if (osCb) onStatus = osCb;
   if (rpd) resolveProfileDir = rpd;
 }
 
-// ===== 二进制探测（首次启动前调用，不启动浏览器）=====
+// ===== ??????????????????????====
 async function checkBinary() {
   try {
     const m = await loadMod();
     state.binary = m.binaryInfo();
-    _emitStatus();
+    _emitStatusDebounced();
     return state.binary;
   } catch (e) {
     state.binary = { installed: false, error: String(e && e.message || e) };
-    _emitStatus();
+    _emitStatusDebounced();
     return state.binary;
   }
 }
 
-// ===== 启动 / 关闭 =====
+// ===== ?? / ?? =====
 async function start(opts = {}) {
   if (state.ready) return { ok: true, ready: true };
   if (state.starting) return state.startingPromise;
@@ -86,24 +105,24 @@ async function start(opts = {}) {
 
   state.starting = true;
   state.lastError = null;
-  _emitStatus();
+  _emitStatusDebounced();
 
   state.startingPromise = (async () => {
     try {
       const m = await loadMod();
-      // 准备二进制（首次启动会下载 ~200MB，缓存到 ~/.cloakbrowser/）
+      // ??????????????~200MB???? ~/.cloakbrowser/??
       state.binary = m.binaryInfo();
-      _emitStatus();
+      _emitStatusDebounced();
 
-      // launchPersistentContext：持久 userDataDir，cookies/localStorage 跨重启保留
-      // licenseKey 可选（来自设置 camoufox.cloakLicenseKey），无 key 走 free tier
+      // launchPersistentContext????userDataDir?cookies/localStorage ??????
+      // licenseKey ??????? camoufox.cloakLicenseKey????key ??free tier
       const launchOpts = {
         userDataDir: profileDir,
-        headless: false, // 可见窗口（用户视觉确认）；后续可加 headed 切换
-        humanize: true,  // 鼠标/键盘/滚动 human-like
+        headless: false, // ??????????????????headed ??
+        humanize: true,  // ??/??/?? human-like
         timezone: 'Asia/Shanghai',
         locale: 'zh-CN',
-        // 离线/受限场景：允许用户配代理
+        // ??/????????????
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
         ...(opts.licenseKey ? { licenseKey: opts.licenseKey } : {}),
       };
@@ -111,13 +130,13 @@ async function start(opts = {}) {
       state.context = ctx;
       state.ready = true;
       state.starting = false;
-      _emitStatus();
+      _emitStatusDebounced();
       return { ok: true, ready: true };
     } catch (e) {
       state.lastError = String(e && e.message || e);
       state.starting = false;
       state.ready = false;
-      _emitStatus();
+      _emitStatusDebounced();
       return { ok: false, error: state.lastError };
     }
   })();
@@ -130,21 +149,21 @@ async function stop() {
   try {
     await state.context.close();
   } catch (e) {
-    // 关闭异常不致命
+    // ????????
   }
-  // 关闭所有标签
+  // ???????
   for (const [tabId, info] of state.pages) {
     try { info.listeners && info.listeners.dispose && info.listeners.dispose(); } catch {}
   }
   state.pages.clear();
   state.context = null;
   state.ready = false;
-  _emitStatus();
+  _emitStatusDebounced();
   return { ok: true };
 }
 
-// ===== Page 操作 =====
-// tabId 是渲染层给的稳定 ID（与 BrowserView 的 tabId 对齐）；pageId 是 Playwright Page 在 launcher 内的内部句柄（其实 tabId == pageId，因为一一对应）
+// ===== Page ?? =====
+// tabId ???????? ID?? BrowserView ??tabId ????pageId ??Playwright Page ??launcher ??????????tabId == pageId?????????
 async function newPage(tabId, url) {
   if (!state.context) return { ok: false, error: 'engine not started' };
   if (!tabId) return { ok: false, error: 'tabId required' };
@@ -154,10 +173,10 @@ async function newPage(tabId, url) {
   }
   try {
     const page = await state.context.newPage();
-    // 注入 preInitScript：cloakPreload.cjs 通过 page.addInitScript 路径
+    // ?? preInitScript?cloakPreload.cjs ?? page.addInitScript ??
     const preloadPath = path.join(__dirname, 'cloakPreload.cjs');
     if (fs.existsSync(preloadPath)) {
-      // addInitScript 支持 file/function；读文件注入
+      // addInitScript ?? file/function??????
       const code = fs.readFileSync(preloadPath, 'utf8');
       await page.addInitScript({ content: code });
     }
@@ -171,7 +190,7 @@ async function newPage(tabId, url) {
       listeners: null,
     };
 
-    // 事件监听：导航 → nav 事件
+    // ??????????nav ??
     const onFramenavigated = (frame) => {
       if (frame !== page.mainFrame()) return;
       const newUrl = frame.url();
@@ -184,8 +203,8 @@ async function newPage(tabId, url) {
     };
     page.on('framenavigated', onFramenavigated);
 
-    // console 桥接：cloakPreload.cjs 通过 console.log('__bossclaw_emit__', JSON.stringify({channel,payload}))
-    // 输出 → launcher 解析 → 转发
+    // console ???cloakPreload.cjs ?? console.log('__bossclaw_emit__', JSON.stringify({channel,payload}))
+    // ?? ??launcher ?? ????
     const onConsole = async (msg) => {
       try {
         const text = msg.text();
@@ -281,7 +300,7 @@ async function sendToPage(tabId, channel, payload) {
   const tab = state.pages.get(tabId);
   if (!tab) return { ok: false, error: 'tab not found' };
   try {
-    // 通过 window.__bossclaw_dispatch(channel, payload) 派发；cloakPreload.cjs 注册此函数
+    // ?? window.__bossclaw_dispatch(channel, payload) ???cloakPreload.cjs ??????
     await tab.page.evaluate((args) => {
       try { window.__bossclaw_dispatch && window.__bossclaw_dispatch(args.channel, args.payload); } catch (e) {}
     }, { channel, payload });
@@ -291,7 +310,7 @@ async function sendToPage(tabId, channel, payload) {
   }
 }
 
-// 输入：与原 jc:webview-input 等价；走 Playwright 真实键盘事件（isTrusted:true）
+// ??????jc:webview-input ???? Playwright ???????isTrusted:true??
 async function pageInput(tabId, action, text) {
   const tab = state.pages.get(tabId);
   if (!tab) return { ok: false, error: 'tab not found' };
@@ -300,7 +319,7 @@ async function pageInput(tabId, action, text) {
     switch (action) {
       case 'insertText':
         if (!text) return { ok: false, error: 'empty text' };
-        // Playwright page.keyboard.type 底层是 CDP Input.dispatchKeyEvent，isTrusted:true
+        // Playwright page.keyboard.type ????CDP Input.dispatchKeyEvent?isTrusted:true
         await page.keyboard.type(text, { delay: 12 });
         return { ok: true, action };
       case 'selectAll':

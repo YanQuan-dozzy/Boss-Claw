@@ -1,7 +1,7 @@
 // 移植自 F:\job-claw-main\source\src\background.js 的岗位匹配与沟通草稿逻辑
 import type { AppConfig, JobAnalysis, JobMeta, Profile } from './types';
 import { normalizeStringList } from './helpers';
-import { callModel } from './llm';
+import { cachedCallModel } from './llm';
 import { buildAnalyzeSystemPrompt } from './prompts';
 import { detectInterviewMode } from './interviewMode';
 
@@ -63,6 +63,22 @@ function aiJobView(job: JobMeta): Record<string, unknown> {
   };
 }
 
+// 画像稳定视图：剥离 editedAt / generation 等动态元数据（每次编辑/生成都会更新时间戳，
+// 若原样序列化会导致请求前缀字节变化 → DeepSeek 等 provider 的上下文缓存永不命中，
+// 账单里就只有「输入(未命中)」全价，没有「输入(缓存命中)」折扣）。
+// 只保留业务字段且键序固定：画像内容未变 → 序列化字节完全一致 → 前缀缓存命中。
+export function stableProfileView(profile: Profile): Record<string, unknown> {
+  return {
+    summary: profile.summary,
+    primaryDirections: profile.primaryDirections,
+    secondaryDirections: profile.secondaryDirections,
+    searchKeywords: profile.searchKeywords,
+    excludeDirections: profile.excludeDirections,
+    facts: profile.facts,
+    hardConstraints: profile.hardConstraints,
+  };
+}
+
 export function normalizeApplicantGreeting(result: any, job: JobMeta, profile: Profile | null): string {
   const raw = String(result?.greeting || '').trim();
   // 反向过滤：明确是招聘方口吻的招呼语（如"看到你的简历""欢迎进一步沟通""我们团队""候选人"等），
@@ -89,17 +105,24 @@ export async function analyzeJob(
 ): Promise<JobAnalysis> {
   if (!profile) throw new Error('请先生成职业画像');
   const systemPrompt = buildAnalyzeSystemPrompt(customGreetingPrompt);
-  const result: any = await callModel(
+  // 输入瘦身：简历原文截短至 6000 字（profile.facts 已含教育/经历/项目/技能的结构化摘录，
+  // 足够 AI 引用真实事实；岗位分析费用大头在简历全文，截短后单次输入省约 9K 字符）。
+  // 前缀稳定性（服务端 prompt cache 命中的关键）：system 提示词 + 稳定画像 + 简历 恒定在前，
+  // 岗位信息在最后——同一份简历连续分析多个岗位时，只有岗位片段变化，前缀逐 token 一致，
+  // 命中的输入按缓存价（约为未命中价 1/10）计费。
+  const result: any = await cachedCallModel(
       [
         { role: 'system', content: systemPrompt },
         {
           role: 'user',
-          content: `职业画像：${JSON.stringify(profile)}
-简历：${String(resumeText || '').slice(0, 15000)}
+          content: `职业画像：${JSON.stringify(stableProfileView(profile))}
+简历：${String(resumeText || '').slice(0, 6000)}
 岗位：${JSON.stringify(aiJobView(job))}`,
         },
       ],
-      model
+      model,
+      {},
+      { scope: 'job-analysis' }
     );
   result.greeting = normalizeApplicantGreeting(result, job, profile);
   if (Array.isArray(result.hardBlocks) && result.hardBlocks.length) result.decision = 'reject';

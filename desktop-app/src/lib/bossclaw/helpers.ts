@@ -255,3 +255,20 @@ export function normalizeDirectionKey(value: string): string {
     .replace(/[\s,，/\\|·•()（）【】\[\]_-]+/g, '')
     .trim();
 }
+
+/** 类型守卫：判断对象是否为标准 Error */
+export function isNativeError(e: unknown): e is Error {
+  return e instanceof Error || (typeof e === 'object' && e !== null && 'message' in e && typeof (e as Record<string, unknown>).message === 'string');
+}
+
+/** 从 unknown 异常推导安全的可读错误文本，解决 catch (e: any) 隐患 */
+export function getErrorMessage(error: unknown, fallback = '发生未知错误'): string {
+  if (isNativeError(error)) return error.message;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (typeof error === 'object' && error !== null) {
+    const str = String((error as Record<string, unknown>).error || (error as Record<string, unknown>).message || '').trim();
+    if (str) return str;
+  }
+  return fallback;
+}
+

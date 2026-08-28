@@ -1,13 +1,15 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useEffect } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
 import { useEffectiveTheme } from './lib/useEffectiveTheme';
 import { bridgeStatus } from './lib/bridgeClient';
 import { checkBossLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
+import { useInterval } from './lib/hooks';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import TitleBar from './components/TitleBar';
+import { ErrorBoundary, SkeletonCard } from './components/feedback';
 
 // 数据版本号：与主进程 main.cjs 的 DATA_VERSION 对齐，v3 重建后首次启动清空旧数据
 const DATA_VERSION = 'v3-rebuild-20260815';
@@ -35,6 +37,18 @@ export default function App() {
     root.setAttribute('data-theme', effective);
   }, [effective]);
 
+  // 失焦时暂停非必要微动效，节省系统 CPU/GPU 资源
+  useEffect(() => {
+    const handleBlur = () => document.documentElement.classList.add('is-blurred');
+    const handleFocus = () => document.documentElement.classList.remove('is-blurred');
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
   // 数据版本检测：v3 重建后首次启动清空旧 localStorage 数据（任务/岗位/会话/设置），
   // 与主进程 resetDataForVersion（清 BOSS 登录态）配套，实现「数据也重置」。
   useEffect(() => {
@@ -50,39 +64,23 @@ export default function App() {
 
   // 启动即实时探测本地桥接状态（不依赖持久化、不依赖进入 OpenClaw 页），
   // 之后每 15 秒心跳一次，确保「未连接」时不会误显示「已连接」
-  useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const s = await bridgeStatus();
-        if (!cancelled) useAppStore.getState().setBridgeStatus(s.ok ? 'connected' : 'disconnected');
-      } catch {
-        if (!cancelled) useAppStore.getState().setBridgeStatus('disconnected');
-      }
-    };
-    check();
-    const timer = setInterval(check, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+  const checkBridge = useCallback(async () => {
+    try {
+      const s = await bridgeStatus();
+      useAppStore.getState().setBridgeStatus(s.ok ? 'connected' : 'disconnected');
+    } catch {
+      useAppStore.getState().setBridgeStatus('disconnected');
+    }
   }, []);
+  useInterval(checkBridge, 15000, { immediate: true });
 
   // 启动即探测 BOSS 直聘登录态（cookie 判定），之后每 10 秒心跳一次；
   // 未登录时工作台/首页的自动辅助、搜索采集将被拦截。
-  useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      const ok = await checkBossLogin();
-      if (!cancelled) useAppStore.getState().setBossLoggedIn(ok);
-    };
-    check();
-    const timer = setInterval(check, 10000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
+  const checkBoss = useCallback(async () => {
+    const ok = await checkBossLogin();
+    useAppStore.getState().setBossLoggedIn(ok);
   }, []);
+  useInterval(checkBoss, 10000, { immediate: true });
 
   const isWorkbench = activeRoute === 'workbench';
 
@@ -92,17 +90,21 @@ export default function App() {
       <div className="workspace">
         <Sidebar />
         <main className={'main-stage' + (isWorkbench ? ' main-stage--full' : '')}>
-          <Suspense fallback={<div className="route-loading" />}>
-            {activeRoute === 'home' && <Home />}
-            {activeRoute === 'workbench' && <Workbench />}
-            {activeRoute === 'resume' && <Resume />}
-            {activeRoute === 'directions' && <Directions />}
-            {activeRoute === 'tasks' && <Tasks />}
-            {activeRoute === 'stats' && <Stats />}
-            {activeRoute === 'openclaw' && <OpenClaw />}
-            {activeRoute === 'autochat' && <AutoChat />}
-            {activeRoute === 'settings' && <Settings />}
-          </Suspense>
+          {/* Suspense + ErrorBoundary：路由懒加载与页面级崩溃隔离。
+              单页崩溃不影响侧栏 / 标题栏 / 状态栏，其它页可正常切换。 */}
+          <ErrorBoundary label={activeRoute} key={activeRoute}>
+            <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
+              {activeRoute === 'home' && <Home />}
+              {activeRoute === 'workbench' && <Workbench />}
+              {activeRoute === 'resume' && <Resume />}
+              {activeRoute === 'directions' && <Directions />}
+              {activeRoute === 'tasks' && <Tasks />}
+              {activeRoute === 'stats' && <Stats />}
+              {activeRoute === 'openclaw' && <OpenClaw />}
+              {activeRoute === 'autochat' && <AutoChat />}
+              {activeRoute === 'settings' && <Settings />}
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
       <StatusBar />

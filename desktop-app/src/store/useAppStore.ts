@@ -40,12 +40,15 @@ interface AppState {
   autoAssist: boolean;
   bridgeStatus: 'connected' | 'disconnected';
   bossLoggedIn: boolean | null;
+  sidebarCollapsed: boolean;
   setTheme: (t: ThemeMode) => void;
   toggleTheme: () => void;
   setRoute: (r: RouteKey) => void;
   setAutoAssist: (v: boolean) => void;
   setBridgeStatus: (s: 'connected' | 'disconnected') => void;
   setBossLoggedIn: (v: boolean | null) => void;
+  setSidebarCollapsed: (v: boolean) => void;
+  toggleSidebarCollapsed: () => void;
   /**
    * 标题栏「投递引擎」指示器状态。
    * 与 bridgeStatus 解耦：用户开关按钮 (autoAssist) 即决定状态——
@@ -69,6 +72,7 @@ export const useAppStore = create<AppState>()(
         autoAssist: false,
         bridgeStatus: 'disconnected',
         bossLoggedIn: null,
+        sidebarCollapsed: false,
         engineStatus: 'stopped',
         setTheme: (t) => set({ theme: t }),
         toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
@@ -81,6 +85,8 @@ export const useAppStore = create<AppState>()(
             engineStatus: deriveEngineStatus(state.autoAssist),
           })),
         setBossLoggedIn: (v) => set({ bossLoggedIn: v }),
+        setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+        toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       };
     },
     {

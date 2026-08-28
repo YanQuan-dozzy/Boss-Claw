@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Checkbox, Empty, Progress, Tag, Typography, message, Steps, Tabs, Tooltip, Space, Input } from 'antd';
+import { Button, Card, Checkbox, Empty, Progress, Tag, Typography, message, Steps, Segmented, Tooltip, Space, Input } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   DownOutlined, RightOutlined, StopOutlined, UndoOutlined, ThunderboltOutlined,
-  PauseOutlined, CaretRightOutlined,
+  PauseOutlined, CaretRightOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
-import BrowserView, { NavInfo } from '@/components/BrowserView';
+import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
+import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
+import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
 import { makePendingItem } from '@/store/useDataStore';
 import { PHASE_LABELS, stageToPhase, taskStageMeta } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
@@ -28,22 +30,6 @@ import { camoufoxSearch, camoufoxSend, camoufoxStatus, isCamoufoxStopCode, isCam
 import type { JobMeta, PendingItem, TaskStage } from '@/lib/bossclaw/types';
 
 const { Text } = Typography;
-
-export interface WebviewApi {
-  send: (channel: string, ...args: any[]) => void;
-  loadURL: (url: string) => void;
-  closeTab: (id?: string) => void;
-  openInNewTab: (url?: string, title?: string) => string;
-  openEngineTab: () => string;
-  loadURLInTab: (id: string, url: string) => void;
-  sendInTab: (id: string, channel: string, ...args: any[]) => void;
-  hasTab: (id: string) => boolean;
-  isPreloadReady: (id: string) => boolean;
-  getActiveTabId: () => string;
-  getFirstTabId: () => string;
-  /** 在指定标签页面上下文执行 BOSS 官方 API，返回原始响应（{code, zpData, ...} 或 {error}） */
-  bossApi: (action: string, params?: Record<string, any>, tabId?: string) => Promise<any>;
-}
 
 // 与任务状态机对应的可跟踪阶段（webview DOM 兜底投递会回传这些阶段）
 const TRACKED_STAGES: TaskStage[] = [
@@ -78,28 +64,22 @@ const isJobListUrl = (url: string): boolean => {
 
 const LogStream = memo(function LogStream() {
   const logs = useDataStore((s) => s.logs);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
+  const formattedLogs = useMemo(() => {
+    return logs.slice(-80).map((l, i) => ({
+      id: `${l.time}-${i}`,
+      time: typeof l.time === 'number' ? new Date(l.time).toLocaleTimeString() : String(l.time),
+      level: l.level || 'info',
+      msg: l.msg,
+    }));
   }, [logs]);
+
   return (
-    <div className="log-block">
-      <div className="log-head">消息与日志</div>
-      {logs.length === 0 ? (
-        <div style={{ padding: '14px 12px', color: 'var(--fg-muted)', fontSize: 12 }}>暂无消息</div>
-      ) : (
-        <div className="log-stream" ref={ref}>
-          {logs.slice(-60).map((l, i) => (
-            <div className="log-line" key={`${l.time}-${i}`}>
-              <span className="log-time">{new Date(l.time).toLocaleTimeString()}</span>
-              <span className={'log-lv ' + (l.level || 'info')} />
-              <span className="log-msg">{l.msg}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    <LogConsole
+      logs={formattedLogs}
+      title="消息与日志"
+      maxHeight={220}
+      className="wb-log-console"
+    />
   );
 });
 
@@ -267,6 +247,13 @@ export default function Workbench() {
       recomputeStats();
       return;
     }
+    const bl = isCompanyExcluded(job, cfg);
+    if (bl.excluded) {
+      addPendingItem({ id: runId, runId, job, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: bl.reason });
+      addLog('info', `已跳过：${job.title || job.url}（${bl.reason}）`);
+      recomputeStats();
+      return;
+    }
     const imFilterM = cfg.interviewModeFilter || 'any';
     if (imFilterM !== 'any') {
       const modeM = detectInterviewMode(job);
@@ -424,6 +411,11 @@ export default function Workbench() {
     }
     if (isLocationExcluded(job?.location, cfg)) {
       addLog('info', `跳过「${job?.title || '岗位'}」（所在地命中城市反选排除规则）`);
+      return false;
+    }
+    const bl = isCompanyExcluded(job, cfg);
+    if (bl.excluded) {
+      addLog('info', `跳过「${job?.title || '岗位'}」（${bl.reason}）`);
       return false;
     }
     const imFilterC = cfg.interviewModeFilter || 'any';
@@ -1019,10 +1011,10 @@ export default function Workbench() {
   const visibleAllCount = showIgnored ? pending.length : pending.filter((p) => !isHiddenStatus(p.status)).length;
   const WB_FILTERS = [
     { key: 'all', label: `全部 ${visibleAllCount}` },
-    { key: 'pending', label: `确认队列 ${pending.filter((p) => p.status === 'pending').length}` },
-    { key: 'approved', label: `投递队列 ${pending.filter((p) => p.status === 'approved').length}` },
+    { key: 'pending', label: `待确认 ${pending.filter((p) => p.status === 'pending').length}` },
+    { key: 'approved', label: `待投 ${pending.filter((p) => p.status === 'approved').length}` },
     { key: 'approved_queue', label: `投递中 ${pending.filter((p) => p.status === 'approved_queue').length}` },
-    { key: 'sent', label: `已投递 ${pending.filter((p) => p.status === 'sent').length}` },
+    { key: 'sent', label: `已投 ${pending.filter((p) => p.status === 'sent').length}` },
     { key: 'failed', label: `失败 ${pending.filter((p) => p.status === 'failed').length}` },
   ];
 
@@ -1169,17 +1161,30 @@ export default function Workbench() {
           )}
         </Card>
 
-        <div className="wb-filter-tabs">
-          <Tabs size="small" activeKey={filter} onChange={setFilter} items={WB_FILTERS.map((f) => ({ key: f.key, label: f.label }))} />
-          <div className="wb-filter-actions">
-            <Checkbox checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)}>显示已忽略/跳过</Checkbox>
-            <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!pending.some((p) => p.status === 'approved')}>一键投递</Button>
-            <Button size="small" icon={<CheckOutlined />} onClick={onApproveAll}>批量确认</Button>
-            <Button size="small" onClick={onRejectAll}>全部忽略</Button>
+        <div className="wb-filter-section">
+          <Segmented
+            block
+            size="small"
+            value={filter}
+            onChange={(val) => setFilter(val as string)}
+            options={WB_FILTERS.map((f) => ({ value: f.key, label: f.label }))}
+          />
+          <div className="wb-filter-toolbar">
+            <div className="wb-filter-toolbar__left">
+              <Checkbox checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)}>显示已忽略/跳过</Checkbox>
+            </div>
+            <div className="wb-filter-toolbar__right">
+              <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!pending.some((p) => p.status === 'approved')}>一键投递</Button>
+              <Button size="small" icon={<CheckOutlined />} onClick={onApproveAll}>批量确认</Button>
+              <Button size="small" onClick={onRejectAll}>全部忽略</Button>
+            </div>
           </div>
         </div>
         <div className="wb-sort-hint">
-          <Text type="secondary" style={{ fontSize: 12 }}>待确认岗位按 AI 匹配分从高到低排列；确认沟通前可直接修改求职招呼语。</Text>
+          <InfoCircleOutlined className="wb-sort-hint__icon" />
+          <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.4 }}>
+            待确认岗位按 AI 匹配分从高到低排列；确认沟通前可直接修改求职招呼语。
+          </Text>
         </div>
         <div className="wb-jobs">
           {ranked.length === 0 ? (

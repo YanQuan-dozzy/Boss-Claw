@@ -1,0 +1,23 @@
+# BossClaw 前端编码风格（跨编辑器生效）
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{cjs,js,mjs,ts,tsx,jsx,json,css}]
+indent_size = 2
+max_line_length = 120
+
+[*.{cjs,js}]
+quote_type = single
+
+[*.{ts,tsx}]
+quote_type = single

@@ -52,6 +52,7 @@ declare namespace React {
         partition?: string;
         useragent?: string;
         nodeintegration?: boolean;
+        webpreferences?: string;
         allowpopups?: boolean;
       };
     }

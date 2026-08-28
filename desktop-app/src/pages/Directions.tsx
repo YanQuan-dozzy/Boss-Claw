@@ -179,16 +179,18 @@ export default function Directions() {
           </p>
         </div>
         <div className="page-head-extra">
-          <Button icon={<ReloadOutlined />} onClick={onGenerate}>
-            根据画像更新
-          </Button>
-          <Button icon={<PlusOutlined />} onClick={onAddCustom}>
-            新增自定义方向
-          </Button>
-          <Button type="primary" icon={<CheckCircleOutlined />} onClick={onConfirm}>
-            确认方向（{selectedCount}）
-          </Button>
-          {directionPlan?.confirmed && <Tag color="green">已确认</Tag>}
+          <Space wrap size={10}>
+            <Button size="middle" className="btn-uniform" icon={<ReloadOutlined />} onClick={onGenerate}>
+              根据画像更新
+            </Button>
+            <Button size="middle" className="btn-uniform" icon={<PlusOutlined />} onClick={onAddCustom}>
+              新增自定义方向
+            </Button>
+            <Button size="middle" type="primary" className="btn-uniform" icon={<CheckCircleOutlined />} onClick={onConfirm}>
+              确认方向（{selectedCount}）
+            </Button>
+            {directionPlan?.confirmed && <Tag color="green" style={{ margin: 0, padding: '4px 10px', fontSize: 13 }}>已确认</Tag>}
+          </Space>
         </div>
       </div>
 
@@ -223,7 +225,7 @@ export default function Directions() {
                     )}
                   </div>
                   <div className="direction-card__meta">
-                    <span className="direction-card__priority">优先级 {it.priority}</span>
+                    <span className="direction-rank-badge" title="方向优先级排名">#{it.priority}</span>
                     <Popconfirm
                       title="删除投递方向"
                       description={`确定要删除「${it.name}」吗？删除后可在「根据画像更新」中重新生成画像方向。`}
@@ -271,7 +273,7 @@ export default function Directions() {
                   </Text>
                   <div className="direction-card__tag-list">
                     {it.matchedSkills.map((s) => (
-                      <Tag key={s} color="green" className="direction-card__tag">
+                      <Tag key={s} className="direction-card__tag skill-chip-matched">
                         {s}
                       </Tag>
                     ))}
@@ -286,7 +288,7 @@ export default function Directions() {
                   </Text>
                   <div className="direction-card__tag-list">
                     {it.gaps.map((s) => (
-                      <Tag key={s} className="direction-card__tag">
+                      <Tag key={s} className="direction-card__tag skill-chip-gap">
                         {s}
                       </Tag>
                     ))}

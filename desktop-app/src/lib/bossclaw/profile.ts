@@ -18,7 +18,7 @@ import {
   buildProfilePromptWithAnchor,
   buildCompactProfilePromptWithAnchor,
 } from './prompts';
-import { callModel, AIError, aiFailureKind, isRetryableAiOutputError } from './llm';
+import { cachedCallModel, AIError, aiFailureKind, isRetryableAiOutputError } from './llm';
 
 function explainProfileFallbackReason(reason = '', kind = ''): string {
   const message = String(reason || '').trim();
@@ -275,14 +275,16 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
   const anchor = profileToAnchor(fallback);
   let firstError: Error | null = null;
   try {
+    // 缓存：key 含简历全文与锚点，简历未改动时重复生成画像直接命中，避免 22K 输入重复计费
     const profile = validateGeneratedProfile(
-      await callModel(
+      await cachedCallModel(
         [
           { role: 'system', content: buildProfilePromptWithAnchor(anchor) },
           { role: 'user', content: text.slice(0, 22000) },
         ],
         model,
-        { maxTokens: 4200, temperature: 0.05 }
+        { maxTokens: 4200, temperature: 0.05 },
+        { scope: 'profile' }
       )
     );
     return mergeProfileWithFallback(profile, fallback);
@@ -293,13 +295,14 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
   if (isRetryableAiOutputError(firstError as any)) {
     try {
       const compact = validateCompactGeneratedProfile(
-        await callModel(
+        await cachedCallModel(
           [
             { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) },
             { role: 'user', content: text.slice(0, 18000) },
           ],
           model,
-          { maxTokens: 2200, temperature: 0.05 }
+          { maxTokens: 2200, temperature: 0.05 },
+          { scope: 'profile' }
         )
       );
       return mergeProfileWithFallback(compactProfileToFull(compact, fallback), fallback, {

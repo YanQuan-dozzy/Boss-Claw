@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Progress, Tag, Typography, Space, message } from 'antd';
+import { Button, Progress, Tag, Typography, Space, message, Divider } from 'antd';
 import {
   FileTextOutlined,
   AimOutlined,
@@ -28,6 +28,7 @@ import { profileHasCore } from '@/lib/bossclaw/profile';
 import { selectedDirectionItems } from '@/lib/bossclaw/directions';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { createTasks } from '@/lib/bossclaw/tasks';
+import { MetricCard } from '@/components/MetricCard';
 
 const { Paragraph, Text } = Typography;
 
@@ -93,7 +94,6 @@ export default function Home() {
   ];
   const currentStep = stepStates.findIndex((s) => s !== 'done');
 
-  // ===== 任务控制中心 =====
   const handleStartAssist = () => {
     if (bossLoggedIn === false) {
       message.warning('请先在「工作台」右侧浏览器登录 BOSS 直聘，未登录不能启动');
@@ -107,8 +107,6 @@ export default function Home() {
     if (!profile) { message.warning('请先在简历中心生成职业画像'); setRoute('resume'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); setRoute('directions'); return; }
     setRoute('workbench');
-    // 一键投递：先把「已批准/等待」(approved) 提升为投递队列(approved_queue)，再启动引擎。
-    // 只有这一步会真正开始投递——批准/批量确认都不会自动投递。
     const { next, count } = promoteApprovedToQueue(pending);
     if (count) setPending(next);
     if (!useAppStore.getState().autoAssist) setAutoAssist(true);
@@ -131,7 +129,6 @@ export default function Home() {
   const handleApproveAll = () => {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (waiting.length === 0) { message.info('没有待确认的岗位'); return; }
-    // 批准：只进入「投递队列·等待」(approved)，绝不自动投递；真正投递由「开始投递/一键投递」触发。
     const next = rerankPending(
       pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p))
     );
@@ -170,108 +167,137 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Hero 欢迎区 */}
       <div className="hero">
         <h2 className="hero-title">欢迎回来，开始今天的投递</h2>
         <p className="hero-sub">
           在右侧浏览器中打开 BOSS 直聘岗位 → 点「加入任务」→ AI 分析评分 → 批准后进入投递队列。首次成功投递后会自动暂停，供你核对沟通对象与内容。
         </p>
         <div className="hero-actions">
-          <Button type="primary" size="large" icon={<ThunderboltOutlined />} onClick={() => setRoute('workbench')}>
+          <Button type="primary" size="large" className="btn-uniform-lg" icon={<ThunderboltOutlined />} onClick={() => setRoute('workbench')}>
             打开工作台
           </Button>
-          <Button size="large" icon={<ProfileOutlined />} onClick={() => setRoute('tasks')}>
+          <Button size="large" className="btn-uniform-lg" icon={<ProfileOutlined />} onClick={() => setRoute('tasks')}>
             查看任务进度
           </Button>
         </div>
       </div>
 
-      {/* 统计卡 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14, marginBottom: 20 }}>
-        <div className="stat-card">
-          <div className="stat-icon teal"><ProfileOutlined /></div>
-          <div className="stat-body">
-            <div className="stat-title">待处理岗位</div>
-            <div className="stat-value">{stats.pending}</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon green"><CheckCircleFilled /></div>
-          <div className="stat-body">
-            <div className="stat-title">已投递</div>
-            <div className="stat-value">{stats.sent}</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon red"><FileTextOutlined /></div>
-          <div className="stat-body">
-            <div className="stat-title">失败</div>
-            <div className="stat-value">{stats.failed}</div>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon blue"><AimOutlined /></div>
-          <div className="stat-body">
-            <div className="stat-title">已确认方向</div>
-            <div className="stat-value">{selectedCount}</div>
-          </div>
-        </div>
+      <div className="short-grid cols-4" style={{ marginBottom: 20 }}>
+        <MetricCard
+          title="今日投递"
+          value={stats.sent}
+          suffix="次"
+          subText={`目标 ${config.dailyTarget || 150} 次 / 建议分时段投递`}
+          icon={<CheckCircleFilled />}
+        />
+        <MetricCard
+          title="成功率"
+          value={pending.length > 0 ? Math.round((stats.sent / pending.length) * 100) : 0}
+          type="success-rate"
+          subText={`已处理 ${pending.length} 个岗位 (${selectedCount} 方向)`}
+          icon={<BarChartOutlined />}
+        />
+        <MetricCard
+          title="待处理岗位"
+          value={stats.pending}
+          suffix="个"
+          type="pending"
+          subText="需要在工作台或确认队列核对"
+          icon={<ProfileOutlined />}
+        />
+        <MetricCard
+          title="剩余次数"
+          value={Math.max(0, (config.dailyTarget || 150) - stats.sent)}
+          suffix="次"
+          type="remaining"
+          subText="今日安全限制额度内"
+          icon={<RocketOutlined />}
+        />
       </div>
 
       {/* 任务控制中心 */}
-      <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>任务控制中心</div>
-            <Space wrap size={8}>
-              {!autoAssist ? (
-                <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStartAssist}>开始投递</Button>
-              ) : (
-                <Button icon={<PauseCircleOutlined />} onClick={handlePauseAssist}>暂停</Button>
-              )}
-              <Button icon={<StopOutlined />} onClick={handleStopAssist} disabled={!autoAssist}>停止</Button>
-              <Button icon={<PlusOutlined />} onClick={handleCreateTasks}>新建任务</Button>
-              <Button icon={<CheckOutlined />} onClick={handleApproveAll}>批量确认</Button>
-              <Button icon={<CloseOutlined />} onClick={handleRejectAll}>全部忽略</Button>
-              <Button icon={<AimOutlined />} onClick={() => setRoute('directions')}>管理方向</Button>
-              <Button icon={<ReloadOutlined />} onClick={() => setRoute('tasks')}>失败恢复</Button>
-            </Space>
+      <div className="soft-block ctrl-panel" style={{ marginBottom: 20 }}>
+        <div className="ctrl-panel__head">
+          <div className="ctrl-panel__title">
+            <ThunderboltOutlined style={{ color: 'var(--brand)' }} /> 任务控制中心
           </div>
-          <div style={{ display: 'flex', gap: 20, minWidth: 200, padding: '4px 0' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 22, fontWeight: 700, color: '#fa8c16' }}>{stats.pending}</div>
-              <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>待处理</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--brand)' }}>{stats.sent}</div>
-              <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>已投递</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 22, fontWeight: 700, color: '#f5222d' }}>{stats.failed}</div>
-              <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>失败</div>
-            </div>
+          <Space size={10}>
+            <Tag color="warning" style={{ margin: 0, padding: '4px 12px', fontSize: 13, borderRadius: 6 }}>
+              待处理 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.pending}</span>
+            </Tag>
+            <Tag color="cyan" style={{ margin: 0, padding: '4px 12px', fontSize: 13, borderRadius: 6 }}>
+              已投递 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.sent}</span>
+            </Tag>
+            <Tag color="error" style={{ margin: 0, padding: '4px 12px', fontSize: 13, borderRadius: 6 }}>
+              失败 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.failed}</span>
+            </Tag>
+          </Space>
+        </div>
+
+        {/* 规范操作工具栏 */}
+        <div className="ctrl-toolbar">
+          <div className="ctrl-group">
+            {!autoAssist ? (
+              <Button type="primary" className="btn-uniform" icon={<PlayCircleOutlined />} onClick={handleStartAssist}>
+                开始投递
+              </Button>
+            ) : (
+              <Button className="btn-uniform" icon={<PauseCircleOutlined />} onClick={handlePauseAssist}>
+                暂停
+              </Button>
+            )}
+            <Button danger className="btn-uniform" icon={<StopOutlined />} onClick={handleStopAssist} disabled={!autoAssist}>
+              停止
+            </Button>
           </div>
-          <div style={{ flex: '1 1 220px', minWidth: 220 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>今日投递目标</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>{stats.sent} / {config.dailyTarget || 150}</Text>
-            </div>
-            <Progress
-              percent={Math.min(100, Math.round((stats.sent / Math.max(1, config.dailyTarget || 150)) * 100))}
-              showInfo={false}
-              strokeColor={{ from: '#13b5ac', to: '#078A83' }}
-            />
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              建议分时段投递（早 / 午 / 晚），避免触发平台风控。
-            </Text>
+
+          <Divider type="vertical" style={{ height: 24, margin: '0 4px' }} />
+
+          <div className="ctrl-group">
+            <Button className="btn-uniform" icon={<PlusOutlined />} onClick={handleCreateTasks}>
+              新建任务
+            </Button>
+            <Button className="btn-uniform" icon={<CheckOutlined />} onClick={handleApproveAll}>
+              批量确认
+            </Button>
+            <Button className="btn-uniform" icon={<CloseOutlined />} onClick={handleRejectAll}>
+              全部忽略
+            </Button>
           </div>
+
+          <Divider type="vertical" style={{ height: 24, margin: '0 4px' }} />
+
+          <div className="ctrl-group">
+            <Button className="btn-uniform" icon={<AimOutlined />} onClick={() => setRoute('directions')}>
+              管理方向
+            </Button>
+            <Button className="btn-uniform" icon={<ReloadOutlined />} onClick={() => setRoute('tasks')}>
+              失败恢复
+            </Button>
+          </div>
+        </div>
+
+        {/* 目标进度条 */}
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>今日投递目标</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>{stats.sent} / {config.dailyTarget || 150}</Text>
+          </div>
+          <Progress
+            percent={Math.min(100, Math.round((stats.sent / Math.max(1, config.dailyTarget || 150)) * 100))}
+            showInfo={false}
+            strokeColor={{ from: '#14B8A6', to: '#0D9488' }}
+          />
+          <Text type="secondary" style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
+            建议分时段投递（早 / 午 / 晚），避免触发平台风控。
+          </Text>
         </div>
       </div>
 
-      {/* 运行状态 */}
+      {/* 运行状态 (5 个组件独占整行 5 列网格) */}
       <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>运行状态</div>
-        <div className="status-grid">
+        <div className="short-grid cols-5">
           {statusCells.map((c) => (
             <div className="status-cell" key={c.label}>
               <span className="cell-icon" style={{ color: c.on ? 'var(--brand)' : 'var(--fg-muted)' }}>{c.icon}</span>
@@ -284,80 +310,78 @@ export default function Home() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1fr)', gap: 20 }}>
-        {/* 配置进度 + 快速入口 */}
-        <div>
-          <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={{ fontSize: 15, fontWeight: 600 }}>配置进度</span>
-              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{progress}%</span>
-            </div>
-            <Progress percent={progress} showInfo={false} strokeColor={{ from: '#13b5ac', to: '#078A83' }} />
-            <div style={{ marginTop: 12 }}>
-              {STEPS.map((s, i) => {
-                const st = currentStep === -1 || i < currentStep ? 'done' : i === currentStep ? 'current' : 'todo';
-                return (
-                  <div
-                    key={i}
-                    className={'step-item is-' + st}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setRoute(s.key as any)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setRoute(s.key as any);
-                      }
-                    }}
-                  >
-                    <span className="step-dot">
-                      {st === 'done' ? <CheckCircleFilled style={{ fontSize: 14 }} /> : s.icon}
-                    </span>
-                    <div>
-                      <div className="step-label">{s.label}</div>
-                      <div className="step-desc">{s.desc}</div>
-                    </div>
-                    <RightOutlined style={{ marginLeft: 'auto', color: 'var(--fg-muted)', fontSize: 12 }} />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="soft-block" style={{ padding: '16px 18px' }}>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>快速入口</div>
-            {QUICK_ENTRIES.map((q) => (
-              <button key={q.key} className="quick-entry" onClick={() => setRoute(q.key as any)}>
-                <span className="qe-icon">{q.icon}</span>
-                <span>
-                  <span className="qe-title">{q.title}</span>
-                  <div className="qe-desc">{q.desc}</div>
+      {/* 配置进度 (4 个步骤独占整行 4 列网格) */}
+      <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>配置进度</span>
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{progress}%</span>
+        </div>
+        <Progress percent={progress} showInfo={false} strokeColor={{ from: '#14B8A6', to: '#0D9488' }} />
+        <div className="short-grid cols-4" style={{ marginTop: 14 }}>
+          {STEPS.map((s, i) => {
+            const st = currentStep === -1 || i < currentStep ? 'done' : i === currentStep ? 'current' : 'todo';
+            return (
+              <div
+                key={i}
+                className={'step-item is-' + st}
+                role="button"
+                tabIndex={0}
+                onClick={() => setRoute(s.key as any)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setRoute(s.key as any);
+                  }
+                }}
+              >
+                <span className="step-dot">
+                  {st === 'done' ? <CheckCircleFilled style={{ fontSize: 14 }} /> : s.icon}
                 </span>
-                <RightOutlined className="qe-arrow" />
-              </button>
+                <div className="step-content">
+                  <div className="step-label">{s.label}</div>
+                  <div className="step-desc">{s.desc}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 快速入口 (5 个入口独占整行 5 列网格) */}
+      <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>快速入口</div>
+        <div className="short-grid cols-5">
+          {QUICK_ENTRIES.map((q) => (
+            <button key={q.key} className="quick-entry" onClick={() => setRoute(q.key as any)}>
+              <span className="qe-icon">{q.icon}</span>
+              <div className="qe-content">
+                <div className="qe-title">{q.title}</div>
+                <div className="qe-desc">{q.desc}</div>
+              </div>
+              <RightOutlined className="qe-arrow" />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 最近动态 */}
+      <div className="soft-block" style={{ padding: '16px 18px' }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>最近动态</div>
+        {logs.length === 0 ? (
+          <Paragraph type="secondary" style={{ padding: '16px 0', textAlign: 'center' }}>
+            暂无动态，去工作台开始第一次投递吧
+          </Paragraph>
+        ) : (
+          <div>
+            {logs.slice(-5).reverse().map((l, i) => (
+              <div className="timeline-item" key={i}>
+                <span className={'tl-dot ' + (l.level === 'error' ? 'error' : l.level === 'warn' ? 'warn' : l.level === 'success' ? 'success' : 'info')} />
+                <span className="tl-time">{new Date(l.time).toLocaleTimeString()}</span>
+                <span className="tl-msg">{l.msg}</span>
+              </div>
             ))}
           </div>
-        </div>
-
-        {/* 最近动态 */}
-        <div className="soft-block" style={{ padding: '16px 18px', alignSelf: 'start' }}>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>最近动态</div>
-          {logs.length === 0 ? (
-            <Paragraph type="secondary" style={{ padding: '16px 0', textAlign: 'center' }}>
-              暂无动态，去工作台开始第一次投递吧
-            </Paragraph>
-          ) : (
-            <div>
-              {logs.slice(-5).reverse().map((l, i) => (
-                <div className="timeline-item" key={i}>
-                  <span className={'tl-dot ' + (l.level === 'error' ? 'error' : l.level === 'warn' ? 'warn' : l.level === 'success' ? 'success' : 'info')} />
-                  <span className="tl-time">{new Date(l.time).toLocaleTimeString()}</span>
-                  <span className="tl-msg">{l.msg}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );

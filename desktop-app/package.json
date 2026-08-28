@@ -6,13 +6,21 @@
   "author": "BossClaw by Chris",
   "license": "Apache-2.0",
   "main": "electron/main.cjs",
-  "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "vite",
+    "dev:electron": "vite build && electron . --dev",
+    "typecheck": "tsc -b --pretty",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "electron:dev": "vite build && electron .",
-    "package": "vite build && electron-builder --win"
+    "package": "npm run build && electron-builder --win",
+    "package:portable": "npm run build && electron-builder --win portable",
+    "package:dir": "npm run build && electron-builder --win --dir",
+    "start": "electron .",
+    "verify": "npm run typecheck && npm run build"
   },
   "build": {
     "appId": "com.bossclaw.desktop",
@@ -21,24 +29,47 @@
     "icon": "resources/icon.ico",
     "asar": false,
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "resources"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
       "bridge/**/*",
+      "camoufox/**/*",
       "resources/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.pyc",
+      "!**/__pycache__",
+      "!**/.venv/**"
+    ],
+    "extraResources": [
+      {
+        "from": "camoufox/camoufox_server.py",
+        "to": "camoufox/camoufox_server.py"
+      },
+      {
+        "from": "camoufox/requirements.txt",
+        "to": "camoufox/requirements.txt"
+      }
     ],
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "portable"
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BossClaw 桌面版"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     }
   },
   "dependencies": {

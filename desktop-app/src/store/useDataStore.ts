@@ -20,6 +20,22 @@ export interface LogEntry {
   msg: string;
 }
 
+export type ChatLogStage = 'open_chat' | 'greeting' | 'confirm' | 'resume' | 'ai_reply' | 'risk' | 'system';
+
+export interface ChatLogEntry {
+  id: string;
+  time: number;
+  level: LogLevel | 'stage';
+  stage?: ChatLogStage;
+  jobId?: string;
+  jobTitle?: string;
+  company?: string;
+  msg: string;
+  greetingPreview?: string;
+  errorDetail?: string;
+  method?: string;
+}
+
 interface DataState {
   resumeText: string;
   resumeFileName: string;
@@ -37,6 +53,7 @@ interface DataState {
   taskRuns: TaskRun[];
   stats: Stats;
   logs: LogEntry[];
+  chatLogs: ChatLogEntry[];
 
   setResumeText: (text: string, fileName?: string) => void;
   setResumeImage: (dataUrl: string | null) => void;
@@ -59,6 +76,8 @@ interface DataState {
 
   addLog: (level: LogLevel, msg: string) => void;
   clearLogs: () => void;
+  addChatLog: (entry: Omit<ChatLogEntry, 'id' | 'time'> & { id?: string; time?: number }) => void;
+  clearChatLogs: () => void;
   recomputeStats: () => void;
   resetDailyStats: () => void;
 }
@@ -79,6 +98,7 @@ export const useDataStore = create<DataState>()(
       taskRuns: [],
       stats: DEFAULT_STATS,
       logs: [],
+      chatLogs: [],
 
       setResumeText: (text, fileName) =>
         set((s) => {
@@ -118,6 +138,26 @@ export const useDataStore = create<DataState>()(
 
       addLog: (level, msg) => set((s) => ({ logs: [...s.logs, { time: Date.now(), level, msg }].slice(-500) })),
       clearLogs: () => set({ logs: [] }),
+      addChatLog: (entry) =>
+        set((s) => ({
+          chatLogs: [
+            ...s.chatLogs,
+            {
+              id: entry.id || `clog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              time: entry.time || Date.now(),
+              level: entry.level || 'info',
+              stage: entry.stage || 'system',
+              jobId: entry.jobId,
+              jobTitle: entry.jobTitle,
+              company: entry.company,
+              msg: entry.msg,
+              greetingPreview: entry.greetingPreview,
+              errorDetail: entry.errorDetail,
+              method: entry.method,
+            },
+          ].slice(-500),
+        })),
+      clearChatLogs: () => set({ chatLogs: [] }),
       recomputeStats: () => {
         const { pending, stats } = get();
         // 单次遍历聚合，替代原先 6 次 filter

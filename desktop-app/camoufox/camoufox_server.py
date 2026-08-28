@@ -30,6 +30,7 @@ BossClaw 隐身引擎 —— 本地 Python 桥服务（多内核自适应）
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import shutil
@@ -676,31 +677,33 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
 
 
 # ============================================================
-# 自动沟通（对齐 boss-auto-job-main send_camoufox.py + webview.cjs domApply）
+# 自动沟通（对齐 AI-BossJob-plus HRInteractionManager 沟通链 + webview.cjs openChatOnly）
 # ============================================================
 # 真正的浏览器操作：打开**可见**浏览器窗口 → 岗位详情 → 真实点击「立即沟通 / 继续沟通」
-# → 真实键盘输入招呼语（Playwright keyboard.type，isTrusted:true，BOSS 受控编辑器接受）
-# → 点击发送 / 回车 → 文字气泡确认 → 可选发送在线简历。区别于 /send（API friend/add.json 优先）。
+# → 真实键盘输入招呼语（isTrusted:true）→ 点击发送 / 回车 → 气泡确认 → 可选发送在线简历。
+# 对齐点（来自 AI-BossJob-plus「觅星小臣 - BOSS海投助手」沟通模块）：
+#   1. 输入框稳定选择器 `#chat-input`（contenteditable），找不到再回退 contenteditable/textarea；
+#   2. 发送按钮优先 `.btn-send`（不要求文本含「发送」），回退按文本/class 匹配，再回退回车；
+#   3. 发送确认 = 「自己消息气泡计数」为主（`.chat-message .im-list` 内 `li.message-item.item-self` 等），
+#      文字匹配兜底 —— 未确认不计成功（JobClaw Safety invariant）；
+#   4. 点击「立即沟通」后 BOSS 会弹「已开始沟通」确认框（handleGreetingModal：点「留在此页」/
+#      dialogConfirmButton：确认/继续沟通），等待期间自动点掉；
+#   5. 风控检测 = body innerText 正则（checkAndPauseOnRisk：安全验证/验证码/访问过于频繁…），
+#      命中立即返回 risk，交人工，绝不自动重试。
 # 安全不变量与 /send 一致：招呼语非空；code 35/36/32 立即停止交人工；不绕过验证码/账户验证。
-def _chat_button_state(page) -> str:
-    try:
-        return page.evaluate("""
-            () => {
-                const all = Array.from(document.querySelectorAll('*'));
-                const liji = all.filter(el => (el.textContent || '').trim() === '立即沟通');
-                const jixu = all.filter(el => (el.textContent || '').trim() === '继续沟通');
-                return jixu.length > 0 ? '继续沟通' : (liji.length > 0 ? '立即沟通' : 'not_found');
-            }
-        """)
-    except Exception:
-        return 'not_found'
+CHAT_LABEL_RE = r'立即\s*沟通|继续\s*沟通|打个\s*招呼|打\s*招呼|聊\s*一\s*聊|去\s*沟通|开始\s*沟通'
+RISK_TEXT_RE = re.compile(
+    r'安全验证|访问过于频繁|请完成验证|验证码|异常请求|账号异常|操作过于频繁|请稍后再试|'
+    r'登录已过期|请重新登录|当前环境异常|系统检测到异常'
+)
+# 点击「立即沟通」后的确认弹窗按钮文本（对齐 AI-BossJob-plus handleGreetingModal「留在此页」+ webview dialogConfirmButton）
+MODAL_CONFIRM_RE = re.compile(
+    r'^(继续沟通|确认沟通|去沟通|确定|确认|我知道了|继续|留在此页|留在本页|开启沟通)$'
+)
 
 
-def _find_chat_input(page):
-    """定位可见的聊天输入框（contenteditable / textarea），排除搜索框，返回 Playwright Locator。
-
-    会在主页面及可能弹出的聊天窗口页面（context.pages）中查找——BOSS 点击「立即沟通」
-    后聊天可能以新标签/新窗口形式弹出。"""
+def _all_pages(page):
+    """主页面 + 所有弹出/新开页面（点击「立即沟通」后聊天可能以新标签/新窗口打开）。"""
     pages = [page]
     try:
         for p in list(page.context.pages or []):
@@ -708,14 +711,109 @@ def _find_chat_input(page):
                 pages.append(p)
     except Exception:
         pass
-    selectors = [
-        '[contenteditable="true"]',
-        '[contenteditable="plaintext-only"]',
-        'div[contenteditable]',
-        'textarea',
-    ]
+    return pages
+
+
+def _chat_button_state(page) -> str:
+    """定位沟通按钮文本：继续沟通 / 立即沟通 / not_found。
+    对齐 AI-BossJob-plus（a.op-btn-chat / 文本匹配）与 webview.cjs（正则 + 取最短文本的叶子元素）。"""
+    try:
+        return page.evaluate("""
+            () => {
+                const all = Array.from(document.querySelectorAll('button, a, [role="button"], span, div, i'));
+                const text = (el) => (el.textContent || '').trim().replace(/\\s+/g, ' ');
+                const visible = (el) => {
+                    try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+                    catch (e) { return false; }
+                };
+                const re = /立即\\s*沟通|继续\\s*沟通|打个\\s*招呼|去\\s*沟通|开始\\s*沟通/;
+                const hits = all.filter(el =>
+                    visible(el) && text(el).length <= 12 && re.test(text(el)) &&
+                    !(el.closest('[class*="dialog"],[class*="modal"]') || el.matches('[class*="dialog"] *,[class*="modal"] *'))
+                );
+                if (!hits.length) return 'not_found';
+                hits.sort((a, b) => text(a).length - text(b).length);
+                const label = text(hits[0]);
+                if (/继续\\s*沟通/.test(label)) return '继续沟通';
+                if (/立即\\s*沟通/.test(label)) return '立即沟通';
+                return 'other';
+            }
+        """)
+    except Exception:
+        return 'not_found'
+
+
+def _click_chat_button(page, state_label: str) -> bool:
+    """真实点击沟通按钮：JS 精确定位（最短文本的可见叶子元素）→ 打临时标记 → Playwright 原生 click。"""
+    try:
+        marker = 'data-bossclaw-chat-btn'
+        ok = page.evaluate("""(state, marker) => {
+            const all = Array.from(document.querySelectorAll('button, a, [role="button"], span, div, i'));
+            const text = (el) => (el.textContent || '').trim().replace(/\\s+/g, ' ');
+            const visible = (el) => {
+                try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+                catch (e) { return false; }
+            };
+            const re = new RegExp(state.replace(/\\s+/g, '\\\\s*'));
+            const hits = all.filter(el =>
+                visible(el) && text(el).length <= 12 && re.test(text(el)) &&
+                !(el.closest('[class*="dialog"],[class*="modal"]') || el.matches('[class*="dialog"] *,[class*="modal"] *'))
+            );
+            if (!hits.length) return false;
+            hits.sort((a, b) => text(a).length - text(b).length);
+            hits[0].setAttribute(marker, '1');
+            return true;
+        }""", state_label, marker)
+        if not ok:
+            return False
+        page.locator(f'[{marker}]').first.click(timeout=8000)
+        return True
+    except Exception as e:
+        log('⚠️', f'点击沟通按钮失败：{e}')
+        return False
+
+
+def _dismiss_chat_modal(page) -> bool:
+    """点掉「已开始沟通」确认弹窗（AI-BossJob-plus handleGreetingModal：.default-btn.cancel-btn「留在此页」；
+    webview dialogConfirmButton：确认/继续沟通/留在此页，只认弹窗容器或 BOSS 自家按钮）。"""
+    try:
+        return bool(page.evaluate("""() => {
+            const re = /^(继续沟通|确认沟通|去沟通|确定|确认|我知道了|继续|留在此页|留在本页|开启沟通)$/;
+            const all = Array.from(document.querySelectorAll('button, [role="button"], .default-btn, .btn-sure-v2, a'));
+            for (const el of all) {
+                const label = (el.textContent || '').trim();
+                if (!re.test(label)) continue;
+                if (!(el.offsetWidth || el.offsetHeight)) continue;
+                const inDialog = Boolean(el.closest('[class*="dialog"],[class*="modal"],[class*="popover"],[class*="sentence-popover"]')) ||
+                                 el.matches('.default-btn, .btn-sure-v2, [class*="dialog"] *,[class*="modal"] *');
+                if (inDialog || label === '留在此页' || label === '留在本页') {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
+
+
+def _risk_text_hit(page) -> str:
+    """对齐 AI-BossJob-plus checkAndPauseOnRisk：body innerText 正则检测风控/验证页，命中返回命中词。"""
+    try:
+        text = page.evaluate("() => (document.body ? document.body.innerText.slice(0, 4000) : '')") or ''
+        m = RISK_TEXT_RE.search(text)
+        return m.group(0) if m else ''
+    except Exception:
+        return ''
+
+
+def _find_chat_input(page):
+    """定位可见的聊天输入框，优先 #chat-input（AI-BossJob-plus 稳定 id，BOSS 新版即 contenteditable），
+    排除搜索框，返回 Playwright Locator。会在主页面及弹出的聊天窗口页面中查找。"""
+    pages = _all_pages(page)
     for p in pages:
-        for sel in selectors:
+        for sel in ['#chat-input', '[contenteditable="true"]', '[contenteditable="plaintext-only"]',
+                    'div[contenteditable]', 'textarea', 'input[type="text"]']:
             try:
                 loc = p.locator(sel)
                 count = loc.count()
@@ -733,28 +831,107 @@ def _find_chat_input(page):
                         pass
                     if '搜索' in ph or 'search' in ph.lower():
                         continue
-                    return el
+                    # #chat-input / contenteditable / textarea 视为聊天输入区；input 需 placeholder 含回复/消息等
+                    if sel in ('#chat-input', '[contenteditable="true"]', '[contenteditable="plaintext-only"]',
+                               'div[contenteditable]', 'textarea'):
+                        return el
+                    if re.search(r'回复|消息|输入|打招呼|沟通', ph):
+                        return el
             except Exception:
                 continue
     return None
 
 
+def _input_text(page) -> str:
+    """读取聊天输入框当前内容（校验输入是否成功）。"""
+    try:
+        return str(page.evaluate("""() => {
+            const input = document.querySelector('#chat-input, [contenteditable="true"], [contenteditable="plaintext-only"], div[contenteditable], textarea');
+            if (!input) return '';
+            if (input.isContentEditable) return input.innerText || input.textContent || '';
+            return input.value || '';
+        }""") or '')
+    except Exception:
+        return ''
+
+
+def _inject_text_via_exec(page, greeting: str) -> bool:
+    """兜底注入：execCommand('insertText')（AI-BossJob-plus sendCustomReply 同款，React 受控组件可感知）。"""
+    try:
+        ok = page.evaluate("""(text) => {
+            const input = document.querySelector('#chat-input, [contenteditable="true"], [contenteditable="plaintext-only"], div[contenteditable], textarea');
+            if (!input) return false;
+            input.focus();
+            if (input.isContentEditable) {
+                const sel = window.getSelection();
+                if (sel && sel.selectAllChildren) {
+                    sel.selectAllChildren(input);
+                    document.execCommand('delete');
+                }
+                document.execCommand('insertText', false, text);
+            } else {
+                input.value = text;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return true;
+        }""", greeting)
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def _count_own_messages(page) -> int:
+    """自己消息气泡计数（对齐 AI-BossJob-plus countOwnMessages）：
+    在 `.chat-message .im-list` 内按候选选择器计数；无法识别任何候选时返回 -1（表示不确定）。"""
+    try:
+        return int(page.evaluate("""() => {
+            const container = document.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
+            if (!container) return -1;
+            const sels = ['li.message-item.item-self', 'li.message-item.item-me', 'li.message-item.me',
+                          'li.message-item.item-own', '.chat-message .message-self', '.im-list li[class*="self"]',
+                          '.im-list li[class*="item-me"]', '.im-list li[class*="own"]'];
+            for (const s of sels) {
+                const n = container.querySelectorAll(s).length;
+                if (n > 0) return n;
+            }
+            return -1;
+        }""") or -1)
+    except Exception:
+        return -1
+
+
+def _confirm_bubble_count(page, before: int, timeout_ms: int = 8000) -> bool:
+    """轮询确认新气泡出现（对齐 AI-BossJob-plus confirmMessageSent）：before 为发送前快照。
+    before === -1（无法识别气泡选择器）时返回 False，交由文字匹配兜底。"""
+    if before == -1:
+        return False
+    deadline = time.time() + timeout_ms / 1000.0
+    while time.time() < deadline:
+        now = _count_own_messages(page)
+        if now != -1 and now > before:
+            log('✅', f'气泡计数确认：{before} → {now}')
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def _confirm_message(page, greeting: str) -> bool:
-    """文字气泡确认：发送后聊天记录里出现刚发送的文字（安全不变量：未确认不计成功）。"""
+    """文字气泡确认（兜底）：发送后聊天记录里出现刚发送的文字（安全不变量：未确认不计成功）。"""
     needle = ' '.join(str(greeting or '').split())[:30]
     if not needle:
         return False
     try:
         found = page.evaluate("""
             (needle) => {
-                const sels = ['.chat-conversation', '.conversation', '.message-list',
-                              '[class*="message"]', '[class*="chat-content"]', '[class*="conversation"]'];
+                const sels = ['.chat-message .im-list', '.im-list', '.chat-conversation', '.conversation',
+                              '.message-list', '[class*="message"]', '[class*="chat-content"]', '[class*="conversation"]'];
+                const clean = (t) => (t || '').replace(/[\\u200b-\\u200d\\ufeff\\u2060]/g, ' ').replace(/\\s+/g, ' ');
                 for (const sel of sels) {
                     const els = document.querySelectorAll(sel);
                     for (const el of els) {
-                        // 排除输入框自身（contenteditable/textarea/input 内不算「已发送」）
                         if (el.closest && el.closest('[contenteditable],textarea,input')) continue;
-                        if (el.innerText && el.innerText.includes(needle)) return true;
+                        if (clean(el.innerText || el.textContent).includes(needle)) return true;
                     }
                 }
                 return false;
@@ -763,6 +940,30 @@ def _confirm_message(page, greeting: str) -> bool:
         return bool(found)
     except Exception:
         return False
+
+
+def _find_send_button(page):
+    """定位发送按钮：优先 `.btn-send`（AI-BossJob-plus），其次 class 含 send，再按文本「发送」。
+    不要求按钮文本含「发送」（BOSS 图标按钮可能只有图标）。"""
+    try:
+        btn = page.locator('.btn-send').first
+        if btn.is_visible(timeout=1500):
+            return btn, 'btn-send'
+    except Exception:
+        pass
+    try:
+        btn = page.locator("[class*='send']:visible").first
+        if btn.is_visible(timeout=800):
+            return btn, 'class-send'
+    except Exception:
+        pass
+    try:
+        btn = page.locator("button:has-text('发送'), [role='button']:has-text('发送')").first
+        if btn.is_visible(timeout=800):
+            return btn, 'text-send'
+    except Exception:
+        pass
+    return None, None
 
 
 def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
@@ -794,6 +995,9 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         if "security-check" in page.url:
             log('⚠️', '会话页触发安全检查，等待…')
             time.sleep(8)
+        risk = _risk_text_hit(page)
+        if risk:
+            return {"ok": False, "code": 35, "message": f"检测到安全验证/访问受限（{risk}），已暂停，请人工完成验证", "sent": False}
 
         # Step 2: 登录态检测（页面 DOM + card API 探测）
         login_ok = False
@@ -828,6 +1032,9 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         time.sleep(5)
         if "verify" in page.url:
             return {"ok": False, "code": 35, "message": "需要人工安全验证", "sent": False}
+        risk = _risk_text_hit(page)
+        if risk:
+            return {"ok": False, "code": 35, "message": f"检测到安全验证/访问受限（{risk}），已暂停，请人工完成验证", "sent": False}
 
         # Step 4: 找到并真实点击「立即沟通 / 继续沟通」
         state = _chat_button_state(page)
@@ -835,24 +1042,42 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         if state == 'not_found':
             save_cookies(page.context)
             return {"ok": False, "code": 404, "message": "未找到沟通按钮（岗位可能已下架）", "sent": False}
-        try:
-            page.locator(f"text={state}").first.click(timeout=8000)
-            log('🖱️', f'已真实点击「{state}」，等待沟通窗口…')
-        except Exception as e:
+        # 优先精确定位叶子按钮（text= 是子串匹配，可能点到外层容器）
+        clicked = _click_chat_button(page, state)
+        if not clicked:
+            try:
+                page.locator(f"text={state}").first.click(timeout=3000)
+                clicked = True
+            except Exception:
+                pass
+        if not clicked:
             save_cookies(page.context)
-            return {"ok": False, "code": 500, "message": f"点击沟通按钮失败：{e}", "sent": False}
+            return {"ok": False, "code": 500, "message": "点击沟通按钮失败", "sent": False}
+        log('🖱️', f'已真实点击「{state}」，等待沟通窗口…')
 
-        # Step 5: 等待聊天输入框出现（可能在弹出的聊天窗口页面）
+        # Step 5: 等待聊天输入框出现；期间自动点掉确认弹窗、检测安全验证
         input_el = None
-        deadline = time.time() + 15
+        deadline = time.time() + 20
         while time.time() < deadline:
-            input_el = _find_chat_input(page)
+            for p in _all_pages(page):
+                risk = _risk_text_hit(p)
+                if risk:
+                    save_cookies(page.context)
+                    return {"ok": False, "code": 35,
+                            "message": f"检测到安全验证/访问受限（{risk}），已暂停，请人工完成验证", "sent": False}
+                try:
+                    _dismiss_chat_modal(p)
+                except Exception:
+                    pass
+                input_el = _find_chat_input(p)
+                if input_el is not None:
+                    break
             if input_el is not None:
                 break
-            time.sleep(1)
+            time.sleep(0.6)
         if input_el is None:
             save_cookies(page.context)
-            return {"ok": False, "code": 500, "message": "未找到聊天输入框（沟通窗口可能未打开）", "sent": False}
+            return {"ok": False, "code": 500, "message": "未找到聊天输入框（沟通窗口可能未打开或被验证拦截）", "sent": False}
 
         # 聊天输入框所在页面（可能是弹出的新窗口），后续键盘/发送/确认都在该页执行
         try:
@@ -864,57 +1089,78 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         except Exception:
             pass
 
-        # Step 6: 真实键盘输入招呼语（聚焦输入框 → 清空 → 逐字输入）
+        # Step 6: 发送前快照自己气泡数（AI-BossJob-plus 气泡确认闸门）
+        before_count = _count_own_messages(target_page)
+
+        # Step 7: 真实输入招呼语（聚焦 → 清空 → 逐字输入；内容为空则 execCommand 兜底）
         try:
             input_el.click()
             time.sleep(0.5)
             target_page.keyboard.press('ControlOrMeta+a')
             target_page.keyboard.press('Delete')
             target_page.keyboard.type(greeting, delay=25)
-            time.sleep(0.5)
+            time.sleep(0.6)
+            typed = _input_text(target_page)
+            if not typed.strip() or len(typed.strip()) < 5:
+                log('⚠️', '键盘输入后内容为空，execCommand 兜底注入…')
+                _inject_text_via_exec(target_page, greeting)
+                time.sleep(0.5)
             log('⌨️', '招呼语已真实输入')
         except Exception as e:
             save_cookies(page.context)
             return {"ok": False, "code": 500, "message": f"输入招呼语失败：{e}", "sent": False}
 
-        # Step 7: 发送（点击「发送」按钮，否则回车）
+        # Step 8: 发送（优先 .btn-send / class 含 send / 文本「发送」按钮，最后回车）
         sent_via = 'enter'
-        try:
-            send_btn = target_page.locator("button:has-text('发送'), [class*='send']:has-text('发送')").first
-            if send_btn.is_visible(timeout=1500):
+        send_btn, send_kind = _find_send_button(target_page)
+        if send_btn is not None:
+            try:
                 send_btn.click()
-                sent_via = 'button'
-                log('🖱️', '已点击「发送」按钮')
-            else:
-                target_page.keyboard.press('Enter')
-                log('⌨️', '已回车发送')
-        except Exception:
+                sent_via = send_kind or 'button'
+                log('🖱️', f'已点击发送按钮（{sent_via}）')
+            except Exception:
+                try:
+                    target_page.keyboard.press('Enter')
+                    log('⌨️', '发送按钮点击失败，已回车发送')
+                except Exception:
+                    pass
+        else:
             try:
                 target_page.keyboard.press('Enter')
+                log('⌨️', '已回车发送')
             except Exception:
                 pass
         time.sleep(2)
 
-        # Step 8: 文字气泡确认（安全不变量）
-        confirmed = _confirm_message(target_page, greeting)
+        # Step 9: 发送结果确认 —— 气泡计数为主，文字匹配兜底（安全不变量：未确认不计成功）
+        confirmed = _confirm_bubble_count(target_page, before_count)
+        if not confirmed:
+            confirmed = _confirm_message(target_page, greeting)
         if not confirmed:
             time.sleep(3)
-            confirmed = _confirm_message(target_page, greeting)
+            confirmed = _confirm_bubble_count(target_page, before_count) or _confirm_message(target_page, greeting)
         if not confirmed:
             save_cookies(page.context)
             return {"ok": False, "code": 501, "message": "未能确认文字气泡已发送，请人工核对", "sent": False}
         log('✅', f'文字气泡确认（发送方式：{sent_via}）')
 
-        # Step 9: 可选 —— 发送在线简历
+        # Step 10: 可选 —— 发送在线简历（在聊天输入框所在页操作）
         if send_online_resume:
             try:
-                online_btn = page.locator("text=发送在线简历").first
-                if online_btn.is_visible(timeout=2000):
-                    online_btn.click()
-                    time.sleep(1)
-                    log('📄', '已点击「发送在线简历」')
+                for p in _all_pages(page):
+                    try:
+                        online_btn = p.locator("text=发送在线简历").first
+                        if online_btn.is_visible(timeout=1500):
+                            online_btn.click()
+                            time.sleep(1.5)
+                            log('📄', '已点击「发送在线简历」')
+                            break
+                    except Exception:
+                        continue
             except Exception:
                 log('⚠️', '发送在线简历失败（忽略）')
+        if send_resume_image:
+            log('ℹ️', '图片简历发送：请在 BOSS 聊天窗口内手动补发（自动发图待接入）')
 
         save_cookies(page.context)
         return {"ok": True, "code": 0, "sent": True, "method": "browser-chat", "sentVia": sent_via}

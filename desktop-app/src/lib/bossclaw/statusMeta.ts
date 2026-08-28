@@ -4,6 +4,7 @@ import type { PendingItem } from './types';
 // 岗位卡状态色条映射
 export function jobCardStatus(p: PendingItem): string {
   if (p.status === 'sent') return 'st-sent';
+  if (p.status === 'opened') return 'st-opened';
   if (p.status === 'failed') return 'st-failed';
   if (p.status === 'skipped' || p.status === 'ignored') return 'st-ignored';
   if (p.status === 'approved' || p.status === 'approved_queue') return 'st-approved';

@@ -4,4 +4,41 @@ release/
 *.tsbuildinfo
 vite.config.ts.timestamp-*.mjs
 npm-debug.log*
+.DS_Thumbs
 .DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.workbuddy-tmp/
+.workbuddy/
+.cache/
+bossclaw-debug.log
+debug-render.log
+
+# ===== Electron-builder 输出 =====
+release/win-unpacked/
+release/*.exe
+release/*.exe.blockmap
+release/latest.yml
+release/builder-debug.yml
+release/win-arm64-unpacked/
+
+# ===== Camoufox venv（按 docs/ 指引可能在仓库内建 venv）=====
+camoufox/.venv/
+camoufox/__pycache__/
+camoufox/**/*.pyc
+
+# ===== CloakBrowser 持久 profile（在 release 包内由 launcher 管理）=====
+# 注：本地开发若有此目录也会忽略
+cloakbrowser-profile/
+
+# ===== 用户偏好 / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 测试覆盖（暂未启用）=====
+coverage/
+.nyc_output/
