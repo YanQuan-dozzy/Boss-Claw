@@ -6,9 +6,9 @@
 
 从简历解析、职业画像和岗位方向选择，到岗位信息整理、AI 匹配排序、沟通草稿生成与投递进度管理，集中在一个本地桌面应用中完成。
 
-[快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [完整需求](docs/桌面版改造需求文档.md)
+[快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki 教程](docs/wiki/Home.md)
 
-![Version](https://img.shields.io/badge/version-v2.0.0-078A83)
+![Version](https://img.shields.io/badge/version-v2.1.0-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -24,7 +24,8 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 📦 安装版（推荐） | [BossClaw-2.0.0-win-x64-setup.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest) | 标准安装包，双击安装后从开始菜单启动 |
+| 📦 安装版（推荐） | [BossClaw-2.1.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest) | 标准安装包，双击安装后从开始菜单启动 |
+| 📦 便携版 | [BossClaw-2.1.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest) | 绿色便携版，无需安装、解压即用 |
 
 > **运行要求**：Windows 10/11（x64）；首次启动按提示在「设置」页填写求职条件与 AI API Key 即可使用。
 
@@ -78,13 +79,15 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 | --- | --- |
 | 首页 | 运行状态概览、快捷入口、最近投递动态 |
 | 工作台 | 三栏主界面（侧栏 + 消息进度 + 内置浏览器），手动 / 半自动投递闭环 |
-| 简历中心 | 导入 PDF、DOCX、TXT，本地解析并保留可编辑原文 |
+| 简历中心 | 导入 PDF、DOCX、TXT，本地解析并保留可编辑原文；打招呼语提示词可编辑 |
 | 职业画像 | 根据教育、项目、技能和求职条件生成可编辑画像 |
 | 投递方向 | 自主勾选岗位方向、修改搜索词、调整优先级、添加自定义方向 |
-| 岗位整理 | 内置浏览器打开岗位 → 点「加入任务」→ 中栏记录该岗位 |
-| AI 匹配 | 分析岗位要求，给出匹配分、判断理由、技能命中、能力缺口和待确认项 |
+| 岗位整理 | 内置浏览器打开岗位 → 点「加入任务」→ 中栏记录该岗位；页面噪音自动清洗（jdCleaner） |
+| AI 匹配 | 本地确定性多维匹配（硬约束拦截 + 维度分）与 AI 结果融合，给出匹配分、判断理由、技能命中、能力缺口和待确认项 |
 | 智能排序 | 综合匹配度、硬性条件、HR 活跃度、地点、薪资、新鲜度和风险提示进行排序 |
 | 沟通草稿 | 根据简历证据和岗位要求生成可编辑的应聘沟通内容与个性化打招呼语 |
+| 定制简历 | 输入目标岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，失败回退本地规则 |
+| AI 技能 | 标准 SKILL.md 技能体系（内置 resume-profile / job-analysis / greetings / tailor-cv），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
 | 自动沟通 | 可选真实浏览器引擎（Camoufox），自动打开沟通窗口、输入并发送打招呼语，支持发送在线简历 |
 | 任务进度 | 每个任务和岗位均可显示独立进度、阶段、结果和异常原因 |
 | 数据统计 | 投递量、沟通量、成功率等关键指标的可视化统计 |
@@ -99,7 +102,7 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 - **技术栈**：Electron `^31` + React 18 + TypeScript + Vite + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
 - **进程模型**：主进程（CommonJS，`electron/main.cjs`）+ 预加载脚本（`contextBridge` 安全 IPC + LLM 代理）+ React 渲染进程（Vite 构建）；`contextIsolation: true`、`nodeIntegration: false`、`webviewTag: true`。
 - **全局框架**：顶部标题栏（品牌 + 状态 + 主题切换）、左侧固定功能侧栏、底部状态栏（桥接状态 · Electron 版本 · 投递统计）。
-- **侧栏 9 入口**：首页 / 工作台 / 简历中心 / 投递方向 / 任务进度 / 数据统计 / OpenClaw / 自动沟通 / 设置。
+- **侧栏 10 入口**：首页 / 工作台 / 简历中心 / 投递方向 / 任务进度 / 数据统计 / 定制简历 / OpenClaw / 自动沟通 / 设置。
 - **布局规则**：「工作台」为**三栏**（侧栏 + 消息进度 + 内置浏览器），其余页面为**双栏**（侧栏 + 功能页）。
 - **内置浏览器**：Electron `<webview>` 默认加载 BOSS 直聘，支持地址栏、与中栏联动、登录态持久化（免重复登录）；外部链接经 `shell.openExternal` 打开。
 
@@ -125,7 +128,7 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 cd desktop-app
 npm install          # 安装依赖（含 Electron 二进制）
 npm run dev          # 启动 Vite dev server
-npm run electron:dev # 构建 renderer 并以 Electron 打开
+npm run dev:electron # 构建 renderer 并以 Electron 打开
 ```
 
 > **前置要求**：Node.js 18+（推荐 20）；隐身引擎需 Python 3.10+。
@@ -255,16 +258,17 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.0.0）
+├── desktop-app/               当前主应用（Electron + React，v2.1.0）
 │   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs / cloakPreload.cjs）
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
 │   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py）
+│   ├── skills/                AI 技能库（SKILL.md，内置 resume-profile / job-analysis / greetings / tailor-cv）
 │   ├── src/                   React 渲染进程（main / App / theme / store / components / pages / lib）
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts（dev / build / package）
 ├── docs/
-│   ├── 桌面版改造需求文档.md   权威需求文档（v1.2，决策已确认）
-│   └── src/                   UI 参考实现片段
+│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / FAQ 等）
+│   └── release-notes-*.md     版本发布说明
 ├── start-bossclaw.cmd         Windows 一键启动脚本
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知
 └── LICENSE                    Apache License 2.0
@@ -286,17 +290,17 @@ npm run package:linux   # 打包 Linux 安装包（AppImage + deb）
 npm run package:mac     # 打包 macOS 安装包（dmg + zip，需在 macOS 上执行）
 ```
 
-> macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；仓库已提供 `.github/workflows/build-release.yml`，推送 `v*` 标签或手动触发即可在 GitHub Actions 三平台（Windows / macOS / Linux）自动构建并发布。
+> macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；Windows / Linux 可在本机直接打包。
 
 > 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 
-涉及业务逻辑改动时，请优先回查 `docs/` 下文档，对齐既定口径，禁止凭空重写。
+涉及业务逻辑改动时，请优先回查 `desktop-app/` 下实现与 `docs/wiki/` 文档，对齐既定口径，禁止凭空重写。
 
 ## 反馈与联系
 
-遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 `docs/` 下文档，再提交 Issue。提交时请包含：
+遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 [`docs/wiki/FAQ.md`](docs/wiki/FAQ.md)，再提交 Issue。提交时请包含：
 
-- BossClaw 版本（桌面版 v2.0.0）
+- BossClaw 版本（桌面版 v2.1.0）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图
