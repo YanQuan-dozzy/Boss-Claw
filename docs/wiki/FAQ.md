@@ -51,10 +51,11 @@ start-bossclaw.cmd --visible
 
 v3 重建后首次启动会清空旧 `persist:bossclaw` 会话与 Camoufox 缓存（`DATA_VERSION='v3-rebuild-20260815'`）。重新在「设置」或内置浏览器中扫码登录一次即可，之后登录态会本地持久化。
 
-### Q6：AI 相关功能（职业画像 / 岗位匹配 / 沟通草稿）不可用？
+### Q6：AI 相关功能（职业画像 / 岗位匹配 / 沟通草稿 / 定制简历）不可用？
 
 - 确认已在「设置」页填写并**测试通过** AI API Key（预设 OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟，或自定义 OpenAI 兼容端点）。
 - 无密钥时相关功能降级为提示，不阻断其他流程（本地规则兜底仍可用）。
+- 定制简历 / 岗位分析的结果可能受「设置 → AI 技能（Skills 层）」启停影响：关闭对应技能后，该作用域的 AI 调用不再注入增强约束。
 
 ### Q7：岗位无法「加入任务」或投递没反应？
 
@@ -113,7 +114,7 @@ BossClaw 数据本地优先：AI 只调用**你自己配置的 Key**（OpenAI �
 
 先查看本 Wiki 与 [`desktop-app/README.md`](https://github.com/YanQuan-dozzy/Boss-Claw/blob/main/desktop-app/README.md)，再提交 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)，请包含：
 
-- BossClaw 版本（桌面版 v2.0.0）
+- BossClaw 版本（桌面版 v2.1.0）
 - 操作系统与 Electron 版本
 - 出错步骤
 - **已隐藏隐私信息**的截图（请勿上传含真实简历、手机号、邮箱、身份证信息、API Key 的截图）

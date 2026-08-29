@@ -2,18 +2,20 @@
 
 > 面向求职者的**本地 AI 投递助手**，**独立桌面应用，不占用你的浏览器**。单窗口桌面应用：固定功能侧栏 + 工作台三栏（侧栏 + 中栏消息进度 + 右栏内置浏览器） + 其余页面双栏；应用后台自动投递简历的同时，你的 Chrome / Edge / Firefox 照常使用。
 
-> 完整需求与决策见仓库根：[`docs/桌面版改造需求文档.md`](../docs/桌面版改造需求文档.md)（v1.2，已锁定不再讨论）。
+> 完整使用与开发教程见仓库 [`docs/wiki/`](../docs/wiki/Home.md)（功能指南 / 架构 / 安全 / FAQ），需求与决策见本地 `docs/桌面版改造需求文档.md`（v1.2，仅本地保留）。
 
 ---
 
 ## 功能闭环
 
-- **岗位来源**：内置浏览器打开 BOSS 直聘岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据。
+- **岗位来源**：内置浏览器打开 BOSS 直聘岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据；岗位详情自动清洗页面噪音（`jdCleaner.ts` 渲染层 + `webview.cjs` 同步）。
 - **半自动投递**：中栏批准岗位 → 浏览器跳转 → AI 草稿预填沟通框 → 用户发送。
 - **自动辅助**：启动后按匹配优先级依次投递 `approved_queue` 队列；webview 回传投递阶段（打开沟通 → 填写 → 发送 → 确认文字气泡 → 确认结果），失败自动暂停交人工核对；**首次成功投递后强制暂停验收**（安全不变量）。
 - **任务进度**：中栏任务级进度条 + 阶段标签（整理 / 匹配 / 排序 / 沟通 / 投递），日志流实时滚动；失败可重试 / 忽略 / 跳过。
-- **简历中心**：PDF / DOCX / TXT 本地解析（渲染进程内完成，无需桥接）：PDF 用自研解析器（Flate / ASCIIHex / ASCII85 / RunLength + ToUnicode / CMap），DOCX 用 mammoth 浏览器版 + 自研 ZIP/XML 双通道兜底，`.doc` 旧格式给出转档提示。
-- **AI 能力**：职业画像（AI 完整画像 → 精简重试 → 本地规则三级降级）；岗位匹配（评分 / 决策 / 硬条件拦截 / 沟通草稿）；**4 条个性化打招呼语**（AI 生成 + 求职者口吻校验，失败回退本地规则）。
+- **简历中心**：PDF / DOCX / TXT 本地解析（渲染进程内完成，无需桥接）：PDF 用自研解析器（Flate / ASCIIHex / ASCII85 / RunLength + ToUnicode / CMap），DOCX 用 mammoth 浏览器版 + 自研 ZIP/XML 双通道兜底，`.doc` 旧格式给出转档提示；打招呼语提示词可编辑（留空用默认）。
+- **AI 能力**：职业画像（AI 完整画像 → 精简重试 → 本地规则三级降级）；岗位匹配（**本地确定性多维匹配 + AI 结果融合**，评分 / 决策 / 硬条件拦截 / 沟通草稿）；**4 条个性化打招呼语**（AI 生成 + 求职者口吻校验，失败回退本地规则）。
+- **定制简历**：侧栏「定制简历」页输入岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，AI 输出不达标回退本地规则兜底。
+- **AI 技能体系**：`skills/` 内置 resume-profile / job-analysis / greetings / tailor-cv 四技能（SKILL.md），按作用域注入 system prompt；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理。
 - **LLM 预设**：OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟 / 自定义（OpenAI 兼容端点）。
 - **OpenClaw 桥接**：本地 Node 服务（127.0.0.1:18765）提供状态 / 日报 / 指令控制 / OCR / 简历解析 / **日志查看**。
 - **可选隐身增强（默认关闭）**：
@@ -55,12 +57,17 @@ desktop-app/
 │   └── requirements.txt
 ├── resources/
 │   └── icon.ico
+├── skills/                          # AI 技能库（SKILL.md，内置 resume-profile / job-analysis / greetings / tailor-cv）
+│   ├── resume-profile/SKILL.md
+│   ├── job-analysis/SKILL.md
+│   ├── greetings/SKILL.md
+│   └── tailor-cv/SKILL.md
 └── src/
     ├── main.tsx / App.tsx / theme.ts / index.css
     ├── store/                        # useAppStore / useDataStore / useSettingsStore
-    ├── lib/                          # storage / electronApi / bridgeClient / bossclaw/*
+    ├── lib/                          # storage / electronApi / bridgeClient / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
     ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / feedback
-    └── pages/                        # Home / Workbench / Resume / Directions / Tasks / Stats / OpenClaw / AutoChat / Settings
+    └── pages/                        # Home / Workbench / Resume / Directions / Tasks / Stats / Assistant（定制简历）/ OpenClaw / AutoChat / Settings
 ```
 
 ---
@@ -98,8 +105,8 @@ npm install               # 1. 安装 Node 依赖（含 Electron 二进制）
 ```bash
 npm install                # 安装依赖
 
-npm run dev                # 启动 Vite dev server（默认 5173；Electron 由 electron:dev 启动）
-npm run electron:dev       # 构建 renderer 并以 Electron 打开（生产模式预览）
+npm run dev                # 启动 Vite dev server（默认 5173；Electron 由 dev:electron 启动）
+npm run dev:electron       # 构建 renderer 并以 Electron 打开（生产模式预览）
 npm start                  # 仅启动 Electron（需先 build 或 dev 服务在跑）
 
 npm run typecheck          # 仅类型检查（不打包）
@@ -114,7 +121,7 @@ npm run package:linux      # 打包 Linux AppImage + deb
 npm run package:all        # 打包 Windows + Linux
 ```
 
-> **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）。仓库根 `.github/workflows/build-release.yml` 提供三平台 CI：推送 `v*` 标签或手动触发，即自动构建 Windows / macOS / Linux 安装包并生成草稿 Release。
+> **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）；Windows / Linux 可在本机直接打包。
 
 > **Electron dev 模式**：开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179 端口），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
 > **首次运行需在本机有 Electron 运行环境**（`npm install` 会安装 `electron` 包及其二进制）。
@@ -138,13 +145,13 @@ release/
 └── win-unpacked/                   # 解压目录（可手工分发的文件夹）
 ```
 
-macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）由 GitHub Actions 在 macOS 上构建，见仓库根 `.github/workflows/build-release.yml`。
+macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）需在 macOS 系统上执行 `npm run package:mac` 构建。
 
 ---
 
 ## 功能侧栏入口
 
-固定 7 入口：**首页 · 工作台（三栏自动投递）· 简历中心 · 投递方向 · 任务进度 · OpenClaw · 设置**。
+固定 10 入口：**首页 · 工作台（三栏自动投递）· 简历中心 · 投递方向 · 任务进度 · 数据统计 · 定制简历 · OpenClaw · 自动沟通 · 设置**。
 
 ---
 
@@ -191,4 +198,5 @@ macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）由 GitHub Actions 在 
 
 ## 变更记录
 
+- v2.1.0 — AI 技能体系（内置 4 技能 + 自定义技能导入/新建/删除）；定制简历求职助手（JobAssistant，侧栏新增入口）；岗位匹配本地确定性多维匹配与 AI 融合；岗位采集页面噪音清洗（jdCleaner）；版本 / productName 统一为 BossClaw，新增 macOS / Linux 打包配置。
 - v2.0.0 — 内置浏览器 + 收集投递沟通模块从零重建；统一 IPC 错误包装；Workbench 三栏拆分；CloakBrowser / Camoufox 可选隐身增强。

@@ -58,7 +58,7 @@
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.0.0）
+├── desktop-app/               当前主应用（Electron + React，v2.1.0）
 │   ├── electron/
 │   │   ├── main.cjs           主进程：单窗口 + webview + IPC + 子进程管理
 │   │   ├── preload/
@@ -69,17 +69,18 @@ Boss-claw/
 │   │       └── cloakPreload.cjs
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
 │   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py + requirements.txt）
+│   ├── skills/                AI 技能库（SKILL.md：resume-profile / job-analysis / greetings / tailor-cv）
 │   ├── src/
 │   │   ├── main.tsx / App.tsx / theme.ts / index.css
 │   │   ├── store/             useAppStore / useDataStore / useSettingsStore
-│   │   ├── lib/               storage / electronApi / bridgeClient / bossclaw/*
+│   │   ├── lib/               storage / electronApi / bridgeClient / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
 │   │   ├── components/        TitleBar / Sidebar / StatusBar / BrowserView / feedback
-│   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / Stats / OpenClaw / AutoChat / Settings
+│   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / Stats / Assistant / OpenClaw / AutoChat / Settings
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts
 ├── docs/
-│   ├── 桌面版改造需求文档.md   权威需求文档（v1.2，决策已确认）
-│   └── src/                   UI 参考实现片段
+│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / Safety / FAQ）
+│   └── release-notes-*.md     版本发布说明
 ├── start-bossclaw.cmd         Windows 一键启动脚本
 ├── install-deps.cmd           依赖一键安装脚本
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知
@@ -92,7 +93,7 @@ Boss-claw/
 npm install                # 安装依赖
 
 npm run dev                # 启动 Vite dev server（默认 5173）
-npm run electron:dev       # 构建 renderer 并以 Electron 打开
+npm run dev:electron       # 构建 renderer 并以 Electron 打开
 npm start                  # 仅启动 Electron（需先 build 或 dev 服务在跑）
 
 npm run typecheck          # 仅类型检查（不打包）
@@ -102,6 +103,9 @@ npm run verify             # typecheck + build 组合
 npm run package            # 构建并打包 Windows NSIS 安装包 + 绿色便携版
 npm run package:portable   # 仅打包绿色便携版
 npm run package:dir        # 仅生成解压目录（便于本地试运行）
+npm run package:mac        # 打包 macOS dmg + zip（只能在 macOS 上执行）
+npm run package:linux      # 打包 Linux AppImage + deb
+npm run package:all        # 打包 Windows + Linux
 ```
 
 ### 环境变量
@@ -116,10 +120,12 @@ npm run package:dir        # 仅生成解压目录（便于本地试运行）
 
 ```
 release/
-├── BossClaw 桌面版-2.0.0-x64.exe        # NSIS 安装包（推荐发行）
-├── BossClaw 桌面版-2.0.0-portable.exe   # 绿色便携版（无需安装、解压即用）
-└── win-unpacked/                         # 解压目录（可手工分发）
+├── BossClaw-2.1.0-x64.exe        # NSIS 安装包（推荐发行）
+├── BossClaw-2.1.0-portable.exe   # 绿色便携版（无需安装、解压即用）
+└── win-unpacked/                 # 解压目录（可手工分发）
 ```
+
+macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）需在 macOS 上执行 `npm run package:mac` 构建；Linux 产物（AppImage / deb）由 `npm run package:linux` 在本机构建。
 
 ## 七、可选依赖安装
 
@@ -136,8 +142,9 @@ python -m venv .venv
 
 ## 八、开发注意事项
 
-- 涉及业务逻辑改动时，请优先回查 `docs/桌面版改造需求文档.md`（v1.2），对齐既定口径，禁止凭空重写。
+- 涉及业务逻辑改动时，请优先回查本地需求文档 `docs/桌面版改造需求文档.md`（v1.2，仅本地保留，不入仓库）与参考项目 `job-claw-main` 的实现口径，对齐既定口径，禁止凭空重写。
 - 修改 `electron/preload/webview.cjs` 等主进程 / preload 文件后，**必须重启 Electron** 才能生效（HMR 不覆盖 preload）。
 - 业务逻辑对齐参考项目 `job-claw-main` 的采集与投递口径（`task-state` / `job-priority` / `conversation-identity`）。
+- AI 技能层：技能开关 / 指令变化 → messages 变化 → AI 缓存 key 自动失效；自定义技能存 `userData/skills`（内置 `appPath/skills` 只读），IPC 白名单校验防路径穿越。
 - 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 - 打包前建议先 `npm run verify`（类型检查 + 构建），再 `npm run package`。

@@ -16,13 +16,13 @@
 | Node.js | 仅源码构建需要：20+（推荐 22，`.nvmrc` 已固定） |
 | Python | 仅「隐身引擎」可选功能需要：3.10+ |
 
-> macOS / Linux 打包为后续阶段目标，当前官方发行版为 Windows。
+> 官方发行版为 Windows；macOS / Linux 支持源码构建与打包（macOS 安装包需在 macOS 上构建），见[架构与开发](./Architecture-and-Development)。
 
 ---
 
 ## 二、方式一：下载安装（推荐）
 
-1. 打开 [Releases 页面](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，下载 `BossClaw-2.0.0-win-x64-setup.exe`（NSIS 安装包）。
+1. 打开 [Releases 页面](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，下载 `BossClaw-2.1.0-x64.exe`（NSIS 安装包）或 `BossClaw-2.1.0-portable.exe`（绿色便携版）。
 2. 双击安装，完成后从「开始菜单」启动 BossClaw。
 3. 首次启动进入「设置」页，按提示填写**求职条件**与 **AI API Key** 即可使用。
 
@@ -79,7 +79,7 @@ npm install          # 安装依赖（含 Electron 二进制）
 ```bash
 cd desktop-app
 npm run dev          # 启动 Vite dev server（默认 5173）
-npm run electron:dev # 构建 renderer 并以 Electron 打开
+npm run dev:electron # 构建 renderer 并以 Electron 打开
 ```
 
 > 开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
@@ -103,7 +103,9 @@ npm run electron:dev # 构建 renderer 并以 Electron 打开
 4. **选择投递方向**（「投递方向」页）
    - 勾选准备投递的岗位方向，可修改搜索词、调整优先级、新增自定义方向
    - 系统只为**明确勾选并保存**的方向建立任务
-5. **选择执行模式**（「工作台」页）
+5. **（可选）定制简历**（「定制简历」页）
+   - 粘贴目标岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实
+6. **选择执行模式**（「工作台」页）
    - **人工确认**：AI 完成分析和草稿后，逐条检查、修改、决定是否继续（适合首次使用）
    - **半自动投递**：中栏批准岗位 → 浏览器跳转 → AI 草稿预填沟通框 → **用户点发送**
    - **自动辅助**：按匹配优先级依次投递 `approved_queue` 队列，失败自动暂停交人工核对
