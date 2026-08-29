@@ -63,6 +63,12 @@ venv/
 *.diagnostic.json
 *.local.json
 
+# Internal dev docs (kept local, not committed)
+/docs/仓库清理执行报告.md
+/docs/沟通功能对齐检查报告.md
+/docs/桌面版改造需求文档.md
+/docs/src/
+
 # Editors
 .vscode/
 .idea/
