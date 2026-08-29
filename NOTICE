@@ -1,15 +1,12 @@
-JobClaw by Chris
-Copyright 2026 Chris (GitHub: Chrisbetheking)
+BossClaw
+Copyright 2026 YanQuan-dozzy
 
-This product includes software developed for the JobClaw by Chris project:
-https://github.com/YanQuan-dozzy/Boss-Claw.git
-
-When redistributing JobClaw or a modified version, retain this NOTICE file,
-retain the project attribution “JobClaw by Chris”, and clearly state any
+This product is distributed under the Apache License 2.0. When redistributing
+BossClaw or a modified version, retain this NOTICE file and clearly state any
 material modifications you made.
 
 Community request: when publishing an article, video, derivative project,
-commercial integration, or substantial adaptation based on JobClaw, please
+commercial integration, or substantial adaptation based on BossClaw, please
 notify the author through a GitHub Issue.
 This notification request supports collaboration and is not an additional
 condition of the Apache License 2.0.
