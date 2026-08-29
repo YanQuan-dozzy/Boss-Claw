@@ -73,6 +73,201 @@ function safeOn(channel, handler) {
   });
 }
 
+// ===== AI Skills 层：skills/<id>/SKILL.md（标准技能格式） =====
+// 渲染层调用 AI 时按作用域启用技能：元数据（name/scope/defaultEnabled）经 jc:skills-list
+// 读取，指令正文经 jc:skills-read 读取后注入 system prompt。仅允许白名单目录，防路径穿越。
+// 内置技能（只读）位于 appPath/skills；自定义技能（用户导入/新建，可写）位于 userData/skills。
+const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
+const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
+const SKILL_ID_RE = /^[a-z0-9-]+$/;
+const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant'];
+
+/** 解析 SKILL.md frontmatter（--- 之间的 key: value）+ 正文（frontmatter 之后的内容） */
+function parseSkillFile(raw) {
+  const m = String(raw || '').match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (!m) return null;
+  const meta = {};
+  for (const line of m[1].split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (key) meta[key] = value;
+  }
+  return { meta, body: String(raw || '').slice(m[0].length).trim() };
+}
+
+/** 读取单个技能目录下的全部技能元数据（目录不存在返回 []） */
+async function readSkillDir(dir, custom) {
+  const out = [];
+  let entries = [];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out; // skills 目录不存在时返回空（不报错）
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory() || !SKILL_ID_RE.test(ent.name)) continue;
+    try {
+      const raw = await fs.promises.readFile(path.join(dir, ent.name, 'SKILL.md'), 'utf8');
+      const parsed = parseSkillFile(raw);
+      if (!parsed) continue;
+      const scope = String(parsed.meta.scope || 'assistant');
+      out.push({
+        id: ent.name,
+        name: String(parsed.meta.title || parsed.meta.name || ent.name),
+        description: String(parsed.meta.description || ''),
+        scope: SKILL_SCOPES.includes(scope) ? scope : 'assistant',
+        defaultEnabled: String(parsed.meta.defaultEnabled) !== 'false',
+        custom: Boolean(custom),
+      });
+    } catch { /* 单个技能读取失败跳过 */ }
+  }
+  return out;
+}
+
+safeHandle('jc:skills-list', async () => {
+  const [builtin, custom] = await Promise.all([
+    readSkillDir(SKILLS_DIR, false),
+    readSkillDir(CUSTOM_SKILLS_DIR(), true),
+  ]);
+  return [...builtin, ...custom];
+});
+
+/** 读取技能正文：优先自定义目录（用户导入的会覆盖同 id 读取路径），再回退内置目录 */
+async function readSkillBody(id) {
+  for (const dir of [CUSTOM_SKILLS_DIR(), SKILLS_DIR]) {
+    try {
+      const raw = await fs.promises.readFile(path.join(dir, id, 'SKILL.md'), 'utf8');
+      const parsed = parseSkillFile(raw);
+      return { id, body: parsed ? parsed.body : raw };
+    } catch { /* 继续下一个目录 */ }
+  }
+  return { id, body: '' };
+}
+
+safeHandle('jc:skills-read', async (_event, id) => {
+  if (!SKILL_ID_RE.test(String(id || ''))) return { id: String(id || ''), body: '' };
+  return readSkillBody(String(id));
+});
+
+// ---- 自定义技能：导入（raw SKILL.md 全文 / fields 表单）与删除 ----
+
+/** 名称 → 目录 ID（小写字母数字连字符；纯中文等无 ASCII 名时回退 custom-<时间戳>） */
+function slugifyId(input) {
+  return String(input || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+/** id 是否已存在（自定义目录或内置目录） */
+async function skillIdExists(id) {
+  if (!SKILL_ID_RE.test(id)) return true;
+  for (const dir of [CUSTOM_SKILLS_DIR(), SKILLS_DIR]) {
+    try {
+      await fs.promises.access(path.join(dir, id, 'SKILL.md'));
+      return true;
+    } catch { /* 继续 */ }
+  }
+  return false;
+}
+
+/** 生成不冲突的技能 ID（冲突时追加 -2/-3…） */
+async function uniqueSkillId(base) {
+  const clean = slugifyId(base) || `custom-${Date.now().toString(36)}`;
+  let id = clean;
+  let n = 1;
+  while (await skillIdExists(id)) {
+    id = `${clean}-${++n}`;
+    if (n > 100) return `custom-${Date.now().toString(36)}`; // 兜底防死循环
+  }
+  return id;
+}
+
+/** 写入自定义技能 SKILL.md（与内置格式一致：frontmatter + 正文） */
+async function writeCustomSkill({ id, name, description, scope, instructions }) {
+  const dir = path.join(CUSTOM_SKILLS_DIR(), id);
+  await fs.promises.mkdir(dir, { recursive: true });
+  const md = [
+    '---',
+    `name: ${id}`,
+    `title: ${name}`,
+    `description: ${description || ''}`,
+    `scope: ${scope}`,
+    'defaultEnabled: true',
+    '---',
+    '',
+    instructions.trim(),
+    '',
+  ].join('\n');
+  await fs.promises.writeFile(path.join(dir, 'SKILL.md'), md, 'utf8');
+}
+
+safeHandle('jc:skills-import', async (_event, payload) => {
+  const p = payload || {};
+  let name = '';
+  let description = '';
+  let scope = 'assistant';
+  let body = '';
+
+  if (typeof p.raw === 'string' && p.raw.trim()) {
+    // 方式一：导入 SKILL.md 全文（frontmatter + 正文）
+    const parsed = parseSkillFile(p.raw);
+    if (!parsed) {
+      return {
+        ok: false,
+        error: 'SKILL.md 格式错误：缺少 frontmatter 元信息块（文件需以 --- 开头，含 name/title、description、scope，正文为指令）。',
+      };
+    }
+    name = String(parsed.meta.title || parsed.meta.name || '').trim();
+    description = String(parsed.meta.description || '').trim();
+    scope = String(parsed.meta.scope || 'assistant').trim();
+    body = parsed.body;
+  } else if (p.fields && typeof p.fields === 'object') {
+    // 方式二：手动表单（设置页「新建技能」）
+    name = String(p.fields.name || '').trim();
+    description = String(p.fields.description || '').trim();
+    scope = String(p.fields.scope || 'assistant').trim();
+    body = String(p.fields.instructions || '').trim();
+  } else {
+    return { ok: false, error: '缺少导入内容：请提供 SKILL.md 全文（raw）或表单字段（fields）。' };
+  }
+
+  if (!name) return { ok: false, error: '技能名称不能为空（SKILL.md 需含 name 或 title）。' };
+  if (!body) return { ok: false, error: '技能指令正文不能为空。' };
+  if (!SKILL_SCOPES.includes(scope)) {
+    return { ok: false, error: `作用域非法：${scope}（可选：${SKILL_SCOPES.join(' / ')}）。` };
+  }
+
+  const id = await uniqueSkillId(name);
+  try {
+    await writeCustomSkill({ id, name, description, scope, instructions: body });
+  } catch (err) {
+    return { ok: false, error: '写入失败：' + (err?.message || String(err)) };
+  }
+  dlog('info', `custom skill imported: ${id} (scope=${scope})`);
+  return { ok: true, skill: { id, name, description, scope, defaultEnabled: true, custom: true } };
+});
+
+safeHandle('jc:skills-delete', async (_event, id) => {
+  const skillId = String(id || '');
+  if (!SKILL_ID_RE.test(skillId)) return { ok: false, error: '非法技能 ID。' };
+  // 内置目录存在同名 → 拒绝（只允许删除自定义技能）
+  try {
+    await fs.promises.access(path.join(SKILLS_DIR, skillId, 'SKILL.md'));
+    return { ok: false, error: '内置技能不可删除。' };
+  } catch { /* 内置不存在，继续 */ }
+  try {
+    await fs.promises.rm(path.join(CUSTOM_SKILLS_DIR(), skillId), { recursive: true, force: true });
+  } catch (err) {
+    return { ok: false, error: '删除失败：' + (err?.message || String(err)) };
+  }
+  dlog('info', `custom skill deleted: ${skillId}`);
+  return { ok: true };
+});
+
 // CloakBrowser 隐身浏览器（可选增强，默认关闭；用户在设置页切换）
 // 不动 webviewTag/原 webview 路径——webview 仍是默认引擎，CloakBrowser 作为并行通道。
 // 设计：AGENTS.md §2.1 末段（CloakBrowser 仅作可选增强，默认关闭，不得借此绕过验证码/账户验证）。
@@ -82,8 +277,7 @@ const isDev = !app.isPackaged && process.argv.includes('--dev');
 const DEV_URL = 'http://localhost:5173';
 const APP_ID = 'com.bossclaw.desktop';
 
-// Windows 任务栏右键菜单、跳转列表、UWP 风格通知等都依赖 AppUserModelID。
-// 未设置时 Windows 会把窗口归到 electron.exe，任务栏右键会显示 "Electron"。
+app.setName('BossClaw');
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_ID);
 }
@@ -330,7 +524,7 @@ async function createMainWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 680,
-    title: '',
+    title: 'BossClaw',
     icon: path.join(__dirname, '..', 'resources', 'icon.ico'),
     backgroundColor: '#f6f7f9',
     show: false,

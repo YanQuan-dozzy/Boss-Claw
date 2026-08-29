@@ -2,12 +2,14 @@
 // 对齐 job-claw-main 的解析口径，并借鉴 AI-BossJob 的「多重解析 + 明确降级提示」策略：
 //   PDF  → 本地 pdfExtractor（Flate/ASCIIHex/ASCII85/RunLength + ToUnicode/CMap）
 //   DOCX → 本地 docxParser（ZIP + XML，零依赖）；失败可尝试桥接 mammoth
+//   MD   → 本地 markdownToPlainText（标题/列表/表格/粗斜体等语法清洗为规整纯文本）
+//   TXT  → 直接读取
 //   DOC  → 旧版二进制 Word，前端无法可靠提取，给出转档建议
-//   TXT/MD → 直接读取
 // 所有路径在失败时都给出可操作的下一步建议，避免用户停在“解析失败”死胡同。
 
 import { extractPdfText, isReadableResumeText } from './pdfExtractor';
 import { extractDocxText } from './docxParser';
+import { markdownToPlainText } from './mdParser';
 
 export interface ResumeParseResult {
   text: string;
@@ -19,18 +21,30 @@ export interface BridgeFallback {
   (file: File, name: string): Promise<{ text: string; method: string }>;
 }
 
-export function resumeFileKind(name: string): 'pdf' | 'docx' | 'doc' | 'text' | 'unsupported' {
+export function resumeFileKind(name: string): 'pdf' | 'docx' | 'doc' | 'md' | 'text' | 'unsupported' {
   const lower = String(name || '').toLowerCase();
   if (lower.endsWith('.pdf')) return 'pdf';
   if (lower.endsWith('.docx')) return 'docx';
   if (lower.endsWith('.doc')) return 'doc';
-  if (lower.endsWith('.txt') || lower.endsWith('.md') || lower.endsWith('.text')) return 'text';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.txt') || lower.endsWith('.text')) return 'text';
   return 'unsupported';
 }
 
 export async function parseResumeFile(file: File, bridgeFallback?: BridgeFallback): Promise<ResumeParseResult> {
   const kind = resumeFileKind(file.name);
   const warnings: string[] = [];
+
+  if (kind === 'md') {
+    const raw = await file.text();
+    const cleaned = markdownToPlainText(raw);
+    const text = (cleaned || raw).trim();
+    if (!text) {
+      warnings.push('Markdown 文件未提取到有效文本。可打开文件复制正文粘贴到文本框，或转为 TXT 后重新导入。');
+      throw new Error('Markdown 解析结果为空');
+    }
+    return { text, method: 'markdown', warnings };
+  }
 
   if (kind === 'text') {
     const text = await file.text();
@@ -113,5 +127,5 @@ export async function parseResumeFile(file: File, bridgeFallback?: BridgeFallbac
     throw new Error('暂不支持旧版 .doc 格式，请转存为 DOCX / TXT 或直接粘贴正文');
   }
 
-  throw new Error('仅支持 PDF / DOCX / TXT 文件（旧版 .doc 请先转档）');
+  throw new Error('仅支持 PDF / DOCX / MD / TXT 文件（旧版 .doc 请先转档）');
 }

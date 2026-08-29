@@ -31,7 +31,7 @@ export default function TitleBar() {
       {/* 左侧拖拽区（双击最大化/还原） */}
       <div className="title-bar-drag" onDoubleClick={toggleMaximize}>
         <img className="title-bar-icon" src={bossclawIcon} alt="BossClaw" />
-        <span className="title-bar-name">BossClaw 桌面版</span>
+        <span className="title-bar-name">BossClaw</span>
         <span className="title-bar-sep">·</span>
         <span className="title-bar-status">
           <span className="status-led" style={{ background: meta.color }} />

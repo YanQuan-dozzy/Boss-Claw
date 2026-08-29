@@ -19,6 +19,7 @@ import {
   buildCompactProfilePromptWithAnchor,
 } from './prompts';
 import { cachedCallModel, AIError, aiFailureKind, isRetryableAiOutputError } from './llm';
+import { skillInstructionsFor } from './skills';
 
 function explainProfileFallbackReason(reason = '', kind = ''): string {
   const message = String(reason || '').trim();
@@ -279,7 +280,7 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
     const profile = validateGeneratedProfile(
       await cachedCallModel(
         [
-          { role: 'system', content: buildProfilePromptWithAnchor(anchor) },
+          { role: 'system', content: buildProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
           { role: 'user', content: text.slice(0, 22000) },
         ],
         model,
@@ -297,7 +298,7 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
       const compact = validateCompactGeneratedProfile(
         await cachedCallModel(
           [
-            { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) },
+            { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
             { role: 'user', content: text.slice(0, 18000) },
           ],
           model,

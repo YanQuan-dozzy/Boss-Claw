@@ -5,6 +5,7 @@ import { useEffectiveTheme } from './lib/useEffectiveTheme';
 import { bridgeStatus } from './lib/bridgeClient';
 import { checkBossLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
+import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
@@ -23,6 +24,7 @@ const Tasks = lazy(() => import('./pages/Tasks'));
 const Stats = lazy(() => import('./pages/Stats'));
 const OpenClaw = lazy(() => import('./pages/OpenClaw'));
 const AutoChat = lazy(() => import('./pages/AutoChat'));
+const JobAssistant = lazy(() => import('./pages/JobAssistant'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 export default function App() {
@@ -82,6 +84,11 @@ export default function App() {
   }, []);
   useInterval(checkBoss, 10000, { immediate: true });
 
+  // 启动即预热 AI Skills 层：从 skills/*/SKILL.md 加载技能定义（调用 AI 时按作用域启用注入）
+  useEffect(() => {
+    ensureSkillsLoaded().catch(() => {});
+  }, []);
+
   const isWorkbench = activeRoute === 'workbench';
 
   return (
@@ -102,6 +109,7 @@ export default function App() {
               {activeRoute === 'stats' && <Stats />}
               {activeRoute === 'openclaw' && <OpenClaw />}
               {activeRoute === 'autochat' && <AutoChat />}
+              {activeRoute === 'assistant' && <JobAssistant />}
               {activeRoute === 'settings' && <Settings />}
             </Suspense>
           </ErrorBoundary>

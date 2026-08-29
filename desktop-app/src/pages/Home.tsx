@@ -33,7 +33,7 @@ import { MetricCard } from '@/components/MetricCard';
 const { Paragraph, Text } = Typography;
 
 const STEPS = [
-  { key: 'resume', icon: <FileTextOutlined />, label: '导入简历', desc: 'PDF / DOCX / TXT' },
+  { key: 'resume', icon: <FileTextOutlined />, label: '导入简历', desc: 'PDF / DOCX / MD / TXT' },
   { key: 'resume', icon: <ProfileOutlined />, label: '生成职业画像', desc: 'AI 生成，可编辑' },
   { key: 'directions', icon: <AimOutlined />, label: '选择投递方向', desc: '勾选并确认' },
   { key: 'workbench', icon: <ThunderboltOutlined />, label: '工作台投递', desc: '浏览器 + 人工确认/全自动' },

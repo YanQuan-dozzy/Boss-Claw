@@ -8,6 +8,7 @@ import {
   BarChartOutlined,
   ApiOutlined,
   MessageOutlined,
+  RobotOutlined,
   SettingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -24,6 +25,7 @@ const NAV_ICONS: Record<RouteKey, React.ReactNode> = {
   stats: <BarChartOutlined />,
   openclaw: <ApiOutlined />,
   autochat: <MessageOutlined />,
+  assistant: <RobotOutlined />,
   settings: <SettingOutlined />,
 };
 

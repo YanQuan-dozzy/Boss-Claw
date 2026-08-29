@@ -3,6 +3,7 @@
 // 仅引用真实简历事实；禁止承诺薪资、到岗时间、面试时间或不存在的能力/经历。
 import type { AppConfig, Profile } from './types';
 import { cachedCallModel, aiFailureKind } from './llm';
+import { skillInstructionsFor } from './skills';
 import { normalizeStringList } from './helpers';
 import { ANALYZE_SYSTEM_PROMPT } from './prompts';
 
@@ -97,7 +98,7 @@ export async function generateGreetings(
           experiences: profile.facts?.experiences,
         }
       : null;
-    const systemPrompt = resolveGreetingPrompt(customPrompt || '');
+    const systemPrompt = resolveGreetingPrompt(customPrompt || '') + skillInstructionsFor('greetings');
     // 简历截短至 8000 字 + 缓存：同一份简历与画像重复生成直接命中，不重复计费
     const result: any = await cachedCallModel(
       [

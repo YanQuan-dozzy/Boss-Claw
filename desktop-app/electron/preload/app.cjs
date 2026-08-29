@@ -41,6 +41,16 @@ const api = {
   // CORS 无关的 URL 抓取（主进程转发，供获取 BOSS 公开接口如城市编码表）
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
 
+  // ===== AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）=====
+  // 技能元数据列表（id/name/description/scope/defaultEnabled/source/custom）
+  skillsList: () => ipcRenderer.invoke('jc:skills-list'),
+  // 读取指定技能 SKILL.md 的指令正文（body）
+  skillsRead: (id) => ipcRenderer.invoke('jc:skills-read', id),
+  // 导入 / 新建自定义技能：payload = { raw?: string }（SKILL.md 全文）或 { fields: {name, description?, scope, instructions, source?} }
+  skillsImport: (payload) => ipcRenderer.invoke('jc:skills-import', payload),
+  // 删除自定义技能（内置技能会拒绝）
+  skillsDelete: (id) => ipcRenderer.invoke('jc:skills-delete', id),
+
   // ===== Camoufox 隐身引擎（可选，Python 桥）=====
   // 状态检测（探测 python + camoufox 包 + 桥运行态）；ready=true 表示可搜索/发送
   camoufoxStatus: () => ipcRenderer.invoke('jc:camoufox-status'),

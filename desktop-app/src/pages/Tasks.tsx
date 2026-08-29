@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Button, Card, Checkbox, Progress, Segmented, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
   ReloadOutlined,
   EyeOutlined,
@@ -227,14 +227,67 @@ export default function Tasks() {
                       {chip.cls && <span className={'score-chip ' + chip.cls}>AI {chip.text} 分</span>}
                       <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
                         匹配决策：<Text strong>{p.analysis.decision}</Text>
-                        {p.analysis.hardBlocks?.length ? ` · 拦截硬条件 ${p.analysis.hardBlocks.length} 项` : ''}
-                        {p.analysis.gaps?.length ? ` · 存在缺口 ${p.analysis.gaps.length} 项` : ''}
+                        {p.analysis.hardBlocks?.length ? (
+                          <Tooltip
+                            title={
+                              <div style={{ maxWidth: 360, fontSize: 12 }}>
+                                {p.analysis.hardBlocks.map((b, i) => (
+                                  <div key={i}>· {b}</div>
+                                ))}
+                              </div>
+                            }
+                          >
+                            <span style={{ color: 'var(--danger, #f5222d)', cursor: 'help' }}> · 拦截硬条件 {p.analysis.hardBlocks.length} 项</span>
+                          </Tooltip>
+                        ) : null}
+                        {p.analysis.gaps?.length ? <span> · 存在缺口 {p.analysis.gaps.length} 项</span> : null}
                       </span>
+                      {/* 本地确定性维度分解（可解释匹配：技能/方向/地点/薪资 四主维） */}
+                      {p.analysis.dimensions && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          {[
+                            ['技能', p.analysis.dimensions.skill],
+                            ['方向', p.analysis.dimensions.direction],
+                            ['地点', p.analysis.dimensions.location],
+                            ['薪资', p.analysis.dimensions.salary],
+                          ]
+                            .filter(([, v]) => v != null)
+                            .map(([label, v]) => {
+                              const value = v as number;
+                              const tone = value >= 80 ? 'good' : value >= 55 ? 'mid' : 'low';
+                              return (
+                                <Tooltip key={label} title={`${label}匹配度 ${value}%（本地确定性计算）`}>
+                                  <span className={'dim-chip dim-chip--' + tone}>
+                                    {label} {value}
+                                  </span>
+                                </Tooltip>
+                              );
+                            })}
+                        </span>
+                      )}
                     </>
                   )}
                 </div>
                 <Progress percent={meta.progress} size="small" style={{ width: 150, margin: 0 }} />
               </div>
+
+              {/* 可解释匹配详情：本地命中证据 + 缺口（仅存在时展示） */}
+              {p.analysis && (p.analysis.matchedEvidence?.length || p.analysis.gaps?.length) && (
+                <div className="job-detail" style={{ marginTop: 6 }}>
+                  {p.analysis.matchedEvidence?.length ? (
+                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
+                      <span style={{ color: 'var(--ok, #16a34a)' }}>✓ 匹配点：</span>
+                      {p.analysis.matchedEvidence.slice(0, 4).join('；')}
+                    </div>
+                  ) : null}
+                  {p.analysis.gaps?.length ? (
+                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
+                      <span style={{ color: 'var(--warn, #d97706)' }}>△ 缺口：</span>
+                      {p.analysis.gaps.slice(0, 3).join('；')}
+                    </div>
+                  ) : null}
+                </div>
+              )}
 
               {p.error && <div className="job-error">⚠ {p.error}</div>}
 

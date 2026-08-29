@@ -34,10 +34,23 @@ import {
   FilterOutlined,
   AimOutlined,
   SafetyCertificateOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  FileAddOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
 import { callModel, clearAICache, getAICacheStats, getLLMUsageStats, resetLLMUsageStats } from '@/lib/bossclaw/llm';
+import {
+  allSkillsWithState,
+  setSkillEnabled,
+  resetAllSkills,
+  ensureSkillsLoaded,
+  importSkillFromRaw,
+  createCustomSkill,
+  deleteCustomSkill,
+  type CustomSkillFields,
+} from '@/lib/bossclaw/skills';
 import { exportData, importData, clearAllData } from '@/lib/storage';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
@@ -54,6 +67,17 @@ const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: 'system', label: '跟随系统' },
 ];
 
+// 自定义技能可绑定的 AI 调用作用域（与 skills.ts SkillScope 一致）
+const SKILL_SCOPE_OPTIONS = [
+  { label: '职业画像（profile）', value: 'profile' },
+  { label: '岗位匹配评估（job-analysis）', value: 'job-analysis' },
+  { label: '打招呼语（greetings）', value: 'greetings' },
+  { label: '岗位定制简历（assistant）', value: 'assistant' },
+];
+
+// 新建技能的默认表单
+const DEFAULT_CREATE_SKILL: CustomSkillFields = { name: '', description: '', scope: 'assistant', instructions: '' };
+
 export default function Settings() {
   const { config, setConfig, setModel, applyProviderDefaults, isLLMConfigured } = useSettingsStore();
   const theme = useAppStore((s) => s.theme);
@@ -64,6 +88,91 @@ export default function Settings() {
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [aiCacheStats, setAiCacheStats] = useState<ReturnType<typeof getAICacheStats> | null>(null);
   const [llmUsage, setLlmUsage] = useState<ReturnType<typeof getLLMUsageStats> | null>(null);
+  // AI 技能（skills 层）启用状态：初始用内置定义，加载 SKILL.md 后刷新
+  const [skills, setSkills] = useState(() => allSkillsWithState());
+  const refreshSkills = () => setSkills(allSkillsWithState());
+  const onToggleSkill = (id: string, enabled: boolean) => {
+    setSkillEnabled(id, enabled);
+    refreshSkills();
+  };
+  useEffect(() => {
+    ensureSkillsLoaded().then(refreshSkills).catch(() => {});
+  }, []);
+
+  // ===== 自定义技能（导入 / 新建 / 删除）=====
+  const skillImportRef = useRef<HTMLInputElement>(null);
+  const [createSkillOpen, setCreateSkillOpen] = useState(false);
+  const [creatingSkill, setCreatingSkill] = useState(false);
+  const [createSkillForm, setCreateSkillForm] = useState(DEFAULT_CREATE_SKILL);
+  const patchCreateSkill = (patch: Partial<typeof DEFAULT_CREATE_SKILL>) =>
+    setCreateSkillForm((f) => ({ ...f, ...patch }));
+
+  // 从本地 SKILL.md 文件导入
+  const onImportSkillFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const r = await importSkillFromRaw(raw);
+      if (!r.ok) {
+        message.error('导入失败：' + (r.error || '格式错误'));
+        return;
+      }
+      message.success('技能导入成功，已在列表中启用');
+      await ensureSkillsLoaded();
+      refreshSkills();
+    } catch (err: any) {
+      message.error('导入失败：' + (err?.message || err));
+    } finally {
+      if (skillImportRef.current) skillImportRef.current.value = '';
+    }
+  };
+
+  // 手动新建技能
+  const onCreateSkillSubmit = async () => {
+    const name = createSkillForm.name.trim();
+    const instructions = createSkillForm.instructions.trim();
+    if (!name) { message.warning('请填写技能名称'); return; }
+    if (!instructions) { message.warning('请填写技能指令正文'); return; }
+    setCreatingSkill(true);
+    try {
+      const r = await createCustomSkill({ ...createSkillForm, name, instructions });
+      if (!r.ok) {
+        message.error('新建失败：' + (r.error || '未知错误'));
+        return;
+      }
+      message.success(`技能「${name}」创建成功`);
+      setCreateSkillOpen(false);
+      setCreateSkillForm(DEFAULT_CREATE_SKILL);
+      await ensureSkillsLoaded();
+      refreshSkills();
+    } catch (err: any) {
+      message.error('新建失败：' + (err?.message || err));
+    } finally {
+      setCreatingSkill(false);
+    }
+  };
+
+  // 删除自定义技能（内置技能不显示删除入口）
+  const onDeleteSkill = (id: string, name: string) => {
+    Modal.confirm({
+      title: `删除自定义技能「${name}」？`,
+      content: '删除后该技能的指令将不再注入任何 AI 调用，且无法恢复（SKILL.md 文件会被移除）。内置技能不受影响。',
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        const r = await deleteCustomSkill(id);
+        if (!r.ok) {
+          message.error('删除失败：' + (r.error || '未知错误'));
+          return;
+        }
+        message.success('已删除自定义技能');
+        await ensureSkillsLoaded();
+        refreshSkills();
+      },
+    });
+  };
 
   const refreshAICacheStats = () => {
     setAiCacheStats(getAICacheStats());
@@ -821,6 +930,70 @@ export default function Settings() {
               </Paragraph>
             </div>
           </div>
+
+          {/* AI 技能（Skills 层）：调用 AI 时按作用域注入已启用技能的指令 */}
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <AimOutlined />
+                </div>
+                AI 技能（Skills 层）
+              </div>
+              <Tag color="purple">运行时启用</Tag>
+            </div>
+            <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 12, fontSize: 13 }}>
+              调用 AI 时按任务作用域自动注入已启用的技能指令。
+              关闭某技能后，对应 AI 调用的增强约束不再注入；开关变化会使相关 AI 缓存自动失效，下次调用按新状态重新生成。
+              支持导入标准 SKILL.md（frontmatter + 正文）或手动新建自定义技能，自定义技能保存在本机用户数据目录。
+            </Paragraph>
+            {skills.map((sk) => (
+              <div key={sk.id} className="sg-item" style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <Space size={8} wrap>
+                      <Text strong style={{ fontSize: 13 }}>{sk.name}</Text>
+                      {sk.custom ? <Tag color="purple">自定义</Tag> : <Tag>内置</Tag>}
+                      <Tag color="blue">{sk.scope}</Tag>
+                      {sk.enabled ? <Tag color="green">启用中</Tag> : <Tag>已停用</Tag>}
+                    </Space>
+                    <Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>{sk.description}</Paragraph>
+                  </div>
+                  <Space size={4}>
+                    {sk.custom && (
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        title="删除自定义技能"
+                        onClick={() => onDeleteSkill(sk.id, sk.name)}
+                      />
+                    )}
+                    <Switch checked={sk.enabled} onChange={(v) => onToggleSkill(sk.id, v)} />
+                  </Space>
+                </div>
+              </div>
+            ))}
+            <div className="setting-actions" style={{ marginTop: 8 }}>
+              <Space wrap>
+                <Button size="small" icon={<FileAddOutlined />} onClick={() => skillImportRef.current?.click()}>
+                  导入 SKILL.md
+                </Button>
+                <Button size="small" icon={<PlusOutlined />} onClick={() => setCreateSkillOpen(true)}>
+                  新建技能
+                </Button>
+                <Button
+                  size="small"
+                  icon={<ClearOutlined />}
+                  onClick={() => { resetAllSkills(); refreshSkills(); message.success('已恢复全部技能为默认启用'); }}
+                >
+                  恢复默认
+                </Button>
+              </Space>
+              <input ref={skillImportRef} type="file" accept=".md,.markdown,.txt" hidden onChange={onImportSkillFile} />
+            </div>
+          </div>
         </div>
       ),
     },
@@ -1132,6 +1305,58 @@ export default function Settings() {
         items={tabItems}
         type="line"
       />
+
+      {/* 新建自定义技能弹窗 */}
+      <Modal
+        title="新建自定义技能"
+        open={createSkillOpen}
+        onOk={onCreateSkillSubmit}
+        onCancel={() => setCreateSkillOpen(false)}
+        okText="创建技能"
+        cancelText="取消"
+        confirmLoading={creatingSkill}
+        width={560}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+          <div>
+            <span className="field-label">技能名称（必填，作为展示名）</span>
+            <Input
+              value={createSkillForm.name}
+              onChange={(e) => patchCreateSkill({ name: e.target.value })}
+              placeholder="如：销售话术优化 / English Greetings"
+            />
+          </div>
+          <div>
+            <span className="field-label">绑定作用域（该技能在什么 AI 调用时注入）</span>
+            <Select
+              style={{ width: '100%' }}
+              value={createSkillForm.scope}
+              onChange={(v) => patchCreateSkill({ scope: v as CustomSkillFields['scope'] })}
+              options={SKILL_SCOPE_OPTIONS}
+            />
+          </div>
+          <div>
+            <span className="field-label">一句话描述（可选）</span>
+            <Input
+              value={createSkillForm.description}
+              onChange={(e) => patchCreateSkill({ description: e.target.value })}
+              placeholder="说明该技能的作用，显示在技能列表中"
+            />
+          </div>
+          <div>
+            <span className="field-label">技能指令正文（必填，注入 AI system prompt）</span>
+            <Input.TextArea
+              rows={6}
+              value={createSkillForm.instructions}
+              onChange={(e) => patchCreateSkill({ instructions: e.target.value })}
+              placeholder={'例如：生成 3 条英文打招呼语，每条 30-60 词，以 "Hi, I would like to apply for..." 开头，只引用简历真实事实，输出严格 JSON。'}
+            />
+          </div>
+          <Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+            自定义技能保存在本机用户数据目录（userData/skills），创建后立即生效，可随时停用或删除；开关变化会使相关 AI 缓存自动失效。
+          </Paragraph>
+        </div>
+      </Modal>
     </div>
   );
 }

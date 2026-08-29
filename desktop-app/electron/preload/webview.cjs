@@ -46,6 +46,29 @@ function visible(el) {
 }
 
 function textOf(el) { return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim(); }
+
+// 岗位描述清洗：DOM 兜底抓取详情容器时可能匹配到过大的节点（整页文本），
+// 混入页面级噪音——「去App 与BOSS随时沟通」「求职工具 升级VIP」「热门职位/热门城市/
+// 热门企业/附近城市」推荐区、以及标题行操作按钮「收藏/立即沟通/举报/微信扫码分享」。
+// 统一在此剔除，只保留岗位相关信息（标题行 + 职位描述正文 + HR 信息）。
+function cleanJobDescription(raw) {
+  const text = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  // 终止锚点：首个命中位置之后均为页面级内容，直接截断
+  const cutAt = text.search(
+    /去App|前往App|与BOSS随时沟通|求职工具|升级VIP|去升级|热门职位|热门城市|热门企业|附近城市|点击查看地图|查看更多信息|查看地图|工作地址|下载BOSS直聘|下载App|打开App|扫码下载/
+  );
+  let cleaned = cutAt >= 0 ? text.slice(0, cutAt) : text;
+  // 显式删除词：标题行/banner 的操作按钮与分享文案
+  cleaned = cleaned
+    .replace(/\s*收藏\s*/g, ' ')
+    .replace(/\s*立即沟通\s*/g, ' ')
+    .replace(/\s*举报\s*/g, ' ')
+    .replace(/\s*微信扫码分享\s*/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned;
+}
 const all = (sel, root = document) => {
   try { return Array.from((root && root.querySelectorAll) ? root.querySelectorAll(sel) : document.querySelectorAll(sel)); }
   catch { return []; }
@@ -228,7 +251,7 @@ function extractJobFromDom() {
   const company = pick(['.job-banner .company', '.company-name', '.business-name']);
   const salary = pick(['.job-banner .salary', '.salary', '[class*="salary"]']);
   const location = pick(['.job-banner .location', '.job-area', '[class*="location"]']);
-  const description = ((banner && banner.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+  const description = cleanJobDescription((banner && banner.innerText) || '').slice(0, 1500);
   return { url: location.href, title, company, salary, location, description };
 }
 
@@ -910,7 +933,7 @@ function extractJobDetail(card) {
     company,
     salary: fields.salary || salaryMatch?.[0] || '',
     location: fields.location,
-    description: detailText.slice(0, 9000),
+    description: cleanJobDescription(detailText).slice(0, 9000),
     cardText: cardText.slice(0, 1000),
     url: realUrl,
     jobId,
