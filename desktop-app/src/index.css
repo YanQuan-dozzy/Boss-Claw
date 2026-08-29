@@ -95,8 +95,8 @@ html[data-theme='dark'],
 
 /* ===== 自定义标题栏 (TitleBar) ===== */
 .title-bar {
-  height: 36px;
-  flex: 0 0 36px;
+  height: 44px;
+  flex: 0 0 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -116,8 +116,8 @@ html[data-theme='dark'],
   height: 100%;
   -webkit-app-region: drag;
 }
-.title-bar-icon { width: 18px; height: 18px; border-radius: 4px; }
-.title-bar-name { font-size: 13px; font-weight: 600; color: var(--fg); }
+.title-bar-icon { width: 24px; height: 24px; border-radius: 6px; }
+.title-bar-name { font-size: 16px; font-weight: 700; color: var(--fg); letter-spacing: 0.3px; }
 .title-bar-sep { opacity: 0.4; font-size: 12px; }
 .title-bar-status {
   display: inline-flex;
@@ -145,11 +145,11 @@ html[data-theme='dark'],
   background: var(--hover-bg);
   border: 1px solid var(--border);
   border-radius: 9999px;
-  padding: 2px;
-  gap: 2px;
+  padding: 3px;
+  gap: 3px;
   box-sizing: border-box;
-  height: 26px;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
+  height: 32px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .theme-seg .custom-tooltip-wrapper {
   display: inline-flex;
@@ -160,9 +160,9 @@ html[data-theme='dark'],
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 10px;
+  gap: 6px;
+  height: 24px;
+  padding: 0 12px;
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -176,19 +176,19 @@ html[data-theme='dark'],
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .theme-seg-item .anticon {
-  font-size: 12px;
+  font-size: 13px;
   display: inline-flex;
   align-items: center;
 }
 .theme-seg-item:hover {
   color: var(--fg);
-  background: rgba(13, 148, 136, 0.06);
+  background: rgba(13, 148, 136, 0.08);
 }
 .theme-seg-item.is-active {
   background: var(--bg-elevated);
   color: var(--brand);
   font-weight: 600;
-  box-shadow: 0 2px 6px rgba(13, 148, 136, 0.12), 0 1px 2px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 6px rgba(13, 148, 136, 0.16), 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 /* Ant Design Segmented 胶囊风格统一下沉重载 */
@@ -210,13 +210,14 @@ html[data-theme='dark'],
 }
 
 /* 窗口控制按钮 */
-.window-controls { display: flex; align-items: center; }
+.window-controls { display: flex; align-items: center; gap: 2px; }
 .wc-btn {
-  width: 32px;
-  height: 28px;
+  width: 34px;
+  height: 30px;
   display: grid;
   place-items: center;
   border: none;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -251,7 +252,6 @@ html[data-theme='dark'],
   flex: 1;
   display: flex;
   min-height: 0;
-  height: calc(100vh - 66px);
   overflow: hidden;
 }
 
@@ -1783,6 +1783,21 @@ html[data-theme='dark'],
 .score-chip.high { background: rgba(34, 197, 94, 0.15); color: #16A34A; }
 .score-chip.mid { background: rgba(234, 179, 8, 0.15); color: #D97706; }
 .score-chip.low { background: rgba(239, 68, 68, 0.15); color: #DC2626; }
+
+/* 本地确定性维度分标签（可解释匹配）：技能/方向/地点/薪资 */
+.dim-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: help;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.dim-chip--good { background: rgba(13, 148, 136, 0.12); color: #0D9488; }
+.dim-chip--mid { background: rgba(100, 116, 139, 0.12); color: #64748B; }
+.dim-chip--low { background: rgba(239, 68, 68, 0.12); color: #DC2626; }
 
 .job-expand-btn {
   display: inline-flex;

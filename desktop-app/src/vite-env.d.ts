@@ -36,6 +36,14 @@ interface ElectronBridgeApi {
   cloakPageList?: () => Promise<{ ok: boolean; pages: Array<{ tabId: string; url: string; title: string }> }>;
   onCloakEvent?: (callback: (event: { tabId: string; channel: string; payload: any }) => void) => () => void;
   onCloakStatusChanged?: (callback: (status: { ready: boolean; starting: boolean; binary: any; lastError: string | null }) => void) => () => void;
+  // AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）
+  skillsList?: () => Promise<Array<{ id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom?: boolean }>>;
+  skillsRead?: (id: string) => Promise<{ id: string; body: string }>;
+  skillsImport?: (payload: {
+    raw?: string;
+    fields?: { name: string; description?: string; scope: string; instructions: string };
+  }) => Promise<{ ok: boolean; skill?: { id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom: boolean }; error?: string }>;
+  skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 interface Window {

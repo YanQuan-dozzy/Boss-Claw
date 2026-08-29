@@ -11,6 +11,7 @@ export type RouteKey =
   | 'stats'
   | 'openclaw'
   | 'autochat'
+  | 'assistant'
   | 'settings';
 
 export interface NavItem {
@@ -27,6 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'directions', label: '投递方向' },
   { key: 'tasks', label: '任务进度' },
   { key: 'stats', label: '数据统计' },
+  { key: 'assistant', label: '定制简历' },
   { key: 'openclaw', label: 'OpenClaw' },
   { key: 'autochat', label: '自动沟通' },
   { key: 'settings', label: '设置' },

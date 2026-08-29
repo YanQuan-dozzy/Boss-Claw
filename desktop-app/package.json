@@ -1,7 +1,7 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.0.0",
-  "description": "BossClaw 桌面版 —— 面向求职者的本地 AI 投递助手（Electron + React）",
+  "version": "2.1.0",
+  "description": "BossClaw —— 面向求职者的本地 AI 投递助手（Electron + React）",
   "private": true,
   "author": "YanQuan",
   "license": "Apache-2.0",
@@ -19,12 +19,15 @@
     "package": "npm run build && electron-builder --win",
     "package:portable": "npm run build && electron-builder --win portable",
     "package:dir": "npm run build && electron-builder --win --dir",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:linux": "npm run build && electron-builder --linux",
+    "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
     "verify": "npm run typecheck && npm run build"
   },
   "build": {
     "appId": "com.bossclaw.desktop",
-    "productName": "BossClaw 桌面版",
+    "productName": "BossClaw",
     "copyright": "Copyright © 2026 BossClaw",
     "icon": "resources/icon.ico",
     "asar": false,
@@ -37,6 +40,7 @@
       "electron/**/*",
       "bridge/**/*",
       "camoufox/**/*",
+      "skills/**/*",
       "resources/**/*",
       "package.json",
       "!**/*.pyc",
@@ -66,10 +70,33 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "BossClaw 桌面版"
+      "shortcutName": "BossClaw"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "resources/icon.png",
+      "category": "public.app-category.productivity",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "resources/icon.png",
+      "category": "Office",
+      "maintainer": "YanQuan <yanquan@bossclaw.dev>",
+      "synopsis": "BossClaw 求职投递助手",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   },
   "dependencies": {

@@ -107,7 +107,7 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 
 ### 1. 环境要求
 
-- Windows 10/11（macOS / Linux 打包后续补）
+- Windows 10/11，macOS 10.15+，主流 Linux 发行版（Ubuntu / Debian 等）
 - Node.js 20 或更高版本
 
 ### 2. 安装依赖并启动
@@ -281,8 +281,12 @@ cd desktop-app
 npm install          # 安装依赖
 npm run dev          # Vite dev server（http://localhost:5173）
 npm run build        # tsc 类型检查 + vite 构建到 dist/
-npm run package      # 构建并打包 Windows 安装包（electron-builder --win，产出 nsis 安装包到 release/）
+npm run package      # 打包 Windows 安装包（NSIS + 便携版，产出到 release/）
+npm run package:linux   # 打包 Linux 安装包（AppImage + deb）
+npm run package:mac     # 打包 macOS 安装包（dmg + zip，需在 macOS 上执行）
 ```
+
+> macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；仓库已提供 `.github/workflows/build-release.yml`，推送 `v*` 标签或手动触发即可在 GitHub Actions 三平台（Windows / macOS / Linux）自动构建并发布。
 
 > 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 

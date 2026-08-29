@@ -30,7 +30,7 @@
 - **Electron** `^31`（主进程 CommonJS：`electron/main.cjs` + `electron/preload/*`）
 - **React 18 + TypeScript + Vite 5**（渲染进程：`src/`）
 - **Ant Design 5**（UI）+ **Zustand**（状态，persist 接 localStorage）
-- 打包：**electron-builder**（Windows 优先，NSIS 安装包 + 绿色便携版）
+- 打包：**electron-builder**（Windows NSIS + 便携版，macOS dmg + zip，Linux AppImage + deb）
 
 ---
 
@@ -109,7 +109,12 @@ npm run verify             # typecheck + build 组合
 npm run package            # 构建并打包 Windows NSIS 安装包 + 绿色便携版
 npm run package:portable   # 仅打包绿色便携版（无需安装）
 npm run package:dir        # 仅生成解压目录（不打包，便于本地试运行）
+npm run package:mac        # 打包 macOS dmg + zip（只能在 macOS 系统执行）
+npm run package:linux      # 打包 Linux AppImage + deb
+npm run package:all        # 打包 Windows + Linux
 ```
+
+> **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）。仓库根 `.github/workflows/build-release.yml` 提供三平台 CI：推送 `v*` 标签或手动触发，即自动构建 Windows / macOS / Linux 安装包并生成草稿 Release。
 
 > **Electron dev 模式**：开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179 端口），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
 > **首次运行需在本机有 Electron 运行环境**（`npm install` 会安装 `electron` 包及其二进制）。
@@ -126,10 +131,14 @@ npm run package:dir        # 仅生成解压目录（不打包，便于本地试
 
 ```
 release/
-├── BossClaw 桌面版-2.0.0-x64.exe        # NSIS 安装包（推荐发行）
-├── BossClaw 桌面版-2.0.0-portable.exe   # 绿色便携版（无需安装、解压即用）
-└── win-unpacked/                         # 解压目录（可手工分发的文件夹）
+├── BossClaw-2.1.0-x64.exe         # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.1.0-portable.exe    # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.1.0-x64.AppImage    # Linux 发行版（AppImage，可执行）
+├── BossClaw-2.1.0-amd64.deb       # Linux Debian / Ubuntu 安装包
+└── win-unpacked/                   # 解压目录（可手工分发的文件夹）
 ```
+
+macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）由 GitHub Actions 在 macOS 上构建，见仓库根 `.github/workflows/build-release.yml`。
 
 ---
 

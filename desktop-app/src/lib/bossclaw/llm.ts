@@ -173,7 +173,7 @@ export function resetLLMUsageStats(): void {
 // 不再重复计费。任何输入变化（简历/画像/岗位描述/自定义提示词/模型/温度）都会自然产生新 key。
 // 缓存只存成功结果；失败与测试连接（ping）一律不缓存。
 
-export type AICacheScope = 'profile' | 'job-analysis' | 'greetings';
+export type AICacheScope = 'profile' | 'job-analysis' | 'greetings' | 'assistant';
 
 export interface AICacheMeta {
   /** 缓存作用域：画像 / 岗位分析 / 打招呼语（用于分类管理与清空） */
@@ -202,6 +202,8 @@ const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {
   greetings: 90 * 24 * 3600 * 1000,
   // 岗位分析：key 含岗位描述全文，描述更新自动失效；TTL 仅防「很久以前的同 jobId 缓存」被命中
   'job-analysis': 7 * 24 * 3600 * 1000,
+  // 求职助手（定制简历/求职信、评估报告）：key 含简历/画像/岗位全文，内容变化自动失效
+  assistant: 7 * 24 * 3600 * 1000,
 };
 
 // djb2 双哈希（碰撞概率足够低），渲染进程无 node crypto，用稳定字符串哈希

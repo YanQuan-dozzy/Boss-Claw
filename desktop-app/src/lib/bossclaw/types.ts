@@ -201,6 +201,29 @@ export interface DirectionPlan {
 
 export type Decision = 'recommend' | 'cautious' | 'reject';
 
+/**
+ * 匹配维度分解（本地确定性计算，可解释；AI 分缺失时作为兜底、存在时用于校准展示）。
+ * 对齐 ai-job-search 的多维评估 + Agentic-Career-Assistant 的可解释评分。
+ */
+export interface MatchDimensions {
+  /** 技能匹配 0-100（画像技能在 JD 中的加权命中率）；信息不足为 null */
+  skill: number | null;
+  /** 方向匹配 0-100（岗位标题/描述 vs 画像方向/搜索词） */
+  direction: number | null;
+  /** 地点匹配 0-100（岗位地点 vs 目标城市） */
+  location: number | null;
+  /** 薪资匹配 0-100（JD 薪资 vs 期望薪资） */
+  salary: number | null;
+  /** 学历匹配 0-100（JD 要求 vs 画像学历） */
+  education: number | null;
+  /** 经验匹配 0-100（JD 要求 vs 画像经验） */
+  experience: number | null;
+  /** 本地加权综合分 0-100（null 维度剔除后重归一化） */
+  overall: number | null;
+  /** 维度计算确定程度（0-1），用于 AI 分校准的置信度 */
+  confidence: number;
+}
+
 export interface JobAnalysis {
   score: number;
   decision: Decision;
@@ -210,6 +233,8 @@ export interface JobAnalysis {
   risks: string[];
   reason: string;
   greeting: string;
+  /** 本地确定性维度分解（可解释匹配；analyzeJob 计算后附加） */
+  dimensions?: MatchDimensions;
 }
 
 export interface JobMeta {

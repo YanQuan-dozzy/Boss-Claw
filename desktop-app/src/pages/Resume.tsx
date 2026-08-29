@@ -89,7 +89,7 @@ export default function Resume() {
   const handleFile = async (file: File) => {
     const kind = resumeFileKind(file.name);
     if (kind === 'unsupported') {
-      message.error('仅支持 PDF / DOCX / TXT 文件（旧版 .doc 请先转档为 DOCX/TXT）');
+      message.error('仅支持 PDF / DOCX / MD / TXT 文件（旧版 .doc 请先转档为 DOCX/TXT）');
       return;
     }
     try {
@@ -226,7 +226,7 @@ export default function Resume() {
             <FileTextOutlined className="page-title-icon" />简历中心
           </h1>
           <p className="page-sub">
-            导入 PDF / DOCX / TXT，本地解析提取文本（无需联网）；AI 生成可编辑的职业画像与打招呼语提示词（未配置或失败时自动回退本地规则）。
+            导入 PDF / DOCX / MD / TXT，本地解析提取文本（无需联网）；AI 生成可编辑的职业画像与打招呼语提示词（未配置或失败时自动回退本地规则）。
           </p>
         </div>
       </div>
@@ -298,7 +298,7 @@ export default function Resume() {
               onChange={(e) => setText(e.target.value)}
               rows={text.trim() ? 18 : 6}
               className={!text.trim() ? "mt-12" : ""}
-              placeholder="在此粘贴简历正文，或点击右上角「重新导入」导入 PDF / DOCX / TXT"
+              placeholder="在此粘贴简历正文，或点击右上角「重新导入」导入 PDF / DOCX / MD / TXT"
             />
           </Card>
 
