@@ -20,6 +20,15 @@ export function lineMatches(text: string, pattern: RegExp, limit = 6): string[] 
   ).slice(0, limit);
 }
 
+// 纯小标题行（如「教育经历」「荣誉证书」「自我评价」），不含实质内容，不能当作简历事实引用
+export function isHeadingLine(line: string): boolean {
+  const s = String(line || '')
+    .trim()
+    .replace(/[：:\s]/g, '')
+    .replace(/^\d{1,2}[.、)）]\s*/, '');
+  return /^(教育经历|教育背景|在校经历|在校|学(?:习|生)经历|培训经历|实(?:习)?经历|工作经历|项目经历|项目经验|相关技能|技能特长|专业技能|技能|荣誉证书|荣誉奖项|获奖经历|获奖|证书荣誉|证书|自我评价|个人评价|评价|基本信息|基础信息|个人信息|个人资料|实践经历|校园经历|社会实践|科研成果|学术成果|输出|总结)$/.test(s);
+}
+
 export function extractSkills(text: string): string[] {
   const source = cleanResumeText(text);
   const catalog: [string, RegExp][] = [

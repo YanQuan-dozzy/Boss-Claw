@@ -176,7 +176,7 @@ export function resetLLMUsageStats(): void {
 export type AICacheScope = 'profile' | 'job-analysis' | 'greetings' | 'assistant';
 
 export interface AICacheMeta {
-  /** 缓存作用域：画像 / 岗位分析 / 打招呼语（用于分类管理与清空） */
+  /** 缓存作用域：画像 / 岗位分析 / 打招呼语 / 求职助手（用于分类管理与清空） */
   scope: AICacheScope;
   /** 有效期毫秒，缺省按作用域内置默认值 */
   ttlMs?: number;

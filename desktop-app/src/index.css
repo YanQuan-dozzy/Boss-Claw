@@ -389,6 +389,8 @@ html[data-theme='dark'],
   flex: 1;
   min-width: 0;
   height: 100%;
+  /* 定位锚点：供常驻工作台宿主（.workbench-host）绝对定位铺满主区 */
+  position: relative;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px;
@@ -402,6 +404,49 @@ html[data-theme='dark'],
   display: flex !important;
   height: 100% !important;
   width: 100% !important;
+}
+
+/* ===== 工作台常驻宿主：切换其它模块时后台继续运行（采集/投递/内置浏览器）=====
+   工作台实例始终挂载，仅用 visibility + opacity + z-index 三重降级方式隐藏（与 BrowserView 多标签同机制）。
+   绝不可用 display:none —— 会销毁 webview webContents，导致 IPC 监听与登录态失效。
+
+   【层级控制说明（修复 2026-09-01 z-index 异常）】
+   背景态（is-background）：z-index 强制降到 0 + opacity 0 + visibility hidden，
+     即使 webview Chromium GPU 合成层绕过 visibility 抢占前图层，因 z-index:0 仍位于前台的
+     .page（z-index:auto > 0）之下，不会遮挡其它模块。
+   激活态（is-active）：z-index 提到 10 + opacity 1 + visibility visible，
+     确保工作台前台全屏时位于最高层，正常显示与交互。
+   transition: 先淡入/淡出再切换 visibility，避免闪烁；切回工作台时立即可见无延迟。 */
+.workbench-host {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100% !important;
+  height: 100% !important;
+  visibility: hidden;                /* 后台态：不绘制、不接收事件（默认态即后台态） */
+  pointer-events: none;
+  z-index: 0;                         /* 🆕 后台态：强制降到背景层，让前台的 .page（z-index:auto）显示在上 */
+  opacity: 0;                         /* 🆕 后台态：彻底透明，兜底 webview GPU 合成层残留的可见像素 */
+  overflow: hidden;
+  /* 背景化时：先淡出再隐藏，避免突然消失产生闪烁 */
+  transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+}
+.workbench-host.is-active {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 10 !important;             /* 🆕 前台态：提至最高层，保证内置浏览器正常显示与交互 */
+  opacity: 1;                         /* 🆕 前台态：完全可见 */
+  /* 激活时：立即可见再渐显，无延迟 */
+  transition: opacity 0.2s ease, visibility 0s linear 0s;
+}
+/* 【显式后台态】与默认态等价；这里再次兜底 z-index/opacity，
+   防止未来其他样式覆盖导致 workbench 残留在前台遮挡其它模块。 */
+.workbench-host.is-background {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0 !important;
+  opacity: 0 !important;
 }
 
 .main-stage > .page {
@@ -2969,6 +3014,522 @@ html[data-theme='dark'],
   color: var(--brand);
   margin-left: 8px;
 }
+
+/* ===== AI 结果缓存卡片精美 DashBoard 样式 ===== */
+.ai-cache-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.ai-cache-banner__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(22, 119, 255, 0.12);
+  color: var(--brand);
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ai-cache-banner__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-cache-banner__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.ai-cache-banner__desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+.ai-cache-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.ai-cache-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ai-cache-section__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+}
+
+.ai-cache-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.ai-cache-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ai-cache-stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.ai-cache-stat-card__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.ai-cache-stat-card__info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ai-cache-stat-card__val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1.2;
+  font-family: var(--font-mono, monospace);
+}
+
+.ai-cache-stat-card__val .unit {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  margin-left: 2px;
+}
+
+.ai-cache-stat-card__lbl {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-cache-tip-footer {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+
+.ai-cache-tip-footer .tip-icon {
+  color: var(--brand);
+  font-size: 13px;
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.ai-cache-tip-footer code {
+  background: var(--hover-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--fg);
+}
+
+/* ===== 定制简历结果 (TailorResultView) 美化样式 ===== */
+.tailor-view {
+  margin-bottom: 16px;
+}
+
+.tailor-main-card {
+  border-radius: var(--radius-card, 12px) !important;
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-sm) !important;
+  overflow: hidden;
+}
+
+.tailor-main-header {
+  display: flex;
+  align-items: center;
+}
+
+.tailor-header-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tailor-alert {
+  margin-bottom: 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* 模块独立区块 */
+.tailor-block {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.tailor-block:hover {
+  border-color: var(--border-brand);
+}
+
+.tailor-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.tailor-block-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+}
+
+/* 1. 匹配度双栏对比 */
+.tailor-score-compare {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.tailor-score-pane {
+  flex: 1;
+  min-width: 220px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow-xs);
+}
+
+.tailor-score-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.tailor-score-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.tailor-score-num {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.tailor-score-unit {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+
+.tailor-score-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 6px;
+}
+
+.tailor-score-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--fg-subtle);
+  font-size: 16px;
+  padding: 0 4px;
+}
+
+.tailor-score-tag-wrap {
+  margin-top: 2px;
+}
+
+/* 2. 关键词与技能三层诊断 */
+.tailor-stat-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tailor-diagnostic-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tailor-diag-item {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.tailor-diag-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.tailor-diag-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.tailor-diag-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tailor-tag-item {
+  margin-right: 0 !important;
+  border-radius: 4px !important;
+  font-size: 12px !important;
+  padding: 2px 8px !important;
+}
+
+/* 3. 建议列表 */
+.tailor-sug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tailor-sug-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.tailor-sug-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(13, 148, 136, 0.12);
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tailor-sug-txt {
+  flex: 1;
+}
+
+/* 4. 文本盒子（摘要 / 求职信） */
+.tailor-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.tailor-box-content {
+  margin-bottom: 0 !important;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+/* 5. 重点经历 */
+.tailor-exp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tailor-exp-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  position: relative;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.tailor-exp-row:hover {
+  border-color: var(--border-brand);
+}
+
+.tailor-exp-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tailor-exp-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.tailor-exp-copy {
+  opacity: 0.4;
+  transition: opacity 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tailor-exp-row:hover .tailor-exp-copy {
+  opacity: 1;
+}
+
+.tailor-exp-footnote {
+  display: block;
+  font-size: 12px;
+  margin-top: 8px;
+  color: var(--fg-muted);
+}
+
+/* 二轮回审修订（Reviewer）片段对比 */
+.tailor-react-alert {
+  margin-bottom: 12px;
+}
+
+.tailor-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tailor-diff-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+}
+
+.tailor-diff-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+
+.tailor-diff-cols {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tailor-diff-pane {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+.tailor-diff-pane--before {
+  background: rgba(245, 34, 45, 0.05);
+  border: 1px dashed rgba(245, 34, 45, 0.25);
+}
+
+.tailor-diff-pane--after {
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.tailor-diff-caption {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.tailor-diff-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tailor-diff-arrow {
+  display: flex;
+  align-items: center;
+  color: var(--fg-subtle);
+  font-size: 14px;
+}
+
 
 
 

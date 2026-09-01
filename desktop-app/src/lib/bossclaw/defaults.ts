@@ -67,6 +67,14 @@ export const DEFAULT_CONFIG: AppConfig = {
     model: 'deepseek-v4-flash',
     temperature: 0.1,
   },
+  // 早中晚分批投递：默认关闭；开启且处于全自动模式时按 3 个时段分批投递
+  batchDelivery: {
+    enabled: false,
+    morningTime: '09:00',
+    noonTime: '13:00',
+    eveningTime: '18:00',
+    counts: { morning: 40, noon: 40, evening: 40 },
+  },
 };
 
 export const DEFAULT_PROFILE: Profile | null = null;

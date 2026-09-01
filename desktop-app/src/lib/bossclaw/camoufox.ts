@@ -12,13 +12,15 @@ export interface CamoufoxEngineInfo {
   python?: string;
   camoufox?: boolean;
   camoufoxVersion?: string;
-  /** 当前使用的内核：camoufox / chrome / edge / none */
+  /** 当前使用的隐身内核：camoufox（仅此可用）/ none */
   kernel?: string;
-  /** 内核可执行文件路径（chrome/edge 时） */
+  /** 内核可执行文件路径（仅 camoufox 原生内核，legacy chrome/edge 不再使用） */
   kernelPath?: string;
   kernelMessage?: string;
   cookies?: boolean;
   cookieCount?: number;
+  /** 是否已真实登录（存在 BOSS 的 wt2 鉴权 token） */
+  loggedIn?: boolean;
   message?: string;
 }
 
@@ -28,6 +30,8 @@ export interface CamoufoxStatus {
   camoufox: boolean;
   running: boolean;
   ready: boolean;
+  /** 依赖首次安装中（后台进行，非就绪非失败） */
+  installing?: boolean;
   message?: string;
   engine?: CamoufoxEngineInfo;
 }
@@ -74,6 +78,15 @@ export interface CamoufoxChatResult {
   message?: string;
   method?: string;
   sentVia?: string;
+  /** 该岗位为外部网申，无法自动沟通（应标记跳过） */
+  external?: boolean;
+  /** 目标 HR/会话疑似冲突，已暂停发送 */
+  conflict?: boolean;
+  /** HR 已发来消息，需进入「AI 跟聊」回复（code 700） */
+  needsReply?: boolean;
+  hasHrMessage?: boolean;
+  /** HR 最新一条消息文本（用于生成 AI 回复） */
+  hrLastMessage?: string;
   error?: string;
 }
 
@@ -113,6 +126,11 @@ export function camoufoxSend(jobId: string, greeting: string, os?: string): Prom
   return camoufoxCall<CamoufoxSendResult>('send', { jobId, greeting, os: os || undefined });
 }
 
+export interface CamoufoxResumeImageInput {
+  name: string;
+  data: string;
+}
+
 /**
  * 自动沟通（真正的浏览器操作）：打开可见浏览器窗口，真实点击「立即沟通」、
  * 真实键盘输入招呼语并发送，最后确认文字气泡。
@@ -121,7 +139,24 @@ export function camoufoxSend(jobId: string, greeting: string, os?: string): Prom
 export function camoufoxChat(
   jobId: string,
   greeting: string,
-  opts?: { os?: string; sendResumeImage?: boolean; sendOnlineResume?: boolean }
+  opts?: {
+    os?: string;
+    sendResumeImage?: boolean;
+    sendOnlineResume?: boolean;
+    /** 目标岗位上下文（用于进入沟通后核验 HR/公司，防发错人） */
+    recruiterName?: string;
+    company?: string;
+    jobTitle?: string;
+    /** 本地 base64 图片简历（发送图片简历附件时携带） */
+    resumeImages?: CamoufoxResumeImageInput[];
+    /**
+     * 'auto'（默认）首次打招呼投递：若 HR 已发来消息则返回 needsReply 供 AI 跟聊；
+     * 'reply' 发送渲染层生成的 AI 回复文本（配合 replyText）。
+     */
+    mode?: 'auto' | 'reply';
+    /** mode='reply' 时要发送的 AI 回复文本 */
+    replyText?: string;
+  }
 ): Promise<CamoufoxChatResult> {
   return camoufoxCall<CamoufoxChatResult>('chat', {
     jobId,
@@ -129,6 +164,12 @@ export function camoufoxChat(
     os: opts?.os || undefined,
     sendResumeImage: Boolean(opts?.sendResumeImage),
     sendOnlineResume: Boolean(opts?.sendOnlineResume),
+    recruiterName: opts?.recruiterName || '',
+    company: opts?.company || '',
+    jobTitle: opts?.jobTitle || '',
+    resumeImages: opts?.resumeImages || [],
+    mode: opts?.mode || 'auto',
+    replyText: opts?.replyText || '',
   });
 }
 
@@ -145,6 +186,20 @@ export function camoufoxLogout(): Promise<{ ok: boolean }> {
 /** 停止 Camoufox 桥（释放资源） */
 export function camoufoxStop(): void {
   window.electron?.camoufoxStop?.();
+}
+
+/**
+ * 重启 Camoufox 引擎桥（先停后拉）：自动沟通误触关闭后自愈用。
+ * 返回重启后的状态；引擎未就绪/多轮重启仍失败时由调用方决定自动停止。
+ */
+export async function camoufoxRestart(): Promise<CamoufoxStatus> {
+  try {
+    const s = await window.electron?.camoufoxRestart?.();
+    if (!s) return { python: false, camoufox: false, running: false, ready: false, message: '主进程未暴露 camoufoxRestart 接口' };
+    return s as CamoufoxStatus;
+  } catch (e: any) {
+    return { python: false, camoufox: false, running: false, ready: false, message: String(e?.message || e) };
+  }
 }
 
 /** 检查是否已启用 Camoufox 引擎（设置开关） */

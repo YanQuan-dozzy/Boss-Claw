@@ -5,8 +5,12 @@ import {
   DeleteOutlined,
   DownOutlined,
   SearchOutlined,
-  ClearOutlined,
   SyncOutlined,
+  CheckCircleOutlined,
+  WarningOutlined,
+  CloseCircleOutlined,
+  UnorderedListOutlined,
+  InboxOutlined,
 } from '@ant-design/icons';
 import { ChatLogItem } from './ChatLogItem';
 import type { ChatLogEntry } from '@/store/useDataStore';
@@ -110,11 +114,51 @@ export const ChatLogPanel = memo<ChatLogPanelProps>(function ChatLogPanel({
             value={filterType}
             onChange={(v) => setFilterType(String(v))}
             options={[
-              { label: '全部', value: 'all' },
-              { label: '💬 招呼', value: 'greeting' },
-              { label: '✅ 成功', value: 'success' },
-              { label: '⚠️ 风控', value: 'risk' },
-              { label: '❌ 失败', value: 'error' },
+              {
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <UnorderedListOutlined style={{ fontSize: 11 }} />
+                    全部
+                  </span>
+                ),
+                value: 'all',
+              },
+              {
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <MessageOutlined style={{ color: '#1677ff', fontSize: 11 }} />
+                    招呼
+                  </span>
+                ),
+                value: 'greeting',
+              },
+              {
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 11 }} />
+                    成功
+                  </span>
+                ),
+                value: 'success',
+              },
+              {
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <WarningOutlined style={{ color: '#fa8c16', fontSize: 11 }} />
+                    风控
+                  </span>
+                ),
+                value: 'risk',
+              },
+              {
+                label: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <CloseCircleOutlined style={{ color: '#ff4d4f', fontSize: 11 }} />
+                    失败
+                  </span>
+                ),
+                value: 'error',
+              },
             ]}
           />
 
@@ -140,7 +184,7 @@ export const ChatLogPanel = memo<ChatLogPanelProps>(function ChatLogPanel({
       >
         {filteredLogs.length === 0 ? (
           <div className="chat-log-panel__empty">
-            <ClearOutlined style={{ fontSize: 24, marginBottom: 8, opacity: 0.5 }} />
+            <InboxOutlined style={{ fontSize: 32, marginBottom: 8, opacity: 0.45 }} />
             <div>{searchKw ? '未匹配到相关沟通日志' : '暂无专属沟通日志记录'}</div>
           </div>
         ) : (

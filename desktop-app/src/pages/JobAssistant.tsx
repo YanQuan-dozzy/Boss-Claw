@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Divider, Input, List, Progress, Select, Space, Tag, Typography, message,
+  Alert, Avatar, Button, Card, Checkbox, Divider, Form, Input, List, Modal, Radio, Select, Space, Tag, Typography, Upload, message,
 } from 'antd';
 import {
-  RobotOutlined, FileTextOutlined, CopyOutlined, SendOutlined, LoadingOutlined, ImportOutlined,
-  DeleteOutlined, ArrowRightOutlined, HistoryOutlined, CheckCircleOutlined, ExclamationCircleOutlined,
+  RobotOutlined, FileTextOutlined, LoadingOutlined, ImportOutlined,
+  DeleteOutlined, HistoryOutlined, ExclamationCircleOutlined,
+  DownloadOutlined, CameraOutlined,
 } from '@ant-design/icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
@@ -14,8 +15,11 @@ import { computeMatchScore, extractJdKeywords } from '@/lib/bossclaw/resumeMatch
 import { stableProfileView } from '@/lib/bossclaw/matching';
 import { cleanJobDescription, jdLooksNoisy } from '@/lib/bossclaw/jdCleaner';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
+import { buildResumeHtml, defaultPdfFileName, RESUME_TEMPLATES, isKnownTemplate } from '@/lib/bossclaw/resumePdf';
+import { buildResumeDocData, extractContactInfo, RESUME_SECTION_META } from '@/lib/bossclaw/resumeContact';
+import { TailorResultView } from '@/components/TailorResultView';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 // ===== 历史定制记录（本地持久化，最近 20 条） =====
 const HISTORY_KEY = 'bossclaw-tailor-history-v1';
@@ -73,29 +77,163 @@ export default function JobAssistant() {
   const [jobTitle, setJobTitle] = useState('');
   const [jobDesc, setJobDesc] = useState('');
   const [importId, setImportId] = useState<string | undefined>(undefined);
+  // 从工作台导入的岗位分析分（AI 优先），用于匹配分数展示；AI 未配置时回退本地计算
+  const [importedScore, setImportedScore] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [tailor, setTailor] = useState<TailorResult | null>(null);
   const [history, setHistory] = useState<TailorHistoryItem[]>(() => loadHistory());
 
+  // ===== 导出定制简历 PDF =====
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportTailor, setExportTailor] = useState<TailorResult | null>(null);
+  const [exportSections, setExportSections] = useState<string[]>(RESUME_SECTION_META.filter((m) => m.default).map((m) => m.id));
+  const [exportForm] = Form.useForm();
+
+  // 模板选择（持久化到 localStorage，下次打开沿用）
+  const TEMPLATE_KEY = 'bossclaw-resume-template-v1';
+  const [templateId, setTemplateId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(TEMPLATE_KEY);
+      if (saved && isKnownTemplate(saved)) return saved;
+    } catch { /* 忽略存储异常 */ }
+    return 'classic';
+  });
+  const setTemplate = (id: string) => {
+    setTemplateId(id);
+    try { localStorage.setItem(TEMPLATE_KEY, id); } catch { /* 忽略 */ }
+  };
+
+  // ===== 个人照片（选填，压缩后持久化；未上传时模板渲染虚线占位框） =====
+  const PHOTO_KEY = 'bossclaw-resume-photo-v1';
+  const [photo, setPhoto] = useState<string>(() => {
+    try { return localStorage.getItem(PHOTO_KEY) || ''; } catch { return ''; }
+  });
+  const setPhotoPersist = (dataUrl: string) => {
+    setPhoto(dataUrl);
+    try {
+      if (dataUrl) localStorage.setItem(PHOTO_KEY, dataUrl);
+      else localStorage.removeItem(PHOTO_KEY);
+    } catch { /* localStorage 满则忽略（本次仍生效） */ }
+  };
+
+  /** 照片压缩：等比缩到最长边 360px，JPEG 0.85，控制体积（证件照足够清晰） */
+  const compressPhoto = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const max = 360;
+          let { width, height } = img;
+          if (width > max || height > max) {
+            const scale = max / Math.max(width, height);
+            width = Math.round(width * scale);
+            height = Math.round(height * scale);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('Canvas 不可用')); return; }
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        };
+        img.onerror = () => reject(new Error('图片解析失败'));
+        img.src = String(reader.result);
+      };
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.readAsDataURL(file);
+    });
+
+  /** 打开导出对话框：以提取的联系信息为初值（须用户确认），章节默认勾选 */
+  const openExport = (result: TailorResult, title: string) => {
+    setExportTailor(result);
+    const c = extractContactInfo(resumeText, title);
+    exportForm.setFieldsValue({
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      targetTitle: c.targetTitle || title,
+    });
+    setExportSections(RESUME_SECTION_META.filter((m) => m.default).map((m) => m.id));
+    setExportOpen(true);
+  };
+
+  /** 渲染 A4 HTML → 经主进程 printToPDF 保存（无 Electron 时降级下载 HTML 自行打印） */
+  const onExportPdf = async () => {
+    if (!exportTailor) return;
+    let values: { name: string; phone: string; email: string; targetTitle: string };
+    try {
+      values = await exportForm.validateFields();
+    } catch {
+      return; // 校验失败（必填缺失），antd 已展示错误
+    }
+    setExporting(true);
+    try {
+      const data = buildResumeDocData(resumeText, profile, exportTailor, values, exportSections);
+      if (!data.sections.length) {
+        message.warning('请至少勾选一个内容分节');
+        return;
+      }
+      if (photo) data.photo = photo;
+      const html = buildResumeHtml(data, templateId);
+      const fileName = defaultPdfFileName(data.contact);
+      const api = (window as any).electron as any;
+      if (api?.savePdf) {
+        const r = await api.savePdf(fileName, html);
+        if (r?.canceled) return;
+        if (r?.ok) message.success(`已保存：${r.filePath}`);
+        else message.error(`保存失败：${r?.error || '未知原因'}`);
+      } else {
+        // 浏览器降级：下载 HTML，提示用浏览器「打印 → 另存为 PDF」
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName.replace(/\.pdf$/i, '.html');
+        a.click();
+        URL.revokeObjectURL(url);
+        message.info(`已生成 ${fileName.replace(/\.pdf$/i, '.html')}，请用浏览器打开后「打印 → 另存为 PDF」`);
+      }
+    } catch (e: any) {
+      message.error('导出失败：' + getErrorMessage(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const hasResume = Boolean(resumeText && resumeText.trim().length > 0);
   const canGenerate = Boolean(jobTitle.trim() && jobDesc.trim() && hasResume);
 
-  // 实时匹配度预览：本地确定性计算（不调用 AI），JD / 简历 / 画像变化即时刷新
+  // 实时匹配度预览：优先 AI（工作台导入分）；AI 未配置时回退本地确定性计算（不调用 AI）
+  const aiConfigured = Boolean(config.model?.apiKey);
   const liveMatch = useMemo(() => {
     if (!jobDesc.trim() || !hasResume) return null;
     const { keywords, weights } = extractJdKeywords(jobDesc, profile);
     const profileBlob = profile ? JSON.stringify(stableProfileView(profile)) : '';
     return computeMatchScore(keywords, weights, `${resumeText}\n${profileBlob}`);
   }, [jobDesc, resumeText, hasResume, profile]);
+  // 匹配分数取值：AI 已配置且有工作台导入分 → 用 AI 分；否则用本地计算分兜底
+  const currentMatchScore = useMemo(() => {
+    if (aiConfigured && importedScore != null) return importedScore;
+    return liveMatch ? liveMatch.score : null;
+  }, [aiConfigured, importedScore, liveMatch]);
+  const scoreSource: 'ai' | 'local' = aiConfigured && importedScore != null ? 'ai' : 'local';
 
   // 从任务记录导入岗位 JD（便利入口，非耦合依赖）
   // 注意：历史任务可能是清洗修复前采集的，description 里混有「去App/热门职位」等页面噪声，
   // 导入时统一 cleanJobDescription 清洗；公司/薪资/地点前缀仅当描述里没有对应标签行时才拼接，避免重复。
   const onImport = (id: string | undefined) => {
     setImportId(id);
-    if (!id) return;
+    if (!id) {
+      setImportedScore(null);
+      return;
+    }
     const p = approvedJobs.find((x) => x.id === id);
     if (!p) return;
+    // 工作台分析分（AI 优先）：导入时记录，AI 已配置则作为匹配分数主来源
+    setImportedScore(p.analysis?.score ?? null);
     const j = p.job || {};
     const desc = cleanJobDescription(j.description || '');
     const parts: string[] = [];
@@ -105,18 +243,18 @@ export default function JobAssistant() {
     if (desc) parts.push(desc);
     setJobTitle(String(j.title || '').replace(/\s*\d+-\d+K.*$/, '').trim());
     setJobDesc(parts.filter(Boolean).join('\n'));
-    message.success('已导入岗位信息（已自动清理页面噪声），可修改后生成');
+    message.success('已导入岗位信息（已自动清理无关内容），可修改后生成');
   };
 
   const onGenerate = async () => {
     if (!canGenerate) {
       if (!hasResume) return message.warning('请先在「简历中心」上传/粘贴简历并生成职业画像');
-      return message.warning('请填写岗位名称与岗位 JD');
+      return message.warning('请填写岗位名称与岗位要求');
     }
     setGenerating(true);
     try {
       const job = { title: jobTitle.trim(), company: '', description: jobDesc.trim() };
-      const r = await tailorForJob(job, resumeText, profile, config.model);
+      const r = await tailorForJob(job, resumeText, profile, config.model, useDataStore.getState().greetingPrompt || undefined);
       setTailor(r);
       // 保存历史记录（同岗位重复定制保留最新一条）
       const item: TailorHistoryItem = {
@@ -156,8 +294,6 @@ export default function JobAssistant() {
     message.success('已存入打招呼语列表（可在「自动沟通」中选用）');
   };
 
-  const match = tailor?.match;
-
   return (
     <div className="page">
       <div className="page-head">
@@ -166,8 +302,8 @@ export default function JobAssistant() {
             <RobotOutlined className="page-title-icon" />定制简历
           </h1>
           <p className="page-sub">
-            输入目标岗位 JD，AI 基于简历与职业画像生成岗位定制内容：匹配评分、关键词覆盖分析、
-            量化经历、求职打招呼语与优化建议。只引用简历真实事实，不编造任何能力与数据。
+            输入目标岗位描述，AI 基于简历生成定制内容：匹配评分、要点对照、重点经历、
+            求职打招呼语与优化建议，并可一键导出适配的简历 PDF。
           </p>
         </div>
       </div>
@@ -188,7 +324,7 @@ export default function JobAssistant() {
               label: `${String(p.job?.title || '').replace(/\s*\d+-\d+K.*$/, '')} · ${p.job?.company || '未知公司'}`,
             }))}
           />
-          <Text type="secondary" style={{ fontSize: 12 }}><ImportOutlined /> 仅展示你已批准通过的岗位（工作台「批准」后即在此可见），导入后自动填充岗位名称与 JD，可直接修改</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}><ImportOutlined /> 仅展示你已批准通过的岗位（工作台「批准」后即在此可见），导入后自动填充岗位名称与岗位要求，可直接修改</Text>
         </Space>
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <div>
@@ -201,7 +337,7 @@ export default function JobAssistant() {
             />
           </div>
           <div>
-            <Text strong style={{ display: 'block', marginBottom: 6 }}>岗位 JD <Text type="danger">*</Text></Text>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>岗位要求 <Text type="danger">*</Text></Text>
             <Input.TextArea
               placeholder="粘贴岗位职责与任职要求全文，内容越完整，定制越精准…"
               value={jobDesc}
@@ -212,12 +348,12 @@ export default function JobAssistant() {
             />
             {jdLooksNoisy(jobDesc) && (
               <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Tag color="orange" icon={<ExclamationCircleOutlined />}>检测到页面噪声</Tag>
+                <Tag color="orange" icon={<ExclamationCircleOutlined />}>检测到无关内容</Tag>
                 <Button size="small" icon={<DeleteOutlined />} onClick={() => setJobDesc(cleanJobDescription(jobDesc))}>
-                  一键清理噪声
+                  一键清理
                 </Button>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  去除「去App 与BOSS随时沟通 / 求职工具 升级VIP / 热门职位推荐区」等页面内容
+                  去除「去App 与BOSS随时沟通 / 热门职位推荐区」等无关内容
                 </Text>
               </div>
             )}
@@ -242,185 +378,40 @@ export default function JobAssistant() {
           </Space>
           {!config.model?.apiKey && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              未配置 AI 模型时将回退本地规则（摘要 + 兜底招呼语），建议在「设置 → AI·LLM」填写 API Key。
+              未配置 AI 时将按本地模板生成（摘要 + 打招呼语占位），建议在「设置 → AI」中填写密钥。
             </Text>
           )}
         </div>
 
-        {/* 实时匹配度预览（本地确定性计算） */}
-        {liveMatch && (
+        {/* 实时匹配度预览（AI 优先：工作台导入分；AI 未配置时本地确定性计算） */}
+        {liveMatch && currentMatchScore != null && (
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <Text strong style={{ fontSize: 13 }}>当前简历匹配度：</Text>
-            <Tag color={scoreColor(liveMatch.score)} style={{ fontSize: 13, padding: '1px 10px' }}>
-              {liveMatch.score} 分
+            <Tag color={scoreColor(currentMatchScore)} style={{ fontSize: 13, padding: '1px 10px' }}>
+              {currentMatchScore} 分
             </Tag>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              JD 关键词命中 {liveMatch.coverage}/{liveMatch.total}（覆盖率 {liveMatch.coverageRatio}%）· 生成后对比提升
-            </Text>
+            {scoreSource === 'ai' ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                <Tag color="green" style={{ fontSize: 11, marginRight: 6 }}>AI 分</Tag>
+                工作台分析导入（{importedScore} 分）· 生成定制后按需对比提升
+              </Text>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {!aiConfigured && <Tag style={{ fontSize: 11, marginRight: 6 }}>本地分</Tag>}
+                简历覆盖岗位要点 {liveMatch.coverage}/{liveMatch.total}（{liveMatch.coverageRatio}%）· 生成后对比提升
+              </Text>
+            )}
           </div>
         )}
       </Card>
 
       {tailor && (
-        <Card
-          size="small"
-          className="mb-16"
-          title={
-            <Space>
-              <RobotOutlined style={{ color: 'var(--brand)' }} />
-              <span>定制结果</span>
-              {tailor.method === 'ai' ? <Tag color="green">AI 生成</Tag> : <Tag>本地规则兜底</Tag>}
-            </Space>
-          }
-        >
-          {tailor.warning && <Alert style={{ marginBottom: 12 }} type="info" showIcon message={tailor.warning} />}
-
-          {/* 匹配度对比：定制前 → 定制后 */}
-          {match && (
-            <>
-              <Divider orientation="left" plain style={{ margin: '8px 0 12px' }}>
-                <Space size={6}><ArrowRightOutlined />匹配度（定制前 → 定制后）</Space>
-              </Divider>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>定制前（简历原文）</Text>
-                  <Progress
-                    percent={match.before.coverageRatio}
-                    strokeColor={scoreColor(match.before.score)}
-                    format={() => `${match.before.score} 分`}
-                    style={{ marginBottom: 0 }}
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>命中 {match.before.coverage}/{match.before.total} 个关键词</Text>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <ArrowRightOutlined style={{ fontSize: 16, color: 'var(--text-2, #86909c)' }} />
-                </div>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>定制后（原简历 + 定制内容）</Text>
-                  <Progress
-                    percent={match.after.coverageRatio}
-                    strokeColor={scoreColor(match.after.score)}
-                    format={() => `${match.after.score} 分`}
-                    style={{ marginBottom: 0 }}
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>命中 {match.after.coverage}/{match.after.total} 个关键词</Text>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  {(() => {
-                    const delta = match.after.score - match.before.score;
-                    if (delta >= 5) return <Tag color="green">提升 +{delta}</Tag>;
-                    if (delta <= -5) return <Tag color="red">下降 {delta}</Tag>;
-                    return <Tag>基本持平</Tag>;
-                  })()}
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* 关键词覆盖三层分析 */}
-          {match && (
-            <>
-              <Divider orientation="left" plain style={{ margin: '16px 0 8px' }}>岗位关键词覆盖分析</Divider>
-              <Space size={[4, 8]} wrap style={{ marginBottom: 4 }}>
-                {match.keywords.coveredInResume.length ? (
-                  match.keywords.coveredInResume.map((k) => <Tag key={k} color="green"><CheckCircleOutlined /> {k}</Tag>)
-                ) : (
-                  <Text type="secondary">（无已覆盖关键词）</Text>
-                )}
-              </Space>
-              <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
-                绿色 = 岗位要求且简历已体现
-              </Text>
-              {match.keywords.missingInResumeButInProfile.length > 0 && (
-                <>
-                  <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
-                    <ExclamationCircleOutlined style={{ color: '#faad14' }} /> 画像具备但简历未体现（建议把真实经历/技能补写进简历）：
-                  </Text>
-                  <Space size={[4, 8]} wrap style={{ marginBottom: 8 }}>
-                    {match.keywords.missingInResumeButInProfile.map((k) => <Tag key={k} color="gold">{k}</Tag>)}
-                  </Space>
-                </>
-              )}
-              {match.keywords.completelyMissing.length > 0 && (
-                <>
-                  <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>
-                    <ExclamationCircleOutlined style={{ color: '#f5222d' }} /> 简历与画像均缺失（真实缺口，如实评估是否可补）：
-                  </Text>
-                  <Space size={[4, 8]} wrap>
-                    {match.keywords.completelyMissing.map((k) => <Tag key={k} color="red">{k}</Tag>)}
-                  </Space>
-                </>
-              )}
-              {!match.keywords.missingInResumeButInProfile.length && !match.keywords.completelyMissing.length && (
-                <Text type="secondary" style={{ fontSize: 12 }}>岗位关键词在简历中均有体现，覆盖良好。</Text>
-              )}
-            </>
-          )}
-
-          {/* 优化建议 */}
-          {tailor.suggestions.length > 0 && (
-            <>
-              <Divider orientation="left" plain style={{ margin: '16px 0 8px' }}>优化建议（可执行）</Divider>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
-                {tailor.suggestions.map((s, i) => <li key={i} style={{ marginBottom: 4 }}>{s}</li>)}
-              </ul>
-            </>
-          )}
-
-          <Divider orientation="left" plain style={{ margin: '16px 0 12px' }}>岗位匹配技能</Divider>
-          <Space size={[4, 8]} wrap style={{ marginBottom: 4 }}>
-            {tailor.highlightedSkills.length ? (
-              tailor.highlightedSkills.map((s) => <Tag key={s} color="green">{s}</Tag>)
-            ) : (
-              <Text type="secondary">（暂无）</Text>
-            )}
-          </Space>
-
-          {tailor.skillGaps.length > 0 && (
-            <>
-              <Divider orientation="left" plain style={{ margin: '12px 0' }}>岗位要求但简历缺失（如实提示，不补写）</Divider>
-              <Space size={[4, 8]} wrap>
-                {tailor.skillGaps.map((g) => <Tag key={g} color="orange">{g}</Tag>)}
-              </Space>
-            </>
-          )}
-
-          <Divider orientation="left" plain style={{ margin: '12px 0' }}>定制个人摘要</Divider>
-          <Paragraph style={{ marginBottom: 4, whiteSpace: 'pre-wrap' }}>{tailor.tailoredSummary}</Paragraph>
-          <Button
-            size="small"
-            icon={<CopyOutlined />}
-            style={{ marginTop: 4 }}
-            onClick={() => { navigator.clipboard?.writeText(tailor.tailoredSummary); message.success('已复制摘要'); }}
-          >
-            复制摘要
-          </Button>
-
-          <Divider orientation="left" plain style={{ margin: '12px 0' }}>重点经历（按岗位相关性重排 · 量化改写）</Divider>
-          {tailor.tailoredExperiences.length ? (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {tailor.tailoredExperiences.map((e, i) => <li key={i} style={{ marginBottom: 4 }}>{e}</li>)}
-            </ul>
-          ) : <Text type="secondary">（暂无）</Text>}
-          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
-            仅提炼简历中已有的数字（规模/时长/效率），简历无数字则保持事实描述，不编造数据。
-          </Text>
-
-          <Divider orientation="left" plain style={{ margin: '12px 0' }}>定制求职信（打招呼语）</Divider>
-          <div style={{ background: 'var(--bg-soft, #f8fafc)', borderRadius: 8, padding: '10px 14px' }}>
-            <Paragraph style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>{tailor.coverLetter}</Paragraph>
-            <Space>
-              <Button size="small" icon={<SendOutlined />} onClick={onSaveCoverLetter}>存入打招呼语</Button>
-              <Button
-                size="small"
-                icon={<CopyOutlined />}
-                onClick={() => { navigator.clipboard?.writeText(tailor.coverLetter); message.success('已复制求职信'); }}
-              >
-                复制求职信
-              </Button>
-            </Space>
-          </div>
-        </Card>
+        <TailorResultView
+          tailor={tailor}
+          jobTitle={jobTitle.trim() || '定制简历'}
+          onExportPdf={() => openExport(tailor, jobTitle.trim() || '定制简历')}
+          onSaveCoverLetter={onSaveCoverLetter}
+        />
       )}
 
       {/* 历史定制记录 */}
@@ -438,6 +429,9 @@ export default function JobAssistant() {
             renderItem={(h) => (
               <List.Item
                 actions={[
+                  <Button key="export" size="small" icon={<DownloadOutlined />} onClick={() => openExport(h.result, h.jobTitle)}>
+                    导出 PDF
+                  </Button>,
                   <Button key="view" size="small" onClick={() => onLoadHistory(h)}>查看</Button>,
                   <Button key="del" size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => onRemoveHistory(h.id)} />,
                 ]}
@@ -451,6 +445,172 @@ export default function JobAssistant() {
           />
         )}
       </Card>
+
+      {/* 导出定制简历 PDF：联系信息人工确认 + 分节勾选 */}
+      <Modal
+        title={<Space><DownloadOutlined style={{ color: 'var(--brand)' }} />导出定制简历 PDF</Space>}
+        open={exportOpen}
+        onCancel={() => { if (!exporting) setExportOpen(false); }}
+        width={560}
+        okText="生成并保存"
+        cancelText="取消"
+        confirmLoading={exporting}
+        onOk={onExportPdf}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="所有内容均来自你的简历与定制结果，不会编造任何能力与数据。"
+          description="请核对下方联系信息（已从简历自动提取，可修改）；选择模板后生成 A4 PDF，可直接投递。"
+        />
+
+        {/* 模板选择（多套美观模板，选择持久化） */}
+        <div style={{ margin: '4px 0 12px' }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>简历模板</Text>
+          <Radio.Group
+            value={templateId}
+            onChange={(e) => setTemplate(e.target.value)}
+            style={{ width: '100%' }}
+          >
+            <Space wrap size={8} style={{ width: '100%' }}>
+              {RESUME_TEMPLATES.map((t) => (
+                <Radio.Button
+                  key={t.id}
+                  value={t.id}
+                  style={{
+                    width: 'calc(50% - 4px)',
+                    height: 'auto',
+                    padding: '8px 10px',
+                    whiteSpace: 'normal',
+                    textAlign: 'left',
+                    lineHeight: '1.5',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 12,
+                      height: 12,
+                      borderRadius: 3,
+                      background: t.color,
+                      marginTop: 3,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span>
+                    <span style={{ display: 'block', fontWeight: 600, fontSize: 13 }}>{t.name}</span>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t.desc}</Text>
+                  </span>
+                </Radio.Button>
+              ))}
+            </Space>
+          </Radio.Group>
+        </div>
+
+        {/* 个人照片（选填，未上传则模板显示占位框） */}
+        <div style={{ margin: '4px 0 12px' }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>个人照片 <Text type="secondary" style={{ fontWeight: 400 }}>（选填 · 所有模板均保留照片框，上传后自动嵌入）</Text></Text>
+          <Upload
+            accept="image/*"
+            showUploadList={false}
+            beforeUpload={(file) => {
+              compressPhoto(file)
+                .then((dataUrl) => { setPhotoPersist(dataUrl); message.success('照片已添加'); })
+                .catch((e) => message.error('照片处理失败：' + getErrorMessage(e)));
+              return false; // 阻止 antd 自动上传
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Avatar
+                size={56}
+                shape="square"
+                src={photo || undefined}
+                icon={!photo ? <CameraOutlined /> : undefined}
+                style={{ background: photo ? 'transparent' : '#eef1f5', border: '1px dashed #c3ccd6', color: '#8a94a6' }}
+              />
+              <Space size={6} wrap>
+                <Button size="small" icon={<CameraOutlined />}>上传照片</Button>
+                {photo && (
+                  <Button size="small" type="text" danger onClick={() => { setPhotoPersist(''); message.info('已移除照片'); }}>
+                    移除
+                  </Button>
+                )}
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', width: 200 }}>
+                  支持 JPG/PNG，自动压缩后本地保存
+                </Text>
+              </Space>
+            </div>
+          </Upload>
+        </div>
+
+        <Form form={exportForm} layout="vertical" size="small" style={{ marginTop: 8 }}>
+          <Space size={12} style={{ width: '100%' }} align="start">
+            <Form.Item
+              label="姓名"
+              name="name"
+              rules={[{ required: true, message: '请填写姓名' }]}
+              style={{ flex: 1, minWidth: 120 }}
+            >
+              <Input placeholder="用于简历头部展示" maxLength={20} />
+            </Form.Item>
+            <Form.Item
+              label="电话"
+              name="phone"
+              rules={[{ pattern: /^1[3-9]\d{9}$/, message: '请填写 11 位手机号' }]}
+              style={{ flex: 1, minWidth: 150 }}
+            >
+              <Input placeholder="选填，建议填写" maxLength={11} />
+            </Form.Item>
+          </Space>
+          <Space size={12} style={{ width: '100%' }} align="start">
+            <Form.Item
+              label="邮箱"
+              name="email"
+              rules={[{ type: 'email', message: '邮箱格式不正确' }]}
+              style={{ flex: 1, minWidth: 150 }}
+            >
+              <Input placeholder="选填" maxLength={60} />
+            </Form.Item>
+            <Form.Item
+              label="求职意向岗位"
+              name="targetTitle"
+              rules={[{ required: true, message: '请填写求职意向岗位' }]}
+              style={{ flex: 1, minWidth: 150 }}
+            >
+              <Input placeholder="如：前端开发工程师" maxLength={30} />
+            </Form.Item>
+          </Space>
+        </Form>
+
+        <Divider orientation="left" plain style={{ margin: '4px 0 10px' }}>内容分节（按需勾选）</Divider>
+        <Checkbox.Group
+          value={exportSections}
+          onChange={(vals) => setExportSections(vals.map(String))}
+          style={{ width: '100%' }}
+        >
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            {RESUME_SECTION_META.map((m) => (
+              <Checkbox key={m.id} value={m.id}>
+                <Space size={4}>
+                  <span>{m.title}</span>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{m.hint}</Text>
+                </Space>
+              </Checkbox>
+            ))}
+          </Space>
+        </Checkbox.Group>
+        {exportTailor && exportTailor.skillGaps.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <Text type="warning" style={{ fontSize: 12 }}>
+              提示：岗位要求但简历未体现的技能未写入（{exportTailor.skillGaps.join('、')}）。若确实具备，可补齐真实经历后再导出。
+            </Text>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

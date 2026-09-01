@@ -11,6 +11,7 @@ import {
   isStudentResume,
   normalizeStringList,
   lineMatches,
+  isHeadingLine,
   normalizeDirectionKey,
   findDirectionRule,
 } from './helpers';
@@ -88,10 +89,18 @@ export function buildLocalProfile(resumeText: string, reason = '', failureKind =
   if (topSkills.length) summaryParts.push(`具备 ${topSkills.join('、')} 等技能或项目经验`);
   summaryParts.push(`主要关注 ${primaryDirections.join('、')} 方向`);
 
-  const education = lineMatches(text, /大学|学院|本科|硕士|博士|教育经历|专业/i, 6);
-  const experiences = lineMatches(text, /实习|工作经历|公司|负责|任职|助理|工程师/i, 8);
-  const projects = lineMatches(text, /项目|系统|平台|工作台|GitHub|开发|实现|搭建|设计/i, 10);
-  const certificates = lineMatches(text, /证书|CET|英语六级|英语四级|资格|获奖|奖项/i, 6);
+  // 剔除纯小标题行（如「教育经历」「荣誉证书」本身），避免被当作简历事实引用
+  const notHeading = (items: string[]) => items.filter((item) => !isHeadingLine(item));
+  const education = notHeading(lineMatches(text, /大学|学院|本科|硕士|博士|教育经历|专业/i, 8));
+  const experiences = notHeading(lineMatches(text, /实习|工作经历|公司|负责|任职|助理|工程师/i, 8));
+  const projects = notHeading(lineMatches(text, /项目|系统|平台|工作台|GitHub|开发|实现|搭建|设计/i, 10));
+  const certificates = notHeading(
+    lineMatches(
+      text,
+      /证书|CET|英语六级|英语四级|资格|获奖|奖项|奖学金|优秀学生|优秀干部|优秀毕业生|三好学生|荣誉称号|蓝桥杯|天梯赛|竞赛|大赛|一等奖|二等奖|三等奖|ccpc|icpc|acm|华为|ict|普通话|雅思|托福|cpa|acca|计算机二级/i,
+      8
+    )
+  );
   const resolvedKind = failureKind || (reason ? aiFailureKind({ message: reason }) : 'not-requested');
 
   return normalizeProfile({

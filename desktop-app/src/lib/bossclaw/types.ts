@@ -85,8 +85,9 @@ export interface AppConfig {
    *   - 'webview'（默认）：Electron <webview>，原 Boss-claw 路径，与 webview.cjs 预加载协同
    *   - 'cloak'：CloakBrowser 隐身浏览器（Node + Playwright），多 Page + 持久 profile，
    *     用于降低 BOSS 直聘反检测概率（仅作可选增强，不绕过验证码/账户验证）
-   *   - 'camoufox'：Camoufox 隐身引擎（Python 桥 + 多内核自适应：优先 Camoufox 原生内核，
-   *     否则复用系统 Chrome/Edge + Playwright stealth），同样不绕过验证码/账户验证。
+   *   - 'camoufox'：Camoufox 隐身引擎（Python 桥，仅 Camoufox 原生内核可用；实测 BOSS
+   *     对 Playwright 驱动的系统 Chrome/Edge 返回空壳页，故本地浏览器不可复用），
+   *     同样不绕过验证码/账户验证。
    * 切换后需要刷新工作台才能生效；cloak / camoufox 模式下 webviewTag 仍开启以便回退。
    * 注：'camoufox' 与下方 camoufox.enabled 在设置层互相同步；Workbench 仍以 camoufox.enabled
    * 作为「隐身通道是否启用」的功能开关判据，本字段是其语义入口。
@@ -113,6 +114,24 @@ export interface AppConfig {
     apiKey: string;
     model: string;
     temperature: number;
+  };
+  /**
+   * 早中晚分批投递：仅在全自动模式（executionMode='auto'）时生效。
+   * 开启后，自动投递引擎只会在 早 / 午 / 晚 三个时段窗口内投递，
+   * 每个时段最多投递 counts.对应字段 条（0 表示该时段不限量），
+   * 避免集中在一次批量投递触发平台风控。
+   */
+  batchDelivery: {
+    /** 是否启用分批投递 */
+    enabled: boolean;
+    /** 早间时段开始时间 'HH:mm'（早间窗口 = morningTime → noonTime） */
+    morningTime: string;
+    /** 午间时段开始时间 'HH:mm'（午间窗口 = noonTime → eveningTime） */
+    noonTime: string;
+    /** 晚间时段开始时间 'HH:mm'（晚间窗口 = eveningTime → 次日 00:00） */
+    eveningTime: string;
+    /** 每个时段本次投递配额（0 表示不设该时段限量） */
+    counts: { morning: number; noon: number; evening: number };
   };
 }
 

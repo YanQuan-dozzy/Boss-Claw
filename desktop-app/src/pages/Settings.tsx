@@ -13,9 +13,11 @@ import {
   Switch,
   Tabs,
   Tag,
+  TimePicker,
   Typography,
   message,
 } from 'antd';
+import dayjs from 'dayjs';
 import {
   CheckCircleOutlined,
   DownloadOutlined,
@@ -37,6 +39,13 @@ import {
   PlusOutlined,
   DeleteOutlined,
   FileAddOutlined,
+  FileTextOutlined,
+  HddOutlined,
+  SyncOutlined,
+  DisconnectOutlined,
+  InfoCircleOutlined,
+  RedoOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -241,7 +250,8 @@ export default function Settings() {
     if (!silent) setCfxLoading(true);
     const s = await camoufoxStatus();
     setCfx(s);
-    if (!s.ready && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+    // 依赖首次安装中不算「不可用」，不自动关闭引擎开关
+    if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
     if (!silent) setCfxLoading(false);
   };
 
@@ -355,6 +365,17 @@ export default function Settings() {
 
   const llmReady = isLLMConfigured();
 
+  // ===== 早中晚分批投递配置助手 =====
+  const batch = config.batchDelivery;
+  const patchBatch = (p: Partial<typeof batch>) => setConfig({ batchDelivery: { ...batch, ...p } });
+  const patchBatchCount = (id: keyof typeof batch.counts, v: number) =>
+    setConfig({ batchDelivery: { ...batch, counts: { ...batch.counts, [id]: v } } });
+  const BATCH_SLOT_ROWS: { id: keyof typeof batch.counts; label: string }[] = [
+    { id: 'morning', label: '早间' },
+    { id: 'noon', label: '午间' },
+    { id: 'evening', label: '晚间' },
+  ];
+
   // 定义 5 大分类 Tab
   const tabItems = [
     {
@@ -393,6 +414,70 @@ export default function Settings() {
               {config.executionMode === 'auto'
                 ? '全自动投递：岗位由 AI 评估符合要求后，自动确认并直接进入投递队列唤起沟通。'
                 : '人工确认：由 AI 筛选评分后，岗位保留在待确认队列，需在工作台手动点击「确认」或「批量确认」后才进入投递队列。'}
+            </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <ClockCircleOutlined />
+                </div>
+                早中晚分批投递
+              </div>
+              {batch.enabled && config.executionMode !== 'auto' ? (
+                <Tag color="orange">需全自动模式生效</Tag>
+              ) : batch.enabled ? (
+                <Tag color="green">已启用·按时段分批</Tag>
+              ) : (
+                <Tag>已关闭</Tag>
+              )}
+            </div>
+            <div className="sg-item">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <span className="field-label">启用早中晚分批投递</span>
+                <Switch checked={batch.enabled} onChange={(v) => patchBatch({ enabled: v })} />
+              </div>
+            </div>
+            {batch.enabled && (
+              <>
+                <div className="settings-grid" style={{ marginTop: 8 }}>
+                  {BATCH_SLOT_ROWS.map((row) => {
+                    const timeKey: 'morningTime' | 'noonTime' | 'eveningTime' =
+                      row.id === 'morning' ? 'morningTime' : row.id === 'noon' ? 'noonTime' : 'eveningTime';
+                    return (
+                      <div key={row.id} className="sg-item">
+                        <span className="field-label">{row.label}时段开始时间</span>
+                        <TimePicker
+                          format="HH:mm"
+                          style={{ width: '100%' }}
+                          value={dayjs(batch[timeKey], 'HH:mm')}
+                          onChange={(t) => patchBatch({ [timeKey]: t ? t.format('HH:mm') : '09:00' })}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="settings-grid">
+                  {BATCH_SLOT_ROWS.map((row) => (
+                    <div key={row.id} className="sg-item">
+                      <span className="field-label">{row.label}时段投递配额</span>
+                      <InputNumber
+                        min={0}
+                        style={{ width: '100%' }}
+                        placeholder="0=不限"
+                        value={batch.counts[row.id]}
+                        onChange={(v) => patchBatchCount(row.id, v ?? 0)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+              开启后，在<b>全自动投递模式</b>下，自动沟通将按 早 / 午 / 晚 三个时段窗口分批进行，而非一次性集中投递；
+              每个时段开始时点可单独设置，并限定该时段的本次投递配额（0 表示不限，仍受每日 / 每分钟安全上限约束）。
+              在「人工确认（半自动）」模式下本开关不生效；三个时段依次为：早间（早→午）、午间（午→晚）、晚间（晚→次日 0 点）。
             </Paragraph>
           </div>
 
@@ -856,78 +941,176 @@ export default function Settings() {
                 <div className="section-icon-box">
                   <DatabaseOutlined />
                 </div>
-                AI 结果缓存
+                AI 结果缓存与省流
               </div>
-              <Tag color="blue">省流</Tag>
+              <Tag color="cyan" style={{ borderRadius: 10, fontWeight: 600 }}>0-Token 复用</Tag>
             </div>
 
-            <Paragraph type="secondary" style={{ marginBottom: 14, fontSize: 13 }}>
-              职业画像、岗位分析、打招呼语的 AI 生成结果会在本机缓存。相同输入（简历、画像、岗位、提示词均未变化）再次使用时直接命中缓存，
-              不再调用模型计费；修改简历、提示词或模型参数后自动生成新结果。缓存仅保存在本机。
-            </Paragraph>
+            {/* 说明横幅 Banner */}
+            <div className="ai-cache-banner">
+              <div className="ai-cache-banner__icon">
+                <ThunderboltOutlined />
+              </div>
+              <div className="ai-cache-banner__content">
+                <div className="ai-cache-banner__title">智能本地结果缓存与 Context 节约</div>
+                <div className="ai-cache-banner__desc">
+                  职业画像、岗位分析与求职招呼语生成结果均加密保存在本机。相同输入（简历/画像/岗位/提示词均未变）时<strong>直接复用缓存（0 延迟、0 Token 计费）</strong>；更新简历或提示词后将自动重新计算生成。
+                </div>
+              </div>
+            </div>
 
-            <div className="sg-item" style={{ marginBottom: 0 }}>
-              <span className="field-label">本机缓存</span>
-              <div className="llm-keyrow">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {aiCacheStats ? (
-                    <>
-                      <Tag>{aiCacheStats.entries} 条结果</Tag>
-                      <Tag>累计命中 {aiCacheStats.hits} 次</Tag>
-                      <Tag>累计生成 {aiCacheStats.misses} 次</Tag>
-                      <Tag>占用约 {(aiCacheStats.totalBytes / 1024).toFixed(0)} KB</Tag>
-                    </>
-                  ) : (
-                    <Tag>读取中…</Tag>
-                  )}
+            {/* 本机磁盘缓存区 */}
+            <div className="ai-cache-section">
+              <div className="ai-cache-section__header">
+                <div className="ai-cache-section__title">
+                  <HddOutlined style={{ color: 'var(--brand)', marginRight: 6 }} />
+                  本机磁盘缓存
                 </div>
                 <Button
-                  icon={<ClearOutlined />}
+                  size="small"
+                  danger
+                  type="dashed"
+                  icon={<DeleteOutlined />}
                   onClick={() => {
                     const count = clearAICache();
                     refreshAICacheStats();
-                    message.success(count > 0 ? `已清空 ${count} 条 AI 缓存` : '缓存已为空');
+                    message.success(count > 0 ? `已清空 ${count} 条 AI 本机缓存` : '缓存已为空');
                   }}
-                  className="btn-uniform"
+                  disabled={!aiCacheStats || aiCacheStats.entries === 0}
                 >
                   清空缓存
                 </Button>
               </div>
+
+              <div className="ai-cache-grid">
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(22, 119, 255, 0.1)', color: '#1677ff' }}>
+                    <FileTextOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {aiCacheStats ? aiCacheStats.entries : 0} <span className="unit">条</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">缓存记录数</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(82, 196, 26, 0.1)', color: '#52c41a' }}>
+                    <CheckCircleOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val" style={{ color: '#52c41a' }}>
+                      {aiCacheStats ? aiCacheStats.hits : 0} <span className="unit">次</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">累计命中 (0-Token)</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(250, 140, 22, 0.1)', color: '#fa8c16' }}>
+                    <SyncOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {aiCacheStats ? aiCacheStats.misses : 0} <span className="unit">次</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">新生成次数</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(114, 46, 209, 0.1)', color: '#722ed1' }}>
+                    <HddOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {aiCacheStats ? (aiCacheStats.totalBytes / 1024).toFixed(1) : 0} <span className="unit">KB</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">占用磁盘容量</div>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div className="sg-item" style={{ marginTop: 14, marginBottom: 0 }}>
-              <span className="field-label">服务端缓存</span>
-              <div className="llm-keyrow">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {llmUsage ? (
-                    <>
-                      <Tag>{llmUsage.requests} 次请求</Tag>
-                      <Tag>缓存命中 {llmUsage.cacheHitTokens.toLocaleString()} tokens</Tag>
-                      <Tag>缓存未命中 {llmUsage.cacheMissTokens.toLocaleString()} tokens</Tag>
-                      {llmUsage.cacheHitTokens + llmUsage.cacheMissTokens > 0 ? (
-                        <Tag color={llmUsage.cacheHitTokens / (llmUsage.cacheHitTokens + llmUsage.cacheMissTokens) >= 0.5 ? 'green' : 'orange'}>
-                          命中率 {Math.round((llmUsage.cacheHitTokens / (llmUsage.cacheHitTokens + llmUsage.cacheMissTokens)) * 100)}%
-                        </Tag>
-                      ) : null}
-                    </>
-                  ) : (
-                    <Tag>读取中…</Tag>
-                  )}
+            {/* 服务端 Prompt Cache 统计区 */}
+            <div className="ai-cache-section" style={{ marginTop: 14 }}>
+              <div className="ai-cache-section__header">
+                <div className="ai-cache-section__title">
+                  <ApiOutlined style={{ color: '#13c2c2', marginRight: 6 }} />
+                  服务端 Context Caching 统计
                 </div>
                 <Button
+                  size="small"
+                  icon={<RedoOutlined />}
                   onClick={() => {
                     resetLLMUsageStats();
                     refreshAICacheStats();
+                    message.success('已重置服务端 Token 缓存统计');
                   }}
-                  className="btn-uniform"
                 >
-                  清零统计
+                  重置统计
                 </Button>
               </div>
-              <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                记录本会话调用模型时返回的 prompt_cache_hit/miss_tokens。命中率越高说明请求前缀越稳定，账单中的「输入(缓存命中)」越多
-                （DeepSeek 等供应商命中价约为未命中价的 1/10）。画像/简历/提示词未变化时，连续分析岗位应保持高命中率。
-              </Paragraph>
+
+              <div className="ai-cache-grid">
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(19, 194, 194, 0.1)', color: '#13c2c2' }}>
+                    <ApiOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {llmUsage ? llmUsage.requests : 0} <span className="unit">次</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">模型请求次数</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(82, 196, 26, 0.1)', color: '#52c41a' }}>
+                    <ThunderboltOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val" style={{ color: '#52c41a' }}>
+                      {llmUsage ? llmUsage.cacheHitTokens.toLocaleString() : 0} <span className="unit">tokens</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">缓存命中 (Hit Tokens)</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(245, 34, 45, 0.1)', color: '#ff4d4f' }}>
+                    <DisconnectOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {llmUsage ? llmUsage.cacheMissTokens.toLocaleString() : 0} <span className="unit">tokens</span>
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">缓存未命中 (Miss Tokens)</div>
+                  </div>
+                </div>
+
+                <div className="ai-cache-stat-card">
+                  <div className="ai-cache-stat-card__icon" style={{ background: 'rgba(24, 144, 255, 0.1)', color: '#1890ff' }}>
+                    <CheckCircleOutlined />
+                  </div>
+                  <div className="ai-cache-stat-card__info">
+                    <div className="ai-cache-stat-card__val">
+                      {llmUsage && (llmUsage.cacheHitTokens + llmUsage.cacheMissTokens > 0)
+                        ? `${Math.round((llmUsage.cacheHitTokens / (llmUsage.cacheHitTokens + llmUsage.cacheMissTokens)) * 100)}%`
+                        : '100%'}
+                    </div>
+                    <div className="ai-cache-stat-card__lbl">Token 命中率</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="ai-cache-tip-footer">
+                <InfoCircleOutlined className="tip-icon" />
+                <span>
+                  记录当前会话调用模型返回的 <code>prompt_cache_hit / miss_tokens</code>。前缀越稳定，账单中缓存命中越多（DeepSeek 等供应商命中价格低至未命中的 1/10）。连续分析岗位可保持极高命中率。
+                </span>
+              </div>
             </div>
           </div>
 
@@ -1118,7 +1301,7 @@ export default function Settings() {
                     showIcon
                     style={{ borderRadius: 8, marginBottom: 10 }}
                     message="隐身引擎未就绪"
-                    description={cfx?.message || '请确认已安装系统 Chrome/Edge/Firefox 内核，或点击「检测状态」。'}
+                    description={cfx?.message || '请确认已安装 Camoufox 隐身引擎内核（本地浏览器不可复用），或点击「检测状态」。'}
                   />
                 )}
                 <div className="settings-grid">
@@ -1157,16 +1340,16 @@ export default function Settings() {
                       size="middle"
                       icon={<QrcodeOutlined />}
                       loading={cfxLogining}
-                      disabled={!cfx?.ready && !cfxConfig.enabled}
+                      disabled={Boolean(cfx?.engine?.loggedIn) || (!cfx?.ready && !cfxConfig.enabled)}
                       onClick={onCamoufoxLogin}
                     >
-                      隐身扫码登录
+                      {cfx?.engine?.loggedIn ? '已登录' : '隐身扫码登录'}
                     </Button>
                     <Button
                       size="middle"
                       danger
                       icon={<StopOutlined />}
-                      disabled={!cfx?.engine?.cookieCount}
+                      disabled={!cfx?.engine?.loggedIn}
                       onClick={onCamoufoxLogout}
                     >
                       退出登录

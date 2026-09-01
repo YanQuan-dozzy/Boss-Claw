@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Modal, Tooltip, message } from 'antd';
 import {
   ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, ExportOutlined,
-  PlusCircleOutlined, ThunderboltOutlined,
+  PlusCircleOutlined, ThunderboltOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -481,10 +481,20 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
 
   const loadURL = useCallback((url: string) => navigate(url), [navigate]);
 
-  // ===== 关闭标签：main 标签仅重置 URL 保留主标签；detail 标签真正 remove webview 释放 webContents =====
+  // ===== 关闭标签：main 标签仅返回首页保留 webContents；detail 标签真正 remove webview 释放 webContents =====
   const closeTab = useCallback((id: string) => {
     const target = tabsRef.current.find((t) => t.id === id);
     if (!target) return;
+    if (target.kind === 'main') {
+      // main 标签：不销毁 webContents（保住 BOSS 登录态与 IPC 监听），仅导航回首页关闭当前页面
+      patchTab(id, { url: BOSS_HOME, title: 'BOSS直聘', canGoBack: false, canGoForward: false });
+      const el = webviewEls.current[id];
+      if (el) {
+        try { el.loadURL(BOSS_HOME); } catch {}
+      }
+      return;
+    }
+    // detail 标签：从列表中移除，激活到主标签
     const el = webviewEls.current[id];
     if (el) {
       try { el.remove?.(); } catch {}
@@ -492,15 +502,6 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
       delete preloadReady.current[id];
       delete registeredTabs.current[id];
     }
-    if (target.kind === 'main') {
-      // main 标签永不删除；仅重置到 BOSS_HOME
-      patchTab(id, { url: BOSS_HOME, title: 'BOSS直聘', canGoBack: false, canGoForward: false });
-      if (el) {
-        try { el.loadURL(BOSS_HOME); } catch {}
-      }
-      return;
-    }
-    // detail 标签：从列表中移除，激活到主标签
     setTabs((prev) => prev.filter((t) => t.id !== id));
     if (activeIdRef.current === id) {
       const nextMain = tabsRef.current.find((t) => t.kind === 'main');
@@ -637,17 +638,16 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
               title={(t.title || t.url) + (t.kind === 'detail' ? '（沟通详情，完成后自动关闭）' : '')}
             >
               <span className="browser-tab-title">{t.title || 'BOSS直聘'}</span>
-              {t.kind === 'detail' && (
-                <button
-                  type="button"
-                  className="browser-tab-close"
-                  aria-label="关闭标签"
-                  onClick={(e) => handleCloseTab(t.id, e)}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  ×
-                </button>
-              )}
+              <button
+                type="button"
+                className="browser-tab-close"
+                aria-label="关闭标签"
+                title={t.kind === 'main' ? '关闭当前标签（返回首页）' : '关闭标签'}
+                onClick={(e) => handleCloseTab(t.id, e)}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <CloseOutlined />
+              </button>
             </div>
           ))}
         </div>
@@ -729,7 +729,9 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
                 ref={(el: any) => handleRegister(t.id, el)}
                 preload={WEBVIEW_PRELOAD}
                 partition="persist:bossclaw"
-                webpreferences="sandbox=no"
+                // backgroundThrottling=no：工作台切到其它模块时隐藏但保持挂载，
+                // 禁用 Chromium 后台节流，保证采集/投递的 guest 页 setTimeout/rAF 全速运行
+                webpreferences="sandbox=no, backgroundThrottling=no"
                 src={t.url}
               />
               {/* 加载中遮罩：仅在 active 标签且正在加载时可见，避免影响其他标签 */}

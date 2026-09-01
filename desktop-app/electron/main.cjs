@@ -4,7 +4,7 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
@@ -82,9 +82,12 @@ const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
 const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant'];
 
-/** 解析 SKILL.md frontmatter（--- 之间的 key: value）+ 正文（frontmatter 之后的内容） */
+/** 解析 SKILL.md frontmatter（顶部成对分隔线之间的 key: value）+ 正文（frontmatter 之后的内容） */
+// 分隔线兼容 --- 与 *** / === / ___ 等常见 YAML/文档分隔符（历史文件曾用 ***/---------------------，
+// 统一按「整行仅由 3 个及以上同类分隔符组成」匹配，避免个别技能文件用非 --- 分隔导致解析失败、技能不显示）
 function parseSkillFile(raw) {
-  const m = String(raw || '').match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  const delim = '[-*_=]';
+  const m = String(raw || '').match(new RegExp(`^${delim}{3,}\\s*\\n([\\s\\S]*?)\\n${delim}{3,}\\s*\\n?`));
   if (!m) return null;
   const meta = {};
   for (const line of m[1].split('\n')) {
@@ -323,20 +326,20 @@ function resetDataForVersion() {
     const marker = path.join(app.getPath('userData'), '.bossclaw-data-version');
     if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === DATA_VERSION) return;
     // 1) 清空 BOSS 登录态会话（persist:bossclaw 的 wt2 等 cookie）
-    try { session.fromPartition('persist:bossclaw').clearStorageData().catch(() => {}); } catch {}
+    try { session.fromPartition('persist:bossclaw').clearStorageData().catch((e) => dlog('warn', 'clear boss session storage failed', { message: e?.message })); } catch (e) { dlog('warn', 'clear boss session partition failed', { message: e?.message }); }
     // 2) 清空 Camoufox 隐身引擎 cookie
     try {
       const camCookie = path.join(app.getPath('home'), '.bossclaw', 'camoufox-cookies.json');
       if (fs.existsSync(camCookie)) fs.unlinkSync(camCookie);
-    } catch {}
+    } catch (e) { dlog('warn', 'clear camoufox cookie failed', { message: e?.message }); }
     // 3) 清空 CloakBrowser 隐身浏览器持久 profile
     try {
       const cloakProfile = path.join(app.getPath('userData'), 'cloakbrowser-profile');
       if (fs.existsSync(cloakProfile)) fs.rmSync(cloakProfile, { recursive: true, force: true });
-    } catch {}
+    } catch (e) { dlog('warn', 'clear cloakbrowser profile failed', { message: e?.message }); }
     // 4) 写版本标记，避免重复清理
-    try { fs.writeFileSync(marker, DATA_VERSION); } catch {}
-  } catch {}
+    try { fs.writeFileSync(marker, DATA_VERSION); } catch (e) { dlog('warn', 'write data-version marker failed', { message: e?.message }); }
+  } catch (e) { dlog('warn', 'reset data for version failed', { message: e?.message }); }
 }
 
 function startBridge() {
@@ -365,58 +368,175 @@ function startBridge() {
 
 // ===== Camoufox 隐身引擎（Python 桥）=====
 
-// 探测可用的 Python 解释器（优先 py launcher，其次 python/python3）
+// 项目本地 venv 的 python 可执行文件（install-deps.cmd 把 camoufox/playwright 装到这里）
+function venvPython() {
+  return process.platform === 'win32'
+    ? path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe')
+    : path.join(__dirname, '..', '.venv', 'bin', 'python');
+}
+
 function detectPython() {
   return new Promise((resolve) => {
-    const candidates = process.platform === 'win32'
-      ? ['py', 'python', 'python3']
-      : ['python3', 'python'];
-    let idx = 0;
-    const tryNext = () => {
-      if (idx >= candidates.length) return resolve(null);
-      const cmd = candidates[idx++];
-      execFile(cmd, ['--version'], { timeout: 5000 }, (err) => {
-        if (err) return tryNext();
-        resolve(cmd);
-      });
-    };
-    tryNext();
+    // 1) 项目本地 venv 优先（stealth 依赖安装处），避免误用未装依赖的系统 Python
+    execFile(venvPython(), ['--version'], { timeout: 5000 }, (err) => {
+      if (!err) return resolve(venvPython());
+      // 2) 未创建 venv 时退回系统 Python
+      const candidates = process.platform === 'win32'
+        ? ['py', 'python', 'python3']
+        : ['python3', 'python'];
+      let idx = 0;
+      const tryNext = () => {
+        if (idx >= candidates.length) return resolve(null);
+        const cmd = candidates[idx++];
+        execFile(cmd, ['--version'], { timeout: 5000 }, (e2) => {
+          if (e2) return tryNext();
+          resolve(cmd);
+        });
+      };
+      tryNext();
+    });
   });
 }
 
-// 检测隐身引擎可用性：camoufox 包已装 或 系统 Chrome/Edge/Firefox 存在（不启动浏览器）。
-// 引擎是多内核自适应的——优先 Camoufox 原生内核（C++ 级），否则复用系统浏览器 + Playwright stealth，
-// 因此只要「Python + 任一可用内核」即可启动桥（无需下载 492MB 专用内核）。
+// 执行 python 命令并返回 Promise（stderr 视为失败）
+function runPythonAsync(python, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(python, args, { timeout: opts.timeout || 120000, ...opts }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = String(stderr || err.message || '');
+        return reject(new Error(msg.trim() || `命令失败：${args[0] || ''}`));
+      }
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
+// ===== 隐身引擎 Python 依赖自愈（后台安装，不阻塞请求）=====
+// 背景：桥的 Chrome/Edge 回退路径运行时 `from playwright.sync_api import ...`，
+// 若所选 Python 未装 playwright 会抛 `No module named 'playwright'`。
+// 注意：首次安装不能阻塞在 IPC 请求里（否则前端按钮无限转圈），改为后台跑，请求立刻返回「安装中」。
+let _cfxDepsReady = null;       // 本次会话已就绪的 python 路径
+let _cfxDepsInstalling = null;  // 后台安装 Promise（去重）
+
+// ===== 引擎检测状态持久化：内核/依赖检测过一次即跨启动保留，避免每次开软件重做 =====
+// app.getPath 须在 ready 后调用，故惰性计算路径
+function comfoxStateFile() {
+  return path.join(app.getPath('home'), '.bossclaw', 'engine-state.json');
+}
+function loadEngineState() {
+  try {
+    const f = comfoxStateFile();
+    if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf-8'));
+  } catch (e) { dlog('warn', 'load engine-state failed', { message: e?.message }); }
+  return {};
+}
+function saveEngineState(patch) {
+  try {
+    const merged = { ...loadEngineState(), ...patch };
+    const f = comfoxStateFile();
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify(merged));
+  } catch (e) { dlog('warn', 'save engine-state failed', { message: e?.message }); }
+}
+function markCamoufoxReady(python) {
+  _cfxDepsReady = python;
+  saveEngineState({ python, depsReady: true });
+}
+
+// 探测指定 python 缺失哪些 stealth 依赖（快，不触发安装）
+function probeMissingDeps(python) {
+  return new Promise((resolve) => {
+    execFile(python, ['-c',
+      "import importlib.util;ps=['playwright','camoufox'];print(','.join(p for p in ps if importlib.util.find_spec(p) is None))"],
+      { timeout: 10000 }, (err, stdout) => {
+        if (err) return resolve(['playwright', 'camoufox']);
+        resolve(String(stdout || '').split(',').filter(Boolean));
+      });
+  });
+}
+
+// 后台真正安装依赖：优先装进程 playwright（Chromium 回退必需、体积小、快）；
+// camoufox 为可选增强（native 内核才需要），尽力安装，失败静默不阻塞。
+async function installCamoufoxDeps(python) {
+  // 决定安装目标：项目 .venv（干净、可复现）→ 否则退回所选 Python
+  let target = python;
+  const venv = venvPython();
+  if (python !== venv) {
+    try {
+      if (!fs.existsSync(venv)) {
+        await runPythonAsync(python, ['-m', 'venv', path.join(__dirname, '..', '.venv')], { timeout: 120000 });
+      }
+      if (fs.existsSync(venv)) target = venv;
+    } catch (e) {
+      dlog('warn', 'create stealth venv failed, fallback to system python', { message: e?.message });
+      target = python;
+    }
+  }
+  const pip = (pkg, idx) => runPythonAsync(target, ['-m', 'pip', 'install', '-q', '--upgrade', pkg], { timeout: 300000 })
+    .catch(async (e) => {
+      if (idx < 2) {
+        dlog('warn', `pip install ${pkg} retry with mirror`, { message: e?.message });
+        return runPythonAsync(target, ['-m', 'pip', 'install', '-q', '--upgrade', pkg,
+          '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'], { timeout: 360000 });
+      }
+      throw e;
+    });
+  // 1) 核心：playwright（必须装好，否则回退/原生内核 import camoufox 都会失败并抛 No module named 'playwright'）
+  //    camoufox 0.5.x 要求 playwright<1.61，须锁定兼容版本
+  try { await pip('playwright>=1.40,<1.61', 1); } catch (e) { dlog('error', 'playwright install failed', { message: e?.message }); throw e; }
+  // 2) 可选：camoufox[geoip]（原生内核 + GeoIP，优先用于登录/沟通；失败不影响 Chromium 回退）
+  try { await pip('camoufox[geoip]', 0); } catch (e) { dlog('info', 'camoufox install skipped (optional)', { message: e?.message }); }
+  dlog('info', 'stealth deps ready', { target });
+  return target;
+}
+
+// 确保依赖就绪：已就绪立即返回；缺失则触发后台安装并返回「安装中」。
+async function ensureCamoufoxDeps(python) {
+  if (_cfxDepsReady) return { python: _cfxDepsReady, ok: true, ready: true };
+  let missing = [];
+  try { missing = await probeMissingDeps(python); } catch (e) { missing = ['playwright', 'camoufox']; }
+  if (!missing.length) {
+    markCamoufoxReady(python);
+    return { python, ok: true, ready: true };
+  }
+  // 开始后台安装（去重）
+  if (!_cfxDepsInstalling) {
+    _cfxDepsInstalling = installCamoufoxDeps(python)
+      .then((target) => { markCamoufoxReady(target); _cfxDepsInstalling = null; return target; })
+      .catch((e) => { dlog('error', 'install stealth deps failed', { message: e?.message }); _cfxDepsInstalling = null; return null; });
+  }
+  return {
+    python, ok: false, ready: false, installing: true,
+    message: '正在安装隐身引擎依赖（首次约需 1-2 分钟），请稍候后点击「检测状态」重试',
+  };
+}
+
+// 检测隐身引擎可用性：仅 camouflage 隐身引擎（原生内核）可用。
+// 实测 BOSS 会对 Playwright 驱动的系统 Chrome/Edge 返回空壳页，本地浏览器不可复用，
+// 因此只有「Camoufox 包 + 原生内核」可用。
 function checkCamoufoxEngine(pythonCmd) {
   return new Promise((resolve) => {
     if (!pythonCmd) return resolve(false);
-    const probe = [
-      "import importlib.util, os",
-      "ok = importlib.util.find_spec('camoufox') is not None",
-      "paths = [",
-      "  r'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',",
-      "  r'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',",
-      "  r'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',",
-      "  r'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',",
-      "  r'C:\\Program Files\\Mozilla Firefox\\firefox.exe',",
-      "  r'C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe',",
-      "]",
-      "ok = ok or any(os.path.exists(p) for p in paths)",
-      "print(1 if ok else 0)",
-    ].join('\n');
+    const probe = "import importlib.util;print(1 if importlib.util.find_spec('camoufox') is not None else 0)";
     execFile(pythonCmd, ['-c', probe], { timeout: 8000 }, (err, stdout) => {
       resolve(!err && String(stdout || '').trim() === '1');
     });
   });
 }
 
-// 启动隐身引擎 Python 桥（按需：Python + camoufox 包或系统浏览器任一可用即启动）
-async function startCamoufoxBridge() {
+// 启动隐身引擎 Python 桥（按需：Python + camoufox 包可用即启动）
+// pythonOverride 调用方已确保依赖就绪时传入，避免重复探测；未传时自愈依赖（后台安装）。
+async function startCamoufoxBridge(pythonOverride) {
   if (camoufoxProcess) return { running: true };
-  const python = await detectPython();
+  let python = pythonOverride || (await detectPython());
   if (!python) return { running: false, error: '未检测到 Python 环境' };
+  if (!pythonOverride) {
+    const env = await ensureCamoufoxDeps(python);
+    if (env.installing) return { running: false, installing: true, error: env.message || '隐身引擎依赖安装中，请稍候再试' };
+    python = env.python || python;
+  }
   const available = await checkCamoufoxEngine(python);
-  if (!available) return { running: false, error: '未检测到可用内核：请安装 Chrome/Edge/Firefox，或执行 pip install "camoufox[geoip]" && camoufox fetch' };
+  if (!available) return { running: false, error: '隐身引擎未就绪：本地浏览器不可复用，请安装 Camoufox 隐身引擎内核：pip install "camoufox[geoip]" && camoufox fetch' };
   try {
     const server = path.join(__dirname, '..', 'camoufox', 'camoufox_server.py');
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
@@ -462,17 +582,48 @@ function stopCamoufoxBridge() {
   }
 }
 
+// 后台预热：应用启动时加载持久化的「已就绪」状态并预拉起 Python 桥，
+// 让登录/自动沟通首次点击不再承担冷启动（import camoufox/numpy 等较重）与重复检测。
+function warmUpCamoufox() {
+  (async () => {
+    const python = await detectPython();
+    if (!python) return;
+    // 跨启动继承上次检测结果：python 一致且曾就绪 → 视为就绪，跳过重复探测。
+    // 但需用一次廉价探测校验依赖仍在（避免 playwright/camoufox 被卸载或残留损坏目录后，
+    // 持久化「已就绪」掩盖问题；探测缺失则交给 ensure 后台自愈重装）。
+    const state = loadEngineState();
+    if (state.python === python && state.depsReady) {
+      let missing = [];
+      try { missing = await probeMissingDeps(python); } catch { missing = ['playwright', 'camoufox']; }
+      if (!missing.length) {
+        markCamoufoxReady(python);
+        dlog('info', 'camoufox engine state restored', { python });
+      } else {
+        dlog('warn', 'camoufox engine state stale, will re-probe/install', { python, missing });
+      }
+    }
+    await startCamoufoxBridge();
+  })().catch((e) => dlog('warn', 'camoufox warm-up failed', { message: e?.message }));
+}
+
 // 渲染层查询 Camoufox 引擎状态（Python 探测 + camoufox 包检测 + 桥运行状态）
 safeHandle('jc:camoufox-status', async () => {
   const python = await detectPython();
-  const available = python ? await checkCamoufoxEngine(python) : false;
-  const base = { python: Boolean(python), pythonCmd: python, camoufox: available };
+  if (!python) return { python: false, running: false, ready: false, message: '未检测到 Python 环境' };
+  // 自愈依赖后再判定可用性，避免「检测到内核但缺 playwright 运行时崩溃」
+  const env = await ensureCamoufoxDeps(python);
+  if (env.installing) {
+    return { python: true, pythonCmd: python, camoufox: false, running: false, ready: false, installing: true, message: env.message || '正在安装隐身引擎依赖，请稍候' };
+  }
+  const readyPython = env.python || python;
+  const available = await checkCamoufoxEngine(readyPython);
+  const base = { python: Boolean(readyPython), pythonCmd: readyPython, camoufox: available };
   if (!available) {
-    return { ...base, running: false, ready: false, message: '未检测到可用内核（需要 Chrome/Edge/Firefox 或 camoufox 原生内核）' };
+    return { ...base, running: false, ready: false, message: '隐身引擎未就绪（仅支持 Camoufox 隐身引擎内核，本地浏览器不可复用）' };
   }
   // 桥未运行则尝试拉起
   if (!camoufoxProcess) {
-    const r = await startCamoufoxBridge();
+    const r = await startCamoufoxBridge(readyPython);
     if (!r.running) return { ...base, running: false, ready: false, message: r.error || '桥启动失败' };
   }
   try {
@@ -487,13 +638,45 @@ safeHandle('jc:camoufox-status', async () => {
 // 显式停止隐身引擎桥（设置页用）
 ipcMain.on('jc:camoufox-stop', () => stopCamoufoxBridge());
 
+// 重启隐身引擎桥：先停后拉，返回最终状态（自动沟通误触关闭后自愈用；
+// 多次重启失败由渲染层判定并自动停止自动沟通）
+safeHandle('jc:camoufox-restart', async () => {
+  stopCamoufoxBridge();
+  const python = await detectPython();
+  if (!python) return { python: false, running: false, ready: false, message: '未检测到 Python 环境' };
+  const env = await ensureCamoufoxDeps(python);
+  if (env.installing) {
+    return { python: true, running: false, ready: false, installing: true, message: env.message || '正在安装隐身引擎依赖，请稍候' };
+  }
+  const readyPython = env.python || python;
+  const available = await checkCamoufoxEngine(readyPython);
+  if (!available) {
+    return { python: Boolean(readyPython), camoufox: false, running: false, ready: false, message: '隐身引擎未就绪（仅支持 Camoufox 隐身引擎内核，本地浏览器不可复用）' };
+  }
+  const r = await startCamoufoxBridge(readyPython);
+  if (!r.running) {
+    return { python: Boolean(readyPython), camoufox: true, running: false, ready: false, message: r.error || '桥重启失败' };
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    return { python: Boolean(readyPython), camoufox: true, running: true, ready: Boolean(data.ok), message: data.message || '', engine: data };
+  } catch (e) {
+    return { python: Boolean(readyPython), camoufox: true, running: true, ready: false, message: String((e && e.message) || e) };
+  }
+});
+
 // 渲染层调用隐身引擎桥（search/send/login），统一转发 127.0.0.1 请求
 safeHandle('jc:camoufox-call', async (_event, action, payload) => {
   const python = await detectPython();
-  const available = python ? await checkCamoufoxEngine(python) : false;
-  if (!available) return { ok: false, error: '未检测到可用内核（Chrome/Edge/Firefox 或 camoufox）' };
+  if (!python) return { ok: false, error: '未检测到 Python 环境' };
+  const env = await ensureCamoufoxDeps(python);
+  if (env.installing) return { ok: false, installing: true, error: env.message || '隐身引擎依赖安装中，请稍候再试' };
+  const readyPython = env.python || python;
+  const available = await checkCamoufoxEngine(readyPython);
+  if (!available) return { ok: false, error: '隐身引擎未就绪（本地浏览器不可复用，请安装 Camoufox 隐身引擎内核）' };
   if (!camoufoxProcess) {
-    const r = await startCamoufoxBridge();
+    const r = await startCamoufoxBridge(readyPython);
     if (!r.running) return { ok: false, error: r.error || '桥启动失败' };
   }
   const pathMap = { search: '/search', send: '/send', chat: '/chat', login: '/login', logout: '/logout', clear: '/clear' };
@@ -728,6 +911,55 @@ safeHandle('jc:clipboard-write', (_event, text) => {
   try { clipboard.writeText(String(text ?? '')); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
+// 保存定制简历 PDF：渲染进程传 A4 打印 HTML → 隐藏窗口 printToPDF → 系统保存对话框 → 写盘。
+// 排版完全由 HTML/CSS 控制（resumePdf.ts 的 moderncv 风格模板），@page 控制页边距，
+// printToPDF 传 margins:'none' 避免与 CSS 边距叠加。零额外依赖、中文由系统字体渲染。
+safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
+  const name = String(defaultName || '').trim();
+  if (!/^[\w\u4e00-\u9fa5()（）\-· ]{1,120}\.pdf$/i.test(name)) {
+    return { ok: false, error: '文件名不合法（须以 .pdf 结尾）' };
+  }
+  const htmlText = String(html || '');
+  if (htmlText.length < 200 || !/<!DOCTYPE html>/i.test(htmlText)) {
+    return { ok: false, error: 'HTML 内容不完整，无法生成 PDF' };
+  }
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: '保存定制简历',
+    defaultPath: path.join(app.getPath('documents'), name),
+    filters: [
+      { name: 'PDF 文档', extensions: ['pdf'] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+
+  // 隐藏打印窗口：不启用 Node 能力，纯渲染 HTML（无脚本），保证安全
+  const printWin = new BrowserWindow({
+    show: false,
+    width: 842,
+    height: 1191,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  try {
+    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
+    // 等待字体与样式渲染稳定（系统字体加载 + 布局）
+    await new Promise((r) => setTimeout(r, 400));
+    const pdf = await printWin.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      margins: { marginType: 'none' },
+    });
+    if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
+    await fs.promises.writeFile(filePath, pdf);
+    return { ok: true, filePath };
+  } catch (e) {
+    dlog('error', 'printToPDF failed', { message: (e && e.message) || String(e) });
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    try { printWin.destroy(); } catch {}
+  }
+});
+
 // 通用 URL 抓取（CORS 无关，供渲染进程获取 BOSS 公开接口，如城市编码表）。
 // 在主进程用 Node 原生 fetch 请求，避免渲染进程跨域限制。
 safeHandle('jc:fetch-url', async (_event, url) => {
@@ -865,6 +1097,8 @@ app.whenReady().then(() => {
   // 桥接服务改为按需启动：由用户在 OpenClaw / 设置页主动「启动/连接」后，
   // 经 jc:bridge-control(start) IPC 才 spawn；避免「未连接却显示已连接」。
   createMainWindow();
+  // 后台预热隐身引擎（读取持久化状态 + 预拉起 Python 桥），登录不再承担冷启动卡顿
+  warmUpCamoufox();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
