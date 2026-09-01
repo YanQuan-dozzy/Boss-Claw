@@ -20,7 +20,7 @@ export interface LogEntry {
   msg: string;
 }
 
-export type ChatLogStage = 'open_chat' | 'greeting' | 'confirm' | 'resume' | 'ai_reply' | 'risk' | 'system';
+export type ChatLogStage = 'open_chat' | 'greeting' | 'confirm' | 'resume' | 'ai_reply' | 'risk' | 'system' | 'verify_chat_target' | 'skip';
 
 export interface ChatLogEntry {
   id: string;
@@ -42,10 +42,13 @@ interface DataState {
   resumeImage: string | null; // dataURL，非持久化
   /** 图片简历（base64，持久化）：首次沟通后自动打包发送 */
   imageResumes: ImageResume[];
-  /** AI 生成的求职打招呼语（持久化）：简历中心生成后写入，工作台岗位沟通可选用 */
+  /** AI 生成的求职打招呼语（持久化）：定制简历「存入打招呼语」写入，工作台岗位沟通可选用（无招呼语时兜底） */
   greetings: string[];
-  /** 用户自定义打招呼语提示词（持久化）：留空则使用系统默认提示词；用于驱动岗位分析中的打招呼语生成与简历中心的4条招呼语生成 */
+  /** 简历中心「打招呼语提示词」输入框内容（持久化）。
+   *  生成时的提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 本输入框内容 → ③ 都不满足则本地规则。 */
   greetingPrompt: string;
+  /** 沟通信息（持久化）：用户自行填写的面试时间/到岗时间等真实信息，AI 跟聊回复 HR 时引用；留空则维持原回复行为 */
+  communicationInfo: string;
   profile: Profile | null;
   profileDraft: ProfileDraft | null;
   directionPlan: DirectionPlan | null;
@@ -62,6 +65,7 @@ interface DataState {
   removeImageResume: (id: string) => void;
   setGreetings: (items: string[]) => void;
   setGreetingPrompt: (prompt: string) => void;
+  setCommunicationInfo: (info: string) => void;
   setProfile: (p: Profile | null) => void;
   setProfileDraft: (d: ProfileDraft | null) => void;
   setDirectionPlan: (p: DirectionPlan | null) => void;
@@ -91,6 +95,7 @@ export const useDataStore = create<DataState>()(
       imageResumes: [],
       greetings: [],
       greetingPrompt: '',
+      communicationInfo: '',
       profile: DEFAULT_PROFILE,
       profileDraft: DEFAULT_PROFILE_DRAFT,
       directionPlan: DEFAULT_DIRECTION_PLAN,
@@ -118,6 +123,7 @@ export const useDataStore = create<DataState>()(
       removeImageResume: (id) => set((s) => ({ imageResumes: s.imageResumes.filter((r) => r.id !== id) })),
       setGreetings: (items) => set({ greetings: Array.isArray(items) ? items.filter((g) => String(g || '').trim().length >= 8) : [] }),
       setGreetingPrompt: (prompt) => set({ greetingPrompt: String(prompt || '').trim() }),
+      setCommunicationInfo: (info) => set({ communicationInfo: String(info || '') }),
       setProfile: (p) => set({ profile: p }),
       setProfileDraft: (d) => set({ profileDraft: d }),
       setDirectionPlan: (p) => set({ directionPlan: p }),

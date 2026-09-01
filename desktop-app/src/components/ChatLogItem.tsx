@@ -28,6 +28,8 @@ const STAGE_META: Record<
   resume: { icon: <PaperClipOutlined />, label: '简历附件', color: 'geekblue' },
   ai_reply: { icon: <RobotOutlined />, label: 'AI跟聊', color: 'teal' },
   risk: { icon: <WarningOutlined />, label: '风控/暂停', color: 'volcano' },
+  verify_chat_target: { icon: <ExclamationCircleOutlined />, label: '目标核验', color: 'volcano' },
+  skip: { icon: <WarningOutlined />, label: '跳过', color: 'gold' },
   system: { icon: <SettingOutlined />, label: '系统调度', color: 'default' },
 };
 
@@ -73,7 +75,10 @@ export const ChatLogItem = memo<ChatLogItemProps>(function ChatLogItem({ log }) 
         {/* 打招呼语引述对话框 */}
         {log.greetingPreview && (
           <div className="chat-log-item__bubble">
-            <div className="chat-log-item__bubble-author">💬 拟发送给 HR 的求职招呼语：</div>
+            <div className="chat-log-item__bubble-author">
+              <MessageOutlined style={{ marginRight: 6, color: 'var(--brand)' }} />
+              拟发送给 HR 的求职招呼语：
+            </div>
             <div className="chat-log-item__bubble-text">{log.greetingPreview}</div>
           </div>
         )}

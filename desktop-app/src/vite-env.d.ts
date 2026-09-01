@@ -20,6 +20,7 @@ interface ElectronBridgeApi {
   camoufoxStatus?: () => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;
   camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;
+  camoufoxRestart?: () => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; installing?: boolean; message?: string; engine?: unknown }>;
   // CloakBrowser 隐身浏览器（可选增强，Node + Playwright）
   cloakBinary?: () => Promise<{ ok: boolean; binary?: any; error?: string }>;
   cloakStart?: (opts?: { licenseKey?: string; proxy?: string }) => Promise<{ ok: boolean; ready?: boolean; error?: string }>;
@@ -44,6 +45,8 @@ interface ElectronBridgeApi {
     fields?: { name: string; description?: string; scope: string; instructions: string };
   }) => Promise<{ ok: boolean; skill?: { id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom: boolean }; error?: string }>;
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
+  savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
 }
 
 interface Window {

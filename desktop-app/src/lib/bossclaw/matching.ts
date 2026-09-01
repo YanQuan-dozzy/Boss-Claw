@@ -1,8 +1,8 @@
 // 移植自 job-claw-main\source\src\background.js 的岗位匹配与沟通草稿逻辑
-import type { AppConfig, JobAnalysis, JobMeta, Profile } from './types';
-import { normalizeStringList } from './helpers';
+import type { AppConfig, JobAnalysis, JobMeta, Profile, ProfileFacts } from './types';
+import { normalizeStringList, isHeadingLine } from './helpers';
 import { cachedCallModel } from './llm';
-import { skillInstructionsFor } from './skills';
+import { ensureSkillsLoaded, skillInstructionsFor } from './skills';
 import { buildAnalyzeSystemPrompt } from './prompts';
 import { detectInterviewMode } from './interviewMode';
 import { computeLocalMatch, enhancedLocalScore } from './jobMatch';
@@ -37,16 +37,117 @@ export function localMatchScore(job: JobMeta, profile: Profile | null): number |
   return Math.max(0, Math.min(100, Math.round((weighted / full) * 100)));
 }
 
+// 从教育事实行里抽取出真实身份：学校 + 专业 + 学历，跳过「教育经历」这类纯小标题。
+// 仅引用简历里真实存在的院校/专业/学历，缺哪个就不写哪个，绝不臆造。专业识别不限定技术类，
+// 覆盖「XX专业」「XX | 本科」以及常见学科词等多种简历写法，保证非互联网简历也能正确取到专业。
+function identityFromEducation(education: string[], degree: string, student: boolean): string {
+  const content = education.map((line) => String(line || '').trim()).filter((line) => line && !isHeadingLine(line));
+  let school = '';
+  let major = '';
+  for (const line of content) {
+    if (!school) {
+      const m = line.match(/([\u4e00-\u9fa5]{2,12}(?:大学|学院))/);
+      if (m) school = m[1];
+    }
+    if (!major) {
+      // 「XX专业」写法
+      const m = line.match(/([\u4e00-\u9fa5A-Za-z]{1,10})专业/);
+      if (m) major = m[1];
+      // 「XX | 本科 / 大专」写法（学历分隔符，适用于学校--专业合在一行的情况）
+      else {
+        const d = line.match(/([\u4e00-\u9fa5A-Za-z]{2,16})\s*[|｜/·]\s*(?:本科|硕士|博士|大专|专科)/);
+        if (d && d[1].length >= 2 && d[1].length <= 16) major = d[1];
+      }
+      // 常见学科词兜底（含市场/财务/法律/外语/护理/药学/新闻等非技术学科，保证通用简历可识别）
+      if (!major) {
+        const n = line.match(
+          /([\u4e00-\u9fa5]{2,12}(?:工程|科学|技术|管理|设计|软件|大数据|人工智能|自动化|电子|通信|信息|金融|会计|医学|护理|药学|教育|机械|车辆|市场|营销|财务|法律|法学|外语|英语|新闻|广告|艺术|体育|经济|旅游|物流|建筑|土木|化工|材料|生物|环境|测绘|采矿|石油|冶金|纺织|服装|餐饮|酒店|商贸|销售|人事|人力))/
+        );
+        if (n && n[1].length >= 3 && n[1].length <= 12) major = n[1];
+      }
+    }
+    if (school && major) break;
+  }
+  const base = `${school || ''}${major ? `${major}专业` : ''}`;
+  if (!base) return '';
+  const label = ({ 本科: '本科生', 硕士: '硕士研究生', 博士: '博士研究生', 大专: '大专生' } as Record<string, string>)[degree] || '';
+  if (student && label) return `${base}在读${label}`;
+  if (student) return `${base}在读学生`;
+  if (label) return `${base}${label}`;
+  return base;
+}
+
+// 技能与岗位的相关性排序：优先命中岗位描述、其次命中标题的技能，其余按画像顺序兜底。
+// 与 localMatchScore 的口径一致：英文/数字词按词边界匹配，中文走子串匹配。
+function pickRelevantSkills(skills: string[], job: JobMeta | null, take = 3): string[] {
+  const list = skills.slice();
+  if (!list.length) return [];
+  const title = String(job?.title || '').toLowerCase();
+  const desc = String(job?.description || '').toLowerCase();
+  const hit = (term: string, text: string): boolean => {
+    if (!text || !term) return false;
+    const s = term.toLowerCase();
+    if (/^[\x00-\x7F]+$/.test(s)) return new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
+    return text.includes(s);
+  };
+  const descHits = list.filter((s) => hit(s, desc));
+  const titleHits = list.filter((s) => hit(s, title) && !descHits.includes(s));
+  const rest = list.filter((s) => !descHits.includes(s) && !titleHits.includes(s));
+  return [...descHits, ...titleHits, ...rest].slice(0, take);
+}
+
+// 从简历事实里挑一条真实、简洁的荣誉/证书（如蓝桥杯、一等奖、奖学金、英语六级、专业证书），
+// 作为接地气的证据。优先挑有明确比赛/竞赛或奖级信号的行，其次一般荣誉（奖学金/荣誉称号/资格证书）。
+// 只取短行，跳过小标题，找不到就返回空串、绝不编造，保证非互联网简历同样适用。
+function pickRealAward(facts: ProfileFacts | undefined): string {
+  if (!facts) return '';
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const group of [facts.certificates, facts.education, facts.projects, facts.experiences]) {
+    for (const raw of group || []) {
+      const line = String(raw || '').trim();
+      if (!line || line.length > 60 || isHeadingLine(line) || seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  const stripYear = (line: string) => line.replace(/^\s*(?:\d{2,4}\s*年?\s*)+/, '').trim();
+  // 1) 明确奖级：一等奖/金奖/冠军…且带比赛/竞赛类命名 → 技术与非技术比赛都算
+  const competition = lines.find(
+    (l) =>
+      /(?:一等奖|二等奖|三等奖|金奖|银奖|铜奖|冠军|亚军|季军|获奖)/.test(l) &&
+      /(?:蓝桥杯|天梯赛|icpc|acm|华为|ict|csp|ccpc|竞赛|大赛|比赛|数学建模|创新创业|挑战杯|程序设计|演讲|作文|辩论|职业技能|艺术|体育)/i.test(l)
+  );
+  if (competition) return stripYear(competition);
+  // 2) 一般荣誉 / 称号 / 奖学金
+  const honor = lines.find((l) =>
+    /(?:奖学金|优秀学生|优秀干部|优秀毕业生|优秀共青团员|三好学生|十佳|荣誉称号|年度评选)/.test(l) ||
+    /(?:英语六级|英语四级|\bcet|\bielts|\btoefl|雅思|托福|普通话|计算机二级|初级会计|中级会计|\bcpa|\bacca|职业资格|资格证|等级证书)/i.test(l)
+  );
+  return honor ? stripYear(honor) : '';
+}
+
+// 本地确定性主人打招呼语兜底模板：以真实简历事实为骨架（身份/技能/荣誉），
+// 不再出现「我是教育经历」这类把表单小标题当身份、或「有相关项目实践」这种凭空捏造的表述。
 export function fallbackApplicantGreeting(job: JobMeta, profile: Profile | null): string {
   const title = String(job?.title || '该岗位').trim();
-  const skills = normalizeStringList(profile?.facts?.skills, 4);
-  const education = normalizeStringList(profile?.facts?.education, 1);
-  const direction = normalizeStringList(profile?.primaryDirections?.map((item) => (typeof item === 'string' ? item : item?.name)), 2);
-  const identity = education[0] || '';
-  const evidence = skills.length ? `熟悉${skills.slice(0, 3).join('、')}，有相关项目实践` : (profile?.summary || direction.join('、'));
+  const skills = normalizeStringList(profile?.facts?.skills, 30);
+  const education = normalizeStringList(profile?.facts?.education, 8);
+  const degree = String(profile?.hardConstraints?.degree || '').trim();
+  const student =
+    (profile?.hardConstraints?.employmentTypes ?? []).includes('实习') ||
+    String(profile?.hardConstraints?.experience || '').includes('在校');
+  const identity = identityFromEducation(education, degree, student);
+  const relevant = pickRelevantSkills(skills, job, 3);
+  const showSkills = relevant.length ? relevant : skills.slice(0, 3);
+  const award = pickRealAward(profile?.facts);
+
+  const body: string[] = [];
+  if (identity) body.push(`我是${identity}`);
+  if (showSkills.length) body.push(`熟悉${showSkills.join('、')}`);
+  if (award) body.push(`曾获${award}`);
   const parts = [`您好，我想应聘贵公司的${title}岗位。`];
-  if (identity) parts.push(`我是${identity}，`);
-  if (evidence) parts.push(`${evidence}。`);
+  if (body.length) parts.push(`${body.join('，')}。`);
   parts.push('对该岗位的工作内容很感兴趣，希望有机会进一步沟通，谢谢。');
   return parts.join('').replace(/。{2,}/g, '。').slice(0, 200);
 }
@@ -114,7 +215,12 @@ export async function analyzeJob(
   customGreetingPrompt?: string
 ): Promise<JobAnalysis> {
   if (!profile) throw new Error('请先生成职业画像');
-  const systemPrompt = buildAnalyzeSystemPrompt(customGreetingPrompt) + skillInstructionsFor('job-analysis');
+  // 打招呼语/求职信提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 简历中心输入框内容 → ③ 都不满足则回退本地规则。
+  // 先确保 skills 已从磁盘加载（含用户自行导入/新建的自定义技能）。
+  await ensureSkillsLoaded();
+  const greetingsSkill = skillInstructionsFor('greetings');
+  const inputGreeting = greetingsSkill ? '' : (customGreetingPrompt || '').trim();
+  const systemPrompt = buildAnalyzeSystemPrompt(inputGreeting || undefined) + skillInstructionsFor('job-analysis') + greetingsSkill;
   // 本地确定性多维匹配（deal-breaker 硬约束 + 可解释维度 + 兜底分），先于 AI 计算：
   //   - 硬约束不依赖模型判断，信息充分即拦截（学历/经验/地点/求职类型/黑名单/猎头/外部网申/面试方式）；
   //   - 维度分（技能/方向/地点/薪资/学历/经验）用于 UI 可解释展示与 AI 分校准。

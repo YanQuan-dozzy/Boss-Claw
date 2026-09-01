@@ -1,0 +1,64 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>张三 - 前端开发工程师</title><style>
+@page { size: A4; margin: 14mm 15mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  color: var(--text, #333); font-size: 10.5pt; line-height: 1.6;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.resume { max-width: 100%; }
+/* ===== 头部 ===== */
+.resume-header { text-align: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid var(--accent, #2b5a9e); position: relative; }
+.resume-header::after { content: ""; display: block; border-bottom: 1px solid var(--line, #d5e2f2); position: absolute; left: 0; right: 0; bottom: -4px; }
+.resume-name { margin: 0 0 6px; font-size: 22pt; font-weight: 700; color: var(--heading, #1f3a63); }
+/* 注意：不使用 letter-spacing——Chromium 打印会把字距实现为字符间空格，破坏 ATS 检索。 */
+.resume-contact { font-size: 9.5pt; color: var(--text-2, #555); }
+.resume-contact .sep { margin: 0 7px; color: var(--line, #b0b8c4); }
+.resume-contact .label { color: var(--text-3, #8a94a6); margin-right: 2px; }
+/* ===== 分节 ===== */
+.resume-section { margin-bottom: 12px; }
+.resume-section-title {
+  margin: 0 0 7px; padding: 2px 0 2px 9px; font-size: 12pt; font-weight: 700; color: var(--heading, #1f3a63);
+  border-left: 4px solid var(--accent, #2b5a9e); line-height: 1.4;
+}
+.resume-section-body { padding-left: 13px; }
+.resume-section-body p { margin: 3px 0; }
+/* ===== 摘要 ===== */
+.para-block p, .summary { text-align: justify; }
+/* ===== 技能标签 ===== */
+.skill-chips { margin: 2px 0; }
+.skill-chip {
+  display: inline-block; margin: 2px 5px 2px 0; padding: 1px 9px;
+  background: var(--chip-bg, #eef3fa); color: var(--chip-text, #2b5a9e); border: 1px solid var(--chip-border, #d3e0f0);
+  border-radius: 10px; font-size: 9.5pt; line-height: 1.6;
+}
+/* ===== 要点列表 ===== */
+ul.bullets { margin: 3px 0; padding-left: 16px; }
+ul.bullets li { margin-bottom: 3px; text-align: justify; }
+ul.bullets li::marker { color: var(--accent, #2b5a9e); }
+/* 打印控制：避免小节标题与内容分页分离 */
+.resume-section { break-inside: avoid-page; }
+
+@page { size: A4; margin: 0; }
+.tpl-sidebar { --text:#2a2a2a; --text-2:#555; --heading:#1d2733; }
+.tpl-sidebar .resume { display: flex; min-height: 297mm; }
+.tpl-sidebar .sidebar {
+  width: 30%; background: #263445; color: #e8eef5; padding: 14mm 7mm;
+  font-size: 9pt; line-height: 1.7;
+}
+.tpl-sidebar .sidebar .side-name { font-size: 19pt; font-weight: 700; color: #fff; margin: 0 0 4px; }
+.tpl-sidebar .sidebar .side-title { font-size: 10pt; color: #a8c3e8; margin: 0 0 12px; }
+.tpl-sidebar .sidebar .side-contact { font-size: 8.5pt; color: #c9d6e5; margin-bottom: 16px; }
+.tpl-sidebar .sidebar .side-contact div { margin-bottom: 4px; }
+.tpl-sidebar .sidebar .side-section { margin-bottom: 14px; }
+.tpl-sidebar .sidebar .side-section-title { font-size: 10.5pt; font-weight: 700; color: #fff; border-left: 3px solid #5b8fc9; padding-left: 7px; margin: 0 0 7px; }
+.tpl-sidebar .sidebar .side-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 7px; border: 1px solid #48657f; border-radius: 10px; font-size: 8pt; color: #d7e3ef; }
+.tpl-sidebar .sidebar ul.side-bullets { margin: 3px 0; padding-left: 14px; }
+.tpl-sidebar .sidebar ul.side-bullets li { margin-bottom: 3px; }
+.tpl-sidebar .main { flex: 1; padding: 14mm 12mm 14mm 10mm; }
+.tpl-sidebar .resume-section { margin-bottom: 13px; }
+.tpl-sidebar .resume-section-title { border-left: 4px solid #2b5a9e; padding-left: 8px; font-size: 12pt; color: #1d2733; }
+.tpl-sidebar .resume-section-body { padding-left: 12px; }
+.tpl-sidebar .skill-chip { background: #eef3fa; border-color: #d3e0f0; color: #2b5a9e; }
+</style></head><body class="tpl-sidebar"><div class="resume"><aside class="sidebar"><h1 class="side-name">张三</h1><div class="side-title">前端开发工程师</div><div class="side-contact"><div>电话 13800138000</div><div>邮箱 zhangsan@example.com</div><div>求职意向 前端开发工程师</div></div><div class="side-section"><div class="side-section-title">核心技能</div><div class="skill-chips"><span class="side-chip">React</span><span class="side-chip">TypeScript</span><span class="side-chip">Vite &amp; Webpack</span><span class="side-chip">Node.js</span><span class="side-chip">Ant Design</span><span class="side-chip">Git / CI</span></div></div><div class="side-section"><div class="side-section-title">教育背景</div><ul class="side-bullets"><li>某大学 · 计算机科学与技术 · 本科 · 2022-2026</li></ul></div></aside><main class="main"><section class="resume-section"><h2 class="resume-section-title">个人摘要</h2><div class="resume-section-body"><div class="para-block"><p>计算机科学本科在读，具备 React / TypeScript 项目经验，主导过 2 个中大型 Web 项目从 0 到 1 落地，注重性能与工程规范。</p></div></div></section><section class="resume-section"><h2 class="resume-section-title">岗位相关经历亮点</h2><div class="resume-section-body"><ul class="bullets"><li>主导电商中台前端重构，首屏加载耗时从 3s 降至 1.2s</li><li>搭建内部组件库，覆盖 20+ 业务页面</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">工作/实习经历</h2><div class="resume-section-body"><ul class="bullets"><li>某科技有限公司 · 前端开发实习生（2024.06-2024.12）：负责营销活动页开发与埋点统计</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">项目经历</h2><div class="resume-section-body"><ul class="bullets"><li>在线课程平台（React + TypeScript + Vite）：负责课程列表、播放页与后台管理</li></ul></div></section></main></div></body></html>

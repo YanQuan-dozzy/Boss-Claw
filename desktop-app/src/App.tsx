@@ -61,7 +61,9 @@ export default function App() {
         localStorage.setItem('bossclaw-data-version', DATA_VERSION);
         window.location.reload();
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[App] 数据版本重置失败（可能导致旧数据残留）: ' + String((e && (e as Error).message) || e));
+    }
   }, []);
 
   // 启动即实时探测本地桥接状态（不依赖持久化、不依赖进入 OpenClaw 页），
@@ -97,22 +99,33 @@ export default function App() {
       <div className="workspace">
         <Sidebar />
         <main className={'main-stage' + (isWorkbench ? ' main-stage--full' : '')}>
-          {/* Suspense + ErrorBoundary：路由懒加载与页面级崩溃隔离。
-              单页崩溃不影响侧栏 / 标题栏 / 状态栏，其它页可正常切换。 */}
-          <ErrorBoundary label={activeRoute} key={activeRoute}>
-            <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
-              {activeRoute === 'home' && <Home />}
-              {activeRoute === 'workbench' && <Workbench />}
-              {activeRoute === 'resume' && <Resume />}
-              {activeRoute === 'directions' && <Directions />}
-              {activeRoute === 'tasks' && <Tasks />}
-              {activeRoute === 'stats' && <Stats />}
-              {activeRoute === 'openclaw' && <OpenClaw />}
-              {activeRoute === 'autochat' && <AutoChat />}
-              {activeRoute === 'assistant' && <JobAssistant />}
-              {activeRoute === 'settings' && <Settings />}
-            </Suspense>
-          </ErrorBoundary>
+          {/* 工作台常驻宿主：active 时全屏显示；切换其它模块时隐藏但保持挂载，
+              使「搜索采集 / 自动投递 / 内置浏览器」在后台继续运行（webview 不被销毁）。
+              因此工作台使用稳定 key 的独立 ErrorBoundary，不随路由切换而卸载。 */}
+          <div className={'workbench-host' + (isWorkbench ? ' is-active' : ' is-background')}>
+            <ErrorBoundary label="workbench">
+              <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
+                <Workbench />
+              </Suspense>
+            </ErrorBoundary>
+          </div>
+          {!isWorkbench && (
+            /* Suspense + ErrorBoundary：路由懒加载与页面级崩溃隔离。
+               单页崩溃不影响侧栏 / 标题栏 / 状态栏，其它页可正常切换。 */
+            <ErrorBoundary label={activeRoute} key={activeRoute}>
+              <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
+                {activeRoute === 'home' && <Home />}
+                {activeRoute === 'resume' && <Resume />}
+                {activeRoute === 'directions' && <Directions />}
+                {activeRoute === 'tasks' && <Tasks />}
+                {activeRoute === 'stats' && <Stats />}
+                {activeRoute === 'openclaw' && <OpenClaw />}
+                {activeRoute === 'autochat' && <AutoChat />}
+                {activeRoute === 'assistant' && <JobAssistant />}
+                {activeRoute === 'settings' && <Settings />}
+              </Suspense>
+            </ErrorBoundary>
+          )}
         </main>
       </div>
       <StatusBar />

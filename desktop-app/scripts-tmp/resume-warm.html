@@ -1,0 +1,49 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>张三 - 前端开发工程师</title><style>
+@page { size: A4; margin: 14mm 15mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  color: var(--text, #333); font-size: 10.5pt; line-height: 1.6;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.resume { max-width: 100%; }
+/* ===== 头部 ===== */
+.resume-header { text-align: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid var(--accent, #2b5a9e); position: relative; }
+.resume-header::after { content: ""; display: block; border-bottom: 1px solid var(--line, #d5e2f2); position: absolute; left: 0; right: 0; bottom: -4px; }
+.resume-name { margin: 0 0 6px; font-size: 22pt; font-weight: 700; color: var(--heading, #1f3a63); }
+/* 注意：不使用 letter-spacing——Chromium 打印会把字距实现为字符间空格，破坏 ATS 检索。 */
+.resume-contact { font-size: 9.5pt; color: var(--text-2, #555); }
+.resume-contact .sep { margin: 0 7px; color: var(--line, #b0b8c4); }
+.resume-contact .label { color: var(--text-3, #8a94a6); margin-right: 2px; }
+/* ===== 分节 ===== */
+.resume-section { margin-bottom: 12px; }
+.resume-section-title {
+  margin: 0 0 7px; padding: 2px 0 2px 9px; font-size: 12pt; font-weight: 700; color: var(--heading, #1f3a63);
+  border-left: 4px solid var(--accent, #2b5a9e); line-height: 1.4;
+}
+.resume-section-body { padding-left: 13px; }
+.resume-section-body p { margin: 3px 0; }
+/* ===== 摘要 ===== */
+.para-block p, .summary { text-align: justify; }
+/* ===== 技能标签 ===== */
+.skill-chips { margin: 2px 0; }
+.skill-chip {
+  display: inline-block; margin: 2px 5px 2px 0; padding: 1px 9px;
+  background: var(--chip-bg, #eef3fa); color: var(--chip-text, #2b5a9e); border: 1px solid var(--chip-border, #d3e0f0);
+  border-radius: 10px; font-size: 9.5pt; line-height: 1.6;
+}
+/* ===== 要点列表 ===== */
+ul.bullets { margin: 3px 0; padding-left: 16px; }
+ul.bullets li { margin-bottom: 3px; text-align: justify; }
+ul.bullets li::marker { color: var(--accent, #2b5a9e); }
+/* 打印控制：避免小节标题与内容分页分离 */
+.resume-section { break-inside: avoid-page; }
+
+.tpl-warm { --accent:#e07a3f; --heading:#8a4a20; --line:#f2dcc9; --text-2:#8a6a52; --text-3:#b08a6d; --chip-bg:#fdeee0; --chip-text:#c25e1f; --chip-border:#f5d8c0; }
+.tpl-warm .resume-header { background: #fdf6ef; border-bottom: 2px solid #e07a3f; padding: 14px 16px 12px; margin-bottom: 16px; border-radius: 4px; }
+.tpl-warm .resume-header::after { display: none; }
+.tpl-warm .resume-name { color: #8a4a20; }
+.tpl-warm .resume-section-title { border-left-color: #e07a3f; }
+.tpl-warm .skill-chip { border-radius: 12px; }
+</style></head><body class="tpl-warm"><div class="resume"><header class="resume-header"><h1 class="resume-name">张三</h1><div class="resume-contact"><span><span class="label">求职意向</span>前端开发工程师</span><span class="sep">|</span><span><span class="label">电话</span>13800138000</span><span class="sep">|</span><span><span class="label">邮箱</span>zhangsan@example.com</span></div></header><section class="resume-section"><h2 class="resume-section-title">个人摘要</h2><div class="resume-section-body"><div class="para-block"><p>计算机科学本科在读，具备 React / TypeScript 项目经验，主导过 2 个中大型 Web 项目从 0 到 1 落地，注重性能与工程规范。</p></div></div></section><section class="resume-section"><h2 class="resume-section-title">核心技能</h2><div class="resume-section-body"><div class="skill-chips"><span class="skill-chip">React</span><span class="skill-chip">TypeScript</span><span class="skill-chip">Vite &amp; Webpack</span><span class="skill-chip">Node.js</span><span class="skill-chip">Ant Design</span><span class="skill-chip">Git / CI</span></div></div></section><section class="resume-section"><h2 class="resume-section-title">岗位相关经历亮点</h2><div class="resume-section-body"><ul class="bullets"><li>主导电商中台前端重构，首屏加载耗时从 3s 降至 1.2s</li><li>搭建内部组件库，覆盖 20+ 业务页面</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">工作/实习经历</h2><div class="resume-section-body"><ul class="bullets"><li>某科技有限公司 · 前端开发实习生（2024.06-2024.12）：负责营销活动页开发与埋点统计</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">项目经历</h2><div class="resume-section-body"><ul class="bullets"><li>在线课程平台（React + TypeScript + Vite）：负责课程列表、播放页与后台管理</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">教育背景</h2><div class="resume-section-body"><ul class="bullets"><li>某大学 · 计算机科学与技术 · 本科 · 2022-2026</li></ul></div></section></div></body></html>

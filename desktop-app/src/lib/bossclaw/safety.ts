@@ -53,7 +53,7 @@ const CODE_MAP: Record<number, Omit<RiskSignal, 'code'>> = {
   36: { severity: 'challenge', message: '账户异常，需人工验证，切勿重复重试以免升级封禁', requireHuman: true, retryable: false, cooldownMs: SAFETY_LIMITS.DEFAULT_COOLDOWN_MS * 2 },
   // 环境异常（检测到异常环境/指纹）
   37: { severity: 'env', message: '检测到环境异常，已暂停，请人工核对', requireHuman: true, retryable: false, cooldownMs: SAFETY_LIMITS.DEFAULT_COOLDOWN_MS },
-  // 环境异常未登录（隐身引擎复用系统浏览器时，BOSS 可能对未登录的自动化环境返回 38）
+  // 环境异常未登录（隐身引擎仅 Camoufox 原生内核；未登录的自动化环境可能返回 38）
   38: { severity: 'env', message: '环境异常：请先完成隐身引擎扫码登录后再搜索/投递', requireHuman: true, retryable: false, cooldownMs: SAFETY_LIMITS.DEFAULT_COOLDOWN_MS },
   // 限速（请求频率超阈值）
   1006: { severity: 'rate_limited', message: '请求过于频繁，已被限速，进入退避冷却', requireHuman: false, retryable: true, cooldownMs: SAFETY_LIMITS.RATE_LIMIT_COOLDOWN_MS },

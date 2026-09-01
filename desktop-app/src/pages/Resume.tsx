@@ -27,14 +27,32 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import { isReadableResumeText } from '@/lib/bossclaw/pdfExtractor';
 import { parseResumeFile, resumeFileKind } from '@/lib/bossclaw/resumeParser';
 import { buildProfile, profileFromDraft, profileToDraft, profileHasCore } from '@/lib/bossclaw/profile';
-import { generateGreetings, DEFAULT_GREETING_PROMPT, resolveGreetingPrompt } from '@/lib/bossclaw/greetings';
+import { analyzeJob, fallbackApplicantGreeting } from '@/lib/bossclaw/matching';
+import { DEFAULT_ANALYZE_GREETING_INSTRUCTIONS } from '@/lib/bossclaw/prompts';
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
 import { bridgeParseResume } from '@/lib/bridgeClient';
-import type { ProfileDraft } from '@/lib/bossclaw/types';
+import type { JobMeta, ProfileDraft } from '@/lib/bossclaw/types';
 import { EmptyState } from '@/components/feedback';
 
 const { TextArea } = Input;
 const { Text } = Typography;
+
+// 打招呼语预览的测试岗位 JD（可修改，预填一份真实岗位描述便于直接体验工作台提示词的效果）
+const TEST_JOB_DESC = `职位描述
+岗位职责
+参与CSGHub平台模块全栈开发(Golang+Vue.js)
+协助后端API、前端页面、配套工具功能开发调试协助进行容器环境下程序部署、问题排查(Docker/K8s)配合研发、产品团队完成需求开发、自测
+编写基础开发文档，参与代码优化
+任职要求
+·本科及以上学历，计算机、软件工程等相关专业，27届应届生优先
+了解Golang基础语法，能够独立编写简单接口
+掌握Vue基础，能够实现常规前端页面开发知道Docker基础概念，接触过容器更佳
+了解基础HTTP、RESTful接口相关知识
+有课程项目、个人Demo、小型开发项目优先
+主动好学，沟通良好，能长期稳定实习，表现优异可转正
+加分项:
+接触过大模型、AI应用开发
+了解K8s、CI/CD、消息队列基础概念有开源项目、云原生相关实践经验`;
 
 // DOCX / PDF 本地解析失败时的桥接兜底（mammoth / pdftotext / OCR）
 const bridgeFallback = async (file: File, name: string) => {
@@ -57,7 +75,6 @@ export default function Resume() {
   const setResumeText = useDataStore((s) => s.setResumeText);
   const setProfile = useDataStore((s) => s.setProfile);
   const setProfileDraft = useDataStore((s) => s.setProfileDraft);
-  const storeGreetings = useDataStore((s) => s.greetings);
   const storeGreetingPrompt = useDataStore((s) => s.greetingPrompt);
   const setGreetingPromptStore = useDataStore((s) => s.setGreetingPrompt);
   const config = useSettingsStore((s) => s.config);
@@ -67,19 +84,17 @@ export default function Resume() {
   const [draft, setDraft] = useState<ProfileDraft | null>(profileDraft);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [method, setMethod] = useState('');
-  const [greetings, setGreetings] = useState<string[]>([]);
-  const [greetingsMeta, setGreetingsMeta] = useState<{ method: string; warning?: string } | null>(null);
+  const [previewGreeting, setPreviewGreeting] = useState('');
+  const [previewMeta, setPreviewMeta] = useState<{ method: string; warning?: string } | null>(null);
   const [greetingBusy, setGreetingBusy] = useState(false);
-  const [customPrompt, setCustomPrompt] = useState(storeGreetingPrompt || DEFAULT_GREETING_PROMPT);
+  const [customPrompt, setCustomPrompt] = useState(storeGreetingPrompt || DEFAULT_ANALYZE_GREETING_INSTRUCTIONS);
+  const [testJobTitle, setTestJobTitle] = useState('全栈开发实习生');
+  const [testJobDesc, setTestJobDesc] = useState(TEST_JOB_DESC);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // 页面加载时回填全局 store 中已生成的打招呼语和自定义提示词（刷新后仍可见，无需重新生成）
+  // 页面加载时回填全局 store 中已保存的自定义打招呼语提示词（刷新后仍可见）
   useEffect(() => {
-    if (storeGreetings.length) {
-      setGreetings(storeGreetings);
-      setGreetingsMeta({ method: 'ai', warning: undefined });
-    }
     if (storeGreetingPrompt) {
       setCustomPrompt(storeGreetingPrompt);
     }
@@ -106,9 +121,9 @@ export default function Resume() {
       } else {
         message.success(`已解析简历文本（${result.method}），可点击「生成职业画像」。`);
       }
-      // 新简历导入后清空旧打招呼语
-      setGreetings([]);
-      setGreetingsMeta(null);
+      // 新简历导入后清空旧打招呼语预览
+      setPreviewGreeting('');
+      setPreviewMeta(null);
     } catch (err: any) {
       setWarnings((w) => [...w, err?.message || '解析失败']);
       message.error(err?.message || '解析失败');
@@ -152,25 +167,33 @@ export default function Resume() {
     }
   };
 
-  const onGenerateGreetings = async () => {
+  const onGeneratePreview = async () => {
     if (!text.trim()) {
       message.warning('请先导入或粘贴简历文本');
       return;
     }
+    if (!testJobTitle.trim() && !testJobDesc.trim()) {
+      message.warning('请填写测试岗位名称与岗位 JD');
+      return;
+    }
     setGreetingBusy(true);
     try {
+      // 保存用户编辑的提示词到 store（工作台岗位分析 / 定制简历求职信共用）
+      const trimmed = customPrompt.trim();
+      setGreetingPromptStore(trimmed && trimmed !== DEFAULT_ANALYZE_GREETING_INSTRUCTIONS ? trimmed : '');
       const p = useDataStore.getState().profile;
-      // 保存用户编辑的提示词到 store（供工作台岗位分析使用）
-      const promptToUse = resolveGreetingPrompt(customPrompt);
-      setGreetingPromptStore(promptToUse === DEFAULT_GREETING_PROMPT ? '' : customPrompt);
-      const result = await generateGreetings(text, p, config.model, customPrompt);
-      setGreetings(result.greetings);
-      setGreetingsMeta({ method: result.method, warning: result.warning });
-      // 写入全局 store：工作台岗位沟通可选用这些 AI 打招呼语
-      useDataStore.getState().setGreetings(result.greetings);
-      message.success(result.method === 'ai' ? `已基于自定义提示词生成 4 条 AI 个性化打招呼语（已供工作台选用）` : '已生成 4 条打招呼语（本地规则）');
+      const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
+      // 复用工作台同一分析链路（同提示词、同校验），保证预览与工作台真实生成一致
+      const analysis = await analyzeJob(job, p, text, config, config.model, trimmed || undefined);
+      setPreviewGreeting(analysis.greeting);
+      setPreviewMeta({ method: 'ai', warning: undefined });
+      message.success('已按工作台提示词生成 1 条针对该岗位 JD 的打招呼语');
     } catch (err: any) {
-      message.error(err?.message || '生成失败');
+      const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
+      const local = fallbackApplicantGreeting(job, useDataStore.getState().profile);
+      setPreviewGreeting(local);
+      setPreviewMeta({ method: 'local', warning: `AI 生成失败（${err?.message || '未知原因'}），已回退本地规则打招呼语。` });
+      message.warning('未生成 AI 招呼语，已回退本地规则');
     } finally {
       setGreetingBusy(false);
     }
@@ -184,13 +207,13 @@ export default function Resume() {
   };
 
   const onSavePrompt = () => {
-    const resolved = resolveGreetingPrompt(customPrompt);
-    setGreetingPromptStore(resolved === DEFAULT_GREETING_PROMPT ? '' : customPrompt);
-    message.success('打招呼语提示词已保存（将用于工作台岗位分析的招呼语生成）');
+    const trimmed = customPrompt.trim();
+    setGreetingPromptStore(trimmed && trimmed !== DEFAULT_ANALYZE_GREETING_INSTRUCTIONS ? trimmed : '');
+    message.success('打招呼语提示词已保存（工作台岗位分析 / 简历中心预览 / 定制简历求职信共用）');
   };
 
   const onResetPrompt = () => {
-    setCustomPrompt(DEFAULT_GREETING_PROMPT);
+    setCustomPrompt(DEFAULT_ANALYZE_GREETING_INSTRUCTIONS);
     setGreetingPromptStore('');
     message.info('已恢复为系统默认提示词');
   };
@@ -302,55 +325,68 @@ export default function Resume() {
             />
           </Card>
 
-          <Card size="small" title={<Space><CommentOutlined /> AI 打招呼语提示词</Space>}
+          <Card size="small" title={<Space><CommentOutlined /> AI 打招呼语提示词（工作台定制）</Space>}
             extra={
               <Space>
-                <Button icon={<ThunderboltOutlined />} loading={greetingBusy} onClick={onGenerateGreetings}>生成预览</Button>
                 <Button icon={<SaveOutlined />} size="small" onClick={onSavePrompt}>保存提示词</Button>
-                <Button size="small" onClick={onResetPrompt} disabled={customPrompt === DEFAULT_GREETING_PROMPT}>恢复默认</Button>
-                {greetings.length > 0 && (
-                  <Button size="small" onClick={() => { setGreetings([]); setGreetingsMeta(null); }}>清空预览</Button>
-                )}
+                <Button size="small" onClick={onResetPrompt} disabled={customPrompt === DEFAULT_ANALYZE_GREETING_INSTRUCTIONS}>恢复默认</Button>
               </Space>
             }>
-            <div style={{ marginBottom: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                自定义 AI 生成打招呼语的提示词。修改后点击「保存提示词」，工作台分析岗位时将使用你的提示词生成个性化招呼语。留空或恢复默认则使用系统内置提示词。
-              </Text>
-            </div>
             <TextArea
               value={customPrompt}
               onChange={(e) => setCustomPrompt(e.target.value)}
               rows={8}
-              placeholder="在此编辑 AI 打招呼语提示词，控制生成口吻、角度、长度等..."
+              placeholder="在此编辑 AI 打招呼语提示词，控制生成口吻、开头格式、长度、安全红线等..."
               style={{ fontSize: 12, lineHeight: 1.7, fontFamily: 'monospace' }}
             />
-            {greetings.length > 0 ? (
-              <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={8}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Text strong style={{ fontSize: 13 }}>预览结果（基于当前提示词生成）</Text>
-                  {greetingsMeta?.method === 'local' && greetingsMeta.warning && (
-                    <Tag color="orange">{greetingsMeta.warning}</Tag>
-                  )}
-                  {greetingsMeta?.method === 'ai' && <Tag color="green">AI 生成</Tag>}
-                </div>
-                {greetings.map((g, i) => (
-                  <div key={i} className="greeting-item">
-                    <span className="greeting-index">{i + 1}</span>
-                    <Text style={{ flex: 1, minWidth: 0 }}>{g}</Text>
-                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopyGreeting(g)}>复制</Button>
-                  </div>
-                ))}
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  预览供参考；实际投递时，工作台会根据每个岗位单独生成针对性招呼语。请勿替用户承诺薪资、到岗或面试时间。
-                </Text>
+
+            <div style={{ marginTop: 14, borderTop: '1px dashed var(--border)', paddingTop: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Text strong style={{ fontSize: 13 }}>打招呼语预览（测试岗位 JD）</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>按工作台提示词为指定岗位生成 1 条招呼语，与工作台真实生成一致</Text>
+              </div>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Input
+                  value={testJobTitle}
+                  onChange={(e) => setTestJobTitle(e.target.value)}
+                  placeholder="岗位名称，如：全栈开发实习生"
+                  maxLength={60}
+                />
+                <TextArea
+                  value={testJobDesc}
+                  onChange={(e) => setTestJobDesc(e.target.value)}
+                  rows={6}
+                  placeholder="粘贴测试岗位 JD（职位描述 / 任职要求）…"
+                  style={{ fontSize: 12, lineHeight: 1.6 }}
+                />
               </Space>
-            ) : (
-              <EmptyState
-                title="尚未生成招呼语预览"
-                description="导入简历后编辑提示词，点击「生成预览」查看效果。提示词将用于工作台每个岗位的打招呼语生成。"
-              />
-            )}
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Button type="primary" icon={<ThunderboltOutlined />} loading={greetingBusy} onClick={onGeneratePreview}>生成打招呼语</Button>
+                {previewGreeting && (
+                  <>
+                    <Tag color={previewMeta?.method === 'ai' ? 'green' : 'orange'}>
+                      {previewMeta?.method === 'ai' ? 'AI 生成' : '本地兜底'}
+                    </Tag>
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopyGreeting(previewGreeting)}>复制</Button>
+                    <Button size="small" type="text" onClick={() => { setPreviewGreeting(''); setPreviewMeta(null); }}>清空</Button>
+                  </>
+                )}
+              </div>
+              {previewMeta?.warning && (
+                <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>{previewMeta.warning}</Text>
+              )}
+              {previewGreeting ? (
+                <div className="greeting-item" style={{ marginTop: 8 }}>
+                  <span className="greeting-index">1</span>
+                  <Text style={{ flex: 1, minWidth: 0 }}>{previewGreeting}</Text>
+                </div>
+              ) : (
+                <EmptyState
+                  title="尚未生成打招呼语预览"
+                  description="填写测试岗位 JD 后点击「生成打招呼语」，按工作台提示词生成针对该岗位的 1 条招呼语。请勿替用户承诺薪资、到岗或面试时间。"
+                />
+              )}
+            </div>
           </Card>
         </Col>
 

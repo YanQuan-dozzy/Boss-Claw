@@ -135,7 +135,7 @@ macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）需在 macOS 上执行 
 cd desktop-app/camoufox
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m camoufox fetch   # 可选：下载指纹内核(~150MB)；跳过则自动回退系统 Chrome/Edge
+.venv\Scripts\python -m camoufox fetch   # 必装：下载 Camoufox 原生内核(~150MB)；本地 Chrome/Edge 不可复用，不装则引擎不可用
 ```
 
 **CloakBrowser**——首次启用「隐身浏览器」时自动下载 ~200MB 隐身 Chromium 到 `~/.cloakbrowser/` 并校验 Ed25519 签名；离线环境可用 `CLOAKBROWSER_BINARY_PATH` 指向本地二进制。

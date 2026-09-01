@@ -1,0 +1,69 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>张三 - 前端开发工程师</title><style>
+@page { size: A4; margin: 13mm 14mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  color: var(--text, #333); font-size: 10.5pt; line-height: 1.6;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.resume { max-width: 100%; }
+/* ===== 照片插入框（未上传 → 虚线占位；上传 → 照片） ===== */
+.photo-box { flex-shrink: 0; }
+.photo-box img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.photo-placeholder {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  border: 1.5px dashed #c3ccd6; color: #a8b2bd; font-size: 9pt; background: #fafbfc;
+}
+/* ===== 头部 ===== */
+.resume-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid var(--accent, #2b5a9e); }
+.resume-header-main { flex: 1; min-width: 0; }
+.resume-name { margin: 0 0 6px; font-size: 21pt; font-weight: 700; color: var(--heading, #1f3a63); }
+/* 注意：不使用 letter-spacing——Chromium 打印会把字距实现为字符间空格，破坏 ATS 检索。 */
+.resume-contact { font-size: 9.5pt; color: var(--text-2, #555); }
+.resume-contact .sep { margin: 0 7px; color: var(--line, #b0b8c4); }
+.resume-contact .label { color: var(--text-3, #8a94a6); margin-right: 2px; }
+/* ===== 分节 ===== */
+.resume-section { margin-bottom: 12px; }
+.resume-section-title {
+  margin: 0 0 7px; padding: 2px 0 2px 9px; font-size: 12pt; font-weight: 700; color: var(--heading, #1f3a63);
+  border-left: 4px solid var(--accent, #2b5a9e); line-height: 1.4;
+}
+.resume-section-body { padding-left: 13px; }
+.resume-section-body p { margin: 3px 0; }
+/* ===== 摘要 ===== */
+.para-block p, .summary { text-align: justify; }
+/* ===== 技能标签 ===== */
+.skill-chips { margin: 2px 0; }
+.skill-chip {
+  display: inline-block; margin: 2px 5px 2px 0; padding: 1px 9px;
+  background: var(--chip-bg, #eef3fa); color: var(--chip-text, #2b5a9e); border: 1px solid var(--chip-border, #d3e0f0);
+  border-radius: 10px; font-size: 9.5pt; line-height: 1.6;
+}
+/* ===== 要点列表 ===== */
+ul.bullets { margin: 3px 0; padding-left: 16px; }
+ul.bullets li { margin-bottom: 3px; text-align: justify; }
+ul.bullets li::marker { color: var(--accent, #2b5a9e); }
+/* 打印控制：避免小节标题与内容分页分离 */
+.resume-section { break-inside: avoid-page; }
+
+@page { size: A4; margin: 0; }
+.tpl-dark { --text:#2a2a2a; --text-2:#555; --heading:#1d2733; }
+.tpl-dark .resume { display: flex; min-height: 297mm; }
+.tpl-dark .left {
+  width: 30%; background: #263445; color: #e8eef5; padding: 14mm 7mm;
+  font-size: 9pt; line-height: 1.7;
+}
+.tpl-dark .left .photo-box { width: 28mm; height: 28mm; margin: 0 auto 10mm; border-radius: 50%; overflow: hidden; border: 2.5px solid #5b8fc9; }
+.tpl-dark .left .col-name { font-size: 19pt; font-weight: 700; color: #fff; text-align: center; margin: 0 0 4px; }
+.tpl-dark .left .col-title { font-size: 10pt; color: #a8c3e8; text-align: center; margin: 0 0 12px; }
+.tpl-dark .left .col-contact { font-size: 8.5pt; color: #c9d6e5; margin-bottom: 16px; }
+.tpl-dark .left .col-contact div { margin-bottom: 4px; }
+.tpl-dark .left .col-section { margin-bottom: 14px; }
+.tpl-dark .left .col-section-title { font-size: 10.5pt; font-weight: 700; color: #fff; border-left: 3px solid #5b8fc9; padding-left: 7px; margin: 0 0 7px; }
+.tpl-dark .left .col-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 7px; border: 1px solid #48657f; border-radius: 10px; font-size: 8pt; color: #d7e3ef; }
+.tpl-dark .left ul.col-bullets { margin: 3px 0; padding-left: 14px; }
+.tpl-dark .left ul.col-bullets li { margin-bottom: 3px; }
+.tpl-dark .right { flex: 1; padding: 14mm 12mm 14mm 10mm; }
+.tpl-dark .resume-section-title { border-left: 4px solid #2b5a9e; }
+</style></head><body class="tpl-dark"><div class="resume"><aside class="left"><div class="photo-box"><img src="data:image/jpeg;base64,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" alt="个人照片"/></div><div class="col-name">张三</div><div class="col-title">前端开发工程师</div><div class="col-contact"><div>电话 13800138000</div><div>邮箱 zhangsan@example.com</div><div>求职意向 前端开发工程师</div></div><div class="col-section"><div class="col-section-title">核心技能</div><div class="skill-chips"><span class="col-chip">React</span><span class="col-chip">TypeScript</span><span class="col-chip">Vite &amp; Webpack</span><span class="col-chip">Node.js</span><span class="col-chip">Ant Design</span><span class="col-chip">Git / CI</span></div></div><div class="col-section"><div class="col-section-title">教育背景</div><ul class="col-bullets"><li>某大学 · 计算机科学与技术 · 本科 · 2022-2026</li></ul></div></aside><main class="right"><section class="resume-section"><h2 class="resume-section-title">个人摘要</h2><div class="resume-section-body"><div class="para-block"><p>计算机科学本科在读，具备 React / TypeScript 项目经验，主导过 2 个中大型 Web 项目从 0 到 1 落地，注重性能与工程规范。</p></div></div></section><section class="resume-section"><h2 class="resume-section-title">岗位相关经历亮点</h2><div class="resume-section-body"><ul class="bullets"><li>主导电商中台前端重构，首屏加载耗时从 3s 降至 1.2s</li><li>搭建内部组件库，覆盖 20+ 业务页面</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">工作/实习经历</h2><div class="resume-section-body"><ul class="bullets"><li>某科技有限公司 · 前端开发实习生（2024.06-2024.12）：负责营销活动页开发与埋点统计</li></ul></div></section><section class="resume-section"><h2 class="resume-section-title">项目经历</h2><div class="resume-section-body"><ul class="bullets"><li>在线课程平台（React + TypeScript + Vite）：负责课程列表、播放页与后台管理</li></ul></div></section></main></div></body></html>

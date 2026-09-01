@@ -92,8 +92,8 @@ if errorlevel 1 (
     echo [WARN] pip install failed - retrying with Tsinghua mirror...
     ".venv\Scripts\python.exe" -m pip install -r "camoufox\requirements.txt" -i https://pypi.tuna.tsinghua.edu.cn/simple
 )
-echo [INFO] Optional: download camoufox fingerprint core (~150MB)?
-echo        If you skip, the engine auto-falls back to system Chrome / Edge.
+echo [INFO] Required: download camoufox fingerprint core (~150MB)?
+echo        Local Chrome / Edge are NOT reusable - the stealth engine is unavailable without the core.
 set "FETCH_CORE="
 set /p FETCH_CORE="Download camoufox core now? [y/N] "
 if /i "%FETCH_CORE%"=="y" ".venv\Scripts\python.exe" -m camoufox fetch

@@ -1,4 +1,5 @@
 # BossClaw 隐身引擎（可选）Python 依赖
 # 由根目录 install-deps.cmd 自动安装到 desktop-app/.venv
-camoufox>=0.5
-playwright>=1.40
+# camoufox[geoip] 提供 C++ 级指纹伪装内核与 GeoIP（登录/沟通走原生内核时必需）
+camoufox[geoip]>=0.5
+playwright>=1.40,<1.61

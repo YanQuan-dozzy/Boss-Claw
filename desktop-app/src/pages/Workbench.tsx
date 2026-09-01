@@ -27,6 +27,7 @@ import {
 } from '@/lib/bossclaw/safety';
 import { resolveCityCode, loadBossCityCodes } from '@/lib/bossclaw/searchUrl';
 import { camoufoxSearch, camoufoxSend, camoufoxStatus, isCamoufoxStopCode, isCamoufoxEnvCode, type CamoufoxJob } from '@/lib/bossclaw/camoufox';
+import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
 import type { JobMeta, PendingItem, TaskStage } from '@/lib/bossclaw/types';
 
 const { Text } = Typography;
@@ -739,8 +740,8 @@ export default function Workbench() {
   const runNext = async () => {
     const ranked = rerankPending(useDataStore.getState().pending);
     const candidate =
-      (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue')) ||
-      ranked.find((p) => p.status === 'approved_queue');
+      (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue' && !isDeliveryClaimed(p.id))) ||
+      ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id));
     if (candidate) preferIdRef.current = null;
     if (!candidate) {
       if (visualActiveRef.current || cfxActiveRef.current) return;
@@ -780,7 +781,21 @@ export default function Workbench() {
         const st = await camoufoxStatus();
         if (!st.ready) { pauseAssist('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测')); return; }
         setApplyStage('send_message');
-        const result = await camoufoxSend(jobId, greeting, cfx0.os);
+        // 共享占位锁：若该岗位正被后台「自动沟通」投递，则工作台跳过（交给认领方）
+        if (!claimDelivery(candidate.id)) {
+          addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
+          setApplyStage(null);
+          recomputeStats();
+          if (useAppStore.getState().autoAssist) void runNextRef.current();
+          return;
+        }
+        let cfxResult: any;
+        try {
+          cfxResult = await camoufoxSend(jobId, greeting, cfx0.os);
+        } finally {
+          releaseDelivery(candidate.id);
+        }
+        const result = cfxResult;
         if (result.ok && result.sent) {
           handleDelivered(candidate.id);
           return;
@@ -853,7 +868,22 @@ export default function Workbench() {
 
     setApplyStage('open_job');
     addLog('info', `通过 BOSS 官方接口投递：${candidate.job?.title || '岗位'}`);
-    const result = await webviewApi.current?.bossApi('friendAdd', { encryptJobId, encryptBossId, greeting: finalGreeting }, apiTabId);
+    // 共享占位锁：与后台「自动沟通」互斥，避免对同一岗位重复投递
+    if (!claimDelivery(candidate.id)) {
+      addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
+      updatePending(candidate.id, { status: 'approved' }); // 交回后台「自动沟通」（approved 归它处理）
+      setApplyStage(null);
+      recomputeStats();
+      if (useAppStore.getState().autoAssist) void runNextRef.current();
+      return;
+    }
+    let friendAddResult: any;
+    try {
+      friendAddResult = await webviewApi.current?.bossApi('friendAdd', { encryptJobId, encryptBossId, greeting: finalGreeting }, apiTabId);
+    } finally {
+      releaseDelivery(candidate.id);
+    }
+    const result = friendAddResult;
     if (result && !result.error && result.code === 0) {
       addLog('success', `friend/add 接口返回成功：${candidate.job?.title || ''}`);
       handleDelivered(candidate.id);

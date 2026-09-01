@@ -71,10 +71,10 @@ v3 重建后首次启动会清空旧 `persist:bossclaw` 会话与 Camoufox 缓�
 - 沟通对象与岗位一致
 - 未出现验证码 / 安全验证（code 35 / 36 / 32 会立即停止交人工）
 
-### Q9：隐身引擎报错「未检测到可用内核」？
+### Q9：隐身引擎报错「隐身引擎未就绪」？
 
-- 安装 Chrome / Edge / Firefox 任一浏览器，引擎会自动复用
-- 或执行 `pip install 'camoufox[geoip]' && python -m camoufox fetch` 下载指纹内核（约 150MB）
+- 本地 Chrome / Edge 不可复用（BOSS 反爬对 Playwright 驱动的系统浏览器返回空壳页），请勿只安装浏览器
+- 需执行 `pip install 'camoufox[geoip]' && python -m camoufox fetch` 下载 Camoufox 原生内核（约 150MB）
 
 ### Q10：CloakBrowser（隐身浏览器）下载慢 / 失败？
 

@@ -14,7 +14,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { useAutoChatEngine } from '@/hooks/useAutoChatEngine';
+import { useAutoChatStore } from '@/store/useAutoChatStore';
 import {
   camoufoxStatus, camoufoxLogin, camoufoxLogout,
   type CamoufoxStatus,
@@ -23,7 +23,6 @@ import { electronApi } from '@/lib/electronApi';
 import {
   isLockedOut, cooldownRemaining, SAFETY_LIMITS,
 } from '@/lib/bossclaw/safety';
-import { DEFAULT_GREETING_PROMPT, resolveGreetingPrompt } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { cleanTitle, formatMetaLine } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
@@ -54,22 +53,20 @@ export default function AutoChat() {
   const imageResumes = useDataStore(useShallow((s) => s.imageResumes));
   const addImageResume = useDataStore((s) => s.addImageResume);
   const removeImageResume = useDataStore((s) => s.removeImageResume);
-  const storeGreetingPrompt = useDataStore((s) => s.greetingPrompt);
-  const setGreetingPromptStore = useDataStore((s) => s.setGreetingPrompt);
+  const storeCommunicationInfo = useDataStore((s) => s.communicationInfo);
+  const setCommunicationInfo = useDataStore((s) => s.setCommunicationInfo);
   const profile = useDataStore((s) => s.profile);
 
   const config = useSettingsStore(useShallow((s) => s.config));
   const setConfig = useSettingsStore((s) => s.setConfig);
 
-  // ===== 自动沟通解耦 Engine Hook =====
-  const {
-    chatRunning,
-    activeChatId,
-    progress,
-    chatOne,
-    runBatchChat,
-    stopChat,
-  } = useAutoChatEngine();
+  // ===== 自动沟通后台引擎（全局持久：切页仍继续运行，工作台新批准岗位自动加入）=====
+  const chatRunning = useAutoChatStore((s) => s.chatRunning);
+  const activeChatId = useAutoChatStore((s) => s.activeChatId);
+  const progress = useAutoChatStore((s) => s.progress);
+  const chatOne = useAutoChatStore((s) => s.chatOne);
+  const start = useAutoChatStore((s) => s.start);
+  const stop = useAutoChatStore((s) => s.stop);
 
   // ===== Camoufox 隐身引擎状态 =====
   const [cfx, setCfx] = useState<CamoufoxStatus | null>(null);
@@ -80,18 +77,20 @@ export default function AutoChat() {
     [config.camoufox]
   );
 
-  // ===== 打招呼语提示词编辑器（本地草稿）=====
-  const [customPrompt, setCustomPrompt] = useState(storeGreetingPrompt || DEFAULT_GREETING_PROMPT);
-
   useEffect(() => { recomputeStats(); }, [pending, recomputeStats]);
 
   const refreshCamoufox = useCallback(async (silent = false) => {
     if (!silent) setCfxLoading(true);
     const s = await camoufoxStatus();
     setCfx(s);
-    if (!s.ready && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+    // 依赖安装中不算「不可用」，不自动关闭引擎开关
+    if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
     if (!silent) setCfxLoading(false);
   }, [cfxConfig, setConfig]);
+
+  // 页面挂载时静默刷新引擎状态：跨路由重挂载后 `cfx` 会被重置为 null，导致误显示「引擎未就绪」。
+  // 后台已预热，此处会即时返回就绪。
+  useEffect(() => { refreshCamoufox(true); }, []);
 
   const onCamoufoxLogin = useCallback(async () => {
     setCfxLogining(true);
@@ -137,18 +136,6 @@ export default function AutoChat() {
     reader.readAsDataURL(file);
   }, [imageResumes.length, addImageResume]);
 
-  const onSavePrompt = useCallback(() => {
-    const resolved = resolveGreetingPrompt(customPrompt);
-    setGreetingPromptStore(resolved === DEFAULT_GREETING_PROMPT ? '' : customPrompt);
-    message.success('打招呼语提示词已保存（将用于岗位分析的招呼语生成）');
-  }, [customPrompt, setGreetingPromptStore]);
-
-  const onResetPrompt = useCallback(() => {
-    setCustomPrompt(DEFAULT_GREETING_PROMPT);
-    setGreetingPromptStore('');
-    message.info('已恢复为系统默认提示词');
-  }, [setGreetingPromptStore]);
-
   // ===== 派生计算与队列过滤缓存 =====
   const queueItems = useMemo(() => {
     return rerankPending(pending).filter((p) =>
@@ -157,13 +144,13 @@ export default function AutoChat() {
   }, [pending]);
 
   const batchQueue = useMemo(() => {
-    return rerankPending(pending).filter((p) =>
-      p.status === 'approved' || p.status === 'pending' || p.status === 'approved_queue' || p.status === 'opened'
-    );
+    // 与后台引擎分工：本控制台只处理「已批准待沟通(approved)」与「已打开未发打招呼语(opened)」；
+    // 投递中(approved_queue)归工作台「一键投递」，待确认(pending)不自动投递。
+    return rerankPending(pending).filter((p) => p.status === 'approved' || p.status === 'opened');
   }, [pending]);
 
   const queueCount = useMemo(
-    () => pending.filter((p) => p.status === 'approved' || p.status === 'pending' || p.status === 'approved_queue' || p.status === 'opened').length,
+    () => pending.filter((p) => p.status === 'approved' || p.status === 'opened').length,
     [pending]
   );
   const sentCount = useMemo(() => pending.filter((p) => p.status === 'sent').length, [pending]);
@@ -177,15 +164,16 @@ export default function AutoChat() {
     }
     const st = await camoufoxStatus();
     if (!st.ready) {
-      message.warning('隐身引擎未就绪：' + (st.message || '请检测本机 Chrome/Edge/Firefox 或安装 camoufox'));
+      message.warning('隐身引擎未就绪：' + (st.message || '请安装 Camoufox 隐身引擎内核（本地浏览器不可复用）'));
       return;
     }
     if (!batchQueue.length) {
       message.info('没有待沟通的岗位（请先在工作台确认岗位或批准进入队列）');
       return;
     }
-    runBatchChat(batchQueue);
-  }, [profile, config, batchQueue, runBatchChat]);
+    // 启动后台持久沟通：切到工作台仍继续运行，新批准的岗位会自动加入
+    start();
+  }, [profile, config, batchQueue, start]);
 
   return (
     <main className="page" aria-label="自动沟通控制台">
@@ -226,7 +214,7 @@ export default function AutoChat() {
               <div className="autochat-actions">
                 <span style={{ fontSize: 15, fontWeight: 700, marginRight: 4 }}>隐身引擎投递控制</span>
                 {chatRunning ? (
-                  <Button type="primary" danger icon={<StopOutlined />} onClick={stopChat} className="btn-uniform">
+                  <Button type="primary" danger icon={<StopOutlined />} onClick={stop} className="btn-uniform">
                     停止沟通
                   </Button>
                 ) : (
@@ -243,10 +231,10 @@ export default function AutoChat() {
                 <Button onClick={() => refreshCamoufox()} loading={cfxLoading} icon={<ReloadOutlined />} className="btn-uniform">
                   检测状态
                 </Button>
-                <Button icon={<QrcodeOutlined />} loading={cfxLogining} onClick={onCamoufoxLogin} className="btn-uniform">
-                  扫码登录
+                <Button icon={<QrcodeOutlined />} loading={cfxLogining} disabled={Boolean(cfx?.engine?.loggedIn)} onClick={onCamoufoxLogin} className="btn-uniform">
+                  {cfx?.engine?.loggedIn ? '已登录' : '扫码登录'}
                 </Button>
-                <Button danger icon={<StopOutlined />} disabled={!cfx?.engine?.cookieCount} onClick={onCamoufoxLogout} className="btn-uniform">
+                <Button danger icon={<StopOutlined />} disabled={!cfx?.engine?.loggedIn} onClick={onCamoufoxLogout} className="btn-uniform">
                   退出登录
                 </Button>
               </div>
@@ -264,7 +252,15 @@ export default function AutoChat() {
               </div>
             </div>
 
-            {cfx?.ready ? (
+            {cfx?.installing ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ borderRadius: 10, marginTop: 12, marginBottom: 0 }}
+                message="正在安装隐身引擎依赖"
+                description={cfx?.message || '首次使用需安装 Python 依赖（playwright/camoufox），完成后请点击「检测状态」。'}
+              />
+            ) : cfx?.ready ? (
               <Paragraph type="secondary" style={{ margin: '12px 0 0', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Tag color="green" style={{ margin: 0, borderRadius: 4, fontWeight: 600 }}>
                   <RobotOutlined style={{ marginRight: 4 }} />
@@ -278,7 +274,7 @@ export default function AutoChat() {
                 showIcon
                 style={{ borderRadius: 10, marginTop: 12, marginBottom: 0 }}
                 message="隐身引擎当前不可用"
-                description={cfx?.message || '请检查本机浏览器内核（Chrome/Edge/Firefox），或点击「检测状态」重新检查。'}
+                description={cfx?.message || '请安装 Camoufox 隐身引擎内核（本地浏览器不可复用），或点击「检测状态」重新检查。'}
               />
             )}
 
@@ -499,31 +495,23 @@ export default function AutoChat() {
             </div>
           </Card>
 
-          {/* 打招呼语提示词编辑器 */}
+          {/* 沟通信息（AI 跟聊引用：面试时间/到岗时间等，用户自行填写） */}
           <Card
             size="small"
             className="setting-card"
-            title={<><CodeOutlined style={{ color: 'var(--brand)', marginRight: 6 }} /> 打招呼语提示词</>}
-            extra={
-              <Space size={4}>
-                <Button size="small" type="primary" icon={<CheckOutlined />} onClick={onSavePrompt} style={{ borderRadius: 6 }}>
-                  保存
-                </Button>
-                <Button size="small" onClick={onResetPrompt} disabled={customPrompt === DEFAULT_GREETING_PROMPT} style={{ borderRadius: 6 }}>
-                  默认
-                </Button>
-              </Space>
-            }
+            title={<><CodeOutlined style={{ color: 'var(--brand)', marginRight: 6 }} /> 沟通信息（AI 跟聊引用）</>}
           >
+            <Paragraph type="secondary" style={{ margin: '0 0 8px', fontSize: 12 }}>
+              填写你要提供给 HR 的真实信息（如薪资期望、面试时间、到岗时间等）。AI 跟聊回复 HR 时会引用其中填写的内容；留空则维持原有回复风格，不承诺任何这类信息。输入后自动保存。
+            </Paragraph>
             <Input.TextArea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              rows={5}
-              placeholder="在此编辑 AI 打招呼语提示词..."
+              value={storeCommunicationInfo}
+              onChange={(e) => setCommunicationInfo(e.target.value)}
+              rows={4}
+              placeholder={'例：\n薪资期望：XK 或面议\n可面试时间：本周工作日晚上或周末\n可到岗时间：随时可到岗（或 3 月 1 日）'}
               style={{
                 fontSize: 12,
                 lineHeight: 1.6,
-                fontFamily: 'Consolas, Monaco, monospace',
                 borderRadius: 8,
                 background: 'var(--bg)',
               }}

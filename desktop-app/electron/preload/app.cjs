@@ -41,6 +41,9 @@ const api = {
   // CORS 无关的 URL 抓取（主进程转发，供获取 BOSS 公开接口如城市编码表）
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
 
+  // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
+  savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),
+
   // ===== AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）=====
   // 技能元数据列表（id/name/description/scope/defaultEnabled/source/custom）
   skillsList: () => ipcRenderer.invoke('jc:skills-list'),
@@ -58,6 +61,8 @@ const api = {
   camoufoxCall: (action, payload) => ipcRenderer.invoke('jc:camoufox-call', action, payload),
   // 停止 Camoufox 桥（设置页用）
   camoufoxStop: () => ipcRenderer.send('jc:camoufox-stop'),
+  // 重启 Camoufox 桥（自动沟通误触关闭后自愈用），返回最终状态
+  camoufoxRestart: () => ipcRenderer.invoke('jc:camoufox-restart'),
 
   // ===== CloakBrowser 隐身浏览器（可选增强，Node + Playwright）=====
   // 探测二进制状态（不启动浏览器；首次启动会在 launcher.start 内部自动下载 ~200MB）
