@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useEffect, useSyncExternalStore } from 'react';
+import React, { createContext, useContext, useEffect } from 'react';
 import type { ThemeMode } from '../theme';
+import { effectiveTheme } from '../theme';
 import { useAppStore } from '../store/useAppStore';
 
 interface ThemeContextType {
@@ -14,26 +15,12 @@ const ThemeContext = createContext<ThemeContextType>({
   setTheme: () => {},
 });
 
-function subscribeSystemTheme(callback: () => void) {
-  if (typeof window === 'undefined' || !window.matchMedia) {
-    return () => {};
-  }
-  const media = window.matchMedia('(prefers-color-scheme: dark)');
-  media.addEventListener('change', callback);
-  return () => media.removeEventListener('change', callback);
-}
-
-function getSystemThemeSnapshot(): 'light' | 'dark' {
-  if (typeof window === 'undefined' || !window.matchMedia) return 'light';
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-
-export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const ThemeProvider: React.FC<{ children: React.ReactNode; effective?: 'light' | 'dark' }> = ({ children, effective: effectiveProp }) => {
   const mode = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
-  const systemSnapshot = useSyncExternalStore<'light' | 'dark'>(subscribeSystemTheme, getSystemThemeSnapshot, () => 'light');
-
-  const effective = mode === 'system' ? systemSnapshot : mode === 'dark' ? 'dark' : 'light';
+  // P28：receive `effective` already computed by Root (single matchMedia source via useEffectiveTheme),
+  // 避免此处再各自持有一份 matchMedia 监听造成双监听冗余。未传入时做一次同步降级计算。
+  const effective: 'light' | 'dark' = effectiveProp ?? (mode === 'system' ? effectiveTheme('system') : mode === 'dark' ? 'dark' : 'light');
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effective);

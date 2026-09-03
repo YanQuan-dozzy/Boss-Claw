@@ -57,6 +57,9 @@ let runToken = 0; // 递增即作废进行中的批量（start/stop）
 let busy = false; // 批量与单条互斥
 let ownerRun = 0; // 当前持有 busy 的 run token（避免 stop 后再 start 时被旧运行误清）
 let processedIds: Set<string> = new Set(); // 本次运行已处理/已取走的岗位 id
+// P04：stop() 置位的发送取消信号。chatJob 在真正调用网络发送（camoufoxChat）前检查，
+// 已取消则不再发送、不计成功。start()/chatOne() 启动时复位。
+let cancelRequested = false;
 
 // ===== Camoufox 引擎自愈重启（误触关闭后自动拉起；多次失败自动停止）=====
 const MAX_ENGINE_RESTART = 3;
@@ -149,6 +152,11 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
   });
 
   try {
+    // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
+    if (cancelRequested) {
+      addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
+      return 'stop';
+    }
     const resumeImages: { name: string; data: string }[] = cfg.sendResumeImage
       ? (useDataStore.getState().imageResumes as ImageResume[]).map((r) => ({ name: r.name, data: r.data }))
       : [];
@@ -375,6 +383,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
     if (busy || useAutoChatStore.getState().chatRunning) return;
     busy = true;
     runToken += 1;
+    cancelRequested = false; // P04：复位取消信号
     const myToken = runToken;
     ownerRun = myToken;
     const cfg = useSettingsStore.getState().config;
@@ -415,7 +424,52 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           }
 
           const item = eligible[0];
-          // 共享占位锁：与工作台「一键投递」互斥，避免重复投递
+
+          // —— 消费前守卫（P03：冷却/每日上限/分批窗口这些非「实际发送」的判定，
+          //    必须在 claimDelivery + processedIds.add 之前执行，否则会把整队列预占却一条不发，
+          //    窗口打开后这些岗位已被 processedIds 排除 → 永久空轮询）——
+          const nowCfg = useSettingsStore.getState().config;
+          // B1：冷却/每日上限/首条验收/风控这些内部退出路径不再自增 runToken 使 isCurrent=false，
+          //    直接 break 由 finally 正常复位 chatRunning（否则 chatRunning 卡死、start() 被拦死）。
+          if (isLockedOut(nowCfg)) {
+            useDataStore.getState().addChatLog({
+              level: 'warn',
+              stage: 'risk',
+              msg: `账号处于安全冷却期，后台沟通已暂停（剩余约 ${Math.ceil(cooldownRemaining(nowCfg) / 60000)} 分钟）。点击「停止」后可稍后重试。`,
+            });
+            break;
+          }
+          if (dailySentCount(useDataStore.getState().pending) >= effectiveDailyCap(nowCfg)) {
+            useDataStore.getState().addChatLog({
+              level: 'warn',
+              stage: 'risk',
+              msg: `今日沟通数已触及安全上限 ${effectiveDailyCap(nowCfg)} 条，后台沟通已暂停。`,
+            });
+            break;
+          }
+          if (nowCfg.executionMode === 'auto' && nowCfg.batchDelivery?.enabled) {
+            const slot = activeBatchSlot(nowCfg, Date.now(), useDataStore.getState().pending);
+            if (!slot) {
+              useDataStore.getState().addChatLog({
+                level: 'warn',
+                stage: 'system',
+                msg: `⏱ 当前不在早中晚分批投递的时段窗口内（早 ${nowCfg.batchDelivery.morningTime} / 午 ${nowCfg.batchDelivery.noonTime} / 晚 ${nowCfg.batchDelivery.eveningTime}），后台任务等待下一时段。`,
+              });
+              await sleep(IDLE_POLL_MS);
+              continue;
+            }
+            if (slot.remaining <= 0) {
+              useDataStore.getState().addChatLog({
+                level: 'warn',
+                stage: 'system',
+                msg: `⏱ 「${slot.label}」时段投递配额（${slot.quota} 条）已用完，后台任务等待下一时段。`,
+              });
+              await sleep(IDLE_POLL_MS);
+              continue;
+            }
+          }
+
+          // 走到这里才真正要发送 → 才认领占位锁并记入 processedIds（B1/P03）
           if (!claimDelivery(item.id)) {
             // 已被其他引擎认领投递，本轮跳过（交给认领方），下周期若被释放则重新纳入
             continue;
@@ -423,46 +477,6 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           processedIds.add(item.id);
           set({ activeChatId: item.id, progress: { index: processedIds.size, total: processedIds.size + eligible.length } });
           try {
-            const nowCfg = useSettingsStore.getState().config;
-            if (isLockedOut(nowCfg)) {
-              useDataStore.getState().addChatLog({
-                level: 'warn',
-                stage: 'risk',
-                msg: `账号处于安全冷却期，后台沟通已暂停（剩余约 ${Math.ceil(cooldownRemaining(nowCfg) / 60000)} 分钟）。点击「停止」后可稍后重试。`,
-              });
-              runToken += 1;
-              break;
-            }
-            if (dailySentCount(useDataStore.getState().pending) >= effectiveDailyCap(nowCfg)) {
-              useDataStore.getState().addChatLog({
-                level: 'warn',
-                stage: 'risk',
-                msg: `今日沟通数已触及安全上限 ${effectiveDailyCap(nowCfg)} 条，后台沟通已暂停。`,
-              });
-              runToken += 1;
-              break;
-            }
-            if (nowCfg.executionMode === 'auto' && nowCfg.batchDelivery?.enabled) {
-              const slot = activeBatchSlot(nowCfg, Date.now(), useDataStore.getState().pending);
-              if (!slot) {
-                useDataStore.getState().addChatLog({
-                  level: 'warn',
-                  stage: 'system',
-                  msg: `⏱ 当前不在早中晚分批投递的时段窗口内（早 ${nowCfg.batchDelivery.morningTime} / 午 ${nowCfg.batchDelivery.noonTime} / 晚 ${nowCfg.batchDelivery.eveningTime}），后台任务等待下一时段。`,
-                });
-                await sleep(IDLE_POLL_MS);
-                continue;
-              }
-              if (slot.remaining <= 0) {
-                useDataStore.getState().addChatLog({
-                  level: 'warn',
-                  stage: 'system',
-                  msg: `⏱ 「${slot.label}」时段投递配额（${slot.quota} 条）已用完，后台任务等待下一时段。`,
-                });
-                await sleep(IDLE_POLL_MS);
-                continue;
-              }
-            }
             await pacer.waitForSlot();
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
             await sleep(baseSec * 1000 * (0.7 + Math.random() * 0.6));
@@ -477,12 +491,10 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
                   stage: 'confirm',
                   msg: '🛡️ 首条自动沟通成功并已安全暂停：请核对沟通 HR、文字气泡与附件，确认无误后点击「开始批量沟通」继续。',
                 });
-                runToken += 1;
                 break;
               }
             } else if (outcome === 'stop') {
               stopAll = true;
-              runToken += 1;
               break;
             }
             await sleep(500 + Math.random() * 700);
@@ -516,6 +528,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   chatOne: (item) => {
     if (busy || useAutoChatStore.getState().chatRunning) return;
     busy = true;
+    cancelRequested = false; // P04：复位取消信号
     const myToken = (runToken += 1);
     ownerRun = myToken;
     set({ chatRunning: true, activeChatId: item.id, progress: { index: 0, total: 1 } });
@@ -537,6 +550,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
 
   stop: () => {
     runToken += 1; // 作废进行中的批量循环
+    cancelRequested = true; // P04：通知进行中的发送取消（发送前检查，已发出则无法撤回）
     if (ownerRun !== 0) {
       ownerRun = 0;
       busy = false;

@@ -983,6 +983,31 @@ safeHandle('jc:fetch-url', async (_event, url) => {
   }
 });
 
+// P05：LLM 主进程代理（对齐 AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
+// 渲染层不再直连 provider（规避部分端点 CORS 失败、统一主进程超时/错误口径），经此转发。
+// 信任面同 jc:fetch-url（本地工具、URL 由渲染层自身配置的 provider 端点提供）。
+safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000) => {
+  const target = String(url || '');
+  if (!/^https?:\/\//.test(target)) return { ok: false, status: 0, text: '', error: 'invalid url' };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 90000));
+  try {
+    const res = await fetch(target, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${String(apiKey || '')}` },
+      body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    return { ok: false, status: 0, text: '', error: /aborted?|timeout/i.test(msg) ? 'timeout' : msg };
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 // 窗口控制（frame:false 自绘标题栏按钮用）
 ipcMain.on('jc:window-minimize', () => mainWindow?.minimize());
 ipcMain.on('jc:window-maximize', () => {
@@ -1157,7 +1182,7 @@ safeHandle('jc:cloak-stop', async () => {
 // 当前状态
 safeHandle('jc:cloak-status', async () => ({
   ready: cloakLauncher.ready,
-  starting: false,
+  starting: cloakLauncher.starting, // P26：透传 launcher 真实启动态，不再硬编码 false
   binary: cloakLauncher.binary,
   lastError: cloakLauncher.lastError,
 }));

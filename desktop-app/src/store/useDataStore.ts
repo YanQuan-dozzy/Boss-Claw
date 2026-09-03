@@ -179,17 +179,27 @@ export const useDataStore = create<DataState>()(
           if (p.status === 'approved' || p.status === 'approved_queue' || p.status === 'pending') pendingCount += 1;
           if (p.analysis) analyzed += 1;
         }
-        set({
-          stats: {
-            ...stats,
-            sent,
-            skipped,
-            failed,
-            pending: pendingCount,
-            discovered: pending.length,
-            analyzed,
-          },
-        });
+        const next = {
+          ...stats,
+          sent,
+          skipped,
+          failed,
+          pending: pendingCount,
+          discovered: pending.length,
+          analyzed,
+        };
+        // P08：计数未变化时跳过 set，避免无条件 persist 对整个数据包（含 base64 图片简历）重复序列化
+        if (
+          stats.sent === next.sent &&
+          stats.skipped === next.skipped &&
+          stats.failed === next.failed &&
+          stats.pending === next.pending &&
+          stats.discovered === next.discovered &&
+          stats.analyzed === next.analyzed
+        ) {
+          return;
+        }
+        set({ stats: next });
       },
       resetDailyStats: () => set({ stats: { ...DEFAULT_STATS, date: today() } }),
     }),

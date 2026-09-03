@@ -60,7 +60,7 @@ function readableResumeText(text) {
   const compact = String(text || '').replace(/\s/g, '');
   if (compact.length < 40) return false;
   const readable = (compact.match(/[\u3400-\u9fffA-Za-z0-9]/g) || []).length;
-  const bad = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f�]/g) || []).length;
+  const bad = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g) || []).length;
   const hints = (String(text).match(/简历|教育|经历|项目|技能|电话|邮箱|GitHub|工作|实习|resume|education|experience|skills/gi) || []).length;
   return (readable - bad) / compact.length >= 0.5 && (hints > 0 || compact.length >= 220);
 }

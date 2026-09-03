@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BossClaw</title>
+    <!-- P27：暗色首帧防闪烁——React 挂载前根据持久化主题(以及系统偏好)先行设置 data-theme，
+         避免 :root 默认浅色在首个 commit 前闪一下白屏 -->
+    <script>
+      (function () {
+        try {
+          var mode = 'system';
+          var raw = localStorage.getItem('bossclaw-app');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && parsed.state && typeof parsed.state.theme === 'string') mode = parsed.state.theme;
+          }
+          var dark = mode === 'dark' ||
+            (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var el = document.documentElement;
+          el.setAttribute('data-theme', dark ? 'dark' : 'light');
+          if (dark) el.classList.add('dark');
+        } catch (e) { /* 主题预置失败不影响启动 */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

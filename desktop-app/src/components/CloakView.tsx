@@ -1,4 +1,4 @@
-﻿// BossClaw CloakView —— CloakBrowser stealth browser engine mode.
+// BossClaw CloakView —— CloakBrowser stealth browser engine mode.
 // Renders tab strip + address bar + Join Task controls, identical to BrowserView's
 // chrome but with page backing coming from main-process cloakLauncher (Playwright
 // persistent Page) instead of Electron <webview>. API shape (WebviewApi) matches
@@ -84,6 +84,12 @@ export default function CloakView(props: Props) {
   });
   const { tabs, activeId } = state;
 
+  // P18：回调 ref（与 BrowserView 一致）。订阅仅挂载一次，事件回调经 ref 取最新 props，避免 stale closure。
+  const callbacksRef = useRef({ onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone });
+  useEffect(() => {
+    callbacksRef.current = { onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone };
+  }, [onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone]);
+
   const [engine, setEngine] = useState<{ ready: boolean; binary: any; lastError: string | null }>({
     ready: false,
     binary: null,
@@ -138,13 +144,13 @@ export default function CloakView(props: Props) {
         return { ...s, tabs: next };
       });
       if (channel === 'nav' && tabId === activeIdRef.current) {
-        onNavigate?.({ url: payload?.url || '', title: payload?.title || '' });
+        callbacksRef.current.onNavigate?.({ url: payload?.url || '', title: payload?.title || '' });
       }
-      if (channel === 'job-extracted') onJobExtracted?.(payload);
-      if (channel === 'job-list-extracted') onJobListExtracted?.(payload);
-      if (channel === 'apply-stage') onApplyStage?.(payload?.stage, payload, tabId);
-      if (channel === 'collect-progress') onCollectProgress?.(payload);
-      if (channel === 'collect-done') onCollectDone?.(payload);
+      if (channel === 'job-extracted') callbacksRef.current.onJobExtracted?.(payload);
+      if (channel === 'job-list-extracted') callbacksRef.current.onJobListExtracted?.(payload);
+      if (channel === 'apply-stage') callbacksRef.current.onApplyStage?.(payload?.stage, payload, tabId);
+      if (channel === 'collect-progress') callbacksRef.current.onCollectProgress?.(payload);
+      if (channel === 'collect-done') callbacksRef.current.onCollectDone?.(payload);
     });
     const offStatus = e.onCloakStatusChanged?.((status: any) => {
       setEngine((s) => ({

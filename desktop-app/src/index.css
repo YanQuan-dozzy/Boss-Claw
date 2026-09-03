@@ -1766,6 +1766,8 @@ html[data-theme='dark'],
 .job-card.st-sent { border-left-color: var(--status-success); }
 .job-card.st-failed { border-left-color: var(--status-danger); }
 .job-card.st-ignored { border-left-color: var(--fg-subtle); opacity: 0.75; }
+.job-card.st-rejected { border-left-color: #EA580C; } /* P23 */
+.job-card.st-pending { border-left-color: #D97706; }   /* P23 */
 
 .job-header {
   display: flex;

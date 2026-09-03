@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
-import { useEffectiveTheme } from './lib/useEffectiveTheme';
+import { useTheme } from './context/ThemeContext';
 import { bridgeStatus } from './lib/bridgeClient';
 import { checkBossLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
@@ -28,9 +28,9 @@ const JobAssistant = lazy(() => import('./pages/JobAssistant'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 export default function App() {
-  const theme = useAppStore((s) => s.theme);
   const activeRoute = useAppStore((s) => s.activeRoute);
-  const effective = useEffectiveTheme(theme);
+  // P28：从 ThemeProvider 上下文复用 Root 算好的 effective，避免 App 再各自持有一份 matchMedia 监听
+  const { effective } = useTheme();
 
   useEffect(() => {
     const vars = cssVars(effective);

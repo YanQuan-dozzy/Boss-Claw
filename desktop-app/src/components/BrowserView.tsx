@@ -232,8 +232,14 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   // 关键修复：handleRegister 内部不直接使用 useCallback 的回调函数，
   // 而是读取 callbacksRef.current，保证始终调用最新版本的 onNavigate 等。
   const handleRegister = useCallback((tabId: string, el: any) => {
+    if (!el) {
+      // P20：元素卸载/null 时同步清理注册态，避免同 tabId 重建时「新元素不绑监听 + 旧元素残留」致 IPC 静默失效
+      delete webviewEls.current[tabId];
+      delete preloadReady.current[tabId];
+      delete registeredTabs.current[tabId];
+      return;
+    }
     webviewEls.current[tabId] = el;
-    if (!el) return;
     if (registeredTabs.current[tabId]) return;
     registeredTabs.current[tabId] = true;
 
