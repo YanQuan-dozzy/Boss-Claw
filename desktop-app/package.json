@@ -1,6 +1,6 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手（Electron + React）",
   "private": true,
   "author": "YanQuan",
