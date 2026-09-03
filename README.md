@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki 教程](docs/wiki/Home.md)
 
-![Version](https://img.shields.io/badge/version-v2.1.0-078A83)
+![Version](https://img.shields.io/badge/version-v2.3.0-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -26,24 +26,35 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.1.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.1.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.3.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.3.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.3.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.3.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
+> 当前最新发布 v2.3.0 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
+
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🐧 AppImage（通用） | [BossClaw-2.1.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
-| 🐧 Debian / Ubuntu | [BossClaw-2.1.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-amd64.deb) | `sudo dpkg -i BossClaw-2.1.0-amd64.deb` 安装 |
-| 🐧 RHEL / Fedora / CentOS | [BossClaw-2.1.0-x86_64.rpm](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-x86_64.rpm) | `sudo rpm -ivh BossClaw-2.1.0-x86_64.rpm` 安装 |
-| 🐧 Arch / Manjaro | [BossClaw-2.1.0-x64.pacman](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-x64.pacman) | `sudo pacman -U BossClaw-2.1.0-x64.pacman` 安装 |
-| 🐧 通用压缩包 | [BossClaw-2.1.0-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
+| 🐧 AppImage（通用） | [BossClaw-2.1.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
+| 🐧 Debian / Ubuntu | [BossClaw-2.1.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-amd64.deb) | `sudo dpkg -i BossClaw-2.1.0-amd64.deb` 安装 |
+| 🐧 RHEL / Fedora / CentOS | [BossClaw-2.1.0-x86_64.rpm](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.rpm) | `sudo rpm -ivh BossClaw-2.1.0-x86_64.rpm` 安装 |
+| 🐧 Arch / Manjaro | [BossClaw-2.1.0-x64.pacman](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.pacman) | `sudo pacman -U BossClaw-2.1.0-x64.pacman` 安装 |
+| 🐧 通用压缩包 | [BossClaw-2.1.0-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
 
 ### macOS（源码自构建包）
 
+> macOS 产物同样沿用 **v2.1.0** 版本，或在 macOS 系统上从当前源码执行 `npm run package:mac` 自建：
+
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🍎 源码打包档案 | [BossClaw-2.1.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.1.0-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（x64 + arm64）打包；需 Node.js 20+ 和 macOS 系统 |
+| 🍎 源码打包档案 | [BossClaw-2.1.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（x64 + arm64）打包；需 Node.js 20+ 和 macOS 系统 |
+
+### 全平台产物一览（按版本发布）
+
+| 发布版本 | 平台产物 |
+| --- | --- |
+| v2.3.0（最新） | Windows x64 安装版 + 便携版 |
+| v2.1.0 | Windows / Linux（AppImage·deb·rpm·pacman·tar.gz）/ macOS（mac.tar.gz 自建档案） |
 
 > **运行要求**：
 > - Windows：10/11（x64）
@@ -323,7 +334,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 [`docs/wiki/FAQ.md`](docs/wiki/FAQ.md)，再提交 Issue。提交时请包含：
 
-- BossClaw 版本（桌面版 v2.1.0）
+- BossClaw 版本（桌面版 v2.3.0）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图

@@ -163,9 +163,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.1.0-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.1.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.1.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-2.3.0-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.3.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.3.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
 
@@ -253,6 +253,7 @@ release/
 
 ## 变更记录
 
+* v2.3.0 — 批量自动沟通引擎重构（遵循首次验收 / 打招呼语非空 / 频率限制等安全不变量）；隐身引擎（Camoufox）/ 隐身浏览器（CloakBrowser）与贡献模块细节优化；通信模块实现优化。
 * v2.1.0 — AI 技能体系（内置 4 技能 + 自定义技能导入/新建/删除）；定制简历求职助手（JobAssistant，侧栏新增入口）；岗位匹配本地确定性多维匹配与 AI 融合；岗位采集页面噪音清洗（jdCleaner）；版本 / productName 统一为 BossClaw，新增 macOS / Linux 打包配置。
 
 * v2.0.0 — 内置浏览器 + 收集投递沟通模块从零重建；统一 IPC 错误包装；Workbench 三栏拆分；CloakBrowser / Camoufox 可选隐身增强。
