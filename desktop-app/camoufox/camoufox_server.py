@@ -386,14 +386,14 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
 
                 # 调用岗位列表 API（DOM 是 canvas 渲染，无法抓取）。
                 # evaluate 可能因页面持续导航抛 Execution context destroyed，重试最多 3 次。
+                # B2（转义正确性）：query/city 走 evaluate 参数传参 + encodeURIComponent，禁止 f-string 拼 JS。
                 api_result = None
                 for attempt in range(3):
                     try:
-                        api_result = page.evaluate(f"""
-                            () => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query={query}&city={city}&page={page_num}&pageSize=30')
-                                .then(r => r.json())
-                                .catch(e => ({{error: e.message}}))
-                        """)
+                        api_result = page.evaluate(
+                            "({q, c, p}) => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query=' + encodeURIComponent(q) + '&city=' + encodeURIComponent(c) + '&page=' + p + '&pageSize=30').then(r => r.json()).catch(e => ({error: e.message}))",
+                            {"q": query, "c": city, "p": page_num},
+                        )
                         break
                     except Exception as e:
                         log('⚠️', f'evaluate 第 {attempt + 1} 次失败：{str(e)[:60]}，等待 2s 重试…')
@@ -421,10 +421,10 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
                         page.goto(sec_url, wait_until="domcontentloaded", timeout=20000)
                         time.sleep(8)
                         if "security-check" not in page.url:
-                            retry = page.evaluate(f"""
-                                () => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query={query}&city={city}&page={page_num}&pageSize=30')
-                                    .then(r => r.json())
-                            """)
+                            retry = page.evaluate(
+                                "({q, c, p}) => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query=' + encodeURIComponent(q) + '&city=' + encodeURIComponent(c) + '&page=' + p + '&pageSize=30').then(r => r.json())",
+                                {"q": query, "c": city, "p": page_num},
+                            )
                             if retry.get('code') == 0:
                                 jobs = retry.get('zpData', {}).get('jobList', [])
                                 log('✅', f'zp_stoken 后重试：{len(jobs)} 个岗位')
@@ -551,12 +551,10 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
         if not login_ok:
             log('🔑', '未检测到登录态，尝试 card API 验证…')
             try:
-                card = page.evaluate(f"""
-                    () => fetch('/wapi/zpgeek/job/card.json?encryptJobId={job_id}', {{
-                        credentials: 'include',
-                        headers: {{'X-Requested-With': 'XMLHttpRequest'}}
-                    }}).then(r => r.json()).catch(e => ({{error: e.message}}))
-                """)
+                card = page.evaluate(
+                    "({jid}) => fetch('/wapi/zpgeek/job/card.json?encryptJobId=' + encodeURIComponent(jid), {credentials: 'include', headers: {'X-Requested-With': 'XMLHttpRequest'}}).then(r => r.json()).catch(e => ({error: e.message}))",
+                    {"jid": job_id},
+                )
                 if card.get('code') in (0,):
                     login_ok = True
                 elif card.get('code') == 17:
@@ -571,12 +569,10 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
         encrypt_user_id = ''
         job_info = {}
         try:
-            card = page.evaluate(f"""
-                () => fetch('/wapi/zpgeek/job/card.json?encryptJobId={job_id}', {{
-                    credentials: 'include',
-                    headers: {{'X-Requested-With': 'XMLHttpRequest'}}
-                }}).then(r => r.json()).catch(e => ({{error: e.message}}))
-            """)
+            card = page.evaluate(
+                "({jid}) => fetch('/wapi/zpgeek/job/card.json?encryptJobId=' + encodeURIComponent(jid), {credentials: 'include', headers: {'X-Requested-With': 'XMLHttpRequest'}}).then(r => r.json()).catch(e => ({error: e.message}))",
+                {"jid": job_id},
+            )
             if card.get('code') == 0:
                 zp = card.get('zpData', {})
                 encrypt_user_id = zp.get('encryptUserId', '') or ''
@@ -669,8 +665,10 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
             log('🖱️', f'按钮状态：{state["state"]}')
             if state['state'] == '继续沟通':
                 save_cookies(page.context)
-                log('✅', '已在沟通过程中（按钮=继续沟通），视为已建立会话')
-                return {"ok": True, "code": 0, "sent": True, "method": "click-already"}
+                # P13（对齐 /chat 气泡确认、AGENTS 2.1）：到此仅为「已建立会话」，API 发送已失败，
+                # 招呼语**文字气泡未确认**，不得计成功 → 返回非成功，交由 /chat 气泡确认路径处理。
+                log('⚠️', '已建立会话但招呼语气泡未确认（API 发送未成功），不计成功')
+                return {"ok": False, "code": 500, "message": "已建立会话但招呼语气泡未确认（API 发送未成功），请走自动沟通或人工补充", "sent": False}
             if state['state'] == 'not_found':
                 save_cookies(page.context)
                 return {"ok": False, "code": 404, "message": "未找到沟通按钮（可能岗位已下架）", "sent": False}
@@ -686,8 +684,9 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
             """)
             save_cookies(page.context)
             if final_state['state'] == '继续沟通':
-                log('✅', '已通过页面点击建立沟通（后续招呼语请在 BOSS 内补充）')
-                return {"ok": True, "code": 0, "sent": True, "method": "click"}
+                # P13：同样未确认招呼语气泡，不计成功
+                log('⚠️', '已通过页面点击建立会话，但招呼语气泡未确认，不计成功')
+                return {"ok": False, "code": 500, "message": "已建立会话但招呼语气泡未确认，请走自动沟通或人工补充招呼语", "sent": False}
             return {"ok": False, "code": 500, "message": "点击「立即沟通」后状态未变化", "sent": False}
         except Exception as e:
             save_cookies(page.context)
@@ -1414,12 +1413,10 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             login_ok = False
         if not login_ok:
             try:
-                card = page.evaluate(f"""
-                    () => fetch('/wapi/zpgeek/job/card.json?encryptJobId={job_id}', {{
-                        credentials: 'include',
-                        headers: {{'X-Requested-With': 'XMLHttpRequest'}}
-                    }}).then(r => r.json()).catch(e => ({{error: e.message}}))
-                """)
+                card = page.evaluate(
+                    "({jid}) => fetch('/wapi/zpgeek/job/card.json?encryptJobId=' + encodeURIComponent(jid), {credentials: 'include', headers: {'X-Requested-With': 'XMLHttpRequest'}}).then(r => r.json()).catch(e => ({error: e.message}))",
+                    {"jid": job_id},
+                )
                 if card.get('code') == 0:
                     login_ok = True
             except Exception:

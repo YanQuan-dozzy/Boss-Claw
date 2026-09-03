@@ -36,4 +36,7 @@ export function clearAllData(): void {
   for (const k of BOSS_CLAW_KEYS) localStorage.removeItem(k);
   // 旧版本遗留键也一并清理（如有），防止 reset 失败导致旧数据复活
   for (const k of LEGACY_KEYS) localStorage.removeItem(k);
+  // P22：补齐遗漏键（技能启用态 / 城市码缓存），确保「完整清理/恢复出厂」名副其实
+  localStorage.removeItem('bossclaw-skills-v1');
+  localStorage.removeItem('bossclaw-city-codes');
 }

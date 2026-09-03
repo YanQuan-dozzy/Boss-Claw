@@ -365,7 +365,7 @@ function candidateQuality(text: string): number {
   const compact = String(text || '').replace(/\s/g, '');
   if (!compact) return -1;
   const readable = (compact.match(/[\u3400-\u9fffA-Za-z0-9@+._/|:：，、·-]/g) || []).length;
-  const bad = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f�]/g) || []).length;
+  const bad = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g) || []).length;
   return (readable - bad * 2) / compact.length;
 }
 
@@ -477,7 +477,7 @@ function readableScore(text: string): number {
   const compact = String(text || '').replace(/\s/g, '');
   if (!compact) return 0;
   const readable = (compact.match(/[\u3400-\u9fffA-Za-z0-9]/g) || []).length;
-  const controls = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f�]/g) || []).length;
+  const controls = (compact.match(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g) || []).length;
   return Math.max(0, Math.min(1, readable / compact.length - controls / compact.length));
 }
 

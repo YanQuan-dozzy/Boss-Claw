@@ -49,6 +49,7 @@ const QUICK_ENTRIES = [
 
 export default function Home() {
   const profile = useDataStore((s) => s.profile);
+  const resumeText = useDataStore((s) => s.resumeText); // P24：订阅 resumeText，避免外部改动后进度/步骤过期
   const directionPlan = useDataStore((s) => s.directionPlan);
   const pending = useDataStore((s) => s.pending);
   const stats = useDataStore((s) => s.stats);
@@ -69,12 +70,12 @@ export default function Home() {
 
   useEffect(() => {
     let p = 0;
-    if (useDataStore.getState().resumeText) p += 25;
+    if (resumeText) p += 25;
     if (profileHasCore(profile)) p += 25;
     if (directionPlan?.confirmed) p += 25;
     if (pending.some((x) => x.status === 'approved_queue' || x.status === 'sent')) p += 25;
     setProgress(p);
-  }, [profile, directionPlan, pending]);
+  }, [profile, resumeText, directionPlan, pending]);
 
   const selectedCount = selectedDirectionItems(directionPlan).length;
 
@@ -87,7 +88,7 @@ export default function Home() {
   ];
 
   const stepStates = [
-    useDataStore.getState().resumeText ? 'done' : 'todo',
+    resumeText ? 'done' : 'todo',
     profileHasCore(profile) ? 'done' : 'todo',
     directionPlan?.confirmed ? 'done' : 'todo',
     pending.some((x) => x.status === 'approved_queue' || x.status === 'sent') ? 'done' : 'todo',

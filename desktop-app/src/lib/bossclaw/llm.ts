@@ -1,6 +1,8 @@
 // OpenAI 兼容的模型调用层（移植并适配自 callModel）
 // 支持 JSON 模式、网关不兼容 response_format 时自动回退、超时与 JSON 解析兜底
+// P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定），不再渲染层直连 fetch 规避 CORS。
 import type { AppConfig } from './types';
+import { electronApi } from '@/lib/electronApi';
 
 export class AIError extends Error {
   code: string;
@@ -58,21 +60,30 @@ export interface CallOptions {
   jsonMode?: boolean;
 }
 
-async function requestModel(url: string, payload: any, apiKey: string, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+// P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
+// 不再渲染层直连 fetch 规避 CORS；经 electronApi.llmProxy → preload → 主进程 Node fetch 转发。
+
+interface HttpResponseLike {
+  ok: boolean;
+  status: number;
+  text: () => Promise<string>;
+}
+
+async function requestModel(url: string, payload: any, apiKey: string, timeoutMs: number): Promise<HttpResponseLike> {
   try {
-    return await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+    const r = await electronApi.llmProxy(url, payload, apiKey, timeoutMs);
+    if (!r.ok && r.error) {
+      if (r.error === 'timeout') throw new AIError('AI_TIMEOUT', 'AI 请求超时');
+      throw new AIError('AI_NETWORK', `AI 网络请求失败：${r.error}`);
+    }
+    return {
+      ok: r.ok,
+      status: r.status,
+      text: () => Promise.resolve(r.text),
+    };
   } catch (error: any) {
-    if (error?.name === 'AbortError') throw new AIError('AI_TIMEOUT', 'AI 请求超时');
+    if (error instanceof AIError) throw error;
     throw new AIError('AI_NETWORK', `AI 网络请求失败：${error?.message || '连接异常'}`);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

@@ -112,9 +112,24 @@ export async function camoufoxStatus(): Promise<CamoufoxStatus> {
 
 /** 调用 Camoufox 桥（搜索 / 发送 / 登录） */
 export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Record<string, unknown>): Promise<T> {
-  const r = await window.electron?.camoufoxCall?.(action, payload || {});
-  return (r as T) ?? ({ ok: false, error: '主进程未暴露 camoufox 接口' } as T);
+  // P10：同动作(同 jobId) in-flight 防重。避免多个入口并发调用导致同一岗位被重复发送。
+  // 说明：主进程已有 AbortSignal.timeout 兜底超时；此处不做激进渲染层超时——无服务端取消机制时，
+  // 渲染层超时释放锁反而会在服务端仍在真实发送的同时放行重试，放大双发风险。so 只做防重复。
+  const key = `${action}:${typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : 'global'}`;
+  if (CAMOUFOX_IN_FLIGHT.has(key)) {
+    return ({ ok: false, error: '同一岗位/动作正在执行中，已阻止重复操作' }) as T;
+  }
+  CAMOUFOX_IN_FLIGHT.add(key);
+  try {
+    const r = await window.electron?.camoufoxCall?.(action, payload || {});
+    return (r as T) ?? ({ ok: false, error: '主进程未暴露 camoufox 接口' } as T);
+  } finally {
+    CAMOUFOX_IN_FLIGHT.delete(key);
+  }
 }
+
+/** P10：Camoufox in-flight 锁集合 */
+const CAMOUFOX_IN_FLIGHT = new Set<string>();
 
 /** 隐身搜索岗位 */
 export function camoufoxSearch(query: string, city: string, pages = 1, os?: string): Promise<CamoufoxSearchResult> {
@@ -207,12 +222,12 @@ export function camoufoxEnabled(config: { camoufox?: { enabled?: boolean } } | u
   return Boolean(config?.camoufox?.enabled);
 }
 
-/** 检查 Camoufox 搜索结果的错误码是否属于「立即停止」级风控（36/32）或环境异常（38，需登录） */
+/** 检查 Camoufox 搜索结果的错误码是否属于「立即停止」级风控（P11：36/32/35 统一停止交人工） */
 export function isCamoufoxStopCode(code: number | null | undefined): boolean {
-  return code === 36 || code === 32;
+  return code === 36 || code === 32 || code === 35;
 }
 
-/** 环境异常码（38：未登录的自动化环境被识别）—— 需提示用户先扫码登录 */
+/** 环境异常码（P11：38/37 —— 需提示用户先扫码登录 / 环境异常交人工） */
 export function isCamoufoxEnvCode(code: number | null | undefined): boolean {
-  return code === 38;
+  return code === 38 || code === 37;
 }

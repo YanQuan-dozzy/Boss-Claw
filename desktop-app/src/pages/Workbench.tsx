@@ -125,12 +125,21 @@ export default function Workbench() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [jobsExpanded, setJobsExpanded] = useState(false);
   const webviewApi = useRef<WebviewApi | null>(null);
-  const pendingExtract = useRef<((job: JobMeta) => void) | null>(null);
+  // P02：岗位解析请求的去重占位。extractLock 拒绝并发点击；seq token 让超时兜底不会串到新请求。
+  const pendingExtract = useRef<{ resolve: (job: JobMeta) => void; seq: number } | null>(null);
+  const extractSeq = useRef(0);
+  const extractTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extractLock = useRef(false);
   const searchTriggered = useRef(false);
   const runNextRef = useRef<() => void>(() => {});
   const preferIdRef = useRef<string | null>(null);
   const activeTabRef = useRef<string | null>(null);
   const commStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // P01：runNext 互斥守卫。只允许一个投递循环在途；执行中再有触发则排队，结束后续跑。
+  // 解决多入口（running effect / handleDelivered / 失败分支 / 采集）并发进入 runNext，
+  // 造成 activeId/applyStage 相互覆盖、看门狗绑错、waitForSlot 并发等待者超发动作预算的问题。
+  const runNextLock = useRef(false);
+  const runNextQueued = useRef(false);
 
   // ===== 可视化采集状态（对齐 job-claw-main：逐卡片平滑滚动 + 高亮 + 点击展开详情）=====
   const [visualCollecting, setVisualCollecting] = useState(false);
@@ -141,6 +150,9 @@ export default function Workbench() {
   const visualActiveRef = useRef(false);
   const visualTabRef = useRef('');
   const collectDoneResolve = useRef<(() => void) | null>(null);
+  // P09：collect-progress 高频回传 → rAF 节流 setVisualItem，避免逐条进度整页重渲染
+  const visualItemBufRef = useRef<{ index: number; total: number; title: string; company: string; status: string; phase: string }>({ index: 0, total: 0, title: '', company: '', status: '', phase: '' });
+  const visualsRafRef = useRef<number | null>(null);
   const visualProcessedRef = useRef(0);
 
   // ===== Camoufox 隐身采集（可选增强）=====
@@ -153,6 +165,11 @@ export default function Workbench() {
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   useEffect(() => { recomputeStats(); }, [pending, recomputeStats]);
+
+  // P09：卸载时取消未执行的 rAF，避免卸载后 setState
+  useEffect(() => () => {
+    if (visualsRafRef.current != null) cancelAnimationFrame(visualsRafRef.current);
+  }, []);
 
   const ensureBossLogin = (): boolean => {
     if (bossLoggedIn === true) return true;
@@ -195,8 +212,12 @@ export default function Workbench() {
   }, [autoAssist, profile, directionPlan, bossLoggedIn]);
 
   const handleJobExtracted = useCallback((job: JobMeta) => {
-    pendingExtract.current?.(job);
-    pendingExtract.current = null;
+    const cur = pendingExtract.current;
+    if (cur) {
+      if (extractTimer.current) { clearTimeout(extractTimer.current); extractTimer.current = null; }
+      pendingExtract.current = null;
+      cur.resolve(job);
+    }
   }, []);
 
   // 页面级登录态实时回传（配合 App.tsx 的 wt2 cookie 权威检测，登录后立即感知）
@@ -213,14 +234,34 @@ export default function Workbench() {
       message.warning('当前是岗位列表页（含多个岗位）。请点击具体岗位进入详情页后，再点「加入任务」加入单个岗位');
       return;
     }
+    // P02：拒绝并发点击（一次只允许一个岗位解析在途），并清理上一次兜底定时器
+    if (extractLock.current) {
+      message.warning('正在解析上一个岗位，请稍候再点「加入任务」');
+      return;
+    }
+    if (extractTimer.current) { clearTimeout(extractTimer.current); extractTimer.current = null; }
+    extractLock.current = true;
+    const seq = ++extractSeq.current;
     addLog('info', `请求解析岗位：${info.url}`);
-    const job = await new Promise<JobMeta>((resolve) => {
-      pendingExtract.current = resolve;
-      webviewApi.current?.send('extract-job');
-      setTimeout(() => {
-        if (pendingExtract.current) pendingExtract.current({ url: info.url, title: info.title || '手动添加岗位', description: '' });
-      }, 4000);
-    });
+    let job: JobMeta;
+    try {
+      job = await new Promise<JobMeta>((resolve) => {
+        pendingExtract.current = { resolve, seq };
+        webviewApi.current?.send('extract-job');
+        extractTimer.current = setTimeout(() => {
+          if (pendingExtract.current && pendingExtract.current.seq === seq) {
+            pendingExtract.current.resolve({ url: info.url, title: info.title || '手动添加岗位', description: '' });
+            pendingExtract.current = null;
+            extractTimer.current = null;
+          }
+        }, 4000);
+      });
+    } finally {
+      // 兜底：解析已结束（无论成功/超时），清掉可能残留的占位与定时器，并释放并发锁
+      if (extractTimer.current) { clearTimeout(extractTimer.current); extractTimer.current = null; }
+      if (pendingExtract.current && pendingExtract.current.seq === seq) pendingExtract.current = null;
+      extractLock.current = false;
+    }
 
     if ((job as any).isListPage || (job as any).listCardCount > 1) {
       message.warning('当前是岗位列表页（含多个岗位）。请点击具体岗位进入详情页后，再点「加入任务」加入单个岗位');
@@ -495,20 +536,27 @@ export default function Workbench() {
     }
     if (tabId) webviewApi.current?.closeTab(tabId);
     activeTabRef.current = null;
-    if (useAppStore.getState().autoAssist) void runNextRef.current();
+    if (useAppStore.getState().autoAssist) requestRunNext();
   }, [updatePending, addLog, recomputeStats, pauseAssist]);
 
   // ===== 可视化采集（对齐 job-claw-main：逐卡片滚动 + 高亮 + 点击展开详情）=====
   // 采集进度回传（collect-progress）：更新实时状态面板；phase=done 时入库
   const handleCollectProgress = useCallback((data: any) => {
-    setVisualItem({
+    // P09：写入缓冲，rAF 节流一次 setVisualItem（合并同一动画帧内的多条进度）
+    visualItemBufRef.current = {
       index: Number(data?.index ?? 0),
       total: Number(data?.total ?? 0),
       title: String(data?.title || ''),
       company: String(data?.company || ''),
       status: String(data?.status || ''),
       phase: String(data?.phase || ''),
-    });
+    };
+    if (visualsRafRef.current == null) {
+      visualsRafRef.current = requestAnimationFrame(() => {
+        visualsRafRef.current = null;
+        setVisualItem({ ...visualItemBufRef.current });
+      });
+    }
     if (data?.phase === 'done' && data?.job) {
       void ingestJob(data.job);
     }
@@ -643,7 +691,7 @@ export default function Workbench() {
     setVisualItem((v) => ({ ...v, status: '', phase: '' }));
     recomputeStats();
     addLog(wasStopped ? 'warn' : 'success', `可视化采集${wasStopped ? '已停止' : '完成'}：共处理 ${processed} 个岗位（已按条件过滤入库）`);
-    if (useAppStore.getState().autoAssist) void runNext();
+    if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
   // ===== Camoufox 隐身采集（可选增强，保留）=====
@@ -708,7 +756,7 @@ export default function Workbench() {
     setCfxCollecting(false);
     recomputeStats();
     addLog(collectedCount > 0 ? 'success' : 'info', `Camoufox 隐身采集结束：共入库 ${collectedCount} 个岗位`);
-    if (useAppStore.getState().autoAssist) void runNext();
+    if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
   const camoufoxJobToMeta = (j: CamoufoxJob): JobMeta => ({
@@ -736,6 +784,24 @@ export default function Workbench() {
     setCfxCollecting(false);
     addLog('warn', '已停止采集');
   };
+
+  /** P01：经互斥守卫调度 runNext，所有入口统一走此函数避免并发重叠投递 */
+  function requestRunNext() {
+    if (runNextLock.current) { runNextQueued.current = true; return; }
+    runNextLock.current = true;
+    runNextQueued.current = false;
+    void (async () => {
+      try {
+        await runNextRef.current();
+      } finally {
+        runNextLock.current = false;
+        if (runNextQueued.current) {
+          runNextQueued.current = false;
+          requestRunNext();
+        }
+      }
+    })();
+  }
 
   const runNext = async () => {
     const ranked = rerankPending(useDataStore.getState().pending);
@@ -786,7 +852,7 @@ export default function Workbench() {
           addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
           setApplyStage(null);
           recomputeStats();
-          if (useAppStore.getState().autoAssist) void runNextRef.current();
+          if (useAppStore.getState().autoAssist) requestRunNext();
           return;
         }
         let cfxResult: any;
@@ -843,7 +909,7 @@ export default function Workbench() {
       addLog('error', `投递失败：${candidate.job?.title || ''}（岗位缺少 jobId）`);
       setApplyStage(null);
       recomputeStats();
-      if (useAppStore.getState().autoAssist) void runNextRef.current();
+      if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
 
@@ -874,7 +940,7 @@ export default function Workbench() {
       updatePending(candidate.id, { status: 'approved' }); // 交回后台「自动沟通」（approved 归它处理）
       setApplyStage(null);
       recomputeStats();
-      if (useAppStore.getState().autoAssist) void runNextRef.current();
+      if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
     let friendAddResult: any;
@@ -903,7 +969,7 @@ export default function Workbench() {
     recomputeStats();
     if (useAppStore.getState().autoAssist) {
       addLog('warn', '继续投递队列中的下一个岗位');
-      void runNextRef.current();
+      requestRunNext();
     } else {
       addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
     }
@@ -914,7 +980,7 @@ export default function Workbench() {
   useEffect(() => { loadBossCityCodes().catch(() => {}); }, []);
 
   useEffect(() => {
-    if (running) void runNext();
+    if (running) requestRunNext();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
@@ -939,7 +1005,7 @@ export default function Workbench() {
         webviewApi.current?.closeTab(activeTabRef.current);
         activeTabRef.current = null;
       }
-      if (useAppStore.getState().autoAssist) void runNextRef.current();
+      if (useAppStore.getState().autoAssist) requestRunNext();
     }, sec * 1000);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyStage, running, autoAssist, activeId]);
@@ -962,7 +1028,7 @@ export default function Workbench() {
         addLog('warn', `已跳过：${active?.job?.title || ''}（${error}）`);
         setApplyStage(null);
         recomputeStats();
-        if (running) void runNext();
+        if (running) requestRunNext();
         return;
       }
       updatePending(activeId, { status: 'failed', error });
@@ -975,7 +1041,7 @@ export default function Workbench() {
       }
       if (useAppStore.getState().autoAssist) {
         addLog('warn', '继续投递队列中的下一个岗位');
-        void runNextRef.current();
+        requestRunNext();
       } else {
         addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
       }

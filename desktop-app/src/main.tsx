@@ -19,7 +19,7 @@ function Root() {
   const effective = useEffectiveTheme(theme);
 
   return (
-    <ThemeProvider>
+    <ThemeProvider effective={effective}>
       <ConfigProvider locale={zhCN} theme={getTheme(effective)}>
         <AntApp>
           <App />

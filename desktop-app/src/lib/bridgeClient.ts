@@ -12,12 +12,25 @@ export interface BridgeResumeResult {
 }
 
 export async function bridgeParseResume(dataUrl: string, name: string): Promise<BridgeResumeResult> {
-  const res = await fetch(`${BASE}/resume-text?token=${BRIDGE_TOKEN}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dataUrl, name }),
-  });
-  return res.json();
+  // P21：超时 + 失败兜底，与 bridgeStatus 保持一致，桥未启动时返回 {ok:false} 而非抛未处理异常
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await fetch(`${BASE}/resume-text?token=${BRIDGE_TOKEN}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, name }),
+        signal: ctrl.signal,
+      });
+      const data = await res.json();
+      return data as BridgeResumeResult;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return { ok: false, method: 'bridge', error: '本地桥接不可用或超时，请启动 OpenClaw 桥接服务' };
+  }
 }
 
 export async function bridgeStatus(): Promise<{ ok: boolean; [k: string]: unknown }> {

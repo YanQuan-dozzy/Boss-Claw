@@ -8,6 +8,8 @@ export function jobCardStatus(p: PendingItem): string {
   if (p.status === 'failed') return 'st-failed';
   if (p.status === 'skipped' || p.status === 'ignored') return 'st-ignored';
   if (p.status === 'approved' || p.status === 'approved_queue') return 'st-approved';
+  if (p.status === 'rejected') return 'st-rejected'; // P23：补 rejected
+  if (p.status === 'pending') return 'st-pending';   // P23：补 pending
   return '';
 }
 

@@ -16,6 +16,7 @@ import { taskStageMeta } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { EmptyState } from '@/components/feedback';
+import { electronApi } from '@/lib/electronApi';
 import type { PendingItem, PendingStatus, TaskRun } from '@/lib/bossclaw/types';
 
 const { Text } = Typography;
@@ -292,7 +293,7 @@ export default function Tasks() {
               {p.error && <div className="job-error">⚠ {p.error}</div>}
 
               <div className="job-actions job-actions--tasks">
-                <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && window.open(p.job.url)}>
+                <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
                   查看详情
                 </Button>
                 <Button size="small" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>

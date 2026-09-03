@@ -85,6 +85,30 @@ export const electronApi = {
     preloadPath: (): string => (api() as { webviewPreload?: string }).webviewPreload || '',
   },
 
+  // P05：LLM 主进程代理（主进程 Node fetch 转发，规避渲染层 CORS）
+  llmProxy: async (
+    url: string,
+    payload: unknown,
+    apiKey: string,
+    timeoutMs?: number
+  ): Promise<{ ok: boolean; status: number; text: string; error?: string }> => {
+    try {
+      const fn = (api() as Record<string, unknown>).llmProxy as
+        | ((u: string, p: unknown, k: string, t?: number) => Promise<unknown>)
+        | undefined;
+      if (!fn) return { ok: false, status: 0, text: '', error: 'llmProxy 不可用' };
+      const r = (await fn(url, payload, apiKey, timeoutMs)) as { ok?: boolean; status?: number; text?: string; error?: string };
+      return {
+        ok: Boolean(r?.ok),
+        status: Number(r?.status || 0),
+        text: String(r?.text || ''),
+        error: r?.error || undefined,
+      };
+    } catch (e) {
+      return { ok: false, status: 0, text: '', error: (e as Error).message };
+    }
+  },
+
   fetchUrl: async (url: string): Promise<{ ok: boolean; status?: number; text?: string; error?: string }> => {
     try {
       const fn = (api() as { fetchUrl?: (u: string) => Promise<{ ok: boolean; status?: number; text?: string; error?: string }> }).fetchUrl;
