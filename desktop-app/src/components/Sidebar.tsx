@@ -10,6 +10,7 @@ import {
   MessageOutlined,
   RobotOutlined,
   SettingOutlined,
+  ScheduleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons';
@@ -22,6 +23,7 @@ const NAV_ICONS: Record<RouteKey, React.ReactNode> = {
   resume: <FileTextOutlined />,
   directions: <AimOutlined />,
   tasks: <ProfileOutlined />,
+  schedule: <ScheduleOutlined />,
   stats: <BarChartOutlined />,
   openclaw: <ApiOutlined />,
   autochat: <MessageOutlined />,

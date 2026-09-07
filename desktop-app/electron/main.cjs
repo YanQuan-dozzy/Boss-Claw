@@ -724,6 +724,8 @@ async function createMainWindow() {
       webviewTag: true,
       preload: path.join(__dirname, 'preload', 'app.cjs'),
       spellcheck: false,
+      // 关闭后台节流：最小化时渲染进程定时器仍按时触发（本地 5 分钟备份心跳 / 定时任务后台触发依赖此设置）
+      backgroundThrottling: false,
     },
   });
 
@@ -906,6 +908,24 @@ safeHandle('jc:app-info', () => ({
   version: app.getVersion(),
 }));
 
+// 读取「使用前必读」文档（首页「阅读使用文档」入口）。
+// 打包版从 resources/docs/ 读（extraResources 拷贝）；开发版从仓库 docs/ 读（本文件上溯两级）。
+safeHandle('jc:read-doc', async () => {
+  const candidates = [
+    path.join(process.resourcesPath, 'docs', '使用前必读.md'),
+    path.join(__dirname, '..', '..', 'docs', '使用前必读.md'),
+  ];
+  for (const p of candidates) {
+    try {
+      const text = await fs.promises.readFile(p, 'utf8');
+      return { ok: true, text, file: p };
+    } catch {
+      /* 尝试下一个候选路径 */
+    }
+  }
+  return { ok: false, error: '未找到「使用前必读」文档（docs/使用前必读.md）' };
+});
+
 // 剪贴板写入（右键「查看网页源码」Modal 的复制按钮用；渲染进程 navigator.clipboard 在 file:// 下不可靠）
 safeHandle('jc:clipboard-write', (_event, text) => {
   try { clipboard.writeText(String(text ?? '')); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
@@ -957,6 +977,125 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
     return { ok: false, error: String((e && e.message) || e) };
   } finally {
     try { printWin.destroy(); } catch {}
+  }
+});
+
+// ===== 本地数据备份目录（开机自启动同理，见下方 autostart 段）=====
+// localStorage 为主存储；本地备份目录指针存 userData/.backup-dir.txt（独立于 localStorage，
+// 避免 localStorage 缺失时无法得知恢复来源）。渲染层每 5 分钟脏检查后经此写盘。
+function backupCtl() {
+  const pointer = () => path.join(app.getPath('userData'), '.backup-dir.txt');
+  const defaultDir = () => path.join(app.getPath('userData'), 'backup');
+  const readPointer = () => {
+    try { const d = fs.readFileSync(pointer(), 'utf8').trim(); if (d) return d; } catch {}
+    return defaultDir();
+  };
+  const fileIn = (dir) => path.join(dir, 'bossclaw-local-backup.json');
+  return { pointer, defaultDir, readPointer, fileIn };
+}
+
+/** 校验并持久化一个备份目录（绝对路径；自动创建、拷贝旧备份、写指针） */
+function applyBackupDir(dir) {
+  if (!path.isAbsolute(dir)) return { ok: false, error: '备份目录须为绝对路径' };
+  const ctl = backupCtl();
+  const oldDir = ctl.readPointer();
+  fs.mkdirSync(dir, { recursive: true });
+  // 旧目录存在备份文件且新目录无 → 拷贝，避免切换丢数据
+  if (oldDir !== dir) {
+    const src = ctl.fileIn(oldDir);
+    const dst = ctl.fileIn(dir);
+    if (fs.existsSync(src) && !fs.existsSync(dst)) {
+      try { fs.copyFileSync(src, dst); } catch (e) { dlog('warn', 'backup dir copy failed', { message: e?.message }); }
+    }
+  }
+  fs.writeFileSync(ctl.pointer(), dir);
+  return { ok: true, dir };
+}
+
+safeHandle('jc:backup-dir-get', async () => {
+  try { return { dir: backupCtl().readPointer() }; }
+  catch (e) { return { dir: backupCtl().defaultDir(), error: String(e?.message || e) }; }
+});
+
+safeHandle('jc:backup-dir-set', async (_event, dirPath) => {
+  try {
+    return applyBackupDir(String(dirPath || '').trim());
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 系统目录选择对话框 → 持久化为备份目录（选择即应用）
+safeHandle('jc:backup-dir-pick', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: '选择本地备份目录',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
+    return applyBackupDir(filePaths[0]);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:backup-write', async (_event, bundle) => {
+  try {
+    const ctl = backupCtl();
+    const dir = ctl.readPointer();
+    fs.mkdirSync(dir, { recursive: true });
+    const text = typeof bundle === 'string' ? bundle : JSON.stringify(bundle ?? {});
+    if (text.length < 4) return { ok: false, error: '备份内容为空' };
+    const filep = ctl.fileIn(dir);
+    fs.writeFileSync(filep, text);
+    return { ok: true, file: filep, size: Buffer.byteLength(text) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:backup-read', async () => {
+  try {
+    const ctl = backupCtl();
+    const filep = ctl.fileIn(ctl.readPointer());
+    if (!fs.existsSync(filep)) return { ok: false, file: null };
+    const raw = fs.readFileSync(filep, 'utf8');
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+    if (!parsed) return { ok: false, file: null, error: '备份文件损坏' };
+    return { ok: true, file: filep, bundle: parsed };
+  } catch (e) {
+    return { ok: false, file: null, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:backup-delete', async () => {
+  try {
+    const ctl = backupCtl();
+    const filep = ctl.fileIn(ctl.readPointer());
+    if (fs.existsSync(filep)) fs.unlinkSync(filep);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 开机自启动（Windows 登录项）=====
+safeHandle('jc:autostart-get', async () => {
+  try {
+    const st = app.getLoginItemSettings();
+    return { ok: true, openAtLogin: Boolean(st.openAtLogin) };
+  } catch (e) {
+    return { ok: false, openAtLogin: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:autostart-set', async (_event, enabled) => {
+  try {
+    app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
+    return { ok: true, enabled: Boolean(enabled) };
+  } catch (e) {
+    return { ok: false, enabled: Boolean(enabled), error: String((e && e.message) || e) };
   }
 });
 

@@ -7,6 +7,8 @@ import { checkBossLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
 import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
+import { startScheduler } from './lib/scheduler';
+import { restoreFromLocalBackup, startLocalBackup } from './lib/localBackup';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import TitleBar from './components/TitleBar';
@@ -21,6 +23,7 @@ const Workbench = lazy(() => import('./pages/Workbench'));
 const Resume = lazy(() => import('./pages/Resume'));
 const Directions = lazy(() => import('./pages/Directions'));
 const Tasks = lazy(() => import('./pages/Tasks'));
+const ScheduleTasks = lazy(() => import('./pages/ScheduleTasks'));
 const Stats = lazy(() => import('./pages/Stats'));
 const OpenClaw = lazy(() => import('./pages/OpenClaw'));
 const AutoChat = lazy(() => import('./pages/AutoChat'));
@@ -91,6 +94,37 @@ export default function App() {
     ensureSkillsLoaded().catch(() => {});
   }, []);
 
+  // 无 localStorage 数据时从本地备份回签（主存储缺失才恢复，避免覆盖现有数据）
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      let hasData = false;
+      try {
+        hasData = localStorage.getItem('bossclaw-data') != null;
+      } catch {
+        /* ignore */
+      }
+      if (hasData) return; // 主存储健在，以 localStorage 为准
+      const r = await restoreFromLocalBackup();
+      if (!cancelled && r.restored) window.location.reload();
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 启动 5 分钟本地备份心跳（脏检查写盘）
+  useEffect(() => {
+    const stopBackup = startLocalBackup();
+    return () => stopBackup();
+  }, []);
+
+  // 启动全局定时任务调度器（应用运行期间按设定时刻触发投递/采集/备份）
+  useEffect(() => {
+    startScheduler();
+  }, []);
+
   const isWorkbench = activeRoute === 'workbench';
 
   return (
@@ -118,6 +152,7 @@ export default function App() {
                 {activeRoute === 'resume' && <Resume />}
                 {activeRoute === 'directions' && <Directions />}
                 {activeRoute === 'tasks' && <Tasks />}
+                {activeRoute === 'schedule' && <ScheduleTasks />}
                 {activeRoute === 'stats' && <Stats />}
                 {activeRoute === 'openclaw' && <OpenClaw />}
                 {activeRoute === 'autochat' && <AutoChat />}

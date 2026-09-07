@@ -31,6 +31,9 @@ const api = {
   // 打开外部链接
   openExternal: (url) => ipcRenderer.send('jc:open-external', url),
 
+  // 读取「使用前必读」文档（首页「阅读使用文档」入口；开发读仓库 docs/，打包读 resources/docs/）
+  readDoc: () => ipcRenderer.invoke('jc:read-doc'),
+
   // 检查 BOSS 直聘登录态（主进程读 persist:bossclaw 会话 wt2 cookie）
   bossLogin: () => ipcRenderer.invoke('jc:boss-login'),
 
@@ -43,6 +46,18 @@ const api = {
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
   llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
+
+  // ===== 开机自启动（Windows 登录项）=====
+  autostartGet: () => ipcRenderer.invoke('jc:autostart-get'),
+  autostartSet: (enabled) => ipcRenderer.invoke('jc:autostart-set', enabled),
+
+  // ===== 本地数据备份目录（localStorage 主存储 + 周期脏检查写盘）=====
+  backupDir: () => ipcRenderer.invoke('jc:backup-dir-get'),
+  backupDirSet: (dir) => ipcRenderer.invoke('jc:backup-dir-set', dir),
+  backupDirPick: () => ipcRenderer.invoke('jc:backup-dir-pick'),
+  backupWrite: (bundle) => ipcRenderer.invoke('jc:backup-write', bundle),
+  backupRead: () => ipcRenderer.invoke('jc:backup-read'),
+  backupDelete: () => ipcRenderer.invoke('jc:backup-delete'),
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),

@@ -5,6 +5,8 @@ interface ElectronBridgeApi {
   versions?: { electron?: string; chrome?: string; node?: string };
   getAppInfo?: () => Promise<{ name: string; version: string }>;
   openExternal?: (url: string) => void;
+  // 读取「使用前必读」文档（首页「阅读使用文档」入口）
+  readDoc?: () => Promise<{ ok: boolean; text?: string; file?: string; error?: string }>;
   bossLogin?: () => Promise<unknown>;
   webviewPreload?: string;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -47,6 +49,16 @@ interface ElectronBridgeApi {
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 开机自启动（Windows 登录项）
+  autostartGet?: () => Promise<{ ok?: boolean; openAtLogin?: boolean; error?: string }>;
+  autostartSet?: (enabled: boolean) => Promise<{ ok?: boolean; enabled?: boolean; error?: string }>;
+  // 本地数据备份目录（localStorage 主存储 + 周期脏检查写盘）
+  backupDir?: () => Promise<{ dir?: string; error?: string }>;
+  backupDirSet?: (dir: string) => Promise<{ ok?: boolean; dir?: string; error?: string }>;
+  backupDirPick?: () => Promise<{ ok?: boolean; canceled?: boolean; dir?: string; error?: string }>;
+  backupWrite?: (bundle: unknown) => Promise<{ ok?: boolean; file?: string; size?: number; error?: string }>;
+  backupRead?: () => Promise<{ ok?: boolean; file?: string | null; bundle?: { updatedAt?: number; keys?: Record<string, string | null> } | null; error?: string }>;
+  backupDelete?: () => Promise<{ ok?: boolean; error?: string }>;
 }
 
 interface Window {

@@ -8,6 +8,7 @@ export type RouteKey =
   | 'resume'
   | 'directions'
   | 'tasks'
+  | 'schedule'
   | 'stats'
   | 'openclaw'
   | 'autochat'
@@ -27,6 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'resume', label: '简历中心' },
   { key: 'directions', label: '投递方向' },
   { key: 'tasks', label: '任务进度' },
+  { key: 'schedule', label: '定时任务' },
   { key: 'stats', label: '数据统计' },
   { key: 'assistant', label: '定制简历' },
   { key: 'openclaw', label: 'OpenClaw' },

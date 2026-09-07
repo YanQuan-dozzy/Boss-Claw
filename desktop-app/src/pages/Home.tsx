@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Progress, Tag, Typography, Space, message, Divider } from 'antd';
+import { Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin } from 'antd';
 import {
   FileTextOutlined,
   AimOutlined,
@@ -20,6 +20,7 @@ import {
   CloseOutlined,
   ReloadOutlined,
   GlobalOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store/useAppStore';
 import { useDataStore } from '@/store/useDataStore';
@@ -29,6 +30,8 @@ import { selectedDirectionItems } from '@/lib/bossclaw/directions';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { createTasks } from '@/lib/bossclaw/tasks';
 import { MetricCard } from '@/components/MetricCard';
+import { electronApi } from '@/lib/electronApi';
+import MarkdownView from '@/components/MarkdownView';
 
 const { Paragraph, Text } = Typography;
 
@@ -67,6 +70,23 @@ export default function Home() {
   const isLLMConfigured = useSettingsStore((s) => s.isLLMConfigured);
   const config = useSettingsStore((s) => s.config);
   const [progress, setProgress] = useState(0);
+  // 使用前必读文档抽屉
+  const [docOpen, setDocOpen] = useState(false);
+  const [docText, setDocText] = useState('');
+  const [docLoading, setDocLoading] = useState(false);
+
+  const handleOpenDoc = async () => {
+    setDocOpen(true);
+    if (docText || docLoading) return; // 已加载 / 加载中
+    setDocLoading(true);
+    const r = await electronApi.readDoc();
+    setDocLoading(false);
+    if (r.ok && r.text) {
+      setDocText(r.text);
+    } else {
+      message.warning(r.error || '使用文档读取失败');
+    }
+  };
 
   useEffect(() => {
     let p = 0;
@@ -179,6 +199,9 @@ export default function Home() {
           </Button>
           <Button size="large" className="btn-uniform-lg" icon={<ProfileOutlined />} onClick={() => setRoute('tasks')}>
             查看任务进度
+          </Button>
+          <Button size="large" className="btn-uniform-lg" icon={<BookOutlined />} onClick={handleOpenDoc}>
+            阅读使用文档
           </Button>
         </div>
       </div>
@@ -384,6 +407,31 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* 使用前必读文档抽屉 */}
+      <Drawer
+        title={
+          <span>
+            <BookOutlined style={{ color: 'var(--brand)', marginRight: 8 }} />使用前必读
+          </span>
+        }
+        placement="right"
+        width={760}
+        open={docOpen}
+        closable={false}
+        onClose={() => setDocOpen(false)}
+        styles={{ body: { padding: '16px 24px', overflow: 'auto' } }}
+      >
+        {docLoading ? (
+          <div style={{ textAlign: 'center', padding: 48 }}>
+            <Spin tip="文档加载中..." />
+          </div>
+        ) : docText ? (
+          <MarkdownView text={docText} />
+        ) : (
+          <div style={{ textAlign: 'center', padding: 48, color: 'var(--fg-muted)' }}>文档加载失败，请稍后重试</div>
+        )}
+      </Drawer>
     </div>
   );
 }
