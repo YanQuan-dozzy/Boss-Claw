@@ -45,6 +45,8 @@ export interface AppConfig {
   experiences: string[];
   degrees: string[];
   salary: string;
+  /** 公司规模筛选（单选，BOSS scale 参数：0-20人=301 / 20-99人=302 / 100-499人=303 / 500-999人=304 / 1000-9999人=305 / 10000人以上=306；不限=不附加过滤） */
+  companyScale: string;
   sendResumeImage: boolean;
   sendOnlineResume: boolean;
   betweenJobsSeconds: number;

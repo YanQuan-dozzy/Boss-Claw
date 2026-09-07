@@ -1,6 +1,6 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手（Electron + React）",
   "private": true,
   "author": "YanQuan",
@@ -55,6 +55,10 @@
       {
         "from": "camoufox/requirements.txt",
         "to": "camoufox/requirements.txt"
+      },
+      {
+        "from": "../docs/使用前必读.md",
+        "to": "docs/使用前必读.md"
       }
     ],
     "win": {

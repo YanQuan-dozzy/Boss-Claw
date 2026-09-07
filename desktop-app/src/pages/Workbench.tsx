@@ -8,6 +8,7 @@ import {
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
+import { useScheduleStore } from '@/store/useScheduleStore';
 import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
@@ -116,6 +117,8 @@ export default function Workbench() {
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
   const bossLoggedIn = useAppStore((s) => s.bossLoggedIn);
   const directionPlan = useDataStore((s) => s.directionPlan);
+  // 定时任务「采集」请求标志（调度器置位，常驻本组件消费后清除）
+  const collectRequested = useScheduleStore((s) => s.collectRequested);
   const [running, setRunning] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [applyStage, setApplyStage] = useState<TaskStage | null>(null);
@@ -784,6 +787,20 @@ export default function Workbench() {
     setCfxCollecting(false);
     addLog('warn', '已停止采集');
   };
+
+  // 定时任务「采集」触发：消费 collectRequested 调用本组件采集入口（跨页可触发，因本组件常驻挂载）
+  useEffect(() => {
+    if (!collectRequested) return;
+    // 防御：已有采集在进行中则不叠加，仅清除请求标志
+    if (visualActiveRef.current || cfxActiveRef.current) {
+      useScheduleStore.getState().setCollectRequested(false);
+      return;
+    }
+    useScheduleStore.getState().setCollectRequested(false);
+    addLog('info', '定时任务触发搜索采集');
+    startCollect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collectRequested, config.camoufox?.enabled]);
 
   /** P01：经互斥守卫调度 runNext，所有入口统一走此函数避免并发重叠投递 */
   function requestRunNext() {

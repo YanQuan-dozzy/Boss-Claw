@@ -1,0 +1,1403 @@
+openapi: 3.0.3
+info:
+  title: BossClaw Desktop 本地接口规范
+  version: 2.3.0
+  description: |
+    本文件以 OpenAPI v3 描述 BossClaw 桌面应用（Electron + React，desktop-app）暴露的全部接口面。
+    项目为本地单机应用，不对外提供公网 API；接口面共分四层，全部绑定 127.0.0.1：
+
+    | 层 | 传输 | 用途 | 本节位置 |
+    | --- | --- | --- | --- |
+    | 1. OpenClaw 桥接服务（Node HTTP） | HTTP :18765 | 状态/日报/控制、简历 OCR/DOCX 解析（降级通道） | `paths` 前缀 `/bridge/*` |
+    | 2. Camoufox 隐身引擎桥（Python HTTP） | HTTP :18767 | 隐身搜索/打招呼/自动沟通/扫码登录 | `paths` 前缀 `/camoufox/*` |
+    | 3. Electron IPC（主进程） | Electron IPC | 渲染层经 preload `window.electron` 调用主进程能力 | 顶层 `x-electron-ipc` |
+    | 4. 内置浏览器通道 | webview IPC | 渲染层 <-> BOSS 直聘 guest 页面的采集/投递命令与事件 | 顶层 `x-webview-channels` |
+
+    ## 阅读约定
+    - 第 1、2 层是真实 HTTP 端点。为避免两个服务路径重名（各自都有 `/status`），本文件中
+      path 使用 `/bridge/*`、`/camoufox/*` 前缀做展示性消歧，`x-real-path` 标注真实路径，
+      operation 级 `servers` 标注真实端口。鉴权统一为 URL query 参数 `token`。
+    - 第 3、4 层不是 HTTP，无法用 `paths` 表达，故放入合法的顶层 `x-*` 扩展节
+      （OpenAPI 允许未知扩展字段，不影响文档合法性），每条给出方向、参数与示例，便于人工阅读与代码检索。
+    - HTTP 状态码仅用于传输层；业务成败统一以响应体 `ok: boolean` 表达，
+      风控/状态语义见 `x-risk-codes`（顶层扩展节）。
+
+    ## 安全模型
+    - 桥接服务仅监听 127.0.0.1；token 由应用启动时硬编码（见 `bridge/config.json` 与
+      `camoufox_server.py --token`），防御同机其它进程误调。
+    - 渲染层 -> 主进程 IPC 的信任边界见 AGENTS.md §3.1（contextIsolation + 无 nodeIntegration）。
+
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:18765
+    description: OpenClaw 本地桥接服务（bridge/server.cjs）
+  - url: http://127.0.0.1:18767
+    description: Camoufox 隐身引擎桥（camoufox/camoufox_server.py）
+tags:
+  - name: Bridge（OpenClaw 本地桥）
+    description: desktop-app/bridge/server.cjs — Node HTTP 服务；OpenClaw / 设置页使用。
+  - name: Camoufox（隐身引擎桥）
+    description: desktop-app/camoufox/camoufox_server.py — Python HTTP 服务；工作台「隐身搜索 / 自动沟通 / 扫码登录」使用。
+security:
+  - tokenQuery: []
+paths:
+  # ============================================================
+  # Layer 1 — OpenClaw 桥（真实端口 18765）
+  # ============================================================
+  /bridge/status:
+    get:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeStatus
+      summary: 桥接服务状态
+      description: |
+        查询桥接进程是否存活、运行/暂停控制位、可用解析器与本机数据库路径。
+        真实请求：`GET http://127.0.0.1:18765/status?token=bossclaw-desktop-bridge`
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /status
+      parameters:
+        - $ref: '#/components/parameters/TokenQuery'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeStatus'
+              example:
+                ok: true
+                name: bossclaw-bridge
+                version: 2.0.0
+                running: false
+                paused: false
+                parsers: { pdftotext: true }
+                databasePath: C:\Users\DELL\.bossclaw\data.json
+                events: 12
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /bridge/logs:
+    get:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeLogs
+      summary: 最近指令与事件日志
+      description: 返回数据库中最新的指令与事件（时间倒序，各至多 50 条），用于调试与 OpenClaw 页展示。
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /logs
+      parameters:
+        - $ref: '#/components/parameters/TokenQuery'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  commands:
+                    type: array
+                    description: 控制指令历史（最新在前）
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string, enum: [start, pause, stop, restore] }
+                        ts: { type: integer, description: epoch 毫秒 }
+                  events:
+                    type: array
+                    description: 运行事件历史（最新在前）
+                    items:
+                      type: object
+                      properties:
+                        message: { type: string }
+                        ts: { type: integer }
+                        data: { type: object, nullable: true }
+              example:
+                ok: true
+                commands: [{ type: start, ts: 1778200000000 }]
+                events:
+                  - message: 投递成功
+                    ts: 1778200005000
+                    data: { job: { title: 前端开发工程师, company: 某某科技 } }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /bridge/report:
+    get:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeReport
+      summary: 生成求职日报文本
+      description: 汇总「今日」成功沟通 / 沟通失败 / 岗位分析等事件，返回纯文本日报（OpenClaw 可直接投递/粘贴）。
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /report
+      parameters:
+        - $ref: '#/components/parameters/TokenQuery'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  report: { type: string }
+              example:
+                ok: true
+                report: "BossClaw 求职日报｜2026/9/6\n\n成功沟通：3\n沟通失败：0\n岗位分析：5\n运行事件：12\n\n- 前端开发工程师 · 某某科技\n\nByChris"
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /bridge/command:
+    post:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeCommand
+      summary: 桥接控制（启动/暂停/停止/恢复快照）
+      description: |
+        写入一条控制指令并更新 control 位。
+        - `start`：running=true, paused=false
+        - `pause`：paused=true
+        - `stop`：running=false, paused=false
+        - `restore`：返回最近一次快照（不改变 control 位），用于任务恢复
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [start, pause, stop, restore]
+                  description: 控制指令类型
+            example: { type: start }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  control:
+                    type: object
+                    properties:
+                      running: { type: boolean }
+                      paused: { type: boolean }
+                  snapshot:
+                    type: object
+                    nullable: true
+                    description: 仅 restore 返回；无快照时为 null
+              example: { ok: true, control: { running: true, paused: false } }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /bridge/ocr:
+    post:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeOcr
+      summary: 简历 PDF 解析（本机 OCR/文本抽取，降级通道）
+      description: |
+        接收 base64 PDF（data URL），依次尝试本机 `pdftotext`（poppler）；无可靠正文时报错。
+        返回候选中最优结果及诊断信息。渲染层正常情况下优先走 pdfExtractor.ts（纯 JS），
+        本端点作为 Electron 外 / 复杂 PDF 的桥接降级。
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /ocr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcrRequest'
+            example:
+              dataUrl: data:application/pdf;base64,JVBERi0xLjQK...
+      responses:
+        '200':
+          description: 解析结果（业务成败看 ok 字段）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParseResult'
+              examples:
+                success:
+                  value:
+                    ok: true
+                    text: "张三\n男\n求职意向：前端开发工程师\n教育经历：..."
+                    method: pdftotext
+                    diagnostics:
+                      - { method: pdftotext, ok: true, detail: '1823 字' }
+                failed:
+                  value:
+                    ok: false
+                    text: ''
+                    method: none
+                    error: 本机解析与 OCR 均未识别到可靠正文（可安装 poppler 的 pdftotext 或改用 DOCX/TXT）
+                    diagnostics: []
+        '413':
+          description: 请求体超过 28MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorPayload' }
+              example: { ok: false, error: request too large }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /bridge/resume-text:
+    post:
+      tags: [Bridge（OpenClaw 本地桥）]
+      operationId: bridgeResumeText
+      summary: 简历文本抽取（TXT / MD / DOCX / PDF 统一入口）
+      description: |
+        按 `name` 扩展名分派：`.txt`/`.md` 直接 UTF-8 解码；`.docx` 走 mammoth 抽文本；
+        其余按 PDF 处理（pdftotext）。所有内容以 data URL 上传（上限 18MB）。
+      servers:
+        - url: http://127.0.0.1:18765
+      x-real-path: /resume-text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeTextRequest'
+            example:
+              dataUrl: data:application/pdf;base64,JVBERi0xLjQK...
+              name: 张三-简历.pdf
+      responses:
+        '200':
+          description: 解析结果（业务成败看 ok 字段）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParseResult'
+              example:
+                ok: true
+                text: "张三 前端开发工程师 ..."
+                method: mammoth
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+
+  # ============================================================
+  # Layer 2 — Camoufox 隐身引擎桥（真实端口 18767）
+  # ============================================================
+  /camoufox/status:
+    get:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxStatus
+      summary: 隐身引擎状态（内核/Cookie/登录态）
+      description: |
+        仅检测不启动浏览器：Python 版本、camoufox/playwright 包、原生内核路径、
+        持久 Cookie（~/.bossclaw/camoufox-cookies.json）与 wt2 登录态。
+        真实请求：`GET http://127.0.0.1:18767/status?token=bossclaw-camoufox`
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /status
+      parameters:
+        - $ref: '#/components/parameters/TokenQuery'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CamoufoxStatus'
+              example:
+                ok: true
+                version: '0.5.4'
+                python: '3.13'
+                camoufox: true
+                camoufoxVersion: 0.5.4
+                playwright: true
+                kernel: camoufox
+                kernelPath: C:\Users\DELL\.cache\camoufox\...
+                kernelMessage: Camoufox 原生内核就绪
+                cookies: true
+                cookieCount: 24
+                loggedIn: true
+                message: Camoufox 原生内核就绪
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/search:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxSearch
+      summary: 隐身搜索岗位（joblist API，自动 zp_stoken）
+      description: |
+        用 Camoufox 原生内核打开 BOSS 职位搜索页并拦截 /wapi/zpgeek/search/joblist.json，
+        解析为 JobMeta 兼容结构。命中反爬空壳自动重试；code 37（环境异常）自动刷新 zp_stoken；
+        code 17 提示先登录；code 1006 表示请求被节流。
+        本接口只降低「正常搜索被误判为机器人」的概率，不绕过验证码/账户验证。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CamoufoxSearchRequest'
+            example: { query: 前端开发, city: '101010100', pages: 1 }
+      responses:
+        '200':
+          description: 搜索完成（业务成败看 ok 字段，jobs 恒为数组）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CamoufoxSearchResult'
+              examples:
+                success:
+                  value:
+                    ok: true
+                    code: 0
+                    jobs:
+                      - jobId: 8f8f8f8f8f8f8f8f8f
+                        title: 前端开发工程师
+                        company: 某某科技
+                        salary: 20-30K
+                        location: 北京 海淀区
+                        experience: 3-5年
+                        degree: 本科
+                        labels: [五险一金, 不加班]
+                        skills: [React, TypeScript]
+                        description: 负责 BossClaw 桌面应用前端...
+                        recruiterName: 王先生
+                        bossTitle: 技术总监
+                        companySize: 100-499人
+                        companyType: 互联网
+                        url: https://www.zhipin.com/job_detail/8f8f8f8f8f8f8f8f8f.html
+                risk:
+                  value:
+                    ok: false
+                    code: 37
+                    message: 环境异常，已自动刷新 zp_stoken 后仍失败
+                    jobs: []
+        '400':
+          description: 缺少 query
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorPayload' }
+              example: { ok: false, error: 缺少 query }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/send:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxSend
+      summary: 隐身打招呼（API 优先，DOM 兜底；仅文字，不发附件）
+      description: |
+        发送一条招呼语。双通道：优先 BOSS friend/add API（encryptJobId + greeting），失败回退
+        DOM「立即沟通」真实点击 + 输入。成功判据 = 服务端 code 0 或「自己气泡出现并确认文本指纹」。
+        风控语义：code 36/32 立即停止且绝不自动重试（交人工）；code 35 安全验证即停；
+        code 31 表示 Camoufox 会话未登录；code 501 表示气泡未确认（不得计成功）。
+        附件发送不在本端点（见 /chat 的 resumeImages）。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /send
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CamoufoxSendRequest'
+            example:
+              jobId: 8f8f8f8f8f8f8f8f8f
+              greeting: 您好，我对贵司的前端开发工程师岗位很感兴趣，方便沟通一下吗？
+      responses:
+        '200':
+          description: 发送结果（成功 = ok:true 且 code:0）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CamoufoxActionResult'
+              examples:
+                sent:
+                  value: { ok: true, code: 0, sent: true, method: api }
+                domSent:
+                  value: { ok: true, code: 0, sent: true, method: browser-chat, sentVia: dom }
+                risk:
+                  value: { ok: false, code: 36, message: 操作频率过高，请稍后再试（需人工介入）, sent: false }
+                notConfirmed:
+                  value: { ok: false, code: 501, message: 未能确认文字气泡已发送，请人工核对, sent: false }
+                external:
+                  value: { ok: false, code: 600, external: true, message: 该岗位为外部网申，无法在 BOSS 聊天中自动沟通，跳过, sent: false }
+        '400':
+          description: 缺少 jobId 或 greeting
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorPayload' }
+              example: { ok: false, code: 400, error: 缺少 greeting }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/chat:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxChat
+      summary: 自动沟通（发文字 + 可选附件 + 会话确认，AutoChat 主通道）
+      description: |
+        工作台「自动沟通」的完整通道：进入聊天 → （可选）上传简历图片 / 发送在线简历 →
+        输入并发送文字 → 按自己气泡指纹 + 文本双重确认。附会话一致性校验：
+        expected（recruiterName/company/jobTitle）与实际聊天对象冲突时返回 code 602 拒绝发送；
+        HR 先发言且 mode=safe 时返回 code 700 等待人工回复。
+        发送确认口径：ok:true 且 code:0（自己气泡计数为主 + 文字兜底）。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CamoufoxChatRequest'
+            example:
+              jobId: 8f8f8f8f8f8f8f8f8f
+              greeting: 您好，我对贵司的前端开发工程师岗位很感兴趣，方便沟通一下吗？
+              sendResumeImage: false
+              sendOnlineResume: false
+              expected: { recruiterName: 王先生, company: 某某科技, jobTitle: 前端开发工程师 }
+              mode: auto
+              replyText: ''
+      responses:
+        '200':
+          description: 沟通结果（成功 = ok:true 且 code:0）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CamoufoxActionResult'
+              examples:
+                sent:
+                  value: { ok: true, code: 0, sent: true, method: browser-chat, sentVia: button }
+                conflict:
+                  value: { ok: false, code: 602, conflict: true, sent: false, message: 会话对象不一致（预期 某某科技/王先生，实际 ...），已拒绝发送 }
+                needsReply:
+                  value: { ok: false, code: 700, needsReply: true, hasHrMessage: true, sent: false, message: HR 已先发言，等待人工回复后再继续 }
+                risk:
+                  value: { ok: false, code: 32, message: 账号异常，请立即停止并人工处理, sent: false }
+        '400':
+          description: 缺少 jobId 或 greeting
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorPayload' }
+              example: { ok: false, code: 400, error: 缺少 greeting }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/login:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxLogin
+      summary: 扫码登录（headful 窗口 + 持久 Cookie）
+      description: |
+        打开可见的 Camoufox 登录窗口（https://www.zhipin.com/web/user/?ka=header-login），
+        等待用户手机 BOSS App 扫码。登录成功的判据 = URL 离开登录页/用户页且不在安全验证页；
+        成功后 Cookie 持久化到 ~/.bossclaw/camoufox-cookies.json（wt2 随重启保留）。
+        超时/验证码不绕过，均返回失败由用户人工处理。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CamoufoxLoginRequest'
+            example: { timeout: 180 }
+      responses:
+        '200':
+          description: 登录结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  loggedIn: { type: boolean, description: 成功时 true }
+                  code: { type: integer, description: 失败码（31 超时 / 35 反爬拦截） }
+                  message: { type: string }
+              examples:
+                success:
+                  value: { ok: true, loggedIn: true }
+                timeout:
+                  value: { ok: false, code: 31, message: 扫码登录超时，请重试 }
+                blocked:
+                  value: { ok: false, code: 35, message: BOSS 未能加载出登录页（可能被反爬拦截），请重试或改用「内置浏览器」登录 }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/logout:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxLogout
+      summary: 退出登录（清除本地 Cookie 文件）
+      description: 删除 ~/.bossclaw/camoufox-cookies.json。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /logout
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  loggedIn: { type: boolean, example: false }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+  /camoufox/clear:
+    post:
+      tags: [Camoufox（隐身引擎桥）]
+      operationId: camoufoxClear
+      summary: 清除 Camoufox Cookie（不改变运行态）
+      description: 删除 Cookie 文件；与 logout 的差别是不返回 loggedIn 状态。
+      servers:
+        - url: http://127.0.0.1:18767
+      x-real-path: /clear
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+
+# ============================================================
+# 公共参数 / 响应 / Schema
+# ============================================================
+components:
+  parameters:
+    TokenQuery:
+      name: token
+      in: query
+      required: true
+      description: 桥接 token。bridge 为 `bossclaw-desktop-bridge`；camoufox 为 `bossclaw-camoufox`。
+      schema: { type: string }
+      example: bossclaw-desktop-bridge
+  responses:
+    TokenDenied:
+      description: token 无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorPayload' }
+          example: { ok: false, error: token denied }
+  securitySchemes:
+    tokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: 本地服务统一鉴权（URL query）。两服务 token 值不同，见 parameters.TokenQuery。
+  schemas:
+    ErrorPayload:
+      type: object
+      description: 通用业务失败结构（HTTP 层可能同时返回 4xx/5xx）
+      required: [ok, error]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        error: { type: string }
+        code: { type: integer, nullable: true, description: 业务码（见 x-risk-codes） }
+    BridgeStatus:
+      type: object
+      properties:
+        ok: { type: boolean }
+        name: { type: string, example: bossclaw-bridge }
+        version: { type: string, example: 2.0.0 }
+        running: { type: boolean }
+        paused: { type: boolean }
+        parsers:
+          type: object
+          description: 可用解析器探测结果
+          properties:
+            pdftotext: { type: boolean }
+        databasePath: { type: string, description: 本机事件库 JSON 路径 }
+        events: { type: integer, description: 事件总数 }
+    ParseResult:
+      type: object
+      description: /ocr 与 /resume-text 的通用返回（业务成败看 ok）
+      properties:
+        ok: { type: boolean }
+        text: { type: string, description: 抽取/识别出的简历正文（失败为空串） }
+        method:
+          type: string
+          nullable: true
+          enum: [pdftotext, mammoth, text, none]
+        error: { type: string, nullable: true }
+        diagnostics:
+          type: array
+          description: 各解析方法尝试记录（仅 /ocr）
+          items:
+            type: object
+            properties:
+              method: { type: string }
+              ok: { type: boolean }
+              detail: { type: string }
+    OcrRequest:
+      type: object
+      description: PDF 简历 OCR/文本抽取请求
+      required: [dataUrl]
+      properties:
+        dataUrl:
+          type: string
+          format: byte
+          description: PDF 的 base64 data URL（data:application/pdf;base64,...），上限 18MB
+    ResumeTextRequest:
+      type: object
+      description: 简历文本抽取请求（TXT/MD/DOCX/PDF 统一入口）
+      required: [dataUrl, name]
+      properties:
+        dataUrl:
+          type: string
+          format: byte
+          description: 文件 base64 data URL，上限 18MB
+        name:
+          type: string
+          description: 原文件名（扩展名决定分派：.txt/.md 直读；.docx 走 mammoth；其余按 PDF）
+    CamoufoxStatus:
+      type: object
+      description: 隐身引擎检测状态（GET /camoufox/status）
+      properties:
+        ok: { type: boolean }
+        version: { type: string, description: 桥版本 VERSION }
+        python: { type: string, description: 解释器版本 x.y }
+        camoufox: { type: boolean }
+        camoufoxVersion: { type: string }
+        playwright: { type: boolean }
+        kernel:
+          type: string
+          enum: [camoufox, none]
+        kernelPath: { type: string }
+        kernelMessage: { type: string }
+        cookies: { type: boolean, description: Cookie 文件是否存在 }
+        cookieCount: { type: integer }
+        loggedIn: { type: boolean, description: 是否存在有效 wt2 会话 Cookie }
+        message: { type: string }
+    CamoufoxSearchRequest:
+      type: object
+      description: 隐身搜索请求
+      required: [query]
+      properties:
+        query: { type: string, description: 搜索关键词（职位名/公司），如 前端开发 }
+        city:
+          type: string
+          description: BOSS 城市编码，默认 101010100（北京）
+          example: '101010100'
+        pages:
+          type: integer
+          description: 抓取页数 1-5，默认 1
+          minimum: 1
+          maximum: 5
+        os: { type: string, nullable: true, description: 伪装操作系统，如 windows/macos（默认按宿主） }
+    CamoufoxJob:
+      type: object
+      description: BOSS 原始 joblist 字段 → Boss-claw JobMeta 兼容结构
+      properties:
+        jobId: { type: string, description: encryptJobId }
+        title: { type: string, description: jobName }
+        company: { type: string, description: brandName }
+        salary: { type: string, description: salaryDesc }
+        location: { type: string, description: 'cityName + areaDistrict' }
+        experience: { type: string, description: jobExperience }
+        degree: { type: string, description: jobDegree }
+        labels: { type: array, items: { type: string } }
+        skills: { type: array, items: { type: string } }
+        description: { type: string, description: jobDesc }
+        recruiterName: { type: string, description: bossName }
+        bossTitle: { type: string }
+        companySize: { type: string, description: scaleName }
+        companyType: { type: string, description: typeName }
+        url:
+          type: string
+          format: uri
+          description: 'https://www.zhipin.com/job_detail/{jobId}.html'
+    CamoufoxSearchResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        code: { type: integer }
+        message: { type: string }
+        jobs:
+          type: array
+          items: { $ref: '#/components/schemas/CamoufoxJob' }
+    CamoufoxSendRequest:
+      type: object
+      description: 隐身打招呼请求（/send）
+      required: [jobId, greeting]
+      properties:
+        jobId: { type: string, description: encryptJobId }
+        greeting:
+          type: string
+          description: 招呼语，1-800 字，必须为求职者口吻且只引用真实简历事实
+        os: { type: string, nullable: true }
+    CamoufoxChatRequest:
+      type: object
+      description: 自动沟通请求（/chat）
+      required: [jobId, greeting]
+      properties:
+        jobId: { type: string }
+        greeting: { type: string, description: 首条文字，1-800 字 }
+        os: { type: string, nullable: true }
+        sendResumeImage: { type: boolean, description: 是否附带简历图片附件（先传图再发文字） }
+        sendOnlineResume: { type: boolean, description: 是否附带 BOSS 在线简历 }
+        expected:
+          type: object
+          nullable: true
+          description: 会话预期对象，用于防投错（与 job-priority/conversation-identity 对齐）
+          properties:
+            recruiterName: { type: string }
+            company: { type: string }
+            jobTitle: { type: string }
+        resumeImages:
+          type: array
+          description: 待上传简历图片（data URL 列表）
+          items: { type: string, format: byte }
+        mode:
+          type: string
+          enum: [auto, safe]
+          description: auto=自动继续；safe=发现 HR 已发言等边界时返回 code 700 等人工
+        replyText: { type: string, description: 非空时按回复发送（用于跟进消息），空则为首条招呼 }
+    CamoufoxActionResult:
+      type: object
+      description: /send 与 /chat 的通用返回
+      properties:
+        ok: { type: boolean }
+        code: { type: integer, description: 业务码，0=成功；其余见 x-risk-codes }
+        message: { type: string }
+        sent: { type: boolean, description: 文字气泡已确认发送 }
+        method:
+          type: string
+          enum: [api, browser-chat, dom]
+          description: api=friend/add API；browser-chat=浏览器真实点击沟通；dom=页面点击兜底
+        sentVia: { type: string, description: browser-chat 内部路径（button/enter） }
+        external: { type: boolean, description: true=外部网申被安全规则跳过 }
+        conflict: { type: boolean, description: true=会话对象冲突拒绝发送 }
+        needsReply: { type: boolean, description: true=HR 先发言需人工回复 }
+        hasHrMessage: { type: boolean }
+    CamoufoxLoginRequest:
+      type: object
+      description: 扫码登录请求
+      properties:
+        timeout:
+          type: integer
+          description: 等待扫码秒数，30-600，默认 180
+          minimum: 30
+          maximum: 600
+        os: { type: string, nullable: true }
+
+# ============================================================
+# 顶层扩展 — 风控 / 业务码字典
+# ============================================================
+x-risk-codes:
+  description: BOSS 直聘业务码与本地扩展码语义（Camoufox 桥与 webview 通道共用）
+  entries:
+    - { code: 0, meaning: 成功 }
+    - { code: 17, meaning: 需登录 / 会话失效（webview 路径提示用户重新扫码） }
+    - { code: 31, meaning: Camoufox 会话未登录或扫码登录超时，请先 /login }
+    - { code: 32, meaning: 账号级异常/风控，立即停止全部自动化并交人工，绝不自动重试 }
+    - { code: 35, meaning: 检测到安全验证 / 访问受限（需人工完成验证），立即暂停 }
+    - { code: 36, meaning: 操作频率过高（限流），立即停止并冷却，绝不自动重试 }
+    - { code: 37, meaning: 环境异常（被识别为机器人），Camoufox 路径自动刷新 zp_stoken 后重试有限次 }
+    - { code: 1006, meaning: 上游请求被节流，稍后重试 }
+    - { code: 400, meaning: 参数错误（缺 jobId/greeting、文字过长>800 或过短） }
+    - { code: 404, meaning: 未找到沟通按钮（岗位下架 / 页面未加载） }
+    - { code: 500, meaning: 桥内部 / 状态异常（如已建会话但气泡未确认） }
+    - { code: 501, meaning: 未能确认文字气泡已发送，不计成功，需人工核对 }
+    - { code: 600, meaning: 外部网申，安全规则要求跳过（优先级 -6000，对齐 job-priority） }
+    - { code: 602, meaning: 会话对象冲突（实际 HR/公司/岗位与预期不符），拒绝发送 }
+    - { code: 700, meaning: HR 已先发言（hasHrMessage），等待人工回复后再继续 }
+
+# ============================================================
+# 顶层扩展 — Electron IPC（渲染层 <-> 主进程）
+# 实现文件：electron/main.cjs（handler）；electron/preload/app.cjs（contextBridge 暴露 window.electron）
+# ============================================================
+x-electron-ipc:
+  description: |
+    Electron IPC 通道。传输分为三类：
+    - invoke：渲染层 `ipcRenderer.invoke` -> 主进程 `ipcMain.handle`，返回 Promise（请求-响应）；
+    - send：渲染层 `ipcRenderer.send` -> 主进程 `ipcMain.on`，单向通知（fire-and-forget）；
+    - event：主进程 `webContents.send` -> 渲染层 `ipcRenderer.on`（或回调注册），单向推送。
+    preload 把上述通道包装为 window.electron.* 方法（见各条目的 api 字段），
+    渲染层统一经 src/lib/electronApi.ts 安全封装调用；API 缺失时降级为默认值不抛错。
+    除下表通道外，preload 还暴露通用 `invoke/send/on(channel, ...)` 透传口（api: invoke/send/on）。
+  invoke:
+    - channel: jc:app-info
+      api: getAppInfo()
+      summary: 获取应用名称与版本（标题栏/关于使用）
+      params: null
+      returns:
+        type: object
+        properties: { name: { type: string }, version: { type: string } }
+      example:
+        request: []
+        response: { name: BossClaw, version: 2.3.0 }
+    - channel: jc:window-is-maximized
+      api: winIsMaximized()
+      summary: 查询窗口是否最大化（自绘标题栏「还原」图标状态）
+      params: null
+      returns: { type: boolean }
+      example: { request: [], response: false }
+    - channel: jc:boss-login
+      api: bossLogin()
+      summary: 检查 BOSS 登录态（读 persist:bossclaw 会话 wt2 cookie）
+      params: null
+      returns:
+        type: object
+        properties:
+          loggedIn: { type: boolean }
+          cookie: { type: boolean }
+          error: { type: string, nullable: true }
+      example: { request: [], response: { loggedIn: true, cookie: true } }
+    - channel: jc:skills-list
+      api: skillsList()
+      summary: 列出全部 AI 技能元数据（内置 + 用户自定义；扫描 skills/*/SKILL.md frontmatter）
+      params: null
+      returns:
+        type: array
+        description: SkillMeta[]
+        items:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string, description: 中文名（frontmatter title） }
+            description: { type: string }
+            scope: { type: string, enum: [profile, job-analysis, greetings, assistant] }
+            defaultEnabled: { type: boolean }
+            custom: { type: boolean, description: 是否用户自定义技能 }
+      example:
+        request: []
+        response:
+          - { id: resume-profile, name: 简历画像分析, scope: profile, defaultEnabled: true, custom: false }
+          - { id: my-skill, name: 我的技能, description: 自定义, scope: assistant, defaultEnabled: true, custom: true }
+    - channel: jc:skills-read
+      api: skillsRead(id)
+      summary: 读取技能指令正文（先查自定义目录再回退内置；id 白名单 ^[a-z0-9-]+$ 防路径穿越）
+      params:
+        id: { type: string, example: resume-profile }
+      returns: { type: object, properties: { id: { type: string }, body: { type: string } } }
+      example: { request: [resume-profile], response: { id: resume-profile, body: '你是资深 HR...' } }
+    - channel: jc:skills-import
+      api: skillsImport(payload)
+      summary: 导入 / 新建自定义技能（payload.raw=SKILL.md 全文 或 payload.fields=表单字段）
+      params:
+        type: object
+        properties:
+          raw: { type: string, description: SKILL.md 全文（含 frontmatter），可选 }
+          fields:
+            type: object
+            properties:
+              name: { type: string }
+              description: { type: string }
+              scope: { type: string, enum: [profile, job-analysis, greetings, assistant] }
+              instructions: { type: string }
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          skill:
+            type: object
+            nullable: true
+            properties:
+              id: { type: string }
+              name: { type: string }
+              description: { type: string }
+              scope: { type: string }
+              defaultEnabled: { type: boolean }
+              custom: { type: boolean }
+          error: { type: string, nullable: true }
+      example:
+        request:
+          - fields: { name: 打招呼优化, scope: greetings, instructions: 用求职者口吻改写问候语 }
+        response: { ok: true, skill: { id: 打招呼优化, name: 打招呼优化, scope: greetings, defaultEnabled: true, custom: true } }
+    - channel: jc:skills-delete
+      api: skillsDelete(id)
+      summary: 删除自定义技能（内置技能拒绝）
+      params: { id: { type: string, example: my-skill } }
+      returns: { type: object, properties: { ok: { type: boolean }, error: { type: string, nullable: true } } }
+      example: { request: [my-skill], response: { ok: true } }
+    - channel: jc:camoufox-status
+      api: camoufoxStatus()
+      summary: 检测隐身引擎状态（Python 探测 + 依赖自愈 + 桥进程/端口探活；缺依赖时后台安装并返回 installing）
+      params: null
+      returns:
+        type: object
+        properties:
+          python: { type: boolean }
+          pythonCmd: { type: string }
+          camoufox: { type: boolean }
+          running: { type: boolean }
+          ready: { type: boolean }
+          installing: { type: boolean, description: true 表示正在后台安装 playwright/camoufox }
+          message: { type: string }
+          engine: { type: object, nullable: true, description: camoufox /status 返回体 }
+      example:
+        request: []
+        response: { python: true, pythonCmd: 'C:\\...\\python.exe', camoufox: true, running: true, ready: true, message: '', engine: { ok: true } }
+    - channel: jc:camoufox-restart
+      api: camoufoxRestart()
+      summary: 重启隐身引擎桥（自动沟通误触关闭后的自愈入口），返回最终状态
+      params: null
+      returns: 同 jc:camoufox-status
+      example: { request: [], response: { python: true, camoufox: true, running: true, ready: true } }
+    - channel: jc:camoufox-call
+      api: camoufoxCall(action, payload)
+      summary: 转发调用 Camoufox 桥（action 映射真实 HTTP 端点，见 paths /camoufox/*）
+      params:
+        action: { type: string, enum: [search, send, chat, login, logout, clear], example: search }
+        payload: { type: object, description: 透传给桥的请求体（随 action 变化） }
+      returns:
+        type: object
+        description: 桥返回体透传（ok/code/message/jobs/sent...）；本机桥未就绪时 { ok:false, error }
+      example:
+        request: [search, { query: 前端开发, city: '101010100', pages: 1 }]
+        response: { ok: true, code: 0, jobs: [{ jobId: '...', title: 前端开发工程师 }] }
+    - channel: jc:cloak-binary
+      api: cloakBinary()
+      summary: CloakBrowser 隐身浏览器二进制状态探测（不启动浏览器）
+      params: null
+      returns: { type: object, description: '透传 launcher.checkBinary()，含 { ok, binary: { present, version, path, ... } }' }
+      example: { request: [], response: { ok: true, binary: { present: false, path: C:\Users\DELL\.cloakbrowser\... } } }
+    - channel: jc:cloak-start
+      api: cloakStart(opts)
+      summary: 启动 CloakBrowser（首次自动下载 ~200MB 二进制并校验 Ed25519 签名；Playwright 持久 context）
+      params:
+        opts:
+          type: object
+          nullable: true
+          properties:
+            licenseKey: { type: string, nullable: true, description: 可选，Pro 二进制需要 }
+            proxy: { type: string, nullable: true }
+      returns: { type: object, description: 'launcher.start()，{ ok: true, ready: true } 或 { ok: false, error }' }
+      example: { request: [{}], response: { ok: true, ready: true } }
+    - channel: jc:cloak-stop
+      api: cloakStop()
+      summary: 停止 CloakBrowser 并关闭持久 context
+      params: null
+      returns: { type: object, description: '{ ok: true } 或错误' }
+      example: { request: [], response: { ok: true } }
+    - channel: jc:cloak-status
+      api: cloakStatus()
+      summary: CloakBrowser 当前状态
+      params: null
+      returns:
+        type: object
+        properties:
+          ready: { type: boolean }
+          starting: { type: boolean, description: launcher 真实启动态（P26 修复） }
+          binary: { type: object, nullable: true }
+          lastError: { type: string, nullable: true }
+      example: { request: [], response: { ready: true, starting: false, binary: { present: true }, lastError: null } }
+    - channel: jc:cloak-page-new
+      api: cloakPageNew(tabId, url)
+      summary: 打开新标签页（重复 tabId 复用已有页），返回 tabId
+      params:
+        tabId: { type: string, example: tab-job-1 }
+        url: { type: string, example: 'https://www.zhipin.com/web/geek/jobs?query=前端' }
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          tabId: { type: string }
+          url: { type: string }
+          title: { type: string }
+          reused: { type: boolean, description: true=命中已存在标签 }
+      example: { request: [tab-job-1, 'https://www.zhipin.com/web/geek/jobs?query=前端'], response: { ok: true, tabId: tab-job-1, title: BOSS直聘, reused: false } }
+    - channel: jc:cloak-page-close
+      api: cloakPageClose(tabId)
+      summary: 关闭指定标签页
+      params: { tabId: { type: string } }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1], response: { ok: true } }
+    - channel: jc:cloak-page-navigate
+      api: cloakPageNavigate(tabId, url)
+      summary: 标签内导航到 url
+      params: { tabId: { type: string }, url: { type: string } }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1, https://www.zhipin.com/job_detail/xxx.html], response: { ok: true } }
+    - channel: jc:cloak-page-back
+      api: cloakPageBack(tabId)
+      summary: 标签页后退
+      params: { tabId: { type: string } }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1], response: { ok: true } }
+    - channel: jc:cloak-page-forward
+      api: cloakPageForward(tabId)
+      summary: 标签页前进
+      params: { tabId: { type: string } }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1], response: { ok: true } }
+    - channel: jc:cloak-page-reload
+      api: cloakPageReload(tabId)
+      summary: 标签页刷新
+      params: { tabId: { type: string } }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1], response: { ok: true } }
+    - channel: jc:cloak-page-send
+      api: cloakPageSend(tabId, channel, payload)
+      summary: 向标签页注入通道消息（等价 webview.send；cloakPreload.cjs 以 __bossclaw_dispatch 派发到页面）
+      params:
+        tabId: { type: string }
+        channel: { type: string, example: boss-api }
+        payload: { type: object }
+      returns: { ok: boolean }
+      example: { request: [tab-job-1, boss-api, { seq: 1, action: joblist, params: {} }], response: { ok: true } }
+    - channel: jc:cloak-page-input
+      api: cloakPageInput(tabId, action, text)
+      summary: 真实键盘输入（Playwright CDP Input，isTrusted:true；替换 jc:webview-input 的 DOM 合成限制）
+      params:
+        tabId: { type: string }
+        action: { type: string, enum: [insertText, selectAll, delete, pressEnter] }
+        text: { type: string }
+      returns: { type: object, properties: { ok: { type: boolean }, action: { type: string }, error: { type: string, nullable: true } } }
+      example: { request: [tab-chat-1, insertText, 您好，我对该岗位很感兴趣], response: { ok: true, action: insertText } }
+    - channel: jc:cloak-page-list
+      api: cloakPageList()
+      summary: 列出全部打开的标签
+      params: null
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          pages:
+            type: array
+            items:
+              type: object
+              properties: { tabId: { type: string }, url: { type: string }, title: { type: string } }
+      example: { request: [], response: { ok: true, pages: [{ tabId: tab-home, url: https://www.zhipin.com/, title: BOSS直聘 }] } }
+    - channel: jc:clipboard-write
+      api: invoke('jc:clipboard-write', text)
+      summary: 写剪贴板（渲染层 navigator.clipboard 在 file:// 下不可靠的兜底）
+      params: { text: { type: string, description: 任意文本 } }
+      returns: { ok: boolean, error?: string }
+      example: { request: [<html>...</html>], response: { ok: true } }
+    - channel: jc:save-pdf
+      api: savePdf(defaultName, html)
+      summary: 保存定制简历 PDF：A4 打印 HTML -> 隐藏窗口 printToPDF -> 系统保存对话框写盘
+      params:
+        defaultName: { type: string, description: 默认文件名（须以 .pdf 结尾，1-120 字符白名单） }
+        html: { type: string, description: 完整 HTML（须含 <!DOCTYPE html>，长度 >=200） }
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          filePath: { type: string, nullable: true, description: 保存路径（用户取消时为空） }
+          canceled: { type: boolean }
+          error: { type: string, nullable: true }
+      example:
+        request: ['前端开发工程师-张三-定制简历-20260906.pdf', '<!DOCTYPE html><html>...A4 简历...']
+        response: { ok: true, filePath: C:\Users\DELL\Documents\前端开发工程师-张三-定制简历-20260906.pdf }
+    - channel: jc:fetch-url
+      api: fetchUrl(url)
+      summary: 主进程代理 URL 抓取（规避渲染层 CORS，供获取 BOSS 公开数据如城市编码表；15s 超时）
+      params: { url: { type: string, format: uri } }
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          status: { type: integer }
+          text: { type: string, description: 响应文本 }
+          error: { type: string, nullable: true }
+      example: { request: [https://www.zhipin.com/wapi/zpgeek/...], response: { ok: true, status: 200, text: '{"code":0,...}' } }
+    - channel: jc:llm-proxy
+      api: llmProxy(url, payload, apiKey, timeoutMs)
+      summary: LLM 主进程代理（P05）：渲染层不直连 provider，统一主进程超时/错误口径；规避部分端点 CORS
+      params:
+        url: { type: string, format: uri, description: OpenAI 兼容 /chat/completions 端点 }
+        payload: { type: object, description: 请求体（messages/model/...） }
+        apiKey: { type: string, description: Bearer key，渲染层设置持久化，不落盘到主进程 }
+        timeoutMs: { type: integer, default: 90000 }
+      returns:
+        type: object
+        properties:
+          ok: { type: boolean }
+          status: { type: integer, description: HTTP 状态；0 表示网络/超时失败 }
+          text: { type: string, description: 原始响应体（渲染层自行 JSON.parse） }
+          error: { type: string, nullable: true, description: timeout/网络错误信息 }
+      example:
+        request:
+          - https://api.deepseek.com/chat/completions
+          - { model: deepseek-chat, messages: [{ role: user, content: 你好 }] }
+          - sk-xxxxxxxx
+          - 90000
+        response: { ok: true, status: 200, text: '{"id":"...","choices":[...]}' }
+  send:
+    - channel: jc:window-minimize
+      api: winMinimize()
+      summary: 最小化窗口
+      params: null
+      example: { request: [] }
+    - channel: jc:window-maximize
+      api: winMaximize()
+      summary: 最大化 / 还原窗口
+      params: null
+      example: { request: [] }
+    - channel: jc:window-close
+      api: winClose()
+      summary: 关闭窗口
+      params: null
+      example: { request: [] }
+    - channel: jc:open-external
+      api: openExternal(url)
+      summary: 系统浏览器打开外部链接（仅 http/https；shell.openExternal）
+      params: { url: { type: string, format: uri } }
+      example: { request: [https://github.com/] }
+    - channel: jc:camoufox-stop
+      api: camoufoxStop()
+      summary: 停止 Camoufox 桥进程（设置页「停止引擎」）
+      params: null
+      example: { request: [] }
+    - channel: jc:bridge-control
+      api: invoke('jc:bridge-control', type)
+      summary: 启动 / 停止 OpenClaw 桥接子进程（按需 spawn/ kill bridge/server.cjs）
+      params: { type: { type: string, enum: [start, stop] } }
+      example: { request: [start] }
+    - channel: jc:webview-input
+      api: null（webview preload 内部通道）
+      summary: |
+        可信输入通道（Electron 版 CDP）：guest 页面 preload 发来 {seq,action,text}，
+        主进程按 action 执行 webContents.insertText/selectAll/delete/sendInputEvent(Return)，
+        结果经事件 jc:webview-input-done 按 seq 回执。替代合成事件（isTrusted=false 会被 BOSS 受控输入框丢弃）。
+      params:
+        action: { type: string, enum: [insertText, selectAll, delete, pressEnter] }
+        seq: { type: string }
+        text: { type: string }
+      example: { request: [{ seq: '1_123', action: pressEnter, text: '' }] }
+  events:
+    - channel: jc:window-maximized-changed
+      api: onWindowMaximized(cb)
+      summary: 窗口最大化/还原状态推送（标题栏图标切换）
+      payload: { type: boolean, example: true }
+    - channel: jc:window-focus-changed
+      api: ipc.on('jc:window-focus-changed', cb)
+      summary: 窗口焦点变化推送
+      payload: { type: boolean, example: true }
+    - channel: jc:webview-open-link
+      api: ipc.on('jc:webview-open-link', cb)
+      summary: 内置浏览器右键「在新标签打开链接」-> 通知渲染层开新标签
+      payload: { type: object, properties: { url: { type: string } } }
+    - channel: jc:webview-source
+      api: ipc.on('jc:webview-source', cb)
+      summary: 右键「查看网页源码」结果回传（outerHTML 经 IPC 回渲染层 Modal 展示）
+      payload:
+        type: object
+        properties:
+          url: { type: string }
+          html: { type: string, description: 源码；失败为空串 }
+          error: { type: string, nullable: true }
+    - channel: jc:webview-diag
+      api: ipc.on('jc:webview-diag', cb)
+      summary: webview 诊断推送（attach/preload-error/preload-check；写入 userData/bossclaw-webview-diag.log）
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [attach, preload-error, preload-check] }
+          prefs: { type: string, nullable: true }
+          url: { type: string }
+          result: { type: string, nullable: true, description: PRELOAD-CHECK 结果（INJECTED/NOT-INJECTED） }
+          errorCode: { type: integer, nullable: true }
+          error: { type: string, nullable: true }
+    - channel: jc:cloak-event
+      api: onCloakEvent(cb)
+      summary: CloakBrowser Page 事件回传（{tabId, channel, payload}，等价 webview ipc-message）
+      payload:
+        type: object
+        properties:
+          tabId: { type: string }
+          channel: { type: string, description: 页面内事件名（job-extracted/apply-stage/nav/login-state...） }
+          payload: { type: object }
+    - channel: jc:cloak-status-changed
+      api: onCloakStatusChanged(cb)
+      summary: CloakBrowser 启动/停止状态推送
+      payload:
+        type: object
+        properties:
+          ready: { type: boolean }
+          starting: { type: boolean }
+          lastError: { type: string, nullable: true }
+
+# ============================================================
+# 顶层扩展 — 内置浏览器通道（渲染层 <-> BOSS 直聘 guest 页面）
+# 实现文件：electron/preload/webview.cjs（guest preload）；BrowserView.tsx / Workbench.tsx 消费
+# 方向：command=host webContents.send 到 guest；event=guest 经 ipcRenderer.sendToHost 上抛，
+#       宿主 <webview> 以 'ipc-message' 接收（BrowserView.tsx 依 event 名分发）。
+# 引擎选择：webview（Electron <webview> 默认）与 CloakBrowser（设置 engineMode=cloak）两套页面
+#       共享同一套命令/事件语义 —— cloak 经 jc:cloak-page-send 注入、经 jc:cloak-event 回传。
+# ============================================================
+x-webview-channels:
+  description: |
+    内置浏览器对 BOSS 直聘页面的采集 / 投递 / 沟通通道。命令与事件成对出现：
+    渲染层发 command -> guest preload 执行 -> 以 event 回报（多数事件带进度语义，非严格请求-响应）。
+    boss-api 为唯一请求-响应式：渲染层带 seq 发送，guest 以 boss-api-result 回执同 seq。
+  commands:
+    - channel: extract-job
+      summary: 提取当前详情页岗位（URL jobId -> job/card.json API 优先，失败 DOM 兜底）
+      payload: null
+      event: job-extracted
+      example: { request: {}, event: job-extracted }
+    - channel: open-chat
+      summary: 工作台「点击立即沟通」——仅真实点击打开聊天窗口，不发任何文字（open-chat 通道；成功后状态 st-opened）
+      payload: null
+      event: apply-stage
+      note: 发文字交由「自动沟通」页（AutoChat / Camoufox）完成；失败标 failed 继续；risk（code 35 安全验证）立即停
+      example: { request: {}, event: { stage: opened, ok: true } }
+    - channel: start-apply
+      summary: DOM 兜底全流程投递（找沟通入口->输入->发送->气泡确认）；API 通道失败时上层才调用
+      payload:
+        type: object
+        nullable: true
+        description: domApply 选项（通常由 guest 自身取详情，参数可为空）
+      event: apply-stage
+      example: { request: {}, event: { stage: verify_result, ok: true } }
+    - channel: visual-collect
+      summary: 可视化批量采集（对齐 job-claw-main：逐卡片滚动 -> 高亮 -> 点击展开 -> extractJob 结构化 -> 收下一轮）
+      payload:
+        type: object
+        properties:
+          maxJobs: { type: integer, description: 本次采集上限（默认取 dailyTarget 逻辑） }
+      event: collect-progress / collect-done
+      example: { request: { maxJobs: 10 }, event: { phase: done, index: 10, total: 10, processed: 10, maxJobs: 10, job: '{完整岗位对象，见 job-extracted}' } }
+    - channel: collect-control
+      summary: 采集运行时控制（暂停/继续/停止/调速）
+      payload:
+        type: object
+        properties:
+          action: { type: string, enum: [pause, resume, stop, speed] }
+          settleMs: { type: integer, nullable: true, description: speed 用，>=300 生效，上限 5000 }
+      example: { request: { action: pause } }
+    - channel: webview-command
+      summary: 通用命令（调试用 dom-dump：抓取详情页 DOM 诊断信息）
+      payload: { type: object, properties: { action: { type: string, enum: [dom-dump] } } }
+      event: dom-dump
+      example: { request: { action: dom-dump }, event: dom-dump }
+    - channel: boss-api
+      summary: BOSS 官方 API 代理（在登录页同源环境下请求 /wapi/zpgeek/*），请求-响应（seq 匹配）
+      payload:
+        type: object
+        properties:
+          seq: { type: string, description: 上层 promise 化匹配 id }
+          action: { type: string, enum: [joblist, jobCard, jobDetail, friendAdd] }
+          params: { type: object, description: 随 action 变化，见下 }
+      event: boss-api-result
+      action-params:
+        joblist: { query: string, city: string(默认 100010000), page: int(>=1), pageSize: int(1-50 默认 30) }
+        jobCard: { encryptJobId: string }
+        jobDetail: { encryptJobId: string }
+        friendAdd: { encryptJobId: string, encryptBossId?: string, greeting: string(必须非空) }
+      upstream:
+        joblist: GET /wapi/zpgeek/search/joblist.json?scene=1&query=&city=&page=&pageSize=
+        jobCard: GET /wapi/zpgeek/job/card.json?encryptJobId=
+        jobDetail: GET /wapi/zpgeek/job/detail.json?encryptJobId=
+        friendAdd: POST /wapi/zpgeek/friend/add.json { encryptJobId, greeting, encryptBossId? }
+      example:
+        request: { seq: '1778200000000_1', action: jobCard, params: { encryptJobId: abc123 } }
+        event: { seq: '1778200000000_1', ok: true, code: 0, data: { code: 0, zpData: '{省略}' }, riskCodeMessage: '' }
+  events:
+    - channel: preload-ready
+      summary: guest preload 就绪握手（含 url/ts；诊断注入是否成功）
+      payload: { url: string, ts: int }
+    - channel: preload-alive
+      summary: preload 早期存活信号
+      payload: { url: string, time: int }
+    - channel: nav
+      summary: 页面导航变化（MutationObserver 节流上报；webview preloadReady 需 did-start-navigation 重置、dom-ready 置 true）
+      payload: '形如 { url: string, title?: string, isListPage?: bool, ... }（示意，非 JSON Schema）'
+    - channel: login-state
+      summary: BOSS 登录态变化（document.cookie 含 wt2 判定）
+      payload: '形如 { loggedIn: boolean, ... }（示意，非 JSON Schema）'
+    - channel: job-extracted
+      summary: extract-job / 加入任务的数据回报（成功字段见下；API code!=0 时含 riskCode）
+      payload:
+        type: object
+        properties:
+          url: { type: string }
+          title: { type: string }
+          company: { type: string }
+          salary: { type: string }
+          location: { type: string }
+          description: { type: string }
+          jobId: { type: string, description: URL 提取的 encryptJobId }
+          encryptUserId: { type: string }
+          bossName: { type: string }
+          bossTitle: { type: string }
+          skills: { type: array, items: { type: string } }
+          labels: { type: array, items: { type: string } }
+          scaleName: { type: string }
+          typeName: { type: string }
+          error: { type: string, nullable: true }
+          riskCode: { type: integer, nullable: true }
+          isListPage: { type: boolean }
+          listCardCount: { type: integer }
+      example:
+        - url: https://www.zhipin.com/job_detail/abc123.html
+          title: 前端开发工程师
+          company: 某某科技
+          salary: 20-30K
+          location: 北京 海淀区
+          description: 负责桌面应用开发...
+          jobId: abc123
+          encryptUserId: boss_xyz
+          bossName: 王先生
+    - channel: apply-stage
+      summary: 投递阶段机回报（工作台投递进度 / 状态）
+      payload:
+        type: object
+        description: stage 阶段：open_chat -> opened / fill_message -> send_message -> verify_message -> verify_result；异常 failed/risk
+        properties:
+          stage:
+            type: string
+            enum: [open_chat, navigating, opened, fill_message, send_message, verify_message, verify_result, failed, risk]
+          ok: { type: boolean }
+          code: { type: integer, nullable: true, description: risk 阶段的风控码（35/36/32...） }
+          external: { type: boolean, description: true=外部网申按安全规则跳过 }
+          label: { type: string }
+          message: { type: string }
+          error: { type: string, nullable: true }
+      example:
+        - { stage: open_chat, label: 打开沟通窗口 }
+        - { stage: opened, ok: true }
+        - { stage: risk, code: 35, message: 检测到安全验证/访问受限，已暂停，请人工完成验证 }
+    - channel: collect-progress
+      summary: 可视化采集进度回报（phase 见下）
+      payload:
+        type: object
+        properties:
+          phase:
+            type: string
+            enum: [start, list-ready, waiting-list, card-found, scroll, click, heartbeat, dom-diag, no-cards-diag, list-bottom, collect-error, collect-diag, collect-diag-fail, collect-candidates, done]
+          index: { type: integer }
+          total: { type: integer }
+          processed: { type: integer }
+          processedCount: { type: integer }
+          maxJobs: { type: integer }
+          title: { type: string }
+          company: { type: string }
+          status: { type: string }
+          job: { type: object, nullable: true, description: done 阶段携带完整岗位对象 }
+    - channel: collect-done
+      summary: 可视化采集整体结束（成功或异常）
+      payload:
+        type: object
+        properties:
+          listUrl: { type: string }
+          processed: { type: integer }
+          total: { type: integer }
+          maxJobs: { type: integer }
+          error: { type: string, nullable: true }
+    - channel: boss-api-result
+      summary: boss-api 请求-响应回执（seq 匹配；code 语义见 x-risk-codes）
+      payload:
+        type: object
+        properties:
+          seq: { type: string }
+          ok: { type: boolean }
+          code: { type: integer, nullable: true }
+          data: { type: object, nullable: true, description: handleBossApi 的原始返回（{ code, zpData? } 或 { error }） }
+          error: { type: string, nullable: true }
+          riskCodeMessage: { type: string, description: 命中风险码时的可读提示 }
+    - channel: dom-dump
+      summary: webview-command(dom-dump) 的诊断回报
+      payload: { type: object, properties: { found: { type: boolean }, cls: { type: string }, textLen: { type: integer }, hasJobDesc: { type: boolean }, buttons: { type: array }, error: { type: string } } }
+    - channel: preload-error
+      summary: guest preload 内部异常上报（IPC 监听兜底包了一层，单条错误不拖垮其它 listener）
+      payload: { kind?: string, channel?: string, message: string }

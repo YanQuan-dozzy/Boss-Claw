@@ -18,6 +18,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   experiences: [],
   degrees: [],
   salary: '不限',
+  // 公司规模筛选：默认不限（不附加 scale 过滤）
+  companyScale: '不限',
   sendResumeImage: true,
   sendOnlineResume: false,
   betweenJobsSeconds: 20,

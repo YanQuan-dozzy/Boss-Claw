@@ -448,6 +448,17 @@ html[data-theme='dark'],
   z-index: 0 !important;
   opacity: 0 !important;
 }
+/* 后台态兜底：即使标签页激活样式（.browser-pane.is-active）把子级 visibility 置为 visible，
+   visibility 可被子级覆盖导致 webview 在其它模块页仍保持可见。webview 是 OOPIF 原生命中层，
+   其命中测试会拦截覆盖区域内上层 DOM 的点击（如首页「阅读使用文档」抽屉右上角关闭按钮，
+   位于窗口右侧 webview 覆盖区内，X 点击被吞，只能点左侧 mask 关闭）。
+   强制把后台 host 内的 webview / 标签页面板隐藏并禁止命中，恢复上层弹层可点击。 */
+.workbench-host.is-background .browser-pane,
+.workbench-host.is-background .browser-pane.is-active,
+.workbench-host.is-background webview {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 
 .main-stage > .page {
   animation: pageIn 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -3530,6 +3541,97 @@ html[data-theme='dark'],
   align-items: center;
   color: var(--fg-subtle);
   font-size: 14px;
+}
+
+/* ===== 使用前必读文档（MarkdownView，首页抽屉内渲染）===== */
+.md-view {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg);
+  word-break: break-word;
+}
+.md-view > *:first-child { margin-top: 0; }
+.md-view > *:last-child { margin-bottom: 0; }
+.md-h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 20px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.md-h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 18px 0 8px;
+  color: var(--brand);
+}
+.md-h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+}
+.md-p { margin: 8px 0; }
+.md-ul, .md-ol { margin: 8px 0; padding-left: 20px; }
+.md-ul li, .md-ol li { margin: 4px 0; }
+.md-li-checked { list-style: none; margin-left: -20px; }
+.md-check { color: #10B981; margin-right: 6px; }
+.md-blockquote {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--brand);
+  background: var(--hover-bg);
+  border-radius: 0 8px 8px 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+.md-blockquote strong { color: var(--fg); }
+.md-code {
+  margin: 10px 0;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  color: var(--fg);
+  white-space: pre;
+}
+.md-view code {
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+}
+.md-table {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.md-table th, .md-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th {
+  background: var(--hover-bg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-view a {
+  color: var(--brand);
+  text-decoration: none;
+}
+.md-view a:hover { text-decoration: underline; }
+.md-view hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
 }
 
 

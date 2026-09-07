@@ -92,6 +92,17 @@ export const SALARY_CODES: Record<string, string> = {
   '50K以上': '8',
 };
 
+// 公司规模（BOSS web 端 scale 编码，「不限」= 不附加过滤，返回空）
+// 口径来自 zhipin.com 搜索页「公司规模」筛选（0-20人=s301 … 10000人以上=s306）
+export const SCALE_CODES: Record<string, string> = {
+  '0-20人': '301',
+  '20-99人': '302',
+  '100-499人': '303',
+  '500-999人': '304',
+  '1000-9999人': '305',
+  '10000人以上': '306',
+};
+
 // 无明确求职类型时（不限 / 校招等）不附加 jobType 过滤
 function isNoFilter(value: string | undefined | null): boolean {
   const v = String(value || '').trim();
@@ -217,6 +228,13 @@ export function resolveSalaryCode(salary?: string): string {
   return SALARY_CODES[s] || '';
 }
 
+export function resolveScaleCode(scale?: string): string {
+  const s = String(scale || '').trim();
+  if (!s || isNoFilter(s)) return '';
+  if (/^\d{3}$/.test(s)) return s; // 已是 scale 代码（如 301）
+  return SCALE_CODES[s] || '';
+}
+
 // 支持逗号分隔/数组的多个值（BOSS 的 experience / degree 参数接受逗号分隔多值）
 export function resolveExperienceCodes(experience?: string | string[]): string {
   const list = Array.isArray(experience) ? experience : String(experience || '').split(/[，,、]/);
@@ -235,6 +253,8 @@ export interface JobSearchQuery {
   experience?: string | string[];
   degree?: string | string[];
   salary?: string;
+  /** 公司规模（单选，如 0-20人；「不限」/ 省略 = 不附加 scale 过滤） */
+  scale?: string;
   page?: number;
 }
 
@@ -252,6 +272,8 @@ export function buildJobSearchUrl(query: JobSearchQuery = {}): string {
   if (degree) params.set('degree', degree);
   const salary = resolveSalaryCode(query.salary);
   if (salary) params.set('salary', salary);
+  const scale = resolveScaleCode(query.scale);
+  if (scale) params.set('scale', scale);
   if (query.page && query.page > 1) params.set('page', String(query.page));
   const qs = params.toString();
   return qs ? `${BASE_JOBS_URL}?${qs}` : BASE_JOBS_URL;
@@ -264,6 +286,7 @@ export interface SearchQueueItem {
   employmentType: string;
   experience: string;
   degree: string;
+  scale: string;
 }
 
 // 由「已确认投递方向 × 城市 × 求职类型」生成去重后的搜索 URL 队列，供工作台搜索采集使用
@@ -273,6 +296,7 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
   const employmentTypes = config.employmentTypes?.filter(Boolean).length ? config.employmentTypes : ['不限'];
   const experience = config.experiences?.filter(Boolean) ?? [];
   const degree = config.degrees?.filter((d) => d && d !== '不限') ?? [];
+  const scale = config.companyScale || '不限';
 
   const queue: SearchQueueItem[] = [];
   const seen = new Set<string>();
@@ -281,7 +305,7 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
     for (const location of locations) {
       for (const keyword of direction.keywords) {
         for (const employmentType of employmentTypes) {
-          const url = buildJobSearchUrl({ keyword, city: location, jobType: employmentType, experience, degree });
+          const url = buildJobSearchUrl({ keyword, city: location, jobType: employmentType, experience, degree, scale });
           if (seen.has(url)) continue;
           seen.add(url);
           queue.push({
@@ -291,6 +315,7 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
             employmentType,
             experience: experience.join(','),
             degree: degree.join(','),
+            scale,
           });
         }
       }

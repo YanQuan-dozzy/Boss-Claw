@@ -114,7 +114,7 @@ BossClaw 数据本地优先：AI 只调用**你自己配置的 Key**（OpenAI �
 
 先查看本 Wiki 与 [`desktop-app/README.md`](https://github.com/YanQuan-dozzy/Boss-Claw/blob/main/desktop-app/README.md)，再提交 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)，请包含：
 
-- BossClaw 版本（桌面版 v2.1.0）
+- BossClaw 版本（桌面版 v2.4.0）
 - 操作系统与 Electron 版本
 - 出错步骤
 - **已隐藏隐私信息**的截图（请勿上传含真实简历、手机号、邮箱、身份证信息、API Key 的截图）

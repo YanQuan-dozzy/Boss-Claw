@@ -58,9 +58,9 @@
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.1.0）
+├── desktop-app/               当前主应用（Electron + React，v2.4.0）
 │   ├── electron/
-│   │   ├── main.cjs           主进程：单窗口 + webview + IPC + 子进程管理
+│   │   ├── main.cjs           主进程：单窗口 + webview + IPC + 子进程管理 + 备份目录/开机自启
 │   │   ├── preload/
 │   │   │   ├── app.cjs        主窗口安全接口（contextBridge）
 │   │   │   └── webview.cjs    内置浏览器 guest 页回传 + 真实输入
@@ -69,13 +69,13 @@ Boss-claw/
 │   │       └── cloakPreload.cjs
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
 │   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py + requirements.txt）
-│   ├── skills/                AI 技能库（SKILL.md：resume-profile / job-analysis / greetings / tailor-cv）
+│   ├── skills/                AI 技能库（SKILL.md：resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match）
 │   ├── src/
 │   │   ├── main.tsx / App.tsx / theme.ts / index.css
-│   │   ├── store/             useAppStore / useDataStore / useSettingsStore
-│   │   ├── lib/               storage / electronApi / bridgeClient / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
-│   │   ├── components/        TitleBar / Sidebar / StatusBar / BrowserView / feedback
-│   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / Stats / Assistant / OpenClaw / AutoChat / Settings
+│   │   ├── store/             useAppStore / useDataStore / useSettingsStore / useScheduleStore
+│   │   ├── lib/               storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
+│   │   ├── components/        TitleBar / Sidebar / StatusBar / BrowserView / MarkdownView / feedback
+│   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant / OpenClaw / AutoChat / Settings
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts
 ├── docs/

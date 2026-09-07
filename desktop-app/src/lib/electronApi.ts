@@ -68,6 +68,18 @@ export const electronApi = {
     },
   },
 
+  // 读取「使用前必读」文档（首页「阅读使用文档」入口）
+  readDoc: async (): Promise<{ ok: boolean; text?: string; error?: string }> => {
+    try {
+      const fn = api().readDoc;
+      if (!fn) return { ok: false, error: 'readDoc API 不可用' };
+      const r = (await fn()) as { ok?: boolean; text?: string; error?: string };
+      return { ok: Boolean(r?.ok), text: r?.text, error: r?.error };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  },
+
   boss: {
     login: async (): Promise<boolean> => {
       try {
@@ -192,6 +204,90 @@ export const electronApi = {
     },
     onEvent: (cb: (payload: unknown) => void) => (api().onCloakEvent || noopUnsub)(cb),
     onStatusChanged: (cb: (status: unknown) => void) => (api().onCloakStatusChanged || noopUnsub)(cb),
+  },
+
+  // 开机自启动（Windows 登录项；缺失时降级为关闭态 / no-op）
+  autostart: {
+    get: async (): Promise<{ openAtLogin: boolean }> => {
+      try {
+        const fn = api().autostartGet;
+        if (!fn) return { openAtLogin: false };
+        const r = (await fn()) as { ok?: boolean; openAtLogin?: boolean };
+        return { openAtLogin: Boolean(r?.openAtLogin) };
+      } catch {
+        return { openAtLogin: false };
+      }
+    },
+    set: (enabled: boolean) => (api().autostartSet || noop)(enabled),
+  },
+
+  // 本地数据备份目录（localStorage 主存储 + 周期脏检查写盘）
+  backup: {
+    dir: async (): Promise<string> => {
+      try {
+        const fn = api().backupDir;
+        if (!fn) return '';
+        const r = (await fn()) as { dir?: string } | undefined;
+        return String(r?.dir || '');
+      } catch {
+        return '';
+      }
+    },
+    setDir: async (dir: string): Promise<{ ok: boolean; dir?: string; error?: string }> => {
+      try {
+        const fn = api().backupDirSet;
+        if (!fn) return { ok: false, error: 'backup API 不可用' };
+        const r = (await fn(dir)) as { ok?: boolean; dir?: string; error?: string };
+        return { ok: Boolean(r?.ok), dir: r?.dir, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    pick: async (): Promise<{ ok: boolean; canceled?: boolean; dir?: string; error?: string }> => {
+      try {
+        const fn = api().backupDirPick;
+        if (!fn) return { ok: false, error: 'backup API 不可用' };
+        const r = (await fn()) as { ok?: boolean; canceled?: boolean; dir?: string; error?: string };
+        return { ok: Boolean(r?.ok), canceled: r?.canceled, dir: r?.dir, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    write: async (bundle: unknown): Promise<{ ok: boolean; file?: string; error?: string }> => {
+      try {
+        const fn = api().backupWrite;
+        if (!fn) return { ok: false, error: 'backup API 不可用' };
+        const r = (await fn(bundle)) as { ok?: boolean; file?: string; error?: string };
+        return { ok: Boolean(r?.ok), file: r?.file, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    read: async (): Promise<{ ok: boolean; bundle?: { keys?: Record<string, string | null> } | null; file?: string | null; error?: string }> => {
+      try {
+        const fn = api().backupRead;
+        if (!fn) return { ok: false, file: null };
+        const r = (await fn()) as {
+          ok?: boolean;
+          bundle?: { keys?: Record<string, string | null> } | null;
+          file?: string | null;
+          error?: string;
+        };
+        return { ok: Boolean(r?.ok), bundle: r?.bundle ?? null, file: r?.file ?? null, error: r?.error };
+      } catch (e) {
+        return { ok: false, file: null, error: (e as Error).message };
+      }
+    },
+    delete: async (): Promise<boolean> => {
+      try {
+        const fn = api().backupDelete;
+        if (!fn) return false;
+        const r = (await fn()) as { ok?: boolean };
+        return Boolean(r?.ok);
+      } catch {
+        return false;
+      }
+    },
   },
 
   ipc: {

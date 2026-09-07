@@ -22,7 +22,7 @@
 
 * **定制简历**：侧栏「定制简历」页输入岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，AI 输出不达标回退本地规则兜底。
 
-* **AI 技能体系**：`skills/` 内置 resume-profile / job-analysis / greetings / tailor-cv 四技能（SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理。
+* **AI 技能体系**：`skills/` 内置 resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match 六技能（SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；great-resume（经历酥化，assistant 作用域）、job-match（证据驱动岗位匹配，job-analysis 作用域）为增强技能、默认关闭，可在设置页手动启用；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理。
 
 * **LLM 预设**：OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟 / 自定义（OpenAI 兼容端点）。
 
@@ -38,7 +38,17 @@
 
 * **主题**：浅色 / 深色 / 跟随系统（antd + CSS 变量，状态持久化）。
 
-* **数据**：设置页可导出 / 导入 / 清空本地数据（localStorage）。
+* **定时任务**：侧栏「定时任务」页配置，按设定时刻（HH:mm + 星期，空 = 每天）自动触发「投递 / 采集 / 备份」三类动作；全局调度器每 15s 心跳扫描、按目标时刻去重（同一分钟只触发一次），投递复用自动投递引擎全部安全守卫（冷却 / 每日上限 / 分批 / 首条验收 / 风控交人工）；「采集」经跨页标志交常驻工作台消费；最小化时仍触发（主进程关闭背景节流 `backgroundThrottling: false`）。
+
+* **本地自动备份**：`localStorage` 为主存储，另按可配置目录（默认 `userData/backup`，写在 `userData/.backup-dir.txt` 指针）做周期写盘；每 5 分钟脏检查（序列化 keys 未变化则不重写文件），覆盖 `bossclaw-app / -settings-v2 / -data / -schedule` 四组键；`localStorage` 缺失或「清空全部数据」后，可从本地备份文件自动回签恢复。
+
+* **开机自启动**：设置页开关，写入 Windows 登录项（`setLoginItemSettings`，打包安装版生效），配合定时任务实现应用运行期间自动投递 / 采集 / 备份。
+
+* **首页「阅读使用文档」**：首页操作区提供「阅读使用文档」按钮，主进程读取 `docs/使用前必读.md`（开发读仓库/docs，打包读 `resources/docs/`，`extraResources` 已配置）经 MarkdownView 抽屉渲染。
+
+* **公司规模筛选**：设置页新增「公司规模」单选，映射 BOSS web 端 scale 参数（0-20人=301 … 10000人以上=306，不限 = 不附加过滤），参与搜索采集与搜索 URL 构造。
+
+* **数据**：设置页可导出 / 导入 / 清空本地数据（localStorage），并支持「立即备份 / 从本地备份恢复」。
 
 ***
 
@@ -75,17 +85,19 @@ desktop-app/
 │   └── requirements.txt
 ├── resources/
 │   └── icon.ico
-├── skills/                          # AI 技能库（SKILL.md，内置 resume-profile / job-analysis / greetings / tailor-cv）
+├── skills/                          # AI 技能库（SKILL.md，内置 resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match）
 │   ├── resume-profile/SKILL.md
 │   ├── job-analysis/SKILL.md
 │   ├── greetings/SKILL.md
-│   └── tailor-cv/SKILL.md
+│   ├── tailor-cv/SKILL.md
+│   ├── great-resume/SKILL.md
+│   └── job-match/SKILL.md
 └── src/
     ├── main.tsx / App.tsx / theme.ts / index.css
-    ├── store/                        # useAppStore / useDataStore / useSettingsStore
-    ├── lib/                          # storage / electronApi / bridgeClient / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
-    ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / feedback
-    └── pages/                        # Home / Workbench / Resume / Directions / Tasks / Stats / Assistant（定制简历）/ OpenClaw / AutoChat / Settings
+    ├── store/                        # useAppStore / useDataStore / useSettingsStore / useScheduleStore
+    ├── lib/                          # storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
+    ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / MarkdownView / feedback
+    └── pages/                        # Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant（定制简历）/ OpenClaw / AutoChat / Settings
 ```
 
 ***
@@ -163,9 +175,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.3.0-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.3.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.3.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-2.4.0-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.4.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.4.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
 
@@ -200,7 +212,7 @@ release/
 
 ## 功能侧栏入口
 
-固定 10 入口：**首页 · 工作台（三栏自动投递）· 简历中心 · 投递方向 · 任务进度 · 数据统计 · 定制简历 · OpenClaw · 自动沟通 · 设置**。
+固定 11 入口：**首页 · 工作台（三栏自动投递）· 简历中心 · 投递方向 · 任务进度 · 定时任务 · 数据统计 · 定制简历 · OpenClaw · 自动沟通 · 设置**。
 
 ***
 
@@ -222,12 +234,17 @@ release/
 | ----------------------------- | ------------------------------------------------- |
 | `jc:app-info` / `jc:window-*` | 应用信息、窗口控制（标题栏按钮）                                  |
 | `jc:open-external`            | 用系统浏览器打开外部链接                                      |
+| `jc:read-doc`                 | 读取「使用前必读」文档（首页阅读入口；打包读 resources/docs/）   |
 | `jc:fetch-url`                | 主进程代理跨域 fetch（城市编码表）                              |
 | `jc:boss-login`               | 检查 BOSS 直聘登录态（读 wt2 cookie）                       |
 | `jc:webview-input`            | webview 真实键盘输入（CDP 等价）                            |
 | `jc:camoufox-*`               | Camoufox Python 桥（status / search / send / login） |
 | `jc:cloak-*`                  | CloakBrowser 隐身浏览器（启动 / 标签 / 输入）                  |
 | `jc:bridge-control`           | OpenClaw Node 桥启停                                 |
+| `jc:autostart-*`              | 开机自启动（Windows 登录项，get / set）                       |
+| `jc:backup-*`                 | 本地备份（dir-get / dir-set / dir-pick / write / read / delete） |
+| `jc:clipboard-write`          | 剪贴板写入（查看网页源码复制）                              |
+| `jc:save-pdf`                 | 定制简历 A4 打印成 PDF 并保存                              |
 
 所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。
 
@@ -253,6 +270,7 @@ release/
 
 ## 变更记录
 
+* v2.4.0 — 定时任务（投递 / 采集 / 备份，HH:mm + 星期，心跳去重）；本地自动备份（5 分钟脏检查写盘 + 缺失自动回签恢复）；开机自启动（Windows 登录项）；首页「阅读使用文档」入口；公司规模筛选（BOSS scale）；新增 great-resume / job-match 增强技能；关闭后台节流保证最小化定时仍触发。
 * v2.3.0 — 批量自动沟通引擎重构（遵循首次验收 / 打招呼语非空 / 频率限制等安全不变量）；隐身引擎（Camoufox）/ 隐身浏览器（CloakBrowser）与贡献模块细节优化；通信模块实现优化。
 * v2.1.0 — AI 技能体系（内置 4 技能 + 自定义技能导入/新建/删除）；定制简历求职助手（JobAssistant，侧栏新增入口）；岗位匹配本地确定性多维匹配与 AI 融合；岗位采集页面噪音清洗（jdCleaner）；版本 / productName 统一为 BossClaw，新增 macOS / Linux 打包配置。
 

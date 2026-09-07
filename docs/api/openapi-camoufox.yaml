@@ -1,0 +1,761 @@
+openapi: 3.0.3
+
+# ============================================================================
+# BossClaw Camoufox 隐身引擎桥（本地 HTTP 服务）OpenAPI v3 规范
+# ----------------------------------------------------------------------------
+# 代码来源：desktop-app/camoufox/camoufox_server.py（Python 标准库
+# http.server 实现，ThreadingHTTPServer，仅监听 127.0.0.1）。
+# 启动方式：由 Electron 主进程（electron/main.cjs startCamoufoxBridge）
+# 以子进程拉起：python camoufox_server.py --port 18767 --token <token>；
+# 也可手动运行：python camoufox_server.py [--port 18767] [--token xxx]
+# 渲染层一般经主进程 IPC jc:camoufox-call 间接调用本服务（见 ipc-api.md）。
+#
+# 鉴权：所有请求需携带查询参数 ?token=bossclaw-camoufox（apiKey，in:query），
+# 校验失败返回 HTTP 403 {ok:false,error:"token denied"}。
+# CORS：OPTIONS 预检放行（Access-Control-Allow-Origin 透传 Origin）。
+# 注意：业务结果以响应体 {ok, code} 为准——HTTP 200 也可能携带业务失败
+# （如 code=31 未登录 / code=35 需人工验证），详见各响应 schema 与
+# components.x-code-table。
+# ============================================================================
+
+info:
+  title: BossClaw Camoufox 隐身引擎桥
+  description: |
+    为 BossClaw 桌面版提供「隐身」能力的本地引擎桥：隐身搜索、招呼语发送、
+    自动沟通（真实浏览器输入）、扫码登录与会话管理。仅使用 Camoufox 原生
+    隐身内核（本地 Chrome/Edge 经 Playwright 驱动会被 BOSS 反爬返回空壳，
+    不可复用）。
+
+    能力边界（安全不变量，对应 AGENTS.md §2.1）：
+      - code 36 / 32 / 35 代表风控或需人工验证，调用方必须立即停止并转人工，
+        绝不自动重试、绝不绕过验证码 / 账户验证；
+      - 本服务只降低「正常操作被误判为机器人（code 37）」的概率；
+      - 招呼语非空、长度受限（<800 字）；发送节奏由渲染层限速器控制。
+
+    OpenAPI 联系人字段在此省略（本地服务）；更多背景见
+    docs/api/README.md。
+  version: 2.0.0
+  x-code-path: desktop-app/camoufox/camoufox_server.py
+  x-port: 18767
+  x-token: bossclaw-camoufox
+  x-cookie-file: ~/.bossclaw/camoufox-cookies.json
+
+servers:
+  - url: http://127.0.0.1:18767
+    description: 本机 Camoufox 引擎桥（仅回环地址；由主进程随应用启动，或手动 python 启动）
+
+tags:
+  - name: 引擎状态
+    description: 引擎/内核/登录态探测（GET /status）
+  - name: 岗位搜索
+    description: 隐身搜索 BOSS 岗位（POST /search）
+  - name: 招呼语发送
+    description: 向指定岗位 HR 发送招呼语（POST /send，双通道：API 优先、页面点击兜底）
+  - name: 自动沟通
+    description: 真实浏览器自动沟通（POST /chat：真实点击 + 真实键盘输入 + 气泡确认）
+  - name: 会话管理
+    description: 扫码登录 / 登出 / 清除 Cookie（POST /login、/logout、/clear）
+
+paths:
+  /status:
+    get:
+      operationId: engineStatus
+      tags: [引擎状态]
+      summary: 检测隐身引擎可用性
+      description: |
+        只做检测，不启动浏览器：内核种类与路径、camoufox/playwright 包、Cookie
+        登录态（Cookie 中存在 wt2 且非空即视为已登录）。kernel 为 none 时 ok=false。
+      security:
+        - tokenQuery: []
+      responses:
+        '200':
+          description: 引擎检测结果（HTTP 200；ok 字段指示引擎是否可用）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EngineStatus' }
+              example:
+                ok: true
+                version: '2.0.0'
+                python: '3.13.12'
+                camoufox: true
+                camoufoxVersion: '0.5.4'
+                playwright: true
+                kernel: camoufox
+                kernelPath: C:/Users/DELL/.cache/camoufox/camoufox/win64-129.0/camoufox.exe
+                kernelMessage: Camoufox 原生内核可用
+                cookies: true
+                cookieCount: 23
+                loggedIn: true
+                message: Camoufox 原生内核可用
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /search:
+    post:
+      operationId: searchJobs
+      tags: [岗位搜索]
+      summary: 隐身搜索岗位列表
+      description: |
+        打开 Camoufox 内核访问 BOSS 搜索页（humanize/stealth），自动处理 code 37
+        环境检查（security-check 自动通过，失败则按 37 透传）。分页间隔含随机
+        人机延迟。命中风险码（36/32/35/37/38）时透传 code 并返回空 jobs。
+      security:
+        - tokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+            example:
+              query: 前端开发
+              city: 101010100
+              pages: 1
+      responses:
+        '200':
+          description: 搜索结果（jobs 字段；业务失败时 code 非 0 且 jobs 为空）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResult' }
+              example:
+                ok: true
+                code: 0
+                jobs:
+                  - jobId: 5f2e7d9c1a3b4c5d6e7f8a9b
+                    title: 前端开发工程师
+                    company: 北京某某科技有限公司
+                    salary: 20-35K
+                    location: 北京 海淀区
+                    experience: 3-5年
+                    degree: 本科
+                    labels: [五险一金, 补充医疗保险, 年终奖]
+                    skills: [React, TypeScript, Vite]
+                    description: 负责招聘 SaaS 产品 Web 端研发…（示例截断）
+                    recruiterName: 王先生
+                    bossTitle: HR
+                    companySize: 100-499人
+                    companyType: 不需要融资
+                    url: https://www.zhipin.com/job_detail/5f2e7d9c1a3b4c5d6e7f8a9b.html
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /send:
+    post:
+      operationId: sendGreeting
+      tags: [招呼语发送]
+      summary: 向指定岗位 HR 发送招呼语
+      description: |
+        双通道策略（对齐 send_camoufox.py + send_v2.py）：
+          1) API 通道：调 BOSS friend/add.json 接口发送；
+          2) 失败回退「页面真实点击」：打开岗位页 → 点击「立即沟通」→ 输入招呼语
+             → 发送 → 气泡确认。
+        发送成功返回 sent=true（method=api 或页面兜底）；未登录返回 code 31；
+        风控/验证返回 code 35 并绝不做自动处理。招呼语长度校验 1~800 字。
+      security:
+        - tokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendRequest' }
+            example:
+              jobId: 5f2e7d9c1a3b4c5d6e7f8a9b
+              greeting: 您好，我在 BOSS 直聘看到贵司正在招聘前端开发工程师，我对该岗位很感兴趣，方便沟通一下吗？
+      responses:
+        '200':
+          description: 发送结果（HTTP 200；成败看 ok/sent/code）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SendResult' }
+              examples:
+                成功（API 通道）:
+                  value:
+                    ok: true
+                    code: 0
+                    sent: true
+                    method: api
+                成功（页面点击兜底）:
+                  value:
+                    ok: true
+                    code: 0
+                    sent: true
+                    method: page
+                未登录:
+                  value:
+                    ok: false
+                    code: 31
+                    message: 未登录 BOSS（Camoufox 会话），请先扫码登录
+                    sent: false
+                需要人工安全验证:
+                  value:
+                    ok: false
+                    code: 35
+                    message: 需要人工安全验证
+                    sent: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /chat:
+    post:
+      operationId: chatGreeting
+      tags: [自动沟通]
+      summary: 自动沟通（真实浏览器点击 + 键盘输入 + 气泡确认）
+      description: |
+        真正打开 Camoufox 可见窗口：进入岗位聊天 → 处理「已开始沟通」弹窗 →
+        用真实键盘输入招呼语并按回车发送 → 以「自己气泡计数」为主确认已发送
+        （code 501 表示气泡未能确认，需人工核对）。code 35/36/32 立即停止并
+        转人工（绝不自动重试）。含岗位核对（expected）与可选的图片简历 /
+        在线简历发送、HR 先发言（code 700 needsReply）与已在会话（code 602
+        conflict）等分支。
+      security:
+        - tokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+            example:
+              jobId: 5f2e7d9c1a3b4c5d6e7f8a9b
+              greeting: 您好，我对前端开发工程师岗位很感兴趣，方便沟通吗？
+              expected:
+                recruiterName: 王先生
+                company: 北京某某科技有限公司
+                jobTitle: 前端开发工程师
+              sendResumeImage: false
+              sendOnlineResume: false
+              mode: auto
+      responses:
+        '200':
+          description: 自动沟通结果（成败以 ok/sent/code 为准）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatResult' }
+              examples:
+                发送成功:
+                  value:
+                    ok: true
+                    code: 0
+                    sent: true
+                    method: browser-chat
+                    sentVia: keyboard-enter
+                外部网申岗位（跳过）:
+                  value:
+                    ok: false
+                    code: 600
+                    external: true
+                    sent: false
+                    message: 该岗位为外部网申，无法在 BOSS 聊天中自动沟通，跳过
+                已在会话（冲突）:
+                  value:
+                    ok: false
+                    code: 602
+                    conflict: true
+                    sent: false
+                    message: 与 HR 已存在会话，需走「继续沟通」
+                HR 先发言:
+                  value:
+                    ok: false
+                    code: 700
+                    needsReply: true
+                    hasHrMessage: true
+                    sent: false
+                    message: HR 已先发言，需回复而非打招呼
+                未能确认气泡:
+                  value:
+                    ok: false
+                    code: 501
+                    sent: false
+                    message: 未能确认文字气泡已发送，请人工核对
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /login:
+    post:
+      operationId: login
+      tags: [会话管理]
+      summary: 打开可见窗口扫码登录（结果 Cookie 持久化）
+      description: |
+        打开 Camoufox 可见浏览器窗口访问 BOSS 登录页，等待用户扫码。
+        Cookie（含 wt2 主会话）保存到 ~/.bossclaw/camoufox-cookies.json，
+        后续 /search /send /chat 复用。timeout 有效范围 30~600 秒，默认 180。
+        主进程侧（jc:camoufox-call）对该请求的超时为 360 秒。
+      security:
+        - tokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            example:
+              timeout: 180
+      responses:
+        '200':
+          description: 登录结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+              examples:
+                登录成功:
+                  value:
+                    ok: true
+                    loggedIn: true
+                扫码超时:
+                  value:
+                    ok: false
+                    code: 31
+                    loggedIn: false
+                    message: 扫码登录超时，请重试
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /logout:
+    post:
+      operationId: logout
+      tags: [会话管理]
+      summary: 登出（删除本地 Cookie 文件）
+      description: 删除 camoufox-cookies.json，返回 loggedIn=false。不会触发远端登出。
+      security:
+        - tokenQuery: []
+      responses:
+        '200':
+          description: 登出成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogoutResult' }
+              example:
+                ok: true
+                loggedIn: false
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /clear:
+    post:
+      operationId: clearSession
+      tags: [会话管理]
+      summary: 清除本地 Cookie 文件
+      description: 与 /logout 行为基本一致（仅删文件），供设置页「清除会话」使用。
+      security:
+        - tokenQuery: []
+      responses:
+        '200':
+          description: 清除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClearResult' }
+              example:
+                ok: true
+        '403':
+          $ref: '#/components/responses/TokenDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    tokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: 静态令牌（默认 bossclaw-camoufox）。仅限本机回环；缺失/错误返回 HTTP 403。
+
+  responses:
+    TokenDenied:
+      description: 令牌缺失或不匹配
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+          example: { ok: false, error: token denied }
+    BadRequest:
+      description: 请求体缺少必填字段或字段值非法（query 为空、jobId 缺失、greeting 缺失/超长等）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+          examples:
+            缺 query:
+              value: { ok: false, error: 缺少 query }
+            缺 jobId:
+              value: { ok: false, error: 缺少 jobId }
+            缺 greeting:
+              value: { ok: false, error: 缺少 greeting, code: 400 }
+    NotFound:
+      description: 路径不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+          example: { ok: false, error: not found }
+    ServerError:
+      description: 服务内部未捕获异常
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+          example: { ok: false, error: 'Traceback…' }
+
+  schemas:
+    ErrorBody:
+      type: object
+      description: 通用错误体（HTTP 4xx/5xx 与传输层错误）
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+          description: 恒为 false
+        error:
+          type: string
+          description: 人类可读错误信息
+        code:
+          type: integer
+          description: 业务错误码（部分场景附带，见 x-code-table）
+      required: [ok, error]
+
+    EngineStatus:
+      type: object
+      description: GET /status 返回的引擎检测结果
+      properties:
+        ok:
+          type: boolean
+          description: 引擎是否可用（kernel 非 none 时为 true）
+        version:
+          type: string
+          description: 桥自身版本（当前 2.0.0）
+        python:
+          type: string
+          description: 运行桥的 Python 版本，如 3.13.12
+        camoufox:
+          type: boolean
+          description: 是否安装 camoufox 包
+        camoufoxVersion:
+          type: string
+          description: camoufox 包版本（经 importlib.metadata 读取）
+        playwright:
+          type: boolean
+          description: 是否安装 playwright 包
+        kernel:
+          type: string
+          enum: [camoufox, chrome, edge, none]
+          description: 检测到的可用内核（当前实现仅 camoufox 原生内核可用）
+        kernelPath:
+          type: string
+          description: 内核可执行文件绝对路径（无则空串）
+        kernelMessage:
+          type: string
+          description: 内核检测附加信息
+        cookies:
+          type: boolean
+          description: Cookie 文件是否存在
+        cookieCount:
+          type: integer
+          description: Cookie 文件中 cookie 条目数
+        loggedIn:
+          type: boolean
+          description: 是否存在非空 wt2 cookie（BOSS 主登录态判定）
+        message:
+          type: string
+          description: 汇总状态信息（可读）
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: 搜索关键词（职位名/公司名），空串返回 400
+          example: 前端开发
+        city:
+          type: string
+          default: '101010100'
+          description: BOSS 城市编码（默认北京 101010100）
+          example: '101010100'
+        pages:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 1
+          description: 抓取页数（1~5，超过 5 截断）
+        os:
+          type: string
+          nullable: true
+          description: 可选操作系统偏好（透传给引擎内核选择），一般省略
+
+    SearchResult:
+      type: object
+      description: |
+        /search 结果。业务失败（含风险码 36/32/35/37/38）返回 HTTP 200 +
+        ok=false + code + message，jobs 为空数组。
+      properties:
+        ok:
+          type: boolean
+        code:
+          $ref: '#/components/schemas/Code'
+        message:
+          type: string
+          description: 失败原因（仅失败时出现）
+        jobs:
+          type: array
+          description: 岗位列表（Boss-claw JobMeta 兼容结构）
+          items: { $ref: '#/components/schemas/Job' }
+
+    Job:
+      type: object
+      description: 格式化后的岗位（BOSS 原始字段 → JobMeta 兼容）
+      properties:
+        jobId:
+          type: string
+          description: 加密岗位 ID（encryptJobId，参与后续 /send /chat）
+        title:
+          type: string
+          description: 职位名称（jobName）
+        company:
+          type: string
+          description: 公司名称（brandName）
+        salary:
+          type: string
+          description: 薪资描述（salaryDesc），如 20-35K
+        location:
+          type: string
+          description: 城市 + 区县（cityName areaDistrict）
+        experience:
+          type: string
+          description: 经验要求（jobExperience），如 3-5年
+        degree:
+          type: string
+          description: 学历要求（jobDegree），如 本科
+        labels:
+          type: array
+          items: { type: string }
+          description: 福利/亮点标签（jobLabels）
+        skills:
+          type: array
+          items: { type: string }
+          description: 技能标签（skills）
+        description:
+          type: string
+          description: 职位描述（jobDesc，原始 HTML 文本）
+        recruiterName:
+          type: string
+          description: 招聘者姓名（bossName）
+        bossTitle:
+          type: string
+          description: 招聘者头衔（bossTitle），如 HR/技术总监
+        companySize:
+          type: string
+          description: 公司规模（scaleName）
+        companyType:
+          type: string
+          description: 融资阶段（typeName），如 不需要融资
+        url:
+          type: string
+          format: uri
+          description: 岗位详情页 URL（BOSS 真实 href）
+
+    SendRequest:
+      type: object
+      required: [jobId, greeting]
+      properties:
+        jobId:
+          type: string
+          minLength: 1
+          description: 岗位 ID（来自 /search jobs[].jobId）
+        greeting:
+          type: string
+          minLength: 1
+          maxLength: 800
+          description: 招呼语（1~800 字；为空或超长返回 code 400）
+        os:
+          type: string
+          nullable: true
+          description: 可选内核操作系统偏好
+
+    SendResult:
+      type: object
+      description: |
+        /send 结果。HTTP 200 + ok=true + sent=true 视为成功；
+        ok=false 时 code 决定处理策略（31 需登录 / 35 需人工验证 / 36、32 立即停止）。
+      properties:
+        ok:
+          type: boolean
+        sent:
+          type: boolean
+          description: 是否确认发送成功
+        code:
+          $ref: '#/components/schemas/Code'
+        message:
+          type: string
+          description: 失败/成功补充信息
+        method:
+          type: string
+          enum: [api, page]
+          description: 成功通道：api=friend/add.json 接口；page=页面真实点击兜底
+
+    ChatRequest:
+      type: object
+      description: /chat（自动沟通）请求体
+      required: [jobId, greeting]
+      properties:
+        jobId:
+          type: string
+          minLength: 1
+          description: 岗位 ID
+        greeting:
+          type: string
+          minLength: 1
+          maxLength: 800
+          description: 招呼语（与 send 一致校验）
+        os:
+          type: string
+          nullable: true
+          description: 可选内核操作系统偏好
+        sendResumeImage:
+          type: boolean
+          default: false
+          description: 是否附带图片简历（resumeImages 中的图片）
+        sendOnlineResume:
+          type: boolean
+          default: false
+          description: 是否附带 BOSS 在线简历
+        expected:
+          type: object
+          description: 岗位核对信息（防页面错位，供气泡/输入框确认）
+          properties:
+            recruiterName: { type: string, description: 招聘者姓名 }
+            company: { type: string, description: 公司名 }
+            jobTitle: { type: string, description: 职位名 }
+        resumeImages:
+          type: array
+          description: 图片简历列表（data URL 数组；发送前校验非空）
+          items:
+            type: string
+            format: byte
+        mode:
+          type: string
+          enum: [auto]
+          default: auto
+          description: 沟通模式（当前仅 auto）
+        replyText:
+          type: string
+          nullable: true
+          description: HR 先发言（code 700）时的回复文本（可选）
+
+    ChatResult:
+      type: object
+      description: |
+        /chat 结果。code 语义见 components.x-code-table：
+        0 成功；501 气泡未确认需人工；602 已在会话；700 HR 先发言；
+        600 外部网申跳过；35/36/32 立即停止转人工。
+      properties:
+        ok:
+          type: boolean
+        sent:
+          type: boolean
+          description: 是否发送成功
+        code:
+          $ref: '#/components/schemas/Code'
+        message:
+          type: string
+        method:
+          type: string
+          enum: [browser-chat]
+          description: 成功通道（真实浏览器）
+        sentVia:
+          type: string
+          description: 发送方式说明（真实键盘回车等，由实现填充）
+        external:
+          type: boolean
+          description: code=600：外部网申岗位
+        conflict:
+          type: boolean
+          description: code=602：已与 HR 存在会话
+        needsReply:
+          type: boolean
+          description: code=700：HR 已先发言，应回复
+        hasHrMessage:
+          type: boolean
+          description: code=700：检测到 HR 消息
+        skipped:
+          type: boolean
+          description: 已跳过（无需沟通）
+
+    LoginRequest:
+      type: object
+      properties:
+        timeout:
+          type: integer
+          minimum: 30
+          maximum: 600
+          default: 180
+          description: 等待扫码超时（秒）
+        os:
+          type: string
+          nullable: true
+
+    LoginResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        loggedIn:
+          type: boolean
+          description: 是否已获得登录态（wt2 cookie）
+        code:
+          $ref: '#/components/schemas/Code'
+        message:
+          type: string
+          description: 超时等失败原因
+
+    LogoutResult:
+      type: object
+      properties:
+        ok: { type: boolean, enum: [true] }
+        loggedIn: { type: boolean, enum: [false], description: 恒为 false }
+
+    ClearResult:
+      type: object
+      properties:
+        ok: { type: boolean, enum: [true] }
+
+    Code:
+      type: integer
+      description: 业务码（0 成功；其余见下表）
+      x-code-table:
+        '0': 成功
+        '17': 未登录，搜索受限（透传）
+        '31': 未登录 / 登录态失效，需先扫码登录（/login）
+        '32': 风控命中，立即停止，交人工
+        '35': 检测到安全验证 / 访问受限，需人工验证，绝不自动重试
+        '36': 风控命中，立即停止，交人工
+        '37': 环境安全检查未通过（缺 seed/name/ts 或 security-check 未过）
+        '38': 环境异常且未登录，需人工介入
+        '400': 参数校验失败（greeting 空/超长 800、jobId 缺失等）
+        '404': 未找到沟通按钮（岗位可能下架/未加载）
+        '500': 服务内部错误（含气泡未确认兜底等）
+        '501': 未能确认文字气泡已发送，需人工核对
+        '600': 外部网申岗位，无法自动沟通，跳过
+        '602': 已与 HR 存在会话（conflict），应走「继续沟通」
+        '700': HR 已先发言（needsReply），应回复而非打招呼
+        '1006': 平台限速，等待后重试

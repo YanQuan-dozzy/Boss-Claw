@@ -46,6 +46,8 @@ import {
   InfoCircleOutlined,
   RedoOutlined,
   ClockCircleOutlined,
+  FolderOpenOutlined,
+  SaveOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -62,6 +64,13 @@ import {
 } from '@/lib/bossclaw/skills';
 import { exportData, importData, clearAllData } from '@/lib/storage';
 import { bridgeStatus } from '@/lib/bridgeClient';
+import { electronApi } from '@/lib/electronApi';
+import {
+  getBackupDir,
+  writeLocalBackup,
+  restoreFromLocalBackup,
+  clearLocalBackup,
+} from '@/lib/localBackup';
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
@@ -357,6 +366,7 @@ export default function Settings() {
       cancelText: '取消',
       onOk: () => {
         clearAllData();
+        void clearLocalBackup();
         message.success('已清空本地数据，正在刷新…');
         setTimeout(() => window.location.reload(), 600);
       },
@@ -364,6 +374,56 @@ export default function Settings() {
   };
 
   const llmReady = isLLMConfigured();
+
+  // ===== 开机自启动 & 本地备份目录 =====
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [backupDir, setBackupDir] = useState('');
+  useEffect(() => {
+    electronApi.autostart
+      .get()
+      .then((r) => setAutostart(r.openAtLogin))
+      .catch(() => setAutostart(false));
+    getBackupDir().then(setBackupDir).catch(() => setBackupDir(''));
+  }, []);
+
+  const onToggleAutostart = async (v: boolean) => {
+    try {
+      if (!electronApi.autostart.set) {
+        message.warning('当前环境不支持开机自启动');
+        return;
+      }
+      electronApi.autostart.set(v);
+      setAutostart(v);
+      message.success(v ? '已开启开机自启动（打包后随系统启动）' : '已关闭开机自启动');
+    } catch (e: any) {
+      setAutostart(!v);
+      message.error('设置开机自启动失败：' + (e?.message || e));
+    }
+  };
+
+  const onPickBackupDir = async () => {
+    const r = await electronApi.backup.pick();
+    if (r.canceled) return;
+    if (!r.ok) { message.error('选择失败：' + (r.error || '未知错误')); return; }
+    setBackupDir(r.dir || '');
+    message.success(`备份目录已改为：${r.dir}`);
+  };
+
+  const onBackupNow = async () => {
+    const r = await writeLocalBackup(true);
+    if (r.error) {
+      message.warning(r.error === 'backup API 不可用（仅 Electron 可用）' ? '本地备份仅在桌面端可用' : r.error);
+      return;
+    }
+    message.success(r.wrote ? '已写入本地备份' : '内容未变化，未重写本地备份文件');
+  };
+
+  const onRestoreBackup = async () => {
+    const r = await restoreFromLocalBackup();
+    if (!r.restored) { message.warning(r.error || '未找到本地备份文件'); return; }
+    message.success('已从本地备份恢复，正在刷新…');
+    setTimeout(() => window.location.reload(), 600);
+  };
 
   // ===== 早中晚分批投递配置助手 =====
   const batch = config.batchDelivery;
@@ -506,6 +566,31 @@ export default function Settings() {
             <div className="settings-section-header">
               <div className="settings-section-header__title">
                 <div className="section-icon-box">
+                  <PoweroffOutlined />
+                </div>
+                开机自启动
+              </div>
+              {autostart ? <Tag color="green">已开启</Tag> : <Tag>未开启</Tag>}
+            </div>
+            <div className="sg-item">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <span className="field-label">随系统启动自动打开 BossClaw</span>
+                <Switch
+                  checked={Boolean(autostart)}
+                  loading={autostart === null}
+                  onChange={onToggleAutostart}
+                />
+              </div>
+            </div>
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+              开启后，Windows 登录时将自动启动 BossClaw（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
+            </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
                   <QrcodeOutlined />
                 </div>
                 内置浏览器标签页管理
@@ -610,6 +695,18 @@ export default function Settings() {
                   value={config.experiences}
                   onChange={(v) => setConfig({ experiences: v })}
                   options={['不限', '在校生', '应届生', '1年以内', '1-3年', '3-5年', '5-10年', '10年以上'].map((x) => ({
+                    label: x,
+                    value: x,
+                  }))}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">公司规模</span>
+                <Select
+                  style={{ width: '100%' }}
+                  value={config.companyScale || '不限'}
+                  onChange={(v) => setConfig({ companyScale: v })}
+                  options={['不限', '0-20人', '20-99人', '100-499人', '500-999人', '1000-9999人', '10000人以上'].map((x) => ({
                     label: x,
                     value: x,
                   }))}
@@ -1441,6 +1538,42 @@ export default function Settings() {
             </div>
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
               数据（简历、画像、投递方向、任务记录、偏好设置）全量保存在本机浏览器 localStorage。建议定期导出 JSON 文件备份。
+            </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <HddOutlined />
+                </div>
+                本地自动备份
+              </div>
+              {backupDir ? <Tag color="green">已设置备份目录</Tag> : <Tag>默认目录</Tag>}
+            </div>
+            <div className="setting-actions">
+              <Space size={12} wrap>
+                <Button size="middle" className="btn-uniform" icon={<FolderOpenOutlined />} onClick={onPickBackupDir}>
+                  选择备份目录
+                </Button>
+                <Button size="middle" className="btn-uniform" icon={<SaveOutlined />} onClick={onBackupNow}>
+                  立即备份
+                </Button>
+                <Button size="middle" className="btn-uniform" icon={<UploadOutlined />} onClick={onRestoreBackup}>
+                  从本地备份恢复
+                </Button>
+              </Space>
+            </div>
+            <Paragraph
+              type="secondary"
+              style={{ marginTop: 14, marginBottom: 0, fontSize: 13,
+                wordBreak: 'break-all', fontFamily: 'monospace' }}
+            >
+              当前备份目录：{backupDir || '（默认 userData/backup）'}
+            </Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0, fontSize: 13 }}>
+              岗位信息、简历、登录/会话相关持久内容与日志信息将<strong>每 5 分钟</strong>自动备份到该目录；
+              内容未变化则不重写文件（脏检查）。localStorage 仍为主存储，仅当其缺失/被清空时，才从本地备份文件恢复。
             </Paragraph>
           </div>
         </div>

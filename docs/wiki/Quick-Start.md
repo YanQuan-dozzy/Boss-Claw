@@ -22,7 +22,7 @@
 
 ## 二、方式一：下载安装（推荐）
 
-1. 打开 [Releases 页面](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，下载 `BossClaw-2.1.0-x64.exe`（NSIS 安装包）或 `BossClaw-2.1.0-portable.exe`（绿色便携版）。
+1. 打开 [Releases 页面](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，下载 `BossClaw-2.4.0-x64.exe`（NSIS 安装包）或 `BossClaw-2.4.0-portable.exe`（绿色便携版）。
 2. 双击安装，完成后从「开始菜单」启动 BossClaw。
 3. 首次启动进入「设置」页，按提示填写**求职条件**与 **AI API Key** 即可使用。
 
