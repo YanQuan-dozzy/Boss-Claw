@@ -59,6 +59,19 @@ export const electronApi = {
     },
     onMaximizedChanged: (cb: (maximized: boolean) => void) =>
       (api().onWindowMaximized || noopUnsub)(cb),
+    // 窗口置顶：查询 / 设置 / 订阅变化（返回值统一收窄为 boolean）
+    isAlwaysOnTop: async (): Promise<boolean> => {
+      try {
+        const fn = api().winAlwaysOnTop;
+        if (!fn) return false;
+        return Boolean(await fn());
+      } catch {
+        return false;
+      }
+    },
+    setAlwaysOnTop: (value: boolean) => (api().winAlwaysOnTopSet || noop)(Boolean(value)),
+    onAlwaysOnTopChanged: (cb: (isOnTop: boolean) => void) =>
+      (api().onWindowAlwaysOnTopChanged || noopUnsub)(cb),
   },
 
   external: {

@@ -408,42 +408,100 @@ function extractMarkedContentText(content: string): string {
 }
 
 function extractTextFromContent(content: string, fontMaps: Map<number, any>, resourceFonts: Map<string, number>): string {
-  const lines: string[] = [];
-  let currentLine = '';
+  // 坐标感知重建：很多 PDF（Word/WPS）把每个字符用独立 Tm/Td 绘制，若把每次位移都当换行，
+  // 会把中文拆成「一字一行」。这里跟踪绘制坐标：仅当 y 发生明显变化才视为换行；
+  // 同一行内 x 明显右移（字符间距）时补一个空格。从而正确拼回连续文本。
+  const lines: Array<{ y: number; xEnd: number; text: string }> = [];
+  let cur: { y: number; xEnd: number; text: string } | null = null;
+  let curX = 0;
+  let curY = 0;
+  let fontSize = 12;
+  let leading = 0;
   let currentFont: any = null;
-  const pushLine = () => {
-    const cleaned = currentLine.replace(/[ \t]+/g, ' ').trim();
-    if (cleaned) lines.push(cleaned);
-    currentLine = '';
+
+  const flushLine = () => {
+    if (cur) {
+      const cleaned = cur.text.replace(/[ \t]+/g, ' ').trim();
+      if (cleaned) lines.push({ y: cur.y, xEnd: cur.xEnd, text: cleaned });
+    }
+    cur = null;
   };
+  const ensureLine = () => {
+    // 与当前行基线一致则续写；y 位移超过约 0.7 字号才开启新行（0.55 太严会把同一行里
+    // 数字/年份因基线轻微抖动拆成多行，如「年龄：2 / 1」「20 / 23」）
+    if (cur && Math.abs(cur.y - curY) <= Math.max(fontSize, 6) * 0.7) return;
+    flushLine();
+    cur = { y: curY, xEnd: curX, text: '' };
+  };
+  const appendText = (str: string) => {
+    if (!str) return;
+    ensureLine();
+    if (!cur) return;
+    // 只在「明显大间隙」处补空格（词/段间距，约一个字宽以上）；比例字体逐字定位的小间隙不插空格，
+    // 避免把英文单词 `Agent` 误拆成 `A g en t`、日期 `2023` 误拆成 `2 0 2 3`。显式空格来自原文。
+    const bigGap = curX > cur.xEnd + Math.max(fontSize * 1.1, 3);
+    if (cur.text && bigGap) cur.text += ' ';
+    cur.text += str;
+    cur.xEnd = curX + Math.max(str.length * fontSize * 0.5, fontSize * 0.15); // 粗估行尾
+  };
+
   for (const block of content.matchAll(/BT([\s\S]*?)ET/g)) {
     for (const token of tokenizeTextBlock(block[1])) {
-      const fontMatch = token.match(/^\/([^\s/<>\[\]()]+)\s+[-+]?\d*\.?\d+\s+Tf$/);
+      const fontMatch = token.match(/^\/([^\s/<>\[\]()]+)\s+([-+]?\d*\.?\d+)\s+Tf$/);
       if (fontMatch) {
+        fontSize = parseFloat(fontMatch[2] || '12');
         const fontObject = resourceFonts.get(fontMatch[1]);
         currentFont = fontObject ? fontMaps.get(fontObject) || null : null;
         continue;
       }
-      if (/^(?:T\*|[-+]?\d*\.?\d+\s+[-+]?\d*\.?\d+\s+(?:Td|TD)|(?:[-+]?\d*\.?\d+\s+){6}Tm)$/.test(token)) {
-        pushLine();
+      // 文本矩阵：6 个数字，第 5/6 位是 x/y 平移
+      const tm = token.match(/^(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm$/);
+      if (tm) {
+        curX = parseFloat(tm[5]);
+        curY = parseFloat(tm[6]);
+        ensureLine();
+        continue;
+      }
+      const td = token.match(/^(-?[\d.]+)\s+(-?[\d.]+)\s+(Td|TD)$/);
+      if (td) {
+        curX += parseFloat(td[1]);
+        curY += parseFloat(td[2]);
+        if (td[3] === 'TD') leading = -parseFloat(td[2]);
+        ensureLine();
+        continue;
+      }
+      if (token === 'T*') {
+        flushLine();
+        curY -= leading > 0 ? leading : fontSize * 1.2;
         continue;
       }
       if (token.startsWith('[')) {
         const arrayBody = token.slice(1, token.lastIndexOf(']'));
         for (const item of arrayBody.matchAll(/\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f\s]+>|[-+]?\d*\.?\d+/g)) {
           const value = item[0];
-          if (value.startsWith('(') || value.startsWith('<')) currentLine += decodePdfString(value, currentFont);
-          else if (Number(value) < -180) currentLine += ' ';
+          if (value.startsWith('(') || value.startsWith('<')) {
+            const s = decodePdfString(value, currentFont);
+            appendText(s);
+            curX += s.length * fontSize * 0.5;
+          } else if (Number(value) < -180) {
+            curX += -Number(value);
+          } else if (/^-?[\d.]+$/.test(value)) {
+            curX += -Number(value);
+          }
         }
       } else {
         const literal = token.match(/^(\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f\s]+>)/)?.[1];
-        if (literal) currentLine += decodePdfString(literal, currentFont);
-        if (/\s(?:'|")$/.test(token)) pushLine();
+        if (literal) {
+          const s = decodePdfString(literal, currentFont);
+          appendText(s);
+          curX += s.length * fontSize * 0.5;
+        }
+        if (/\s(?:'|")$/.test(token)) flushLine();
       }
     }
-    pushLine();
+    flushLine();
   }
-  const operatorText = lines.join('\n');
+  const operatorText = lines.map((l) => l.text).join('\n');
   const markedText = extractMarkedContentText(content);
   if (markedText && (candidateQuality(markedText) > candidateQuality(operatorText) + 0.08 || operatorText.replace(/\s/g, '').length < 40)) {
     return markedText;

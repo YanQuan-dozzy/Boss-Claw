@@ -41,6 +41,8 @@ export interface AppConfig {
   excludedCompanies: string[];
   /** 招聘方（HR）黑名单：不想沟通的招聘方姓名（如 王老师），子串命中即排除（不依赖 AI 判断） */
   excludedRecruiters: string[];
+  /** 岗位描述排除关键字（如 出差 / 驻场 / 长期外派）：岗位标题/卡片文本/描述任一命中即排除（确定性过滤，不依赖 AI 判断） */
+  excludedJobDescKeywords: string[];
   employmentTypes: string[];
   experiences: string[];
   degrees: string[];

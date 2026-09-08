@@ -877,6 +877,10 @@ async function createMainWindow() {
   // 通知渲染进程窗口最大化状态变化（自绘标题栏「最大化/还原」图标随状态切换）
   mainWindow.on('maximize', () => mainWindow.webContents.send('jc:window-maximized-changed', true));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('jc:window-maximized-changed', false));
+  // 通知渲染进程窗口置顶状态变化（标题栏图钉按钮随状态切换）
+  mainWindow.on('always-on-top-changed', (_event, isOnTop) =>
+    mainWindow.webContents.send('jc:window-always-on-top-changed', Boolean(isOnTop))
+  );
   mainWindow.on('focus', () => mainWindow.webContents.send('jc:window-focus-changed', true));
   mainWindow.on('blur', () => mainWindow.webContents.send('jc:window-focus-changed', false));
 
@@ -1155,6 +1159,9 @@ ipcMain.on('jc:window-maximize', () => {
 });
 ipcMain.on('jc:window-close', () => mainWindow?.close());
 ipcMain.handle('jc:window-is-maximized', () => mainWindow?.isMaximized() ?? false);
+// 窗口置顶（标题栏图钉按钮）：查询当前置顶状态 / 切换
+ipcMain.handle('jc:window-always-on-top', () => mainWindow?.isAlwaysOnTop() ?? false);
+ipcMain.on('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwaysOnTop(Boolean(value)));
 
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。

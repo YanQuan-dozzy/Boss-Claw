@@ -21,11 +21,20 @@ const api = {
   winMaximize: () => ipcRenderer.send('jc:window-maximize'),
   winClose: () => ipcRenderer.send('jc:window-close'),
   winIsMaximized: () => ipcRenderer.invoke('jc:window-is-maximized'),
+  // 窗口置顶（标题栏图钉按钮）：查询状态 / 设置 / 订阅变化
+  winAlwaysOnTop: () => ipcRenderer.invoke('jc:window-always-on-top'),
+  winAlwaysOnTopSet: (value) => ipcRenderer.send('jc:window-always-on-top-set', Boolean(value)),
   // 订阅窗口最大化状态变化（maximize/unmaximize 事件），返回取消订阅函数
   onWindowMaximized: (callback) => {
     const listener = (_event, maximized) => callback(Boolean(maximized));
     ipcRenderer.on('jc:window-maximized-changed', listener);
     return () => ipcRenderer.removeListener('jc:window-maximized-changed', listener);
+  },
+  // 订阅窗口置顶状态变化，返回取消订阅函数
+  onWindowAlwaysOnTopChanged: (callback) => {
+    const listener = (_event, isOnTop) => callback(Boolean(isOnTop));
+    ipcRenderer.on('jc:window-always-on-top-changed', listener);
+    return () => ipcRenderer.removeListener('jc:window-always-on-top-changed', listener);
   },
 
   // 打开外部链接

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
 import { useTheme } from './context/ThemeContext';
@@ -41,6 +41,24 @@ export default function App() {
     Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
     root.setAttribute('data-theme', effective);
   }, [effective]);
+
+  // 侧边栏按窗口宽度自适应：窗口窄于断点（主窗口 minWidth 960）自动收起为图标栏，
+  // 恢复宽度自动展开。跨断点翻转时才改状态，避免覆盖用户在同一侧的手动切换。
+  // 页面缩放依赖原生窗口拖拽调整大小（BrowserWindow 默认可拖拽边缘）。
+  const SIDEBAR_BREAKPOINT = 1100;
+  const lastAutoCollapsedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const applyByWidth = () => {
+      const shouldCollapse = window.innerWidth < SIDEBAR_BREAKPOINT;
+      if (lastAutoCollapsedRef.current !== shouldCollapse) {
+        lastAutoCollapsedRef.current = shouldCollapse;
+        useAppStore.getState().setSidebarCollapsed(shouldCollapse);
+      }
+    };
+    applyByWidth();
+    window.addEventListener('resize', applyByWidth);
+    return () => window.removeEventListener('resize', applyByWidth);
+  }, []);
 
   // 失焦时暂停非必要微动效，节省系统 CPU/GPU 资源
   useEffect(() => {

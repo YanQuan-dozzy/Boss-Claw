@@ -774,14 +774,18 @@ export default function Settings() {
                 <div className="section-icon-box">
                   <StopOutlined />
                 </div>
-                城市反选黑名单（确定性过滤）
+                确定性过滤（黑名单）
               </div>
               <Space>
-                <Tag color="red">已排除 {config.excludedProvinces.length} 省</Tag>
-                <Tag color="volcano">已排除 {config.excludedCities.length} 市</Tag>
+                <Tag color="red">排除 {config.excludedProvinces.length} 省 · {config.excludedCities.length} 市</Tag>
+                <Tag color="geekblue">屏蔽 {config.excludedCompanies?.length || 0} 公司 · {config.excludedRecruiters?.length || 0} HR</Tag>
+                <Tag color="volcano">排除 {config.excludedJobDescKeywords?.length || 0} 个关键字</Tag>
               </Space>
             </div>
             <div className="settings-grid">
+              <div className="settings-grid__group-title">
+                <span className="field-label">城市反选</span>
+              </div>
               <div className="sg-item">
                 <span className="field-label">排除省份 / 直辖市 / 自治区</span>
                 <Select
@@ -812,26 +816,10 @@ export default function Settings() {
                   maxTagCount="responsive"
                 />
               </div>
-            </div>
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              城市反选为确定性过滤（不依赖 AI）：加入任务的岗位所在地若命中上述省份或城市，会被自动跳过、不进入投递队列。与「目标城市」互补。
-            </Paragraph>
-          </div>
 
-          <div className="settings-section-card">
-            <div className="settings-section-header">
-              <div className="settings-section-header__title">
-                <div className="section-icon-box">
-                  <StopOutlined />
-                </div>
-                公司 / 招聘方黑名单（确定性过滤）
+              <div className="settings-grid__group-title">
+                <span className="field-label">公司 / 招聘方</span>
               </div>
-              <Space>
-                <Tag color="red">屏蔽 {config.excludedCompanies?.length || 0} 家公司</Tag>
-                <Tag color="volcano">屏蔽 {config.excludedRecruiters?.length || 0} 位招聘方</Tag>
-              </Space>
-            </div>
-            <div className="settings-grid">
               <div className="sg-item">
                 <span className="field-label">不想投的公司（输入公司名）</span>
                 <Select
@@ -866,9 +854,30 @@ export default function Settings() {
                   maxTagCount="responsive"
                 />
               </div>
+
+              <div className="settings-grid__group-title">
+                <span className="field-label">岗位描述关键字</span>
+              </div>
+              <div className="sg-item wide">
+                <span className="field-label">岗位描述出现以下关键字时排除（如 出差 / 驻场 / 长期外派）</span>
+                <Select
+                  mode="tags"
+                  allowClear
+                  style={{ width: '100%' }}
+                  placeholder="输入关键字，回车添加，如 出差 / 驻场"
+                  value={config.excludedJobDescKeywords || []}
+                  onChange={(v) =>
+                    setConfig({
+                      excludedJobDescKeywords: (v as string[]).map((s) => String(s).trim()).filter(Boolean),
+                    })
+                  }
+                  tokenSeparators={[',', '，']}
+                  maxTagCount="responsive"
+                />
+              </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              公司 / 招聘方黑名单为确定性过滤（不依赖 AI）：加入任务的岗位若公司名或招聘方姓名命中黑名单（支持子串匹配），会被自动跳过、不进入投递队列。与「城市反选」互补。
+              以下过滤器均为确定性规则（不依赖 AI，不消耗 Token）：加入任务的岗位所在地、公司名或招聘方姓名命中黑名单（子串匹配），或岗位标题 / 卡片 / 描述文本中出现任一排除关键字，会被自动跳过、不进入投递队列。与「目标城市」互补。
             </Paragraph>
           </div>
 

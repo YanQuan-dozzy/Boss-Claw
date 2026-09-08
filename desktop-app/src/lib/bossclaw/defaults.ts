@@ -14,6 +14,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 公司 / 招聘方黑名单（默认空：不屏蔽任何公司与 HR）
   excludedCompanies: [],
   excludedRecruiters: [],
+  // 岗位描述排除关键字（默认空：不排除任何岗位描述）
+  excludedJobDescKeywords: [],
   employmentTypes: ['不限'],
   experiences: [],
   degrees: [],
