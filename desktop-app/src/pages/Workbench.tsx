@@ -15,6 +15,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
+import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
 import { makePendingItem } from '@/store/useDataStore';
 import { PHASE_LABELS, stageToPhase, taskStageMeta } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
@@ -461,6 +462,11 @@ export default function Workbench() {
     const bl = isCompanyExcluded(job, cfg);
     if (bl.excluded) {
       addLog('info', `跳过「${job?.title || '岗位'}」（${bl.reason}）`);
+      return false;
+    }
+    const jd = isJdKeywordExcluded(job, cfg);
+    if (jd.excluded) {
+      addLog('info', `跳过「${job?.title || '岗位'}」（${jd.reason}）`);
       return false;
     }
     const imFilterC = cfg.interviewModeFilter || 'any';

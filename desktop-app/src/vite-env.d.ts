@@ -18,6 +18,10 @@ interface ElectronBridgeApi {
   winClose?: () => void;
   winIsMaximized?: () => Promise<boolean>;
   onWindowMaximized?: (callback: (maximized: boolean) => void) => () => void;
+  // 窗口置顶（标题栏图钉按钮）
+  winAlwaysOnTop?: () => Promise<boolean>;
+  winAlwaysOnTopSet?: (value: boolean) => void;
+  onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
   // Camoufox 隐身引擎（可选增强，Python 桥）
   camoufoxStatus?: () => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;
   camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;

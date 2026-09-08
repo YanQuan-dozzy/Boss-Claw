@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
-import { SunOutlined, MoonOutlined, MonitorOutlined } from '@ant-design/icons';
+import { useEffect, useState } from 'react';
+import { SunOutlined, MoonOutlined, MonitorOutlined, PushpinOutlined } from '@ant-design/icons';
 import { useAppStore, type EngineStatus, type ThemeMode } from '../store/useAppStore';
 import electronApi from '../lib/electronApi';
 import bossclawIcon from '../assets/bossclaw-icon.png';
@@ -23,8 +24,28 @@ export default function TitleBar() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const meta = STATUS_META[engineStatus];
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+
+  // 读取初始置顶状态并订阅主进程变化，保证与窗口真实状态同步
+  useEffect(() => {
+    let alive = true;
+    electronApi.win
+      .isAlwaysOnTop()
+      .then((v: boolean) => {
+        if (alive) setAlwaysOnTop(v);
+      })
+      .catch(() => {});
+    const unsub = electronApi.win.onAlwaysOnTopChanged((v: boolean) => {
+      if (alive) setAlwaysOnTop(v);
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, []);
 
   const toggleMaximize = () => electronApi.win.maximize();
+  const toggleAlwaysOnTop = () => electronApi.win.setAlwaysOnTop(!alwaysOnTop);
 
   return (
     <header className="title-bar">
@@ -41,6 +62,19 @@ export default function TitleBar() {
 
       {/* 右侧交互区：外观胶囊切换 + 窗口控制按钮 */}
       <div className="title-bar-actions">
+        <Tooltip title={alwaysOnTop ? '取消置顶' : '窗口置顶'} delayMs={300}>
+          <button
+            type="button"
+            className={'title-pin-btn' + (alwaysOnTop ? ' is-active' : '')}
+            onClick={toggleAlwaysOnTop}
+            aria-label={alwaysOnTop ? '取消置顶' : '窗口置顶'}
+            aria-pressed={alwaysOnTop}
+            title={alwaysOnTop ? '取消置顶' : '窗口置顶'}
+          >
+            <PushpinOutlined />
+          </button>
+        </Tooltip>
+
         <div className="theme-seg" role="group" aria-label="外观主题">
           {THEME_OPTIONS.map((opt) => (
             <Tooltip key={opt.value} title={opt.label} delayMs={400}>

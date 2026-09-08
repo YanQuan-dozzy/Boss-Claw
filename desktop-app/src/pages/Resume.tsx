@@ -3,8 +3,10 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   Input,
+  Modal,
   Row,
   Select,
   Space,
@@ -21,6 +23,8 @@ import {
   CopyOutlined,
   InboxOutlined,
   CommentOutlined,
+  PictureOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -30,6 +34,9 @@ import { buildProfile, profileFromDraft, profileToDraft, profileHasCore } from '
 import { analyzeJob, fallbackApplicantGreeting } from '@/lib/bossclaw/matching';
 import { DEFAULT_ANALYZE_GREETING_INSTRUCTIONS } from '@/lib/bossclaw/prompts';
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
+import { desensitizeResumeText } from '@/lib/bossclaw/resumeDesensitize';
+import { drawResumeImage } from '@/lib/bossclaw/resumeToImage';
+import { polishResumeWithAI } from '@/lib/bossclaw/resumeAI';
 import { bridgeParseResume } from '@/lib/bridgeClient';
 import type { JobMeta, ProfileDraft } from '@/lib/bossclaw/types';
 import { EmptyState } from '@/components/feedback';
@@ -92,6 +99,102 @@ export default function Resume() {
   const [testJobDesc, setTestJobDesc] = useState(TEST_JOB_DESC);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // 原简历「提取文字 → 模板排布 → 转图片」弹窗状态
+  const [desenOpen, setDesenOpen] = useState(false);
+  const [desenBusy, setDesenBusy] = useState(false);
+  const [desenHideName, setDesenHideName] = useState(false);
+  const [desenImg, setDesenImg] = useState<{ png: string; jpeg: string } | null>(null);
+  // AI 智能整理后的简历正文（null=用解析原文）
+  const [desenAiText, setDesenAiText] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const desenBaseName = () => (resumeFileName || '原简历').replace(/\.(pdf|docx?|txt|md)$/i, '');
+
+  const openDesen = async () => {
+    if (!text.trim()) {
+      message.warning('请先导入或粘贴简历原文');
+      return;
+    }
+    setDesenOpen(true);
+    setDesenImg(null);
+    await renderDesen();
+  };
+
+  const renderDesen = async (sourceOverride?: string, hideNameOverride?: boolean) => {
+    setDesenBusy(true);
+    try {
+      // 渲染层 Canvas 直接成图，不依赖 Electron 截屏（稳定，规避「页面捕获结果为空」）
+      const src = sourceOverride ?? desenAiText ?? text;
+      const hideName = hideNameOverride ?? desenHideName;
+      const masked = desensitizeResumeText(src, { hideName });
+      const res = drawResumeImage(masked);
+      setDesenImg({ png: res.pngDataUrl, jpeg: res.jpegDataUrl });
+    } catch (e: any) {
+      message.error('生成失败：' + (e?.message || String(e)));
+    } finally {
+      setDesenBusy(false);
+    }
+  };
+
+  const onHideNameChange = (checked: boolean) => {
+    // 直接把本次值传给渲染，避免 setState 异步导致 renderDesen 读到旧状态（背景反）
+    setDesenHideName(checked);
+    void renderDesen(undefined, checked);
+  };
+
+  const onAiPolish = async () => {
+    if (!config.model?.apiKey) {
+      message.warning('请先在「设置」页填写 AI API Key 后使用 AI 整理');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const out = await polishResumeWithAI(desenAiText ?? text, config.model);
+      setDesenAiText(out);
+      await renderDesen(out);
+      message.success('已用 AI 整理简历内容（可点「用原文」切回）');
+    } catch (e: any) {
+      message.warning(`AI 整理失败：${e?.message || String(e)}，已用原文生成`);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const onClearAi = () => {
+    setDesenAiText(null);
+    void renderDesen();
+    message.info('已切回未整理的原文');
+  };
+
+  const onDesenSave = () => {
+    if (!desenImg?.png) {
+      message.warning('请先生成图片');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = desenImg.png;
+    a.download = `${desenBaseName()}-脱敏投递.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    message.success('已下载脱敏投递图片到「下载」目录');
+  };
+
+  const onDesenAttach = () => {
+    if (!desenImg?.jpeg) {
+      message.warning('请先生成图片');
+      return;
+    }
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const d = new Date();
+    useDataStore.getState().addImageResume({
+      id: `desen_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name: `${desenBaseName()}-脱敏-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.jpeg`,
+      data: desenImg.jpeg,
+      createdAt: Date.now(),
+    });
+    message.success('已存入「图片简历（投递附件）」，可在自动沟通中随打招呼语一并发送');
+  };
 
   // 页面加载时回填全局 store 中已保存的自定义打招呼语提示词（刷新后仍可见）
   useEffect(() => {
@@ -281,10 +384,12 @@ export default function Resume() {
             }
             extra={
               <Space>
+                <Button icon={<PictureOutlined />} loading={desenBusy} onClick={openDesen}
+                  disabled={!text.trim()}>脱敏转图片</Button>
+                <Button onClick={() => { setResumeText(text, resumeFileName); message.success('原文已保存'); }}>保存原文</Button>
                 <Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()}>
                   {text.trim() ? '重新导入' : '导入文件'}
                 </Button>
-                <Button onClick={() => { setResumeText(text, resumeFileName); message.success('原文已保存'); }}>保存原文</Button>
                 <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.text" hidden onChange={onPick} />
               </Space>
             }
@@ -483,6 +588,46 @@ export default function Resume() {
       <Spin spinning={busy} tip={busyMsg}>
         <div style={{ height: 1 }} />
       </Spin>
+
+      <Modal
+        title="原简历转图片（去除敏感信息）"
+        open={desenOpen}
+        onCancel={() => setDesenOpen(false)}
+        width={860}
+        footer={
+          <Space>
+            <Button icon={<DownloadOutlined />} disabled={!desenImg?.png} onClick={onDesenSave}>保存到本机</Button>
+            <Button type="primary" loading={desenBusy} onClick={onDesenAttach} disabled={!desenImg?.jpeg}>加入投递图片简历</Button>
+          </Space>
+        }
+      >
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <Space wrap>
+            <Checkbox checked={desenHideName} onChange={(e) => onHideNameChange(e.target.checked)}>
+              同时隐藏姓名
+            </Checkbox>
+            <Button type="primary" size="small" icon={<ThunderboltOutlined />} loading={aiBusy} onClick={onAiPolish}>
+              AI 智能整理
+            </Button>
+            {desenAiText ? (
+              <Button size="small" type="text" onClick={onClearAi}>用原文</Button>
+            ) : null}
+            {desenAiText ? <Tag color="purple">AI 整理</Tag> : <Tag>解析原文</Tag>}
+          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            电话 / 邮箱 / 身份证 / 微信QQ / 地址等整行剔除，其余号码转为 *，不含说明文字；仅本地生成，未上传。
+          </Text>
+        </div>
+        {desenImg?.png ? (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 560 }}>
+            <img src={desenImg.png} alt="脱敏简历预览" style={{ display: 'block', width: '100%' }} />
+          </div>
+        ) : (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>
+            <Spin spinning={desenBusy} tip="正在用内置模板排布并去除敏感信息…"> </Spin>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
