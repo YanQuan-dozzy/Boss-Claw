@@ -192,6 +192,8 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
         return 'stop';
       }
       let result = initial.result;
+      // 本次成功是否属于「HR 来消息后的 AI 跟聊回复」（仅回复不计入单日投递上限，避免占用投递名额）
+      let sentAsReply = false;
 
     // 外部网申岗位：不能自动投递/沟通，标记跳过（对齐 job-claw externalApplicationInfo / 优先级 -6000）
     if (result.external || result.code === 600) {
@@ -278,10 +280,15 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
           return 'stop';
         }
         result = replySend.result;
+        sentAsReply = true;
       }
 
     if (result.ok && result.sent) {
-      updatePending(item.id, { status: 'sent', error: '', sentAt: Date.now() });
+      // 回复类发送不计入「今日投递」上限：仅置 status=sent 并记录 replySentAt，不改写投递用的 sentAt，
+      // 从而不占用 dailySentCount（sentAt 为今天）统计出的投递岗位数；若此前已投递过（sentAt 已在），仍只算 1 条投递。
+      updatePending(item.id, sentAsReply
+        ? { status: 'sent', error: '', replySentAt: Date.now() }
+        : { status: 'sent', error: '', sentAt: Date.now() });
 
       addChatLog({
         level: 'success',
@@ -289,7 +296,9 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
         jobId,
         jobTitle: title,
         company,
-        msg: `沟通成功！文字气泡已确认发送（模式：${result.method === 'browser-chat' ? '浏览器真实交互' : result.method || 'ok'}）`,
+        msg: sentAsReply
+          ? `AI 跟聊回复发送成功！已回复 HR 消息（不计入今日投递数）`
+          : `沟通成功！文字气泡已确认发送（模式：${result.method === 'browser-chat' ? '浏览器真实交互' : result.method || 'ok'}）`,
         method: result.method,
       });
 
