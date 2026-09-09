@@ -41,6 +41,7 @@ venv/
 
 # 本地工具数据（不可上传）
 .workbuddy/
+.trae/
 
 
 # Secrets and local settings

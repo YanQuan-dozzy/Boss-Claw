@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { createSafePersistStorage } from '@/lib/persistSafe';
 import type {
   DirectionPlan,
   PendingItem,
@@ -10,8 +11,28 @@ import type {
   JobMeta,
   JobAnalysis,
   ImageResume,
+  QualifiedJobExport,
 } from '@/lib/bossclaw/types';
 import { DEFAULT_STATS, DEFAULT_PROFILE, DEFAULT_PROFILE_DRAFT, DEFAULT_DIRECTION_PLAN, today } from '@/lib/bossclaw/defaults';
+
+/** 达标岗位本地缓存上限：最多保留最近 N 天（按日期分组）的达标岗位数据，超出自动清理更早几天的数据，防止 localStorage 撑爆。
+ *  实测按每天约 460 个达标岗位、叠加图片简历+导入文件后，保留 7 天（≈3200 条）仍能把整 store 稳定在 5MB 配额约 60% 以内；90 天会随累计溢出。 */
+const MAX_QUALIFIED_CACHE_DAYS = 7;
+
+/** 裁剪达标岗位缓存：日期键多于上限时，删除最早（更久之前）的日期分组 */
+function pruneQualifiedCache(records: Record<string, QualifiedJobExport[]>, maxDays: number): Record<string, QualifiedJobExport[]> {
+  const keys = Object.keys(records);
+  if (keys.length <= maxDays) return records;
+  // 日期键为 YYYY-MM-DD，字典序即时间序，升序后最前面的是最早几天
+  const sorted = keys.slice().sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const toDrop = keys.length - maxDays;
+  const dropSet = new Set(sorted.slice(0, toDrop));
+  const pruned: Record<string, QualifiedJobExport[]> = {};
+  for (const k of sorted) {
+    if (!dropSet.has(k)) pruned[k] = records[k];
+  }
+  return pruned;
+}
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'success';
 export interface LogEntry {
@@ -57,6 +78,8 @@ interface DataState {
   stats: Stats;
   logs: LogEntry[];
   chatLogs: ChatLogEntry[];
+  /** 达标岗位导出记录（持久化）：按「日期 → 该日已导出的达标岗位」累积，用于当天内去重 */
+  qualifiedExports: Record<string, QualifiedJobExport[]>;
 
   setResumeText: (text: string, fileName?: string) => void;
   setResumeImage: (dataUrl: string | null) => void;
@@ -77,6 +100,8 @@ interface DataState {
   upsertTaskRun: (run: TaskRun) => void;
   updateTaskRun: (id: string, patch: Partial<TaskRun>) => void;
   setTaskRuns: (runs: TaskRun[]) => void;
+  /** 追加某日的达标岗位导出记录（用于当天内去重累积） */
+  mergeQualifiedExports: (date: string, items: QualifiedJobExport[]) => void;
 
   addLog: (level: LogLevel, msg: string) => void;
   clearLogs: () => void;
@@ -104,6 +129,7 @@ export const useDataStore = create<DataState>()(
       stats: DEFAULT_STATS,
       logs: [],
       chatLogs: [],
+      qualifiedExports: {},
 
       setResumeText: (text, fileName) =>
         set((s) => {
@@ -141,6 +167,11 @@ export const useDataStore = create<DataState>()(
       updateTaskRun: (id, patch) =>
         set((s) => ({ taskRuns: s.taskRuns.map((r) => (r.id === id ? { ...r, ...patch } : r)) })),
       setTaskRuns: (runs) => set({ taskRuns: runs }),
+      mergeQualifiedExports: (date, items) =>
+        set((s) => {
+          const next = { ...s.qualifiedExports, [date]: items };
+          return { qualifiedExports: pruneQualifiedCache(next, MAX_QUALIFIED_CACHE_DAYS) };
+        }),
 
       addLog: (level, msg) => set((s) => ({ logs: [...s.logs, { time: Date.now(), level, msg }].slice(-500) })),
       clearLogs: () => set({ logs: [] }),
@@ -205,6 +236,11 @@ export const useDataStore = create<DataState>()(
     }),
     {
       name: 'bossclaw-data',
+      // P30：防抖 + 容错持久化。批量引擎/网络卡顿时 addChatLog 高频触发全量 set，
+      // 原 persist 每次都会同步序列化整个 store（含 base64 图片简历/双 500 条日志/160K 简历文本），
+      // 大对象 stringify + localStorage 写盘会把渲染进程主线程卡死（点击无反应/应用退出）。
+      // 改用防抖合批（短窗口内多次 set 只写一次）+ 配额超限降级（丢运行时日志不丢业务状态）。
+      storage: createSafePersistStorage(),
       partialize: (s) => {
         const { resumeImage, ...rest } = s;
         return rest as DataState;

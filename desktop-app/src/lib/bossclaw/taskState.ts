@@ -4,7 +4,8 @@
 //   工作台「点击立即沟通」打开聊天窗口但尚未执行自动沟通时的状态。
 //   进度百分比：open_chat(78) → opened(80) → verify_chat_target(82)，逻辑顺序单调递增，
 //   与原进度链（open_chat → verify_chat_target 78→82）配合 auto 流程留出 "打开后人工核对" 的位置。
-import type { TaskStage } from './types';
+import type { JobPlatform, TaskStage } from './types';
+import { platformStageLabel } from './platforms';
 
 export const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'ignored', 'skipped']);
 
@@ -41,6 +42,17 @@ export function taskStageMeta(
     label: String(label || meta[0] || '处理中'),
     progress: Math.max(0, Math.min(100, Number(progress ?? meta[1] ?? 0))),
   };
+}
+
+/** 按平台取阶段标签（多平台适配：liepin/zhaopin/job51 有各自投递语义标签） */
+export function taskStageMetaFor(
+  platform: JobPlatform | undefined | null,
+  stage: TaskStage,
+  label = '',
+  progress: number | null = null
+): { label: string; progress: number } {
+  const base = taskStageMeta(stage, label, progress);
+  return { label: platformStageLabel(platform, stage, base.label), progress: base.progress };
 }
 
 // 需求文档 6.2：任务进度条阶段标签（整理 / 匹配 / 排序 / 沟通 / 投递）

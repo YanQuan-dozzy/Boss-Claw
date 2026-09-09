@@ -2,14 +2,17 @@
 // ---------------------------------------------------------
 // 心跳每 15s 检查一次。对启用的条目：命中「当前 HH:mm == 设定 time 且星期匹配（空=每天）」，
 // 并在 90s 容差窗口内、按设定时刻去重（lastRunStamp 记录目标时刻 epoch），触发一次动作：
-//   deliver → useAutoChatStore.start()（内部保留冷却/每日上限/分批/首条验收等安全守卫）
-//   collect → useScheduleStore.setCollectRequested(true)（由常驻工作台组件消费触发采集）
+//   deliver → useAutoChatStore.start(scope)（按条目平台范围/单轮上限，内部保留冷却/每日上限/
+//             首条验收/风控等安全守卫；引擎已在运行则跳过本次触发）
+//   collect → useScheduleStore.setCollectRequest({platforms})（由常驻工作台组件按平台消费触发采集）
 //   backup  → 调本地备份写盘（无备份目录则跳过并记日志）
 import { useAutoChatStore } from '@/store/useAutoChatStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import { useDataStore } from '@/store/useDataStore';
 import { getBackupDir, writeLocalBackup } from './localBackup';
+import { platformLabel } from './bossclaw/platforms';
 import type { ScheduleEntry } from '@/store/useScheduleStore';
+import type { JobPlatform } from '@/lib/bossclaw/types';
 
 const TICK_MS = 15_000;
 const GRACE_MS = 90_000; // 目标时刻后的容差窗口（应对节流/半分延迟）
@@ -36,26 +39,49 @@ function weekdayMatches(entry: ScheduleEntry, day: Date): boolean {
   return entry.daysOfWeek.includes(todayW);
 }
 
+/** 条目的目标平台：空/缺省 = undefined（引擎按全部已启用平台处理） */
+function targetPlatforms(entry: ScheduleEntry): JobPlatform[] | undefined {
+  return Array.isArray(entry.platforms) && entry.platforms.length > 0 ? entry.platforms : undefined;
+}
+
+function platformText(platforms?: JobPlatform[]): string {
+  if (!platforms || platforms.length === 0) return '全部启用平台';
+  return platforms.map((p) => platformLabel(p)).join('/');
+}
+
 async function fireAction(entry: ScheduleEntry): Promise<void> {
   const store = useScheduleStore.getState();
   switch (entry.action) {
     case 'deliver': {
-      // 投递引擎为模块级单例，跨页后台运行；内部已有冷却/每日上限/分批/首条验收等守卫
-      useAutoChatStore.getState().start();
+      // 引擎为模块级单例，跨页后台运行；若已有批量沟通（含手动启动）在运行则跳过本次触发，
+      // 避免两条 run 争抢岗位（start() 内部 busy 互斥也会静默丢弃，这里显式留痕）。
+      if (useAutoChatStore.getState().chatRunning) {
+        useDataStore.getState().addChatLog({
+          level: 'warn',
+          stage: 'system',
+          msg: `⏰ 定时任务「${entry.name}」触发但已有批量沟通在运行，本次触发已跳过（将于下一个触发时刻再次尝试）。`,
+        });
+        break;
+      }
+      const maxCount = Math.max(0, Number(entry.limitPerRun) || 0);
+      useAutoChatStore.getState().start({
+        platforms: targetPlatforms(entry),
+        maxCount: maxCount > 0 ? maxCount : undefined,
+      });
       useDataStore.getState().addChatLog({
         level: 'info',
         stage: 'system',
-        msg: `⏰ 定时任务「${entry.name}」触发：已启动批量自动投递。`,
+        msg: `⏰ 定时任务「${entry.name}」触发：已启动批量自动投递（平台：${platformText(targetPlatforms(entry))}${maxCount > 0 ? `；本次上限 ${maxCount} 条` : ''}）。`,
       });
       break;
     }
     case 'collect': {
-      // 置位采集请求，由常驻工作台组件消费（跨页可触发）
-      store.setCollectRequested(true);
+      // 置位采集请求（携带目标平台），由常驻工作台组件消费（跨页可触发）
+      store.setCollectRequest({ platforms: targetPlatforms(entry) });
       useDataStore.getState().addChatLog({
         level: 'info',
         stage: 'system',
-        msg: `⏰ 定时任务「${entry.name}」触发：已请求搜索采集。`,
+        msg: `⏰ 定时任务「${entry.name}」触发：已请求搜索采集（平台：${platformText(targetPlatforms(entry))}）。`,
       });
       break;
     }
@@ -77,22 +103,33 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
 }
 
 function tick(): void {
-  const s = useScheduleStore.getState();
-  if (!s.entries) return;
-  const now = new Date();
-  const nowMinute = now.getHours() * 60 + now.getMinutes();
-  for (const entry of s.entries) {
-    if (!entry.enabled) continue;
-    const targetMinute = parseMinute(entry.time);
-    if (targetMinute < 0) continue;
-    if (nowMinute !== targetMinute) continue; // 只在本分钟匹配
-    if (!weekdayMatches(entry, now)) continue;
-    const targetMs = targetMsForMinute(now, targetMinute);
-    if (now.getTime() < targetMs || now.getTime() >= targetMs + GRACE_MS) continue;
-    if (entry.lastRunStamp === targetMs) continue; // 已在本目标时刻触发过 → 去重
-    // 先生成新 lastRunStamp 再触发，避免异步动作期间重复进入
-    useScheduleStore.getState().markRun(entry.id, targetMs);
-    void fireAction(entry);
+  try {
+    const s = useScheduleStore.getState();
+    if (!s.entries) return;
+    const now = new Date();
+    const nowMinute = now.getHours() * 60 + now.getMinutes();
+    for (const entry of s.entries) {
+      try {
+        if (!entry.enabled) continue;
+        const targetMinute = parseMinute(entry.time);
+        if (targetMinute < 0) continue;
+        if (nowMinute !== targetMinute) continue; // 只在本分钟匹配
+        if (!weekdayMatches(entry, now)) continue;
+        const targetMs = targetMsForMinute(now, targetMinute);
+        if (now.getTime() < targetMs || now.getTime() >= targetMs + GRACE_MS) continue;
+        if (entry.lastRunStamp === targetMs) continue; // 已在本目标时刻触发过 → 去重
+        // 先生成新 lastRunStamp 再触发，避免异步动作期间重复进入
+        useScheduleStore.getState().markRun(entry.id, targetMs);
+        // P30：单条触发异常不得影响其余条目与整个间隔循环（网络/备份失败等）
+        void fireAction(entry).catch((e: unknown) => {
+          useDataStore.getState().addLog('error', `定时任务「${entry.name}」执行异常：${e instanceof Error ? e.message : String(e)}`);
+        });
+      } catch (e: unknown) {
+        useDataStore.getState().addLog('error', `定时任务「${entry.name}」处理异常：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  } catch (e: unknown) {
+    useDataStore.getState().addLog('error', `定时任务调度心跳异常：${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

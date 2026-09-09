@@ -19,7 +19,9 @@ export interface CamoufoxEngineInfo {
   kernelMessage?: string;
   cookies?: boolean;
   cookieCount?: number;
-  /** 是否已真实登录（存在 BOSS 的 wt2 鉴权 token） */
+  /** 当前状态对应的平台（boss/liepin/zhaopin/job51） */
+  platform?: string;
+  /** 是否已真实登录对应平台（BOSS 看 wt2，其余平台看各自鉴权 cookie） */
   loggedIn?: boolean;
   message?: string;
 }
@@ -37,6 +39,8 @@ export interface CamoufoxStatus {
 }
 
 export interface CamoufoxJob {
+  /** 来源平台（boss/liepin/zhaopin/job51） */
+  platform?: string;
   jobId: string;
   title: string;
   company: string;
@@ -100,22 +104,20 @@ export interface CamoufoxLoginResult {
 
 export type CamoufoxAction = 'search' | 'send' | 'chat' | 'login' | 'logout' | 'clear';
 
-/** 查询 Camoufox 引擎状态（会尝试自动拉起桥） */
-export async function camoufoxStatus(): Promise<CamoufoxStatus> {
+/** 查询 Camoufox 引擎状态（会尝试自动拉起桥；platform 指定平台登录态） */
+export async function camoufoxStatus(platform: string = 'boss'): Promise<CamoufoxStatus> {
   try {
-    const s = await window.electron?.camoufoxStatus?.();
+    const s = await window.electron?.camoufoxStatus?.(platform);
     return (s as CamoufoxStatus) || { python: false, camoufox: false, running: false, ready: false, message: '主进程未暴露 camoufox 接口' };
   } catch (e: any) {
     return { python: false, camoufox: false, running: false, ready: false, message: String(e?.message || e) };
   }
 }
 
-/** 调用 Camoufox 桥（搜索 / 发送 / 登录） */
+/** 调用 Camoufox 桥（搜索 / 发送 / 登录）——platform 维度进 in-flight 锁，防跨平台串锁 */
 export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Record<string, unknown>): Promise<T> {
-  // P10：同动作(同 jobId) in-flight 防重。避免多个入口并发调用导致同一岗位被重复发送。
-  // 说明：主进程已有 AbortSignal.timeout 兜底超时；此处不做激进渲染层超时——无服务端取消机制时，
-  // 渲染层超时释放锁反而会在服务端仍在真实发送的同时放行重试，放大双发风险。so 只做防重复。
-  const key = `${action}:${typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : 'global'}`;
+  const platform = typeof payload?.platform === 'string' && payload.platform ? payload.platform : 'boss';
+  const key = `${action}:${platform}:${typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : 'global'}`;
   if (CAMOUFOX_IN_FLIGHT.has(key)) {
     return ({ ok: false, error: '同一岗位/动作正在执行中，已阻止重复操作' }) as T;
   }
@@ -131,9 +133,9 @@ export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Re
 /** P10：Camoufox in-flight 锁集合 */
 const CAMOUFOX_IN_FLIGHT = new Set<string>();
 
-/** 隐身搜索岗位 */
-export function camoufoxSearch(query: string, city: string, pages = 1, os?: string): Promise<CamoufoxSearchResult> {
-  return camoufoxCall<CamoufoxSearchResult>('search', { query, city, pages, os: os || undefined });
+/** 隐身搜索岗位（platform 默认 boss；liepin/zhaopin/job51 走各自平台模块） */
+export function camoufoxSearch(query: string, city: string, pages = 1, os?: string, platform: string = 'boss'): Promise<CamoufoxSearchResult> {
+  return camoufoxCall<CamoufoxSearchResult>('search', { query, city, pages, os: os || undefined, platform });
 }
 
 /** 隐身发送招呼语 */
@@ -156,17 +158,21 @@ export function camoufoxChat(
   greeting: string,
   opts?: {
     os?: string;
+    /** 平台（boss/liepin/zhaopin/job51），默认 boss */
+    platform?: string;
     sendResumeImage?: boolean;
     sendOnlineResume?: boolean;
     /** 目标岗位上下文（用于进入沟通后核验 HR/公司，防发错人） */
     recruiterName?: string;
     company?: string;
     jobTitle?: string;
+    /** 岗位 URL（非 BOSS 平台投递定位用） */
+    url?: string;
     /** 本地 base64 图片简历（发送图片简历附件时携带） */
     resumeImages?: CamoufoxResumeImageInput[];
     /**
      * 'auto'（默认）首次打招呼投递：若 HR 已发来消息则返回 needsReply 供 AI 跟聊；
-     * 'reply' 发送渲染层生成的 AI 回复文本（配合 replyText）。
+     * 'reply' 发送渲染层生成的 AI 回复文本（配合 replyText）。仅 BOSS 支持。
      */
     mode?: 'auto' | 'reply';
     /** mode='reply' 时要发送的 AI 回复文本 */
@@ -177,25 +183,27 @@ export function camoufoxChat(
     jobId,
     greeting,
     os: opts?.os || undefined,
+    platform: opts?.platform || 'boss',
     sendResumeImage: Boolean(opts?.sendResumeImage),
     sendOnlineResume: Boolean(opts?.sendOnlineResume),
     recruiterName: opts?.recruiterName || '',
     company: opts?.company || '',
     jobTitle: opts?.jobTitle || '',
+    url: opts?.url || '',
     resumeImages: opts?.resumeImages || [],
     mode: opts?.mode || 'auto',
     replyText: opts?.replyText || '',
   });
 }
 
-/** 打开 Camoufox 可见窗口扫码登录 */
-export function camoufoxLogin(timeout = 180, os?: string): Promise<CamoufoxLoginResult> {
-  return camoufoxCall<CamoufoxLoginResult>('login', { timeout, os: os || undefined });
+/** 打开 Camoufox 可见窗口扫码登录（platform 默认 boss；其余平台登录各自站点） */
+export function camoufoxLogin(timeout = 180, os?: string, platform: string = 'boss'): Promise<CamoufoxLoginResult> {
+  return camoufoxCall<CamoufoxLoginResult>('login', { timeout, os: os || undefined, platform });
 }
 
-/** 清除 Camoufox 会话 Cookie */
-export function camoufoxLogout(): Promise<{ ok: boolean }> {
-  return camoufoxCall('logout');
+/** 清除 Camoufox 会话 Cookie（platform 默认 boss） */
+export function camoufoxLogout(platform: string = 'boss'): Promise<{ ok: boolean }> {
+  return camoufoxCall('logout', { platform });
 }
 
 /** 停止 Camoufox 桥（释放资源） */
@@ -207,9 +215,9 @@ export function camoufoxStop(): void {
  * 重启 Camoufox 引擎桥（先停后拉）：自动沟通误触关闭后自愈用。
  * 返回重启后的状态；引擎未就绪/多轮重启仍失败时由调用方决定自动停止。
  */
-export async function camoufoxRestart(): Promise<CamoufoxStatus> {
+export async function camoufoxRestart(platform: string = 'boss'): Promise<CamoufoxStatus> {
   try {
-    const s = await window.electron?.camoufoxRestart?.();
+    const s = await window.electron?.camoufoxRestart?.(platform);
     if (!s) return { python: false, camoufox: false, running: false, ready: false, message: '主进程未暴露 camoufoxRestart 接口' };
     return s as CamoufoxStatus;
   } catch (e: any) {

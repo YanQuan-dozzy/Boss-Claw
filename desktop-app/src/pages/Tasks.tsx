@@ -11,9 +11,11 @@ import {
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useAppStore } from '@/store/useAppStore';
+import { useSettingsStore } from '@/store/useSettingsStore';
 import { rerankPending } from '@/lib/bossclaw/priority';
-import { taskStageMeta } from '@/lib/bossclaw/taskState';
+import { taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
+import PlatformChip from '@/components/PlatformChip';
 import { formatMetaLine, cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { EmptyState } from '@/components/feedback';
 import { electronApi } from '@/lib/electronApi';
@@ -53,6 +55,8 @@ export default function Tasks() {
   const addLog = useDataStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   const setRoute = useAppStore((s) => s.setRoute);
+  // 平台配置（含优先级）订阅：平台顺序变化时任务列表随设置实时重排
+  const config = useSettingsStore((s) => s.config);
   const [filter, setFilter] = useState<'all' | PendingStatus>('all');
   const [showIgnored, setShowIgnored] = useState(false);
 
@@ -60,11 +64,11 @@ export default function Tasks() {
 
   const list = useMemo(
     () =>
-      rerankPending(pending).filter((p) => {
+      rerankPending(pending, config).filter((p) => {
         if (filter !== 'all') return p.status === filter;
         return showIgnored || !isHiddenStatus(p.status);
       }),
-    [pending, filter, showIgnored]
+    [pending, config, filter, showIgnored]
   );
 
   const counts = useMemo(() => {
@@ -86,7 +90,7 @@ export default function Tasks() {
   const onIgnore = (id: string) => { updatePending(id, { status: 'ignored' }); recomputeStats(); };
   const onSkip = (id: string) => { updatePending(id, { status: 'skipped' }); recomputeStats(); };
   const onApprove = (id: string) => {
-    const next = rerankPending(pending.map((p) => p.id === id ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p));
+    const next = rerankPending(pending.map((p) => p.id === id ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p), useSettingsStore.getState().config);
     setPending(next); message.success('已加入投递队列（等待一键投递）'); recomputeStats();
   };
 
@@ -130,7 +134,7 @@ export default function Tasks() {
             action={<Button type="primary" icon={<RocketOutlined />} onClick={() => setRoute('workbench')}>去工作台</Button>}
           />
         ) : (
-          <div>
+          <div className="task-list-scrollable">
             {taskRuns.map((t) => {
               const meta = taskStatusMeta(t);
               return (
@@ -202,7 +206,7 @@ export default function Tasks() {
         </Card>
       ) : (
         list.map((p: PendingItem) => {
-          const meta = taskStageMeta((p.status === 'approved_queue' ? 'queued' : 'waiting_review') as any);
+          const meta = taskStageMetaFor(p.job?.platform, (p.status === 'approved_queue' ? 'queued' : 'waiting_review') as any);
           const st = STATUS_COLOR[p.status] || { color: 'default', label: p.status };
           const chip = scoreChip(p.analysis?.score);
           return (
@@ -210,6 +214,7 @@ export default function Tasks() {
               <div className="job-top">
                 <div style={{ minWidth: 0 }}>
                   <div className="job-title" style={{ fontSize: 15, fontWeight: 600 }}>
+                    <PlatformChip platform={p.job?.platform} />
                     {cleanTitle(p.job?.title, p.job?.salary)}
                   </div>
                   <div className="job-company" style={{ fontSize: 13, marginTop: 2 }}>

@@ -35,7 +35,9 @@ export async function bridgeParseResume(dataUrl: string, name: string): Promise<
 
 export async function bridgeStatus(): Promise<{ ok: boolean; [k: string]: unknown }> {
   try {
-    const res = await fetch(`${BASE}/status?token=${BRIDGE_TOKEN}`);
+    // P30：超时兜底——桥端口若被占用但进程不响应（半开连接），无超时的 fetch 会永久 pending，
+    // App 15s 心跳会逐次堆积挂起请求（内存/句柄泄漏、后台卡死）。3s 超时后按「未连接」处理。
+    const res = await fetch(`${BASE}/status?token=${BRIDGE_TOKEN}`, { signal: AbortSignal.timeout(3000) });
     return res.json();
   } catch {
     return { ok: false };

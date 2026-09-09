@@ -8,6 +8,7 @@ interface ElectronBridgeApi {
   // 读取「使用前必读」文档（首页「阅读使用文档」入口）
   readDoc?: () => Promise<{ ok: boolean; text?: string; file?: string; error?: string }>;
   bossLogin?: () => Promise<unknown>;
+  bossLogout?: (platform: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
   webviewPreload?: string;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send?: (channel: string, ...args: unknown[]) => void;
@@ -22,11 +23,11 @@ interface ElectronBridgeApi {
   winAlwaysOnTop?: () => Promise<boolean>;
   winAlwaysOnTopSet?: (value: boolean) => void;
   onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
-  // Camoufox 隐身引擎（可选增强，Python 桥）
-  camoufoxStatus?: () => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;
+  // Camoufox 隐身引擎（可选增强，Python 桥）——platform 参数（boss/liepin/zhaopin/job51）
+  camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;
   camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;
-  camoufoxRestart?: () => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; installing?: boolean; message?: string; engine?: unknown }>;
+  camoufoxRestart?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; installing?: boolean; message?: string; engine?: unknown }>;
   // CloakBrowser 隐身浏览器（可选增强，Node + Playwright）
   cloakBinary?: () => Promise<{ ok: boolean; binary?: any; error?: string }>;
   cloakStart?: (opts?: { licenseKey?: string; proxy?: string }) => Promise<{ ok: boolean; ready?: boolean; error?: string }>;
@@ -53,6 +54,12 @@ interface ElectronBridgeApi {
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 保存「达标岗位」数据到本地（dir 为空走保存对话框；dir 为绝对路径则在导出目录自动按天写文件）
+  saveQualifiedJobs?: (defaultName: string, jsonText: string, dir?: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）
+  qualifiedJobsDirGet?: () => Promise<{ dir?: string }>;
+  qualifiedJobsDirSet?: (dir: string) => Promise<{ ok?: boolean; dir?: string; error?: string }>;
+  qualifiedJobsDirPick?: () => Promise<{ ok?: boolean; canceled?: boolean; dir?: string; error?: string }>;
   // 开机自启动（Windows 登录项）
   autostartGet?: () => Promise<{ ok?: boolean; openAtLogin?: boolean; error?: string }>;
   autostartSet?: (enabled: boolean) => Promise<{ ok?: boolean; enabled?: boolean; error?: string }>;

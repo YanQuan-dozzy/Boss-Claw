@@ -20,10 +20,12 @@ export default function OpenClaw() {
 
   const call = async (route: string, method = 'GET', body?: any) => {
     const url = `${base}${route}?token=${BRIDGE_TOKEN}`;
+    // P30：桥接 HTTP 超时兜底——本地桥半开（端口占用但无响应）时避免请求永久挂起
     const res = await fetch(url, {
       method,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15000),
     });
     return res.json();
   };

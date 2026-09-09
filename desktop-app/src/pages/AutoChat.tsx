@@ -1,13 +1,13 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
-  Alert, Button, Card, Input, InputNumber, Space, Switch, Tag, Typography, Upload, message, Modal, Progress,
+  Alert, Button, Card, Input, InputNumber, Space, Switch, Tag, Typography, Upload, message, Progress,
 } from 'antd';
 import {
   MessageOutlined, QrcodeOutlined,
   ReloadOutlined, SafetyCertificateOutlined, StopOutlined, DeleteOutlined,
   UploadOutlined, CheckOutlined, CaretRightOutlined,
   LockOutlined, EyeOutlined, PictureOutlined, FileTextOutlined,
-  UsergroupAddOutlined, SafetyOutlined, FieldTimeOutlined,
+  UsergroupAddOutlined, FieldTimeOutlined,
   ThunderboltOutlined, HourglassOutlined, PlusOutlined, CodeOutlined,
   RobotOutlined, SyncOutlined,
 } from '@ant-design/icons';
@@ -21,14 +21,16 @@ import {
 } from '@/lib/bossclaw/camoufox';
 import { electronApi } from '@/lib/electronApi';
 import {
-  isLockedOut, cooldownRemaining, SAFETY_LIMITS,
+  isLockedOut, cooldownRemaining,
 } from '@/lib/bossclaw/safety';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { cleanTitle, formatMetaLine } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
+import { PLATFORM_META, PLATFORM_IDS, platformLabel, platformEnabled, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
 import type { PendingItem, ImageResume } from '@/lib/bossclaw/types';
 import { EmptyState } from '@/components/feedback';
 import { ChatLogPanel } from '@/components/ChatLogPanel';
+import PlatformChip from '@/components/PlatformChip';
 
 const { Text, Paragraph } = Typography;
 
@@ -71,11 +73,24 @@ export default function AutoChat() {
   // ===== Camoufox 隐身引擎状态 =====
   const [cfx, setCfx] = useState<CamoufoxStatus | null>(null);
   const [cfxLoading, setCfxLoading] = useState(false);
-  const [cfxLogining, setCfxLogining] = useState(false);
   const cfxConfig = useMemo(
     () => config.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false },
     [config.camoufox]
   );
+
+  // ===== 多平台适配：各平台 Camoufox 登录态（与设置页「招聘平台」联动，本模块独立验证）=====
+  const [cfxPlatformLogin, setCfxPlatformLogin] = useState<Record<string, CamoufoxStatus | null>>({});
+  const [cfxPlatformLogining, setCfxPlatformLogining] = useState<Record<string, boolean>>({});
+  const refreshPlatformStatus = useCallback(async (p: string) => {
+    try {
+      const s = await camoufoxStatus(p);
+      setCfxPlatformLogin((prev) => ({ ...prev, [p]: s }));
+      return s;
+    } catch {
+      return null;
+    }
+  }, []);
+  const isPlatformLoggedIn = useCallback((p: string): boolean => Boolean(cfxPlatformLogin[p]?.engine?.loggedIn), [cfxPlatformLogin]);
 
   useEffect(() => { recomputeStats(); }, [pending, recomputeStats]);
 
@@ -91,34 +106,31 @@ export default function AutoChat() {
   // 页面挂载时静默刷新引擎状态：跨路由重挂载后 `cfx` 会被重置为 null，导致误显示「引擎未就绪」。
   // 后台已预热，此处会即时返回就绪。
   useEffect(() => { refreshCamoufox(true); }, []);
+  // 多平台：挂载时加载各平台登录态
+  useEffect(() => {
+    PLATFORM_IDS.forEach((p) => refreshPlatformStatus(p));
+  }, [refreshPlatformStatus]);
 
-  const onCamoufoxLogin = useCallback(async () => {
-    setCfxLogining(true);
+  // ===== 多平台：各平台扫码登录 / 退出 =====
+  const onPlatformLogin = useCallback(async (p: string) => {
+    setCfxPlatformLogining((prev) => ({ ...prev, [p]: true }));
     try {
-      const r = await camoufoxLogin(180, cfxConfig.os);
-      if (r.ok && r.loggedIn) message.success('Camoufox 登录成功，会话 Cookie 已持久化');
+      const r = await camoufoxLogin(180, cfxConfig.os, p);
+      if (r.ok && r.loggedIn) message.success(`${platformLabel(p as JobPlatform)} 登录成功，会话 Cookie 已持久化`);
       else message.warning(r.message || r.error || '登录未完成（可能超时或取消）');
     } catch (e: unknown) {
-      message.error('登录失败：' + getErrorMessage(e));
+      message.error(`登录失败：${getErrorMessage(e)}`);
     } finally {
-      setCfxLogining(false);
-      refreshCamoufox(true);
+      setCfxPlatformLogining((prev) => ({ ...prev, [p]: false }));
+      refreshPlatformStatus(p);
     }
-  }, [cfxConfig.os, refreshCamoufox]);
+  }, [cfxConfig.os, refreshPlatformStatus]);
 
-  const onCamoufoxLogout = useCallback(() => {
-    Modal.confirm({
-      title: '退出 Camoufox 登录态？',
-      content: '将清除 Camoufox 会话 Cookie，自动沟通需要重新扫码登录。',
-      okText: '确认退出',
-      cancelText: '取消',
-      onOk: async () => {
-        await camoufoxLogout();
-        message.success('已清除 Camoufox 会话');
-        refreshCamoufox(true);
-      },
-    });
-  }, [refreshCamoufox]);
+  const onPlatformLogout = useCallback(async (p: string) => {
+    await camoufoxLogout(p);
+    message.success(`${platformLabel(p as JobPlatform)} 已退出登录`);
+    refreshPlatformStatus(p);
+  }, [refreshPlatformStatus]);
 
   // ===== 图片简历管理 =====
   const MAX_IMAGE_RESUMES = 4;
@@ -138,20 +150,24 @@ export default function AutoChat() {
 
   // ===== 派生计算与队列过滤缓存 =====
   const queueItems = useMemo(() => {
-    return rerankPending(pending).filter((p) =>
+    return rerankPending(pending, config).filter((p) =>
       ['pending', 'approved', 'approved_queue', 'opened', 'failed', 'sent'].includes(p.status)
     );
-  }, [pending]);
+  }, [pending, config]);
 
   const batchQueue = useMemo(() => {
     // 与后台引擎分工：本控制台只处理「已批准待沟通(approved)」与「已打开未发打招呼语(opened)」；
     // 投递中(approved_queue)归工作台「一键投递」，待确认(pending)不自动投递。
-    return rerankPending(pending).filter((p) => p.status === 'approved' || p.status === 'opened');
-  }, [pending]);
+    // 按平台优先级（数字小=靠前）串行消费：完成 P1 平台全部 approved 才切下一个平台；
+    // 已停用平台（设置页取消勾选）的岗位不进入批次。
+    return rerankPending(pending, config).filter(
+      (p) => (p.status === 'approved' || p.status === 'opened') && platformEnabled(config, String(p.job?.platform || 'boss') as JobPlatform)
+    );
+  }, [pending, config]);
 
   const queueCount = useMemo(
-    () => pending.filter((p) => p.status === 'approved' || p.status === 'opened').length,
-    [pending]
+    () => pending.filter((p) => (p.status === 'approved' || p.status === 'opened') && platformEnabled(config, String(p.job?.platform || 'boss') as JobPlatform)).length,
+    [pending, config]
   );
   const sentCount = useMemo(() => pending.filter((p) => p.status === 'sent').length, [pending]);
   const failedCount = useMemo(() => pending.filter((p) => p.status === 'failed').length, [pending]);
@@ -164,16 +180,33 @@ export default function AutoChat() {
     }
     const st = await camoufoxStatus();
     if (!st.ready) {
-      message.warning('隐身引擎未就绪：' + (st.message || '请安装 Camoufox 隐身引擎内核（本地浏览器不可复用）'));
+      message.warning('隐身引擎未就绪：' + (st.message || '请先下载 Camoufox 隐身引擎内核（暂未下载）'));
       return;
     }
     if (!batchQueue.length) {
       message.info('没有待沟通的岗位（请先在工作台确认岗位或批准进入队列）');
       return;
     }
+    // 多平台适配：验证队列中各平台均已登录（独立验证，未登录平台阻断启动）
+    const involved = [...new Set(batchQueue.map((p) => String(p.job?.platform || 'boss')))];
+    for (const pf of involved) {
+      // BOSS 走全局引擎就绪判断；其余平台需对应平台已登录
+      if (pf !== 'boss') {
+        let st = cfxPlatformLogin[pf];
+        if (!st) st = await refreshPlatformStatus(pf);
+        if (!st?.ready) {
+          message.warning(`平台「${platformLabel(pf as JobPlatform)}」隐身引擎未就绪：${st?.message || '请到设置页检测'}`);
+          return;
+        }
+        if (!st?.engine?.loggedIn) {
+          message.warning(`平台「${platformLabel(pf as JobPlatform)}」未登录，请先在下方扫码登录后再启动`);
+          return;
+        }
+      }
+    }
     // 启动后台持久沟通：切到工作台仍继续运行，新批准的岗位会自动加入
     start();
-  }, [profile, config, batchQueue, start]);
+  }, [profile, config, batchQueue, start, cfxPlatformLogin, refreshPlatformStatus]);
 
   return (
     <main className="page" aria-label="自动沟通控制台">
@@ -211,8 +244,8 @@ export default function AutoChat() {
           {/* 隐身引擎控制卡片 */}
           <Card size="small" className="setting-card">
             <div className="autochat-control-bar">
+              <span className="autochat-control-label">隐身引擎投递控制</span>
               <div className="autochat-actions">
-                <span style={{ fontSize: 15, fontWeight: 700, marginRight: 4 }}>隐身引擎投递控制</span>
                 {chatRunning ? (
                   <Button type="primary" danger icon={<StopOutlined />} onClick={stop} className="btn-uniform">
                     停止沟通
@@ -230,12 +263,6 @@ export default function AutoChat() {
                 )}
                 <Button onClick={() => refreshCamoufox()} loading={cfxLoading} icon={<ReloadOutlined />} className="btn-uniform">
                   检测状态
-                </Button>
-                <Button icon={<QrcodeOutlined />} loading={cfxLogining} disabled={Boolean(cfx?.engine?.loggedIn)} onClick={onCamoufoxLogin} className="btn-uniform">
-                  {cfx?.engine?.loggedIn ? '已登录' : '扫码登录'}
-                </Button>
-                <Button danger icon={<StopOutlined />} disabled={!cfx?.engine?.loggedIn} onClick={onCamoufoxLogout} className="btn-uniform">
-                  退出登录
                 </Button>
               </div>
 
@@ -274,9 +301,41 @@ export default function AutoChat() {
                 showIcon
                 style={{ borderRadius: 10, marginTop: 12, marginBottom: 0 }}
                 message="隐身引擎当前不可用"
-                description={cfx?.message || '请安装 Camoufox 隐身引擎内核（本地浏览器不可复用），或点击「检测状态」重新检查。'}
+                description={cfx?.message || '请先下载 Camoufox 隐身引擎内核（暂未下载），或点击「检测状态」重新检查。'}
               />
             )}
+
+            {/* ===== 多平台：各平台登录态与扫码登录（独立验证；按设置优先级排序） ===== */}
+            <div className="autochat-platform-grid">
+              {sortedEnabledPlatforms(config).map((p) => {
+                const loggedIn = isPlatformLoggedIn(p);
+                const ready = Boolean(cfxPlatformLogin[p]?.ready);
+                return (
+                  <div key={p} className="autochat-platform-card">
+                    <Tag color={loggedIn ? 'green' : 'default'} className="autochat-platform-name">{PLATFORM_META[p].label}</Tag>
+                    <span className="autochat-platform-status">
+                      {!ready ? '引擎未就绪' : (loggedIn ? '已登录' : '未登录')}
+                    </span>
+                    <div className="autochat-platform-action">
+                      {!loggedIn && (
+                        <Button
+                          size="small"
+                          type="link"
+                          icon={<QrcodeOutlined />}
+                          loading={Boolean(cfxPlatformLogining[p])}
+                          onClick={() => onPlatformLogin(p)}
+                        >
+                          登录
+                        </Button>
+                      )}
+                      {loggedIn && (
+                        <Button size="small" type="link" danger onClick={() => onPlatformLogout(p)}>退出</Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
             {chatRunning && progress.total > 0 && (
               <div style={{ marginTop: 12, padding: '12px 16px', background: 'var(--hover-bg)', borderRadius: 10, border: '1px dashed var(--border-brand)' }}>
@@ -331,6 +390,7 @@ export default function AutoChat() {
                         <div className="job-header-main" style={{ minWidth: 0 }}>
                           <div className="job-title-row">
                             <div className="job-title">
+                              <PlatformChip platform={p.job?.platform} compact />
                               {cleanTitle(p.job?.title, p.job?.salary)}
                               {p.job?.salary && <span className="job-salary-tag">{p.job.salary}</span>}
                             </div>
@@ -528,24 +588,7 @@ export default function AutoChat() {
                 message={`账号处于冷却期，剩余约 ${Math.ceil(cooldownRemaining(config) / 60000)} 分钟`}
               />
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div className="stat-input-card">
-                <span className="sic-label">
-                  <SafetyOutlined className="sic-icon" />
-                  每日上限
-                </span>
-                <div className="sic-input-wrap">
-                  <InputNumber
-                    min={1}
-                    max={SAFETY_LIMITS.MAX_SAFE_DAILY}
-                    value={config.maxDailySent}
-                    onChange={(v) => setConfig({ maxDailySent: v ?? 120 })}
-                    style={{ width: '100%' }}
-                  />
-                  <span className="sic-unit">条/日</span>
-                </div>
-              </div>
-
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
               <div className="stat-input-card">
                 <span className="sic-label">
                   <FieldTimeOutlined className="sic-icon" />

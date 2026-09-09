@@ -21,7 +21,7 @@
 // 对外 apiRef 契约（Workbench 使用）：send / loadURL / closeTab / openInNewTab / openEngineTab /
 // loadURLInTab / sendInTab / hasTab / isPreloadReady / getActiveTabId / getFirstTabId / bossApi。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Modal, Tooltip, message } from 'antd';
+import { Button, Input, Modal, Tooltip, Select, message } from 'antd';
 import {
   ArrowLeftOutlined, ArrowRightOutlined, ReloadOutlined, ExportOutlined,
   PlusCircleOutlined, ThunderboltOutlined, CloseOutlined,
@@ -29,9 +29,33 @@ import {
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import electronApi from '@/lib/electronApi';
+import { PLATFORM_META, PLATFORM_IDS, PLATFORM_CHIP_PALETTE, platformEnabled, resolvePlatform, type JobPlatform } from '@/lib/bossclaw/platforms';
 import CloakView from '@/components/CloakView';
 
-const BOSS_HOME = 'https://www.zhipin.com';
+// 默认加载 BOSS 直聘（多平台：按 defaultPlatform 加载对应平台首页）
+const BOSS_HOME = PLATFORM_META.boss.homeUrl;
+
+// ===== 加载遮罩生命周期计时 =====
+// 遮罩由 webview 加载事件驱动。旧实现只依赖 did-finish-load（页面 load 事件），
+// 且 3s「兜底」在 finish 回调内才开始计时——BOSS 这类站点若有慢子资源拖住 load，
+// 遮罩会无限期转圈。现改为「导航序号 + 多级兜底」：
+//   · load 完成（finish/did-stop-loading）→ 立即淡出，不再额外空等；
+//   · dom-ready（HTML 解析完，defer/module 脚本已执行）→ 给足首屏窗口后软兜底淡出；
+//   · 每次导航开始 → 硬兜底，加载挂起/网络黑洞时遮罩也有明确上限；
+//   · did-fail-load（断网/连接被重置/证书错误）→ 立即淡出，杜绝永久转圈。
+const LOADING_FADE_MS = 300;               // 淡出动画窗口（匹配 CSS transition 0.25s，略留余量）
+const HIDE_AFTER_DOM_READY_MS = 1800;      // dom-ready 后软兜底：给 SPA 首屏渲染窗口
+const HARD_HIDE_MS = 15000;                // 导航级硬兜底：加载挂起时遮罩最长展示时长
+
+// 加载动画徽标短名（方块内展示；未收录平台回退 label 去常见后缀）
+const PLATFORM_SHORT: Partial<Record<JobPlatform, string>> = {
+  boss: 'BOSS',
+  liepin: '猎聘',
+  zhaopin: '智联',
+  job51: '无忧',
+};
+const platformShort = (platform: JobPlatform): string =>
+  PLATFORM_SHORT[platform] || PLATFORM_META[platform]?.label.replace(/(直聘|招聘|无忧)$/, '') || PLATFORM_META[platform]?.label || '加载';
 
 // ===== preload 路径：模块顶层一次性读取，避免 React 重渲染导致 undefined =====
 // webview 标签 preload 属性协议必须是 file:（Electron 硬性要求）；Windows 反斜杠绝对路径会被拒绝加载，
@@ -72,6 +96,8 @@ export interface WebviewApi {
 }
 
 interface Props {
+  /** 初始标签加载的招聘平台（默认 boss；多平台：liepin/zhaopin/job51 加载各自首页） */
+  defaultPlatform?: JobPlatform;
   onNavigate?: (info: NavInfo) => void;
   onJoinTask?: (info: { url: string; title: string }) => void;
   onJobExtracted?: (job: any) => void;
@@ -112,12 +138,24 @@ export default function BrowserView(props: Props) {
   return <BrowserViewImpl {...props} />;
 }
 
-function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, onDomDump, apiRef }: Props) {
+function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJobExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, onDomDump, apiRef }: Props) {
+  const homeMeta = PLATFORM_META[defaultPlatform] || PLATFORM_META.boss;
   const [tabs, setTabs] = useState<TabState[]>(() => {
-    const tab = makeTab(BOSS_HOME, 'BOSS直聘', 'main');
+    const tab = makeTab(homeMeta.homeUrl, homeMeta.label, 'main');
     return [tab];
   });
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? '');
+
+  // ===== 多平台适配：新建标签时选择的平台（与设置页「招聘平台」启用状态联动）=====
+  const config0 = useSettingsStore((s) => s.config);
+  const enabledPlatforms = useMemo<JobPlatform[]>(
+    () => PLATFORM_IDS.filter((p) => platformEnabled(config0, p)),
+    [config0],
+  );
+  const [newTabPlatform, setNewTabPlatform] = useState<JobPlatform>('boss');
+  useEffect(() => {
+    if (!platformEnabled(config0, newTabPlatform)) setNewTabPlatform('boss');
+  }, [config0, newTabPlatform]);
 
   // 每个标签独立的加载状态：加载中 = true，加载完成 = false
   // 初始时所有标签都处于加载中（BOSS_HOME 尚未加载完毕）
@@ -129,19 +167,42 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   // 淡出动画阶段（已停止加载但遮罩还在淡出中）
   const [fadingTabs, setFadingTabs] = useState<Set<string>>(new Set());
 
+  // ===== 加载遮罩生命周期控制（导航序号 + 多级兜底）=====
+  // loadSeqRef：每个标签的「当前导航序号」。did-start-navigation 时 +1；
+  // 所有“隐藏遮罩”的定时器到期后先校验序号——期间若发生新导航（序号变化）
+  // 则该定时器自动失效，避免旧导航残留的定时器误清新导航的 loading 态（遮罩提前消失/闪烁）。
+  const loadSeqRef = useRef<Record<string, number>>({});
+  // 立即进入淡出阶段，FADE_MS 后真正卸载节点（带序号校验）
+  const hideLoading = useCallback((id: string, seq: number) => {
+    setFadingTabs((prev) => { if (prev.has(id)) return prev; const s = new Set(prev); s.add(id); return s; });
+    setTimeout(() => {
+      if ((loadSeqRef.current[id] || 0) !== seq) return; // 期间已有新导航：放弃本次隐藏
+      setLoadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
+      setFadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
+    }, LOADING_FADE_MS);
+  }, []);
+  // 定时淡出（快照当前序号，到期校验）；被更新的导航接管时自动失效
+  const scheduleHide = useCallback((id: string, afterMs: number) => {
+    const seq = loadSeqRef.current[id] || 0;
+    setTimeout(() => {
+      if ((loadSeqRef.current[id] || 0) !== seq) return;
+      hideLoading(id, seq);
+    }, afterMs);
+  }, [hideLoading]);
+
   const markLoading = useCallback((id: string, loading: boolean) => {
     if (loading) {
+      // 新加载开始：进入 loading 并中断可能残留的淡出
       setLoadingTabs((prev) => { if (prev.has(id)) return prev; const s = new Set(prev); s.add(id); return s; });
       setFadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
     } else {
-      // 先进入淡出阶段，400ms 后真正移除
-      setFadingTabs((prev) => { const s = new Set(prev); s.add(id); return s; });
-      setTimeout(() => {
-        setLoadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
-        setFadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
-      }, 400);
+      hideLoading(id, loadSeqRef.current[id] || 0);
     }
-  }, []);
+  }, [hideLoading]);
+  // handleRegister 只依赖 patchTab（不能随渲染重建，否则 webview 重复解绑/绑监听）；
+  // 事件回调统一经本 ref 取最新版计时函数
+  const loadingCtlRef = useRef({ markLoading, hideLoading, scheduleHide });
+  loadingCtlRef.current = { markLoading, hideLoading, scheduleHide };
 
   // 确保 activeId 与 tabs 同步
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeId) ?? tabs[0] ?? null, [tabs, activeId]);
@@ -153,6 +214,18 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   useEffect(() => {
     callbacksRef.current = { onNavigate, onJobExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, onDomDump };
   });
+
+  // ===== onNavigate 变化去重：webview 高频回传 nav（URL/标题未变的导航事件、SPA 内重复上报）=====
+  // 若每次都调用，Workbench 的 setNav 会以新对象触发整树重渲染（该页是最大组件之一）。
+  // 只在 URL 或标题真正变化时回调一次，URL 未变（如 title 保持空串）的消息直接丢弃。
+  const lastNavReportRef = useRef<{ url: string; title: string } | null>(null);
+  const reportNavigate = useCallback((url: string, title: string) => {
+    const t = String(title || '');
+    const prev = lastNavReportRef.current;
+    if (prev && prev.url === url && prev.title === t) return;
+    lastNavReportRef.current = { url, title: t };
+    callbacksRef.current.onNavigate?.({ url, title: t });
+  }, []);
 
   // 监听侧边栏收起/展开状态与 viewport 尺寸变化
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
@@ -198,12 +271,22 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   }, [forceResizeWebview]);
 
   // ===== patchTab：更新单个 tab 字段（始终使用 setState 最新引用）=====
+  // 性能：逐键比较，值与现值一致（含值为 undefined 的键）时直接返回 prev，
+  // 避免 webview 高频 nav 消息（URL 未变但事件触发）造成无效 re-render 整棵浏览器子树。
   const patchTab = useCallback((id: string, patch: Partial<TabState>) => {
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === id);
       if (idx < 0) return prev;
+      const cur = prev[idx];
+      const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+      if (!entries.length) return prev;
+      let changed = false;
+      for (const [k, v] of entries) {
+        if ((cur as any)[k] !== v) { changed = true; break; }
+      }
+      if (!changed) return prev;
       const next = [...prev];
-      next[idx] = { ...next[idx], ...patch };
+      next[idx] = { ...cur, ...patch };
       return next;
     });
   }, []);
@@ -221,11 +304,8 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   // ===== 活跃 tab 引用（始终是最新的）=====
   const activeIdRef = useRef(activeId);
   const tabsRef = useRef(tabs);
-  // markLoading ref：handleRegister 内部通过 ref 调用，避免闭包捕获旧版本的 markLoading
-  const markLoadingRef = useRef(markLoading);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
-  useEffect(() => { markLoadingRef.current = markLoading; }, [markLoading]);
 
 
   // ===== 注册 webview 元素 + 绑定事件监听 =====
@@ -272,7 +352,7 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
             });
           }
           if (tabId === activeIdRef.current && nextUrl) {
-            cb.onNavigate?.({ url: nextUrl, title: nextTitle || '' });
+            reportNavigate(nextUrl, nextTitle || '');
           }
           break;
         }
@@ -321,35 +401,50 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
       });
     });
 
-    // ===== preload 就绪标记 =====
-    // did-start-navigation 重置（新页面开始加载，preload 尚未就绪）
-    // dom-ready 表示 preload 脚本顶层已执行完，IPC 监听器已注册
+    // ===== 加载状态机与 preload 就绪标记 =====
+    // did-start-navigation：新页面开始加载（preload 尚未就绪）→ 重新进入 loading + 启动导航级硬兜底
+    // dom-ready：preload 脚本顶层已执行完（IPC 监听器已注册）→ 启动 dom-ready 软兜底
+    // did-finish-load / did-stop-loading：首屏资源就绪 → 立即淡出遮罩（不等多余子资源，避免转圈空耗）
+    // did-fail-load：加载失败（断网/重置/证书）→ 立即淡出，杜绝永久转圈
     const markReady = () => {
       preloadReady.current[tabId] = true;
       forceResizeWebview(tabId);
     };
-    el.addEventListener('did-start-navigation', (_ev: any) => {
+    const ctl = () => loadingCtlRef.current;
+    el.addEventListener('did-start-navigation', () => {
       preloadReady.current[tabId] = false;
-      // 新导航开始时重新进入加载中状态
-      markLoadingRef.current(tabId, true);
+      loadSeqRef.current[tabId] = (loadSeqRef.current[tabId] || 0) + 1; // 导航代际 +1，令旧定时器失效
+      ctl().markLoading(tabId, true);
+      ctl().scheduleHide(tabId, HARD_HIDE_MS); // 硬兜底：加载挂起/黑洞时遮罩最长展示 HARD_HIDE_MS
     });
-    el.addEventListener('dom-ready', markReady);
+    el.addEventListener('dom-ready', () => {
+      markReady();
+      // 软兜底：HTML 已解析且 defer/module 脚本已执行（SPA 首屏通常已完成），
+      // 给足首屏渲染窗口后若 finish 仍未到（被慢子资源拖住），强制淡出让用户看到真实页面
+      ctl().scheduleHide(tabId, HIDE_AFTER_DOM_READY_MS);
+    });
     el.addEventListener('did-finish-load', () => {
       markReady();
-      // 加载完成：先 resize，再关闭遮罩（确保 webview 尺寸已确定）
+      // 加载完成：先 resize 再立即淡出遮罩（确保 webview 尺寸已确定）
       forceResizeWebview(tabId);
-      const t1 = setTimeout(() => { forceResizeWebview(tabId); markLoadingRef.current(tabId, false); }, 150);
+      const t1 = setTimeout(() => { forceResizeWebview(tabId); }, 150);
       const t2 = setTimeout(() => forceResizeWebview(tabId), 600);
-      // 超时保护：无论如何 3s 后强制移除加载遮罩
-      const t3 = setTimeout(() => markLoadingRef.current(tabId, false), 3000);
+      ctl().markLoading(tabId, false);
       // 不需要清理这些 timeout，它们会自然过期
-      void t1; void t2; void t3;
+      void t1; void t2;
     });
     el.addEventListener('did-stop-loading', () => {
       forceResizeWebview(tabId);
-      markLoadingRef.current(tabId, false);
+      ctl().markLoading(tabId, false);
+    });
+    el.addEventListener('did-fail-load', () => {
+      forceResizeWebview(tabId);
+      ctl().markLoading(tabId, false);
     });
     el.addEventListener('did-frame-finish-load', () => forceResizeWebview(tabId));
+    // 初始挂载兜底：首个 src 的首次导航若不触发 did-start-navigation，
+    // 也保证遮罩有明确上限（序号为 0，无导航抢占时正常生效）
+    ctl().scheduleHide(tabId, HARD_HIDE_MS);
 
 
     // ===== 前进/后退状态实时同步 =====
@@ -359,7 +454,7 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
       const url = event?.url;
       if (!url) return;
       patchTab(tabId, { url });
-      if (tabId === activeIdRef.current) cb.onNavigate?.({ url, title: '' });
+      if (tabId === activeIdRef.current) reportNavigate(url, '');
       forceResizeWebview(tabId);
     });
     el.addEventListener('did-navigate-in-page', (event: any) => {
@@ -367,7 +462,7 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
         const url = event?.url;
         if (url) {
           patchTab(tabId, { url });
-          if (tabId === activeIdRef.current) cb.onNavigate?.({ url, title: '' });
+          if (tabId === activeIdRef.current) reportNavigate(url, '');
         }
         forceResizeWebview(tabId);
       }
@@ -406,7 +501,8 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
 
   // ===== 创建标签页（多标签版本）=====
   const createTab = useCallback((url: string, title: string, _activate: boolean, kind: 'main' | 'detail' = 'main'): string => {
-    const tab = makeTab(url, title || 'BOSS直聘', kind);
+    const fallbackTitle = PLATFORM_META[resolvePlatform(url)]?.label || 'BOSS直聘';
+    const tab = makeTab(url, title || fallbackTitle, kind);
     setTabs((prev) => [...prev, tab]);
     setActiveId(tab.id);
     return tab.id;
@@ -416,14 +512,17 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
     setActiveId((prev) => (prev === id ? prev : id));
   }, []);
 
-  // ===== 用户点 + 号：仅允许在已有 main 之外新建 main 标签（采集多任务并发用）=====
+  // ===== 用户点 + 号：按所选平台新建 main 标签（采集多任务并发用；与设置页启用状态联动）=====
   const addTab = useCallback(() => {
-    createTab(BOSS_HOME, 'BOSS直聘', true, 'main');
-  }, [createTab]);
+    const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
+    createTab(meta.homeUrl, meta.label, true, 'main');
+  }, [createTab, newTabPlatform]);
 
   // ===== 在新标签打开 URL：默认 detail（沟通详情页，完成后自动关闭）=====
   const openInNewTab = useCallback((url?: string, title?: string, kind: 'main' | 'detail' = 'detail'): string => {
-    return createTab(url || BOSS_HOME, title || 'BOSS直聘', true, kind);
+    const target = url || BOSS_HOME;
+    const fallbackTitle = PLATFORM_META[resolvePlatform(target)]?.label || 'BOSS直聘';
+    return createTab(target, title || fallbackTitle, true, kind);
   }, [createTab]);
 
   // ===== 右键菜单「在新标签打开链接」→ 主进程经 jc:webview-open-link 转发到此处 =====
@@ -447,8 +546,9 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
   }, []);
 
   const openEngineTab = useCallback((): string => {
-    return createTab(BOSS_HOME, '采集', false, 'main');
-  }, [createTab]);
+    const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
+    return createTab(meta.homeUrl, meta.label, false, 'main');
+  }, [createTab, newTabPlatform]);
 
   // ===== 在指定标签页加载 URL（按 tabId 真正派发）=====
   const loadURLInTab = useCallback((id: string, url: string) => {
@@ -487,20 +587,25 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
 
   const loadURL = useCallback((url: string) => navigate(url), [navigate]);
 
-  // ===== 关闭标签：main 标签仅返回首页保留 webContents；detail 标签真正 remove webview 释放 webContents =====
+  // ===== 关闭标签：只要还剩至少一个标签就真正移除；（最后一个标签保底重置为首页，始终保留一个 webview）=====
+  // 修复：原实现 main 标签永远只「重置回 BOSS 首页」不关闭，导致无法关闭标签。现改为——
+  //   若 tabs 数量 > 1：真正 remove webview 并从列表移除（main/detail 一视同仁）；
+  //   若是最后一个标签：仅导航回首页占位（不销毁 webContents，避免没有 webview 可用）。
   const closeTab = useCallback((id: string) => {
     const target = tabsRef.current.find((t) => t.id === id);
     if (!target) return;
-    if (target.kind === 'main') {
-      // main 标签：不销毁 webContents（保住 BOSS 登录态与 IPC 监听），仅导航回首页关闭当前页面
-      patchTab(id, { url: BOSS_HOME, title: 'BOSS直聘', canGoBack: false, canGoForward: false });
+    const hasOthers = tabsRef.current.length > 1;
+    if (!hasOthers) {
+      // 最后一个标签：退化为占位（导航回当前默认平台首页，保留一个 webview/登录态）
+      const home = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
+      patchTab(id, { url: home.homeUrl, title: home.label, canGoBack: false, canGoForward: false });
       const el = webviewEls.current[id];
       if (el) {
-        try { el.loadURL(BOSS_HOME); } catch {}
+        try { el.loadURL(home.homeUrl); } catch {}
       }
       return;
     }
-    // detail 标签：从列表中移除，激活到主标签
+    // 有其余标签：真正移除该标签
     const el = webviewEls.current[id];
     if (el) {
       try { el.remove?.(); } catch {}
@@ -508,12 +613,15 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
       delete preloadReady.current[id];
       delete registeredTabs.current[id];
     }
-    setTabs((prev) => prev.filter((t) => t.id !== id));
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.id !== id);
+      return next.length ? next : prev;
+    });
     if (activeIdRef.current === id) {
-      const nextMain = tabsRef.current.find((t) => t.kind === 'main');
+      const nextMain = tabsRef.current.find((t) => t.id !== id);
       setActiveId(nextMain?.id || tabsRef.current[0]?.id || '');
     }
-  }, [patchTab]);
+  }, [patchTab, newTabPlatform]);
 
   const closeTabById = useCallback((id?: string) => {
     closeTab(id || activeIdRef.current);
@@ -648,7 +756,7 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
                 type="button"
                 className="browser-tab-close"
                 aria-label="关闭标签"
-                title={t.kind === 'main' ? '关闭当前标签（返回首页）' : '关闭标签'}
+                title={t.kind === 'detail' ? '关闭详情标签' : '关闭标签（至少保留一个）'}
                 onClick={(e) => handleCloseTab(t.id, e)}
                 onMouseDown={(e) => e.stopPropagation()}
               >
@@ -658,6 +766,13 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
           ))}
         </div>
         <Tooltip title="新标签页">
+          <Select
+            size="small"
+            style={{ width: 96 }}
+            value={newTabPlatform}
+            onChange={(v) => setNewTabPlatform(v as JobPlatform)}
+            options={enabledPlatforms.map((p) => ({ value: p, label: PLATFORM_META[p].label }))}
+          />
           <Button size="small" type="text" icon={<PlusCircleOutlined />} onClick={addTab} aria-label="新标签页" />
         </Tooltip>
       </div>
@@ -728,6 +843,11 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
         {tabs.map((t) => {
           const isLoading = loadingTabs.has(t.id);
           const isFading = fadingTabs.has(t.id);
+          // 加载动画按「标签当前 URL」所在平台动态展示（默认 BOSS，未知域名自动回退）
+          const pf = resolvePlatform(t.url);
+          const pfMeta = PLATFORM_META[pf] || PLATFORM_META.boss;
+          const pfPalette = PLATFORM_CHIP_PALETTE[pfMeta.chipKey] || PLATFORM_CHIP_PALETTE.brand;
+          const pfColor = pfPalette.fg;
           return (
             <div key={t.id} className={'browser-pane' + (t.id === activeId ? ' is-active' : '')}>
               {/* ⚠️ 核心红线约束：<webview> 元素必须保持 display: flex 容器级联，严禁行内或 CSS 设置 display: block */}
@@ -749,8 +869,22 @@ function BrowserViewImpl({ onNavigate, onJoinTask, onJobExtracted, onApplyStage,
                   }
                   aria-hidden="true"
                 >
-                  <div className="browser-loading-spinner" />
-                  <span className="browser-loading-text">正在加载 BOSS 直聘…</span>
+                  {/* 平台徽标 + 品牌色环绕转圈：按当前加载的平台动态取色/命名 */}
+                  <div className="browser-loading-stage">
+                    <span
+                      className="browser-loading-ring"
+                      style={{ borderColor: pfColor + '2e', borderTopColor: pfColor }}
+                    />
+                    <span
+                      className="browser-loading-badge"
+                      style={{ background: pfColor, boxShadow: `0 4px 14px ${pfColor}40` }}
+                    >
+                      {platformShort(pf)}
+                    </span>
+                  </div>
+                  <span className="browser-loading-text">
+                    正在加载 <span style={{ color: pfColor, fontWeight: 600 }}>{pfMeta.label}</span>…
+                  </span>
                 </div>
               )}
             </div>

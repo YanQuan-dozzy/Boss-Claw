@@ -230,6 +230,12 @@ export async function analyzeJob(
   // 前缀稳定性（服务端 prompt cache 命中的关键）：system 提示词 + 稳定画像 + 简历 恒定在前，
   // 岗位信息在最后——同一份简历连续分析多个岗位时，只有岗位片段变化，前缀逐 token 一致，
   // 命中的输入按缓存价（约为未命中价 1/10）计费。
+  // 本地硬条件拦截（deal-breaker）已经确定该岗位不可能达到最低分：这类岗位绝不会投递，
+  // greeting 属纯浪费输出 token。在「逐岗不同」的序列末尾追加一句条件提示让模型跳过 greeting，
+  // 不加进 system（system 必须恒定以保住 画像+简历 共享前缀缓存，system 尾部一变跨岗位缓存即失效）。
+  const skipGreetingNote = local.hardBlocks.length
+    ? `\n\n（提示：本岗位经本地硬条件检查存在不满足项【${local.hardBlocks.slice(0, 2).join('；')}】，已判定为不推荐投递，无需为它生成打招呼语，greeting 字段直接输出空字符串即可。）`
+    : '';
   const result: any = await cachedCallModel(
       [
         { role: 'system', content: systemPrompt },
@@ -237,7 +243,7 @@ export async function analyzeJob(
           role: 'user',
           content: `职业画像：${JSON.stringify(stableProfileView(profile))}
 简历：${String(resumeText || '').slice(0, 6000)}
-${untrustedJobSection(job)}`,
+${untrustedJobSection(job)}${skipGreetingNote}`,
         },
       ],
       model,

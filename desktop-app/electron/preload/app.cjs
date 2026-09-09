@@ -40,11 +40,13 @@ const api = {
   // 打开外部链接
   openExternal: (url) => ipcRenderer.send('jc:open-external', url),
 
-  // 读取「使用前必读」文档（首页「阅读使用文档」入口；开发读仓库 docs/，打包读 resources/docs/）
+  // 读取「使用前必读」文档（首页「阅读使用文档」入口；文档源 = 应用 resources/docs/，打包版由 extraResources 拷入）
   readDoc: () => ipcRenderer.invoke('jc:read-doc'),
 
   // 检查 BOSS 直聘登录态（主进程读 persist:bossclaw 会话 wt2 cookie）
   bossLogin: () => ipcRenderer.invoke('jc:boss-login'),
+  // 清除指定平台在 persist:bossclaw 会话中的登录 cookie（设置页「退出登录」用）
+  bossLogout: (platform) => ipcRenderer.invoke('jc:boss-logout', platform),
 
   // 内置浏览器 webview 预加载脚本绝对路径（由 BrowserView 组件读取后设置到 <webview>）
   // 注意：webview 标签的 preload 属性协议必须是 file:（Electron 文档硬性要求，反斜杠绝对路径会被拒绝加载）
@@ -70,6 +72,12 @@ const api = {
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),
+  // 保存「达标岗位」数据到本地：系统保存对话框（dir 为空）或导出目录（dir 为绝对路径，自动按天写文件）→ JSON 写盘
+  saveQualifiedJobs: (defaultName, jsonText, dir) => ipcRenderer.invoke('jc:save-qualified-jobs', defaultName, jsonText, dir),
+  // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）
+  qualifiedJobsDirGet: () => ipcRenderer.invoke('jc:qualified-jobs-dir-get'),
+  qualifiedJobsDirSet: (dir) => ipcRenderer.invoke('jc:qualified-jobs-dir-set', dir),
+  qualifiedJobsDirPick: () => ipcRenderer.invoke('jc:qualified-jobs-dir-pick'),
 
   // ===== AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）=====
   // 技能元数据列表（id/name/description/scope/defaultEnabled/source/custom）
@@ -99,6 +107,9 @@ const api = {
   cloakStop: () => ipcRenderer.invoke('jc:cloak-stop'),
   // 状态（ready / binary / lastError）
   cloakStatus: () => ipcRenderer.invoke('jc:cloak-status'),
+  // 健康检查：探测 Playwright context 进程是否真的活着（防止 ready=true 但进程已死）。
+  // alive=true：直接复用；alive=false：UI 走自动重启路径。
+  cloakHealth: () => ipcRenderer.invoke('jc:cloak-health'),
   // 打开新标签（返回 tabId，浏览器内多 Page）
   cloakPageNew: (tabId, url) => ipcRenderer.invoke('jc:cloak-page-new', tabId, url),
   // 关闭标签

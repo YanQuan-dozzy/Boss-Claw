@@ -3,6 +3,9 @@
 
 export type ExecutionMode = 'review' | 'auto';
 
+// 招聘平台（多平台适配：BOSS 基础上新增 猎聘 / 智联招聘 / 前程无忧 51Job）
+export type JobPlatform = 'boss' | 'liepin' | 'zhaopin' | 'job51';
+
 // 预设提供商：OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟 / 自定义
 // （硅基流动、火山方舟参考 AI-BossJob 的多模型接入，均为 OpenAI 兼容端点）
 export type ModelProvider = 'openai' | 'deepseek' | 'qwen' | 'zhipu' | 'siliconflow' | 'volces' | 'custom';
@@ -28,6 +31,7 @@ export interface ImageResume {
 
 export interface AppConfig {
   executionMode: ExecutionMode;
+  /** （已废弃，仅作旧数据兼容读取）已迁移到 platforms[k].dailyTarget（按平台独立每日目标） */
   dailyTarget: number;
   discoveryLimit: number;
   aiLimit: number;
@@ -72,7 +76,11 @@ export interface AppConfig {
   collectResumeIndex: number;
   /** 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）。0 表示不限 */
   maxJobsPerRun: number;
-  /** 单日投递硬上限（防封号），超过即暂停；受 SAFETY_LIMITS.MAX_SAFE_DAILY 封顶 */
+  /**
+   * （已废弃，仅作旧数据兼容读取）曾为单日投递硬上限。
+   * 已迁移为「按平台适配」：每平台实际上限 = min(该平台每日目标 platforms[k].dailyTarget, 平台侧上限, 150)，
+   * 见 safety.ts effectiveDailyCapFor。本字段不再参与强制执行。
+   */
   maxDailySent: number;
   /** 每分钟动作上限（防封号），远低于平台限速阈值 */
   maxActionsPerMinute: number;
@@ -98,6 +106,21 @@ export interface AppConfig {
    */
   engineMode: 'webview' | 'cloak' | 'camoufox';
   /**
+   * 启用中的招聘平台（多平台适配）：默认仅 boss；liepin/zhaopin/job51 需在设置页手动启用。
+   * 搜索采集与投递按启用平台分流（未启用的平台不出现在工作台搜索选择器中）。
+   *
+   * `priority`：平台投递顺序（数字越小越靠前；同 status 的 pending 排序时 BOSS=1
+   *   优先于猎聘=2 ……）。后台引擎会按此顺序"先跑完一个平台全部 approved 任务再切下一个"。
+   * 默认 BOSS=1, liepin=2, zhaopin=3, job51=4；用户可在「设置 → 招聘平台」用上下按钮调整。
+   *
+   * `dailyTarget`：本平台每日投递目标（0 表示不限，仍受平台侧上限与 SAFETY_LIMITS.MAX_SAFE_DAILY 双重收窄）。
+   * 按平台独立配置（多平台同时启用时，每个平台各自跑自己的额度）；每平台「上限」随之适配：
+   *   min(该平台每日目标, 平台侧上限(如智联 ~100/日), MAX_SAFE_DAILY=150)。
+   * 用户可在「设置 → 招聘平台」每个平台卡片中调整。取代原先顶层 AppConfig.dailyTarget / maxDailySent
+   * （后两者已废弃，仅作旧数据兼容读取）。
+   */
+  platforms: Record<JobPlatform, { enabled: boolean; priority: number; dailyTarget: number }>;
+  /**
    * Camoufox 隐身引擎（可选增强，来自 boss-auto-job-main 的方案）：
    * C++ 级 Firefox 指纹伪装 + humanize 类人行为，用于降低「正常操作被误判为机器人（code 37）」的概率。
    * 仅作为可选通道；不绕过验证码/账户验证（code 35/36/32 仍立即停止交人工）。
@@ -118,24 +141,6 @@ export interface AppConfig {
     apiKey: string;
     model: string;
     temperature: number;
-  };
-  /**
-   * 早中晚分批投递：仅在全自动模式（executionMode='auto'）时生效。
-   * 开启后，自动投递引擎只会在 早 / 午 / 晚 三个时段窗口内投递，
-   * 每个时段最多投递 counts.对应字段 条（0 表示该时段不限量），
-   * 避免集中在一次批量投递触发平台风控。
-   */
-  batchDelivery: {
-    /** 是否启用分批投递 */
-    enabled: boolean;
-    /** 早间时段开始时间 'HH:mm'（早间窗口 = morningTime → noonTime） */
-    morningTime: string;
-    /** 午间时段开始时间 'HH:mm'（午间窗口 = noonTime → eveningTime） */
-    noonTime: string;
-    /** 晚间时段开始时间 'HH:mm'（晚间窗口 = eveningTime → 次日 00:00） */
-    eveningTime: string;
-    /** 每个时段本次投递配额（0 表示不设该时段限量） */
-    counts: { morning: number; noon: number; evening: number };
   };
 }
 
@@ -261,6 +266,8 @@ export interface JobAnalysis {
 }
 
 export interface JobMeta {
+  /** 来源招聘平台（多平台适配）：默认 'boss'，存量数据视为 boss */
+  platform?: JobPlatform;
   title?: string;
   company?: string;
   salary?: string;
@@ -320,6 +327,26 @@ export interface PendingItem {
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */
   riskBlocked?: boolean;
+}
+
+/** 达标岗位导出记录：从工作台队列收集评分≥最低分的岗位，按「日期 → 该日已导出的达标岗位」持久化。
+ *  key 是岗位去重标识（jobId/url，缺失时回退 platform|公司|标题|地点），仅用于当天内去重。 */
+export interface QualifiedJobExport {
+  /** 岗位去重键（当天内去重依据） */
+  key: string;
+  minScore: number;
+  score: number;
+  decision: string;
+  title: string;
+  company: string;
+  salary: string;
+  location: string;
+  url: string;
+  platform: string;
+  recruiterName: string;
+  status: string;
+  /** 加入队列时间戳 */
+  createdAt: number;
 }
 
 export type TaskStage =

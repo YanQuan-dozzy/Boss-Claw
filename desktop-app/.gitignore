@@ -23,6 +23,9 @@ release/latest.yml
 release/builder-debug.yml
 release/win-arm64-unpacked/
 
+# ===== 资源文件损坏/过期备份（按 .broken-<日期> 命名）=====
+resources/*.broken-*
+
 # ===== Camoufox venv（按 docs/ 指引可能在仓库内建 venv）=====
 camoufox/.venv/
 camoufox/__pycache__/
