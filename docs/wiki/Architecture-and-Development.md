@@ -14,6 +14,7 @@
 | 状态管理 | Zustand（persist 中间件接 localStorage） |
 | 本地存储 | localStorage（零后端依赖，数据本地优先） |
 | 打包 | electron-builder（Windows 优先：NSIS 安装包 + 绿色便携版） |
+| 支持平台 | BOSS 直聘 / 猎聘 / 智联招聘 / 前程无忧 51Job（`src/lib/bossclaw/platforms.ts` 平台注册层收口：元数据 / 投递语义 / 外部网申文案 / 阶段标签 / 每日上限；Camoufox 侧模块在 `camoufox/platforms/`） |
 | 可选桥接 | OpenClaw Node 服务（127.0.0.1:18765）、Camoufox Python 桥（127.0.0.1:18767） |
 
 ## 二、进程模型
@@ -40,19 +41,21 @@
 | `jc:app-info` / `jc:window-*` | 应用信息、窗口控制（标题栏按钮） |
 | `jc:open-external` | 用系统浏览器打开外部链接 |
 | `jc:fetch-url` | 主进程代理跨域 fetch（城市编码表） |
-| `jc:boss-login` | 检查 BOSS 直聘登录态（读 wt2 cookie） |
+| `jc:boss-login` | 检查各平台在「内置浏览器（工作台）」会话中的登录态（BOSS 读 wt2 cookie，返回 platforms 映射） |
+| `jc:boss-logout` | 退出指定平台的内置浏览器会话登录态 |
 | `jc:webview-input` | webview 真实键盘输入（CDP 等价） |
-| `jc:camoufox-*` | Camoufox Python 桥（status / search / send / login） |
-| `jc:cloak-*` | CloakBrowser 隐身浏览器（启动 / 标签 / 输入） |
+| `jc:camoufox-*` | Camoufox Python 桥（status / search / send / login / logout / restart，按平台分发到 `camoufox/platforms/*`） |
+| `jc:cloak-*` | CloakBrowser 隐身浏览器（启动 / 标签 / 输入 / health 健康检查，进程断开自动重启） |
 | `jc:bridge-control` | OpenClaw Node 桥启停 |
 
 ## 四、渲染层状态分层
 
 | Store | 内容 | 持久化 |
 | --- | --- | --- |
-| `useAppStore` | 运行时状态：主题、活动路由、桥状态、BOSS 登录态、引擎状态 | 否（每次启动重置） |
+| `useAppStore` | 运行时状态：主题、活动路由、桥状态、BOSS / 平台登录态、引擎状态 | 否（每次启动重置） |
 | `useDataStore` | 业务数据：岗位 / 任务 / 日志 / 画像 | 是（localStorage，带版本号重置） |
-| `useSettingsStore` | 用户配置：LLM 密钥、过滤规则、招呼语、引擎模式 | 是（设置页可导出 / 导入） |
+| `useSettingsStore` | 用户配置：LLM 密钥、过滤规则、招呼语、引擎模式、招聘平台（启用 / 优先级 / 每日投递目标） | 是（设置页可导出 / 导入） |
+| `useScheduleStore` | 定时任务条目（动作 / 时刻 / 星期 / 目标平台 / 单轮上限）+ 采集请求 | 是（`-schedule` 键，本地备份覆盖） |
 
 ## 五、目录结构
 
@@ -63,17 +66,17 @@ Boss-claw/
 │   │   ├── main.cjs           主进程：单窗口 + webview + IPC + 子进程管理 + 备份目录/开机自启
 │   │   ├── preload/
 │   │   │   ├── app.cjs        主窗口安全接口（contextBridge）
-│   │   │   └── webview.cjs    内置浏览器 guest 页回传 + 真实输入
+│   │   │   └── webview.cjs    内置浏览器 guest 页回传 + 真实输入（多平台注入，非 BOSS 站点横向滚动修复等）
 │   │   └── cloakbrowser/
 │   │       ├── launcher.cjs   CloakBrowser 生命周期（启动/标签/CDP输入）
 │   │       └── cloakPreload.cjs
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
-│   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py + requirements.txt）
+│   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py 基座 + platforms/ 平台模块：common.py / liepin.py / zhaopin.py / job51.py）
 │   ├── skills/                AI 技能库（SKILL.md：resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match）
 │   ├── src/
 │   │   ├── main.tsx / App.tsx / theme.ts / index.css
 │   │   ├── store/             useAppStore / useDataStore / useSettingsStore / useScheduleStore
-│   │   ├── lib/               storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
+│   │   ├── lib/               storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（platforms 平台注册 / matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
 │   │   ├── components/        TitleBar / Sidebar / StatusBar / BrowserView / MarkdownView / feedback
 │   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant / OpenClaw / AutoChat / Settings
 │   ├── resources/             应用图标等资源
@@ -145,6 +148,8 @@ python -m venv .venv
 - 涉及业务逻辑改动时，请优先回查本地需求文档 `docs/桌面版改造需求文档.md`（v1.2，仅本地保留，不入仓库）与参考项目 `job-claw-main` 的实现口径，对齐既定口径，禁止凭空重写。
 - 修改 `electron/preload/webview.cjs` 等主进程 / preload 文件后，**必须重启 Electron** 才能生效（HMR 不覆盖 preload）。
 - 业务逻辑对齐参考项目 `job-claw-main` 的采集与投递口径（`task-state` / `job-priority` / `conversation-identity`）。
+- 多平台口径：平台元数据、投递语义（chat / App 招呼自动发送 / 简历投递）、外部网申文案、每日上限与优先级统一在 `src/lib/bossclaw/platforms.ts` 收口（BOSS 反爬与各平台行为调研口径：get_jobs / Auto-JobHunter）；新增平台只需扩展该注册层 + `camoufox/platforms/` 平台模块，渲染层组件（PlatformChip 等）自动跟随。
+- 每日投递上限按平台独立计数（`platforms[k].dailyTarget`，0=不限，受平台侧上限与 `SAFETY_LIMITS.MAX_SAFE_DAILY` 收窄）；定时任务条目支持 `platforms?` / `limitPerRun?`（见 `useScheduleStore` / `scheduler.ts`），旧 `config.batchDelivery` 启动时一次性迁移为三条限量定时任务。
 - AI 技能层：技能开关 / 指令变化 → messages 变化 → AI 缓存 key 自动失效；自定义技能存 `userData/skills`（内置 `appPath/skills` 只读），IPC 白名单校验防路径穿越。
 - 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 - 打包前建议先 `npm run verify`（类型检查 + 构建），再 `npm run package`。
