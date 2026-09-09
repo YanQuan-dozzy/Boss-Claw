@@ -57,7 +57,7 @@
         "to": "camoufox/requirements.txt"
       },
       {
-        "from": "../docs/使用前必读.md",
+        "from": "resources/docs/使用前必读.md",
         "to": "docs/使用前必读.md"
       }
     ],

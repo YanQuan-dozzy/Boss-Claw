@@ -31,6 +31,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { createTasks } from '@/lib/bossclaw/tasks';
 import { MetricCard } from '@/components/MetricCard';
 import { electronApi } from '@/lib/electronApi';
+import { effectiveDailyCap } from '@/lib/bossclaw/safety';
 import MarkdownView from '@/components/MarkdownView';
 
 const { Paragraph, Text } = Typography;
@@ -69,6 +70,8 @@ export default function Home() {
   const bridgeStatus = useAppStore((s) => s.bridgeStatus);
   const isLLMConfigured = useSettingsStore((s) => s.isLLMConfigured);
   const config = useSettingsStore((s) => s.config);
+  // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
+  const dailyGoal = effectiveDailyCap(config);
   const [progress, setProgress] = useState(0);
   // 使用前必读文档抽屉
   const [docOpen, setDocOpen] = useState(false);
@@ -128,7 +131,7 @@ export default function Home() {
     if (!profile) { message.warning('请先在简历中心生成职业画像'); setRoute('resume'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); setRoute('directions'); return; }
     setRoute('workbench');
-    const { next, count } = promoteApprovedToQueue(pending);
+    const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
     if (count) setPending(next);
     if (!useAppStore.getState().autoAssist) setAutoAssist(true);
   };
@@ -151,7 +154,8 @@ export default function Home() {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (waiting.length === 0) { message.info('没有待确认的岗位'); return; }
     const next = rerankPending(
-      pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p))
+      pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p)),
+      useSettingsStore.getState().config
     );
     setPending(next);
     addLog('success', `已批准 ${waiting.length} 个岗位进入投递队列（等待「开始投递」）`);
@@ -211,7 +215,7 @@ export default function Home() {
           title="今日投递"
           value={stats.sent}
           suffix="次"
-          subText={`目标 ${config.dailyTarget || 150} 次 / 建议分时段投递`}
+          subText={`目标 ${dailyGoal} 次 / 建议分时段投递`}
           icon={<CheckCircleFilled />}
         />
         <MetricCard
@@ -231,7 +235,7 @@ export default function Home() {
         />
         <MetricCard
           title="剩余次数"
-          value={Math.max(0, (config.dailyTarget || 150) - stats.sent)}
+          value={Math.max(0, dailyGoal - stats.sent)}
           suffix="次"
           type="remaining"
           subText="今日安全限制额度内"
@@ -304,11 +308,11 @@ export default function Home() {
         {/* 目标进度条 */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>今日投递目标</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>{stats.sent} / {config.dailyTarget || 150}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>今日投递目标（各已启用平台合计）</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>{stats.sent} / {dailyGoal}</Text>
           </div>
           <Progress
-            percent={Math.min(100, Math.round((stats.sent / Math.max(1, config.dailyTarget || 150)) * 100))}
+            percent={Math.min(100, Math.round((stats.sent / Math.max(1, dailyGoal)) * 100))}
             showInfo={false}
             strokeColor={{ from: '#14B8A6', to: '#0D9488' }}
           />

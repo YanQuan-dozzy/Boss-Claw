@@ -41,295 +41,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-# ============================================================
-# 路径与配置
-# ============================================================
-DATA_DIR = Path.home() / '.bossclaw'
-COOKIE_FILE = DATA_DIR / 'camoufox-cookies.json'
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-VERSION = '2.0.0'
-
-# 可复用的系统浏览器内核候选路径（Windows 优先，macOS/Linux 兜底）
-CHROME_CANDIDATES = [
-    r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-    r'C:\Program Files\Google\Chrome\Application\chrome',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
-]
-EDGE_CANDIDATES = [
-    r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
-    r'/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    '/usr/bin/microsoft-edge',
-]
-FIREFOX_CANDIDATES = [
-    r'C:\Program Files\Mozilla Firefox\firefox.exe',
-    r'C:\Program Files (x86)\Mozilla Firefox\firefox.exe',
-    '/Applications/Firefox.app/Contents/MacOS/firefox',
-    '/usr/bin/firefox',
-]
-
-# 内核检测结果缓存（进程生命周期内只检测一次）
-_KERNEL_CACHE: dict | None = None
-
-
-def log(icon: str, msg: str):
-    ts = datetime.now().strftime('%H:%M:%S')
-    print(f"[{ts}] {icon} {msg}", file=sys.stderr, flush=True)
-
+# ===== 平台公共基座（浏览器 / 人类化 / Cookie 按平台持久化）=====
+# BOSS 之外的平台（猎聘/智联/51Job）在 platforms/ 包内实现，复用本基座
+from platforms.common import (
+    log, human_delay, human_sleep, type_greeting_human,
+    open_browser, goto_stable, load_cookies, save_cookies, clear_cookies,
+    cookie_file, detect_kernel, PLATFORMS,
+)
+import platforms as platform_mods
 
 # ============================================================
-# 人类化抖动（对齐 AGENTS.md「只做主动降频、加入人类化抖动，绝不绕过」）
-# 让真实打字/点击/翻页的节奏带随机游走，更接近真人操作，降低被误判为机器人的概率。
+# BOSS 直聘专用风控文案与外部网申检测（聊天投递链路用）
 # ============================================================
-def human_delay(seconds: float, jitter_ratio: float = 0.35, min_seconds: float = 0.0) -> float:
-    """在 base 秒基础上叠加 ±ratio 的随机游走，返回实际需等待的秒数。
-    例：human_delay(5) → 约 3.25s ~ 6.75s。保证不低于 min_seconds。"""
-    base = max(0.0, seconds)
-    width = base * jitter_ratio
-    return max(min_seconds, base - width + random.random() * width * 2)
-
-
-def human_sleep(seconds: float, jitter_ratio: float = 0.35, min_seconds: float = 0.0, rng=None):
-    """人类化随机关心（对 status 透传时也可传 rng）。"""
-    return time.sleep(human_delay(seconds, jitter_ratio, min_seconds))
-
-
-def type_greeting_human(page, text: str, os_name: str | None = None):
-    """真实键盘逐字输入招呼语，带随机打字节奏（对齐 job-claw content 逐字输入 + AI-BossJob 输入链）。
-    每次按下间隔在 20~120ms 内随机游走（中文可略慢），接近真人打字而非固定 delay=25 的机械脉冲。
-    若平台支持 os 键位则忽略（仅保留签名兼容）。
-    """
-    for ch in text:
-        delay = random.randint(20, 120)
-        # 中文 / 全角标点略慢，模拟真人敲中文拼音后选字
-        if ord(ch) > 127:
-            delay = random.randint(40, 140)
-        page.keyboard.type(ch, delay=delay)
-    return True
-
-
-# ============================================================
-# Cookie 管理（对齐 send_camoufox.py 的格式）
-# ============================================================
-def load_cookies() -> list:
-    if not COOKIE_FILE.exists():
-        return []
-    try:
-        with open(COOKIE_FILE, encoding='utf-8') as f:
-            auth = json.load(f)
-    except Exception as e:
-        log('⚠️', f'读取 Cookie 失败：{e}')
-        return []
-    pw_cookies = []
-    for c in auth.get('cookies', []):
-        cookie = {
-            "name": c["name"], "value": c["value"],
-            "domain": c["domain"], "path": c.get("path", "/"),
-        }
-        expires = c.get("expires", -1)
-        if expires and expires > 0:
-            cookie["expires"] = expires
-        if c.get("httpOnly"):
-            cookie["httpOnly"] = True
-        if c.get("secure"):
-            cookie["secure"] = True
-        pw_cookies.append(cookie)
-    return pw_cookies
-
-
-def save_cookies(context) -> int:
-    """导出会话 Cookie 回持久化文件（带备份）。"""
-    try:
-        all_cookies = context.cookies()
-    except Exception as e:
-        log('⚠️', f'导出 Cookie 失败：{e}')
-        return 0
-    export = []
-    for c in all_cookies:
-        export.append({
-            "name": c["name"], "value": c["value"], "domain": c["domain"],
-            "path": c.get("path", "/"), "expires": c.get("expires", -1),
-            "size": len(c.get("value", "")), "httpOnly": c.get("httpOnly", False),
-            "secure": c.get("secure", False), "session": c.get("expires", -1) == -1,
-        })
-    if COOKIE_FILE.exists():
-        try:
-            backup = COOKIE_FILE.parent / (COOKIE_FILE.stem + '.backup.json')
-            shutil.copy(COOKIE_FILE, backup)
-        except Exception:
-            pass
-    with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
-        json.dump({"cookies": export, "origins": []}, f, ensure_ascii=False, indent=2)
-    log('💾', f'Cookie 已持久化：{len(export)} 条 → {COOKIE_FILE}')
-    return len(export)
-
-
-# ============================================================
-# 内核检测与浏览器启动（仅 Camoufox 原生隐身内核）
-# 实测：BOSS 会对 Playwright 驱动的系统 Chrome/Edge 返回空壳页，本地浏览器不能复用，
-# 只有 Camoufox 原生内核（C++ 级指纹伪装）可正常加载/沟通。
-# ============================================================
-def detect_kernel(force: bool = False) -> dict:
-    """检测可用的隐身内核。返回：
-    {'kind': 'camoufox'|'none', 'path': str|None, 'camoufox': bool, 'message': str}
-    仅 Camoufox 原生内核可用；系统 Chrome/Edge/Firefox 不参与回退（无法通过 BOSS 反爬）。
-    """
-    global _KERNEL_CACHE
-    if _KERNEL_CACHE and not force:
-        return _KERNEL_CACHE
-
-    # 1) Camoufox 原生内核（已 camoufox fetch 下载 Firefox）
-    try:
-        import camoufox
-        from camoufox.utils import installed_verstr
-        if installed_verstr():
-            _KERNEL_CACHE = {
-                "kind": "camoufox", "path": None, "camoufox": True,
-                "message": "Camoufox 隐身引擎内核（C++ 级指纹伪装）",
-            }
-            return _KERNEL_CACHE
-    except Exception:
-        pass
-
-    # 2) 未安装隐身引擎内核：本地系统浏览器不可复用（BOSS 反爬对 Playwright 驱动的 Chrome 返回空壳页）
-    _KERNEL_CACHE = {
-        "kind": "none", "path": None, "camoufox": False,
-        "message": "隐身引擎未就绪：本地 Chrome/Edge 不可复用，请安装 Camoufox 原生内核：pip install \"camoufox[geoip]\" && camoufox fetch",
-    }
-    return _KERNEL_CACHE
-
-
-# Chromium 系（Chrome/Edge）的 stealth 初始化脚本：
-# 隐藏 navigator.webdriver、chrome.runtime、CDP 痕迹等自动化特征（JS 级，尽力而为；
-# C++ 级伪装需 Camoufox 原生内核——本引擎自动优先使用，没有则退化到 Chromium+stealth）
-def stealth_init_script() -> str:
-    return """
-    // === BossClaw stealth (Chromium) ===
-    // 1) navigator.webdriver 不可见
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    // 2) 模拟 chrome.runtime（部分检测点会读取）
-    try {
-      if (!window.chrome) window.chrome = {};
-      if (!window.chrome.runtime) {
-        window.chrome.runtime = {
-          connect: () => ({ postMessage: () => {}, disconnect: () => {} }),
-          sendMessage: () => {},
-          id: undefined,
-        };
-      }
-      if (!window.chrome.app) window.chrome.app = { isInstalled: false };
-      if (!window.chrome.csi) window.chrome.csi = () => ({});
-      if (!window.chrome.loadTimes) window.chrome.loadTimes = () => ({});
-    } catch (e) {}
-    // 3) 隐藏 Playwright/CDP 痕迹（尽力而为）
-    try {
-      const origQuery = window.navigator.permissions && window.navigator.permissions.query;
-      if (origQuery) {
-        window.navigator.permissions.query = (parameters) => (
-          parameters && parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : origQuery(parameters)
-        );
-      }
-    } catch (e) {}
-    // 4) 统一语言/时区外观
-    try {
-      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5].map((i) => ({ name: 'Plugin ' + i, filename: 'plugin' + i + '.dll', description: '' })),
-      });
-    } catch (e) {}
-    // 5) WebGL 渲染器信息收敛为常见值（尽力而为；C++ 级需 Camoufox）
-    try {
-      const getExt = HTMLCanvasElement.prototype.getContext;
-      HTMLCanvasElement.prototype.getContext = function (type, ...args) {
-        const ctx = getExt.call(this, type, ...args);
-        if (ctx && (type === 'webgl' || type === 'experimental-webgl')) {
-          const getParam = ctx.getParameter.bind(ctx);
-          const isExt = (name) => {
-            try { return Boolean(ctx.getExtension(name)); } catch (e) { return false; }
-          };
-          if (isExt('WEBGL_debug_renderer_info')) {
-            const ext = ctx.getExtension('WEBGL_debug_renderer_info');
-            const UNMASKED_VENDOR = 0x9245, UNMASKED_RENDERER = 0x9246;
-            try {
-              Object.defineProperty(ctx, 'getParameter', {
-                value: (p) => {
-                  if (p === UNMASKED_VENDOR) return 'Google Inc. (Intel)';
-                  if (p === UNMASKED_RENDERER) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                  return getParam(p);
-                },
-              });
-            } catch (e) {}
-          }
-        }
-        return ctx;
-      };
-    } catch (e) {}
-    """
-
-
-@contextmanager
-def open_browser(os_name: str | None = None, headless: bool = False):
-    """按检测到的内核打开浏览器，yield page；退出时自动关闭。仅 Camoufox 原生内核可用。"""
-    kernel = detect_kernel()
-    if kernel["kind"] == "camoufox":
-        from camoufox.sync_api import Camoufox
-        kwargs = {"humanize": True, "block_images": False}
-        if os_name:
-            kwargs["os"] = os_name
-        if headless:
-            kwargs["headless"] = "virtual"
-        # 注意：不开 geoip=，避免每次启动 Camoufox 都调用 public_ip() 外网请求
-        # （网络不佳时会长时间阻塞/挂起，导致登录初始加载卡顿）。指纹伪装不含 geoip 即可通过 BOSS。
-        with Camoufox(**kwargs) as browser:
-            page = browser.new_page()
-            yield page
-        return
-
-    # Chromium 系：Playwright + 系统浏览器可执行文件（无需下载任何内核）
-    from playwright.sync_api import sync_playwright
-    exe = kernel.get("path")
-    launch_args = {
-        "headless": headless,
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-infobars",
-            "--disable-features=AutomationControlled",
-            "--lang=zh-CN",
-            "--disable-blink-features=IdleDetection",
-        ],
-        # 剔除 Playwright 默认的 --enable-automation 等自动化特征参数（BOSS 环境检测关键项）
-        "ignore_default_args": [
-            "--enable-automation",
-            "--enable-blink-features=IdleDetection",
-            "--disable-component-update",
-        ],
-    }
-    if exe:
-        launch_args["executable_path"] = exe
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_args)
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 850},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-        )
-        context.add_init_script(stealth_init_script())
-        page = context.new_page()
-        yield page
-        try:
-            browser.close()
-        except Exception:
-            pass
+VERSION = '2.1.0'
 
 
 # ============================================================
@@ -1557,37 +1281,8 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
 
 
 # ============================================================
-# 扫码登录（打开可见窗口，等待用户扫码）
+# 扫码登录（打开可见窗口，等待用户扫码）——goto_stable 已移至 platforms/common.py
 # ============================================================
-def goto_stable(page, url, *, max_tries=4, min_content=500, wait=3):
-    """导航并使页面稳定。BOSS 反爬会对自动化浏览器间歇性返回空壳页面
-    （`<html><head></head><body></body></html>` 仅 ~39 字节，URL 也可能是 about:blank）。
-    这里在拿到真实内容前自动重试，避免登录/沟通时停在空白页。"""
-    for attempt in range(max_tries):
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        except Exception as e:
-            log('⚠️', f'导航第 {attempt + 1} 次失败：{str(e)[:60]}，重试…')
-            time.sleep(2)
-            continue
-        time.sleep(wait)
-        cur = (page.url or '').strip().lower()
-        # 空白/非法页（about:blank、data: 等）：直接重试
-        if cur.startswith(('about:', 'data:')) or not cur.startswith('http'):
-            log('⚠️', f'第 {attempt + 1} 次命中空白页（{cur[:40]}），重试…')
-            time.sleep(2)
-            continue
-        try:
-            blen = len(page.content() or '')
-        except Exception:
-            blen = float('inf')  # 页面持续导航 → 视为有真实内容
-        if blen >= min_content:
-            return True
-        log('⚠️', f'第 {attempt + 1} 次命中反爬空壳（len={blen if blen != float("inf") else "navigating"}），重试…')
-        time.sleep(2)
-    return False
-
-
 def do_login(timeout: int = 180, os_name: str | None = None) -> dict:
     log('🔐', '打开登录窗口，请用手机 BOSS App 扫码')
     with open_browser(os_name=os_name, headless=False) as page:
@@ -1667,7 +1362,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         if token != self.server.token:
             return self._send(403, {"ok": False, "error": "token denied"})
         if parsed.path == '/status':
-            payload = engine_status()
+            platform = (parse_qs(parsed.query).get('platform', ['boss'])[0] or 'boss').strip()
+            payload = engine_status(platform)
             return self._send(200, payload)
         return self._send(404, {"ok": False, "error": "not found"})
 
@@ -1677,6 +1373,9 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         if token != self.server.token:
             return self._send(403, {"ok": False, "error": "token denied"})
         body = self._read_body()
+        platform = str(body.get('platform') or 'boss').strip().lower() or 'boss'
+        if platform not in PLATFORMS:
+            return self._send(400, {"ok": False, "error": f"不支持的平台：{platform}"})
 
         try:
             if parsed.path == '/search':
@@ -1686,7 +1385,10 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 os_name = body.get('os') or None
                 if not query:
                     return self._send(400, {"ok": False, "error": "缺少 query"})
-                result = search_jobs(query, city, pages, os_name)
+                if platform == 'boss':
+                    result = search_jobs(query, city, pages, os_name)
+                else:
+                    result = platform_mods.search_jobs(platform, query, city, pages, os_name)
                 return self._send(200, result)
 
             if parsed.path == '/send':
@@ -1697,7 +1399,17 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                     return self._send(400, {"ok": False, "error": "缺少 jobId"})
                 if not greeting:
                     return self._send(400, {"ok": False, "error": "缺少 greeting", "code": 400})
-                result = send_greeting(job_id, greeting, os_name)
+                if platform == 'boss':
+                    result = send_greeting(job_id, greeting, os_name)
+                else:
+                    job = {
+                        "jobId": job_id,
+                        "url": str(body.get('url') or ''),
+                        "company": str(body.get('company') or ''),
+                        "recruiterName": str(body.get('recruiterName') or ''),
+                        "title": str(body.get('jobTitle') or ''),
+                    }
+                    result = platform_mods.deliver(platform, job, greeting, os_name)
                 return self._send(200, result)
 
             if parsed.path == '/chat':
@@ -1718,25 +1430,36 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                     return self._send(400, {"ok": False, "error": "缺少 jobId"})
                 if not greeting:
                     return self._send(400, {"ok": False, "error": "缺少 greeting", "code": 400})
-                result = chat_greeting(job_id, greeting, os_name, send_resume_image, send_online_resume,
-                                       expected, resume_images, mode, reply_text)
+                if platform == 'boss':
+                    result = chat_greeting(job_id, greeting, os_name, send_resume_image, send_online_resume,
+                                           expected, resume_images, mode, reply_text)
+                else:
+                    job = {
+                        "jobId": job_id,
+                        "url": str(body.get('url') or ''),
+                        "company": str(body.get('company') or ''),
+                        "recruiterName": str(body.get('recruiterName') or ''),
+                        "title": str(body.get('jobTitle') or ''),
+                    }
+                    result = platform_mods.deliver(platform, job, greeting, os_name, send_resume_image,
+                                                   send_online_resume, expected, resume_images, mode, reply_text)
                 return self._send(200, result)
 
             if parsed.path == '/login':
                 timeout = max(30, min(600, int(body.get('timeout') or 180)))
                 os_name = body.get('os') or None
-                result = do_login(timeout, os_name)
+                if platform == 'boss':
+                    result = do_login(timeout, os_name)
+                else:
+                    result = platform_mods.do_login(platform, timeout, os_name)
                 return self._send(200, result)
 
             if parsed.path == '/logout':
-                if COOKIE_FILE.exists():
-                    COOKIE_FILE.unlink()
-                    log('🗑️', '已清除 Camoufox Cookie')
+                clear_cookies(platform)
                 return self._send(200, {"ok": True, "loggedIn": False})
 
             if parsed.path == '/clear':
-                if COOKIE_FILE.exists():
-                    COOKIE_FILE.unlink()
+                clear_cookies(platform)
                 return self._send(200, {"ok": True})
 
             return self._send(404, {"ok": False, "error": "not found"})
@@ -1748,9 +1471,34 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         pass  # 静默访问日志
 
 
-def engine_status() -> dict:
-    """检测隐身引擎可用性（不启动浏览器）：内核检测 + Cookie 状态。"""
+# 各平台登录态判定 Cookie（名称含关键字即视为已登录）
+PLATFORM_AUTH_COOKIE_HINTS = {
+    'boss': ('wt2',),
+    'liepin': ('lp_login', 'lp_token', 'token'),
+    'zhaopin': ('zp_auto', 'zp_sign', 'swordman', 'zm_job_pc'),
+    'job51': ('j_ticket', 'sajssp', '51job', 'job51'),
+}
+
+
+def engine_status(platform: str = 'boss') -> dict:
+    """检测隐身引擎可用性（不启动浏览器）：内核检测 + 指定平台 Cookie 状态。"""
     import importlib.util
+    cf = cookie_file(platform)
+    cookie_count = 0
+    logged_in = False
+    if cf.exists():
+        try:
+            with open(cf, encoding='utf-8') as f:
+                cookies = json.load(f).get('cookies', [])
+                cookie_count = len(cookies)
+            # 登录态独立判定：仅按该平台鉴权 Cookie 命中（不靠匿名 cookie 数量，避免误判已登录）
+            hints = PLATFORM_AUTH_COOKIE_HINTS.get(platform, PLATFORM_AUTH_COOKIE_HINTS['boss'])
+            logged_in = any(
+                (str(c.get('name', '')).lower().startswith(hint) or hint in str(c.get('name', '')).lower()) and c.get('value')
+                for c in cookies for hint in hints
+            )
+        except Exception:
+            pass
     info = {
         "ok": False,
         "version": VERSION,
@@ -1761,23 +1509,12 @@ def engine_status() -> dict:
         "kernel": "none",
         "kernelPath": "",
         "kernelMessage": "",
-        "cookies": COOKIE_FILE.exists(),
-        "cookieCount": 0,
-        "loggedIn": False,
+        "platform": platform,
+        "cookies": cf.exists(),
+        "cookieCount": cookie_count,
+        "loggedIn": logged_in,
         "message": "",
     }
-    if COOKIE_FILE.exists():
-        try:
-            with open(COOKIE_FILE, encoding='utf-8') as f:
-                cookies = json.load(f).get('cookies', [])
-                info["cookieCount"] = len(cookies)
-                # 真实登录态：BOSS 的 wt2 鉴权 token（其余匿名 cookie 不等于已登录）
-                info["loggedIn"] = any(
-                    str(c.get('name', '')).lower() == 'wt2' and c.get('value')
-                    for c in cookies
-                )
-        except Exception:
-            pass
     spec = importlib.util.find_spec('camoufox')
     if spec is not None:
         info["camoufox"] = True

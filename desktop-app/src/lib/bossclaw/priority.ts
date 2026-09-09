@@ -1,6 +1,9 @@
 // 移植自 job-claw-main\source\src\lib\job-priority.js
 // 智能排序：综合匹配度、硬性条件、地点、薪资、新鲜度、风险提示进行排序
-import type { JobAnalysis, JobMeta, PendingItem } from './types';
+// 多平台适配：rerankPending 接受可选 AppConfig，按「平台优先级（数字小=靠前）」二级排序，
+// 实现「完成 P1 平台全部任务再切 P2」的串行消费语义。
+import type { AppConfig, JobAnalysis, JobMeta, PendingItem, JobPlatform } from './types';
+import { platformPriority } from './platforms';
 
 function salaryPriority(job: JobMeta = {}): number {
   const raw = String(job.salary || '').trim();
@@ -39,7 +42,9 @@ function freshnessPriority(job: JobMeta = {}): number {
   return 0;
 }
 
-export function computeJobPriority(item: { analysis?: JobAnalysis; job?: JobMeta; retryCount?: number } = {}): number {
+export function computeJobPriority(
+  item: { analysis?: JobAnalysis; job?: JobMeta; retryCount?: number } = {},
+): number {
   const analysis: Partial<JobAnalysis> = item.analysis || {};
   const job: Partial<JobMeta> = item.job || {};
   const hardBlocks = Array.isArray(analysis.hardBlocks) ? analysis.hardBlocks.length : 0;
@@ -83,7 +88,11 @@ function pendingStatusRank(status: string): number {
   );
 }
 
-export function rerankPending(items: PendingItem[] = []): PendingItem[] {
+export function rerankPending(items: PendingItem[] = [], config?: Pick<AppConfig, 'platforms'> | null): PendingItem[] {
+  // 多平台「平台键」比较：config 提供时按各岗位平台的设置优先级（数字小=靠前）分组排序，
+  // 作为第二排序键——实现「同一状态组内先跑完 P1 平台全部岗位、再切 P2 平台」的硬顺序。
+  const platformKeyOf = (entry: { job?: JobMeta }) =>
+    config ? platformPriority(config, String(entry.job?.platform || 'boss') as JobPlatform) : 0;
   const enriched = items.map((entry) => ({
     ...entry,
     priorityScore: computeJobPriority(entry),
@@ -91,6 +100,8 @@ export function rerankPending(items: PendingItem[] = []): PendingItem[] {
   enriched.sort((a, b) => {
     const statusDiff = pendingStatusRank(a.status) - pendingStatusRank(b.status);
     if (statusDiff) return statusDiff;
+    const pfDiff = platformKeyOf(a) - platformKeyOf(b);
+    if (pfDiff) return pfDiff;
     const priorityDiff = Number(b.priorityScore || 0) - Number(a.priorityScore || 0);
     if (priorityDiff) return priorityDiff;
     const scoreDiff = Number(b.analysis?.score || 0) - Number(a.analysis?.score || 0);
@@ -110,7 +121,7 @@ export function rerankPending(items: PendingItem[] = []): PendingItem[] {
 // 把「已批准 / 等待投递」(approved) 的岗位提升为「投递队列 / 投递中」(approved_queue)，
 // 返回新数组与本次提升数量。引擎只认 approved_queue 进行实际投递，
 // 因此「批准」只进等待态、「一键投递」才把等待态批量提升为可投递态。
-export function promoteApprovedToQueue(items: PendingItem[] = []): { next: PendingItem[]; count: number } {
+export function promoteApprovedToQueue(items: PendingItem[] = [], config?: Pick<AppConfig, 'platforms'> | null): { next: PendingItem[]; count: number } {
   let count = 0;
   const next = rerankPending(
     items.map((entry) => {
@@ -119,7 +130,8 @@ export function promoteApprovedToQueue(items: PendingItem[] = []): { next: Pendi
         return { ...entry, status: 'approved_queue' as const, approvedAt: entry.approvedAt || Date.now() };
       }
       return entry;
-    })
+    }),
+    config,
   );
   return { next, count };
 }

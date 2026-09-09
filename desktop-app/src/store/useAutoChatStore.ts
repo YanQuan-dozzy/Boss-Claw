@@ -5,7 +5,8 @@
 // 任务仍在后台继续运行；同时运行器每个周期重新读取 pending，
 // 工作台新批准的岗位会自动进入当前批次的自动沟通队列（无需重新点「开始」）。
 //
-// 安全不变量与旧实现一致：冷却/每日上限/早中晚分批/限速/首条验收/风控交人工均保留。
+// 安全不变量与旧实现一致：冷却/每日上限/限速/首条验收/风控交人工均保留；
+// 「分批」改由定时任务显式表达（每次触发可带 scope：目标平台 + 单轮上限）。
 import { create } from 'zustand';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -14,16 +15,16 @@ import {
   type CamoufoxChatResult,
 } from '@/lib/bossclaw/camoufox';
 import {
-  ActionPacer, effectiveDailyCap, dailySentCount, isLockedOut,
-  cooldownRemaining, SAFETY_LIMITS,
+  ActionPacer, effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
+  isLockedOut, cooldownRemaining, SAFETY_LIMITS,
 } from '@/lib/bossclaw/safety';
 import { cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
-import { activeBatchSlot } from '@/lib/bossclaw/batchSchedule';
 import { generateReply } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
+import { platformEnabled, platformLabel, platformPriority } from '@/lib/bossclaw/platforms';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
-import type { PendingItem, ImageResume } from '@/lib/bossclaw/types';
+import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
 
 type ChatJobOutcome = 'success' | 'failed' | 'stop' | 'continue';
 
@@ -76,7 +77,8 @@ function looksEngineDown(r: CamoufoxChatResult): boolean {
  */
 async function chatWithEngineRecovery(
   send: () => Promise<CamoufoxChatResult>,
-  jobTitle: string
+  jobTitle: string,
+  platform = 'boss'
 ): Promise<{ result: CamoufoxChatResult; dead: boolean }> {
   let result = await send();
   if (!looksEngineDown(result)) return { result, dead: false };
@@ -90,7 +92,7 @@ async function chatWithEngineRecovery(
     });
     let ready = false;
     try {
-      const st = await camoufoxRestart();
+      const st = await camoufoxRestart(platform);
       ready = Boolean(st?.ready);
     } catch {
       ready = false;
@@ -152,6 +154,8 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
   });
 
   try {
+    // 多平台适配：岗位平台（boss/liepin/zhaopin/job51），缺省 boss
+    const platform = String(item.job?.platform || 'boss');
     // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
     if (cancelRequested) {
       addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
@@ -162,6 +166,8 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       : [];
     const baseOpts = {
       os: cfg.camoufox?.os,
+      platform,
+      url: item.job?.url || '',
       sendResumeImage: Boolean(cfg.sendResumeImage),
       sendOnlineResume: Boolean(cfg.sendOnlineResume),
       recruiterName: item.job?.recruiterName || '',
@@ -169,7 +175,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       jobTitle: item.job?.title || '',
       resumeImages,
     };
-    const initial = await chatWithEngineRecovery(() => camoufoxChat(jobId, greeting, baseOpts), title);
+    const initial = await chatWithEngineRecovery(() => camoufoxChat(jobId, greeting, baseOpts), title, platform);
       // Camoufox 引擎多次重启仍失败 → 自动停止自动沟通（不误触关闭即停，也不标记岗位为死失败）
       if (initial.dead) {
         updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
@@ -187,7 +193,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       }
       let result = initial.result;
 
-    // 外部网申岗位：不能自动沟通，标记跳过（对齐 job-claw externalApplicationInfo / 优先级 -6000）
+    // 外部网申岗位：不能自动投递/沟通，标记跳过（对齐 job-claw externalApplicationInfo / 优先级 -6000）
     if (result.external || result.code === 600) {
       updatePending(item.id, { status: 'skipped', error: '外部网申岗位，跳过', retryable: false });
       addChatLog({
@@ -196,7 +202,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
         jobId,
         jobTitle: title,
         company,
-        msg: '外部网申岗位，无法在 BOSS 聊天中自动沟通，已跳过（不加成功计数）',
+        msg: '外部网申岗位，无法自动投递，已跳过（不加成功计数）',
       });
       addLog('warn', `跳过外部网申岗位：${title}`);
       return 'continue';
@@ -218,8 +224,9 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       return 'stop';
     }
 
-    // HR 已发来消息 →「AI 跟聊」（对齐 AI-BossJob aiReply）：生成回复并以回复文本发送
-    if (result.needsReply) {
+    // HR 已发来消息 →「AI 跟聊」（对齐 AI-BossJob aiReply）：生成回复并以回复文本发送。
+    // 仅 BOSS 聊天链路支持（其余平台回复在平台 App 内人工跟进）
+    if (platform === 'boss' && result.needsReply) {
       const hrMessage = String(result.hrLastMessage || '').trim();
       addChatLog({
         level: 'stage',
@@ -254,7 +261,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       });
       const replySend = await chatWithEngineRecovery(
           async () => camoufoxChat(jobId, reply.text, { ...baseOpts, mode: 'reply', replyText: reply.text }),
-          title
+          title, platform
         );
         if (replySend.dead) {
           updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
@@ -362,12 +369,23 @@ export interface AutoChatProgress {
   total: number;
 }
 
+/**
+ * 批量沟通的可选限定范围（由「定时投递」任务等入口传入；手动启动不传 = 全部已启用平台、不限额）：
+ *  - platforms：仅处理这些平台的任务（需同时满足「平台已启用」）；空/缺省 = 全部已启用平台。
+ *  - maxCount：本次运行成功沟通达到该条数即结束；0/缺省 = 不限。
+ * 冷却/每日上限/首条验收/风控等安全守卫在任何 scope 下都优先于本范围生效。
+ */
+export interface AutoChatScope {
+  platforms?: JobPlatform[];
+  maxCount?: number;
+}
+
 interface AutoChatState {
   chatRunning: boolean;
   activeChatId: string | null;
   progress: AutoChatProgress;
   /** 启动后台批量沟通：持续处理当前队列，并自动接收工作台新批准岗位 */
-  start: () => void;
+  start: (scope?: AutoChatScope) => void;
   /** 仅处理单个岗位（不与批量并发） */
   chatOne: (item: PendingItem) => void;
   /** 停止后台任务 */
@@ -379,7 +397,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   activeChatId: null,
   progress: { index: 0, total: 0 },
 
-  start: () => {
+  start: (scope?: AutoChatScope) => {
     if (busy || useAutoChatStore.getState().chatRunning) return;
     busy = true;
     runToken += 1;
@@ -391,10 +409,17 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
     if (pacer.budget !== pacerMax) pacer = new ActionPacer(pacerMax);
     processedIds = new Set();
     set({ chatRunning: true, activeChatId: null, progress: { index: 0, total: 0 } });
+    // 范围描述（定时任务触发时为任务 scope；手动启动无 scope → 全平台不限量）
+    const scopeText = (() => {
+      const parts: string[] = [];
+      if (scope?.platforms?.length) parts.push(`平台：${scope.platforms.map((p) => platformLabel(p)).join('/')}`);
+      if (scope?.maxCount && scope.maxCount > 0) parts.push(`本次上限 ${scope.maxCount} 条`);
+      return parts.length ? `（${parts.join('；')}）` : '';
+    })();
     useDataStore.getState().addChatLog({
       level: 'info',
       stage: 'system',
-      msg: '🚀 批量自动沟通已在后台启动：持续处理当前队列，并会在工作台新批准岗位时自动加入继续沟通（切到工作台仍会继续运行）。',
+      msg: `🚀 批量自动沟通已在后台启动${scopeText}：持续处理当前队列，并会在工作台新批准岗位时自动加入继续沟通（切到工作台仍会继续运行）。`,
     });
 
     void (async () => {
@@ -404,12 +429,27 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
       try {
         while (runToken === myToken) {
           const data = useDataStore.getState();
-          const eligible = rerankPending(data.pending).filter(
-            (p: PendingItem) => BATCH_ELIGIBLE.includes(p.status) && !processedIds.has(p.id) && !isDeliveryClaimed(p.id)
+          const loopCfg = useSettingsStore.getState().config;
+          // 多平台串行消费：
+          //   1) 候选 = 待沟通(approved/opened) 且未被取走/占锁 且「平台仍启用」的岗位；
+          //   2) 从候选中选出「设置优先级最高（数字最小）」的平台组——先跑完该平台全部任务
+          //      （含已打开沟通窗待补发 opened），该平台无剩余可沟通岗位后才切换到下一优先级平台。
+          // 已停用平台（platforms[p].enabled=false）的岗位不进入自动沟通，等待用户重新启用。
+          const pfKey = (p: PendingItem) =>
+            platformPriority(loopCfg, String(p.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51');
+          const allEligible = rerankPending(data.pending, loopCfg).filter(
+            (p: PendingItem) =>
+              BATCH_ELIGIBLE.includes(p.status) &&
+              !processedIds.has(p.id) &&
+              !isDeliveryClaimed(p.id) &&
+              platformEnabled(loopCfg, String(p.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51') &&
+              // 定时投递 scope：仅处理本次任务圈定的平台（空/缺省 = 全部已启用平台）
+              (!scope?.platforms?.length ||
+                scope.platforms.includes((p.job?.platform || 'boss') as JobPlatform))
           );
 
           // 队列暂空 → 后台轮询，等待工作台新批准岗位
-          if (eligible.length === 0) {
+          if (allEligible.length === 0) {
             if (!greeted) {
               greeted = true;
               useDataStore.getState().addChatLog({
@@ -422,12 +462,14 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             await sleep(IDLE_POLL_MS);
             continue;
           }
-
+          // 平台硬串行：仅取最优先平台组；该组清空后（switch）下一轮自然轮到次优平台。
+          const topPfKey = Math.min(...allEligible.map(pfKey));
+          const eligible = allEligible.filter((p) => pfKey(p) === topPfKey);
           const item = eligible[0];
 
-          // —— 消费前守卫（P03：冷却/每日上限/分批窗口这些非「实际发送」的判定，
+          // —— 消费前守卫（P03：冷却/每日上限/单轮上限这些非「实际发送」的判定，
           //    必须在 claimDelivery + processedIds.add 之前执行，否则会把整队列预占却一条不发，
-          //    窗口打开后这些岗位已被 processedIds 排除 → 永久空轮询）——
+          //    守卫放行后这些岗位才会被 processedIds 排除 → 不会永久空轮询）——
           const nowCfg = useSettingsStore.getState().config;
           // B1：冷却/每日上限/首条验收/风控这些内部退出路径不再自增 runToken 使 isCurrent=false，
           //    直接 break 由 finally 正常复位 chatRunning（否则 chatRunning 卡死、start() 被拦死）。
@@ -447,30 +489,34 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             });
             break;
           }
-          if (nowCfg.executionMode === 'auto' && nowCfg.batchDelivery?.enabled) {
-            const slot = activeBatchSlot(nowCfg, Date.now(), useDataStore.getState().pending);
-            if (!slot) {
+          // 多平台适配：平台每日投递上限（min(该平台每日目标, 平台侧上限如智联 100/日, 150)）
+          // 命中后整组跳过该平台岗位（不再逐条告警/预占），转交下一优先级平台，不中断整批
+          {
+            const itemPlatform = (item.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51';
+            if (dailySentCountFor(useDataStore.getState().pending, itemPlatform) >= effectiveDailyCapFor(nowCfg, itemPlatform)) {
               useDataStore.getState().addChatLog({
                 level: 'warn',
-                stage: 'system',
-                msg: `⏱ 当前不在早中晚分批投递的时段窗口内（早 ${nowCfg.batchDelivery.morningTime} / 午 ${nowCfg.batchDelivery.noonTime} / 晚 ${nowCfg.batchDelivery.eveningTime}），后台任务等待下一时段。`,
+                stage: 'risk',
+                msg: `平台 ${itemPlatform} 今日投递已达上限 ${effectiveDailyCapFor(nowCfg, itemPlatform)} 条，该平台剩余岗位本轮跳过（可在「设置 → 招聘平台」调整每日目标）。`,
               });
-              await sleep(IDLE_POLL_MS);
-              continue;
-            }
-            if (slot.remaining <= 0) {
-              useDataStore.getState().addChatLog({
-                level: 'warn',
-                stage: 'system',
-                msg: `⏱ 「${slot.label}」时段投递配额（${slot.quota} 条）已用完，后台任务等待下一时段。`,
-              });
-              await sleep(IDLE_POLL_MS);
+              for (const e of eligible) processedIds.add(e.id);
               continue;
             }
           }
+          // 单轮上限（定时投递任务限定）：成功沟通达到 scope.maxCount 即结束本次运行
+          if (scope?.maxCount && scope.maxCount > 0 && sentCount >= scope.maxCount) {
+            useDataStore.getState().addChatLog({
+              level: 'warn',
+              stage: 'system',
+              msg: `⏱ 本次投递已达设定上限（${scope.maxCount} 条），本次任务结束（下个触发时刻会再次启动）。`,
+            });
+            break;
+          }
 
-          // 走到这里才真正要发送 → 才认领占位锁并记入 processedIds（B1/P03）
-          if (!claimDelivery(item.id)) {
+
+          // 走到这里才真正要发送 → 才认领占位锁并记入 processedIds（B1/P03；多平台：锁带平台前缀）
+          const itemPlatformKey = String(item.job?.platform || 'boss');
+          if (!claimDelivery(item.id, itemPlatformKey)) {
             // 已被其他引擎认领投递，本轮跳过（交给认领方），下周期若被释放则重新纳入
             continue;
           }
@@ -499,7 +545,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             }
             await sleep(500 + Math.random() * 700);
           } finally {
-            releaseDelivery(item.id);
+            releaseDelivery(item.id, itemPlatformKey);
           }
         }
       } finally {

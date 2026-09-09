@@ -104,6 +104,15 @@ export const electronApi = {
         return false;
       }
     },
+    logout: async (platform: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().bossLogout;
+        if (!fn) return { ok: false, error: 'bossLogout API 不可用' };
+        return (await fn(platform)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
   },
 
   webview: {
@@ -299,6 +308,61 @@ export const electronApi = {
         return Boolean(r?.ok);
       } catch {
         return false;
+      }
+    },
+  },
+
+  // 保存「达标岗位」数据到本地：dir 为空走系统保存对话框，dir 为绝对路径则在指定导出目录自动按天写文件
+  saveQualifiedJobs: async (
+    defaultName: string,
+    jsonText: string,
+    dir?: string
+  ): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }> => {
+    try {
+      const fn = api().saveQualifiedJobs;
+      if (!fn) return { ok: false, error: 'saveQualifiedJobs API 不可用（仅 Electron 可用）' };
+      const r = (await fn(defaultName, jsonText, dir)) as {
+        ok?: boolean;
+        canceled?: boolean;
+        filePath?: string;
+        error?: string;
+      };
+      return { ok: Boolean(r?.ok), canceled: r?.canceled, filePath: r?.filePath, error: r?.error };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  },
+
+  // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）
+  qualifiedJobsDir: {
+    get: async (): Promise<string> => {
+      try {
+        const fn = api().qualifiedJobsDirGet;
+        if (!fn) return '';
+        const r = (await fn()) as { dir?: string };
+        return String(r?.dir || '');
+      } catch {
+        return '';
+      }
+    },
+    set: async (dir: string): Promise<{ ok: boolean; dir?: string; error?: string }> => {
+      try {
+        const fn = api().qualifiedJobsDirSet;
+        if (!fn) return { ok: false, error: '导出目录 API 不可用' };
+        const r = (await fn(dir)) as { ok?: boolean; dir?: string; error?: string };
+        return { ok: Boolean(r?.ok), dir: r?.dir, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    pick: async (): Promise<{ ok: boolean; canceled?: boolean; dir?: string; error?: string }> => {
+      try {
+        const fn = api().qualifiedJobsDirPick;
+        if (!fn) return { ok: false, error: '导出目录 API 不可用' };
+        const r = (await fn()) as { ok?: boolean; canceled?: boolean; dir?: string; error?: string };
+        return { ok: Boolean(r?.ok), canceled: r?.canceled, dir: r?.dir, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
       }
     },
   },

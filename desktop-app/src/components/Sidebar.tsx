@@ -34,9 +34,12 @@ const NAV_ICONS: Record<RouteKey, React.ReactNode> = {
 export default memo(function Sidebar() {
   const active = useAppStore((s) => s.activeRoute);
   const setRoute = useAppStore((s) => s.setRoute);
-  const bridge = useAppStore((s) => s.bridgeStatus);
+  const currentAction = useAppStore((s) => s.currentAction);
   const collapsed = useAppStore((s) => s.sidebarCollapsed);
   const toggleCollapsed = useAppStore((s) => s.toggleSidebarCollapsed);
+
+  const actionText = currentAction.text || '等待中';
+  const isActive = currentAction.source != null;
 
   const [collapseTooltipOpen, setCollapseTooltipOpen] = useState(false);
 
@@ -99,19 +102,15 @@ export default memo(function Sidebar() {
       <div className="rail-spacer" />
 
       {collapsed ? (
-        <Tooltip
-          title={`OpenClaw ${bridge === 'connected' ? '已连接' : '未连接'}`}
-          placement="right"
-          destroyTooltipOnHide
-        >
-          <div className={'bridge-status' + (bridge === 'connected' ? ' online' : '') + ' is-collapsed'}>
+        <Tooltip title={actionText} placement="right" destroyTooltipOnHide>
+          <div className={'action-status' + (isActive ? ' online' : '') + ' is-collapsed'}>
             <i className="dot" />
           </div>
         </Tooltip>
       ) : (
-        <div className={'bridge-status' + (bridge === 'connected' ? ' online' : '')}>
+        <div className={'action-status' + (isActive ? ' online' : '')}>
           <i className="dot" />
-          <span>OpenClaw{bridge === 'connected' ? '已连接' : '未连接'}</span>
+          <span>{actionText}</span>
         </div>
       )}
     </nav>

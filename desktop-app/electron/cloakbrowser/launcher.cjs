@@ -127,6 +127,27 @@ async function start(opts = {}) {
         ...(opts.licenseKey ? { licenseKey: opts.licenseKey } : {}),
       };
       const ctx = await m.launchPersistentContext(launchOpts);
+      // 监听 context 关闭：被外部关闭 / 进程崩溃 / 桌面窗口被关 → 立刻把 state 翻成 dead，
+      // 避免 launcher 内存态 ready=true 但 Playwright 真的没了，UI 此时点 + 会静默 hang。
+      try {
+        if (typeof ctx.on === 'function') {
+          ctx.on('close', () => {
+            if (!state.ready && !state.context) return; // 已被 stop()/healthCheck 清过，忽略
+            const closed = Array.from(state.pages.keys());
+            state.pages.clear();
+            state.context = null;
+            state.ready = false;
+            state.starting = false;
+            state.lastError = '隐身浏览器进程已断开（被外部关闭 / 崩溃），下次操作将自动重启';
+            for (const tid of closed) {
+              try { _emit({ tabId: tid, channel: 'closed', payload: { reason: 'context-closed' } }); } catch {}
+            }
+            _emitStatusImmediate();
+          });
+        }
+      } catch (e) {
+        // 注册失败不影响启动
+      }
       state.context = ctx;
       state.ready = true;
       state.starting = false;
@@ -347,6 +368,37 @@ function listPages() {
   return Array.from(state.pages.entries()).map(([tabId, t]) => ({ tabId, url: t.url, title: t.title }));
 }
 
+// 健康检查：探测 Playwright context 进程是否真的活着。
+// launchPersistentContext 的 context 进程可能因 Windows 桌面窗口被关 / 子进程崩溃
+// 已被 stop 过等场景让 state.ready 与 Playwright 真实状态脱钩（点 + 时 ctx.newPage() 会静默 hang）。
+// 这里用 1.5s race 探测 ctx.pages()，并把不一致状态即时修正：失败立刻把 ready=false、context=null，
+// 上游 CloakView 的 ensureCloakEngine() 会基于本返回值触发自动重启。
+async function healthCheck() {
+  if (!state.context) {
+    return { ok: true, alive: false, reason: state.lastError || 'not started', pages: 0 };
+  }
+  try {
+    const pages = await Promise.race([
+      state.context.pages(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('health timeout')), 1500)),
+    ]);
+    return { ok: true, alive: true, pages: pages?.length || 0 };
+  } catch (e) {
+    // 进程已死：自动清理 state + 通知 UI 走自动重启路径
+    const closed = Array.from(state.pages.keys());
+    state.pages.clear();
+    state.context = null;
+    state.ready = false;
+    state.starting = false;
+    state.lastError = `隐身浏览器进程已断开：${String((e && e.message) || e)}`;
+    for (const tid of closed) {
+      try { _emit({ tabId: tid, channel: 'closed', payload: { reason: 'health-failed' } }); } catch {}
+    }
+    _emitStatusImmediate();
+    return { ok: false, alive: false, reason: state.lastError, pages: 0 };
+  }
+}
+
 function getPageState(tabId) {
   const t = state.pages.get(tabId);
   if (!t) return null;
@@ -368,6 +420,7 @@ module.exports = {
   pageInput,
   listPages,
   getPageState,
+  healthCheck,
   get ready() { return state.ready; },
   get binary() { return state.binary; },
   get lastError() { return state.lastError; },

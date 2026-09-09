@@ -16,6 +16,7 @@ import {
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
+import { effectiveDailyCap } from '@/lib/bossclaw/safety';
 import { selectedDirectionItems } from '@/lib/bossclaw/directions';
 import { EmptyState } from '@/components/feedback';
 import type { Decision, PendingStatus } from '@/lib/bossclaw/types';
@@ -117,7 +118,7 @@ export default function Stats() {
   const pending = useDataStore((s) => s.pending);
   const taskRuns = useDataStore((s) => s.taskRuns);
   const directionPlan = useDataStore((s) => s.directionPlan);
-  const dailyTarget = useSettingsStore((s) => s.config.dailyTarget);
+  const config = useSettingsStore((s) => s.config);
 
   const agg = useMemo(() => {
     const byStatus = (s: PendingStatus) => pending.filter((p) => p.status === s).length;
@@ -173,7 +174,8 @@ export default function Stats() {
   const directionCount = selectedDirectionItems(directionPlan).length;
   const decisionTotal = agg.decisions.recommend + agg.decisions.cautious + agg.decisions.reject;
   const scoreTotal = agg.scoreBands.high + agg.scoreBands.mid + agg.scoreBands.low + agg.scoreBands.none;
-  const target = Math.max(1, dailyTarget || 150);
+  // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
+  const target = Math.max(1, effectiveDailyCap(config));
   const goalPct = Math.min(100, Math.round((agg.sent / target) * 100));
 
   const overviewCards: Array<{
@@ -284,7 +286,7 @@ export default function Stats() {
               {/* 今日目标达成 */}
               <div className="block-label mt-12" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 今日目标达成
-                <Tooltip title="目标值可在「设置 → 投递」中调整 dailyTarget">
+                <Tooltip title="今日目标 = 各已启用平台每日目标合计，可在「设置 → 招聘平台」逐平台调整（每平台上限于平台侧限制与防封号上限）">
                   <QuestionCircleOutlined style={{ fontSize: 12, color: 'var(--fg-muted)' }} />
                 </Tooltip>
               </div>

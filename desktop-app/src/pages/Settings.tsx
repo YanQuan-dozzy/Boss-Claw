@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Alert,
   AutoComplete,
   Button,
+  Checkbox,
   Input,
   InputNumber,
   Modal,
@@ -13,11 +14,10 @@ import {
   Switch,
   Tabs,
   Tag,
-  TimePicker,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
-import dayjs from 'dayjs';
 import {
   CheckCircleOutlined,
   DownloadOutlined,
@@ -45,9 +45,11 @@ import {
   DisconnectOutlined,
   InfoCircleOutlined,
   RedoOutlined,
-  ClockCircleOutlined,
   FolderOpenOutlined,
   SaveOutlined,
+  GlobalOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -63,6 +65,7 @@ import {
   type CustomSkillFields,
 } from '@/lib/bossclaw/skills';
 import { exportData, importData, clearAllData } from '@/lib/storage';
+import { useDataStore } from '@/store/useDataStore';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { electronApi } from '@/lib/electronApi';
 import {
@@ -75,9 +78,23 @@ import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
 import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
+import {
+  PLATFORM_META, PLATFORM_IDS, platformEnabled, platformPriority,
+  platformDailyCap, PLATFORM_DEFAULT_DAILY_TARGET,
+  type JobPlatform,
+} from '@/lib/bossclaw/platforms';
 import type { LLMProvider } from '@/store/useSettingsStore';
+import type { PendingItem } from '@/lib/bossclaw/types';
 
 const { Paragraph, Text } = Typography;
+
+/** 达标岗位的去重键（当天内去重依据）：优先 jobId/url，缺失时回退 platform|公司|标题|地点 */
+function qualifiedJobKey(p: PendingItem): string {
+  const j = p.job || {};
+  const id = j.jobId || j.url || '';
+  if (id) return `${j.platform || 'boss'}|${id}`;
+  return `${j.platform || 'boss'}|${j.company || ''}|${j.title || ''}|${j.location || ''}`;
+}
 
 const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: 'light', label: '浅色模式' },
@@ -101,6 +118,7 @@ export default function Settings() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const setRoute = useAppStore((s) => s.setRoute);
+  const requestBrowserLogin = useAppStore((s) => s.requestBrowserLogin);
 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -210,6 +228,17 @@ export default function Settings() {
   const [cfxLogining, setCfxLogining] = useState(false);
   const cfxConfig = config.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
 
+  // ===== 多平台适配：各平台 Camoufox 登录态与登录动作 =====
+  const [cfxPlatforms, setCfxPlatforms] = useState<Record<string, CamoufoxStatus | null>>({});
+  // 各平台在「内置浏览器（工作台）」会话中的登录态（webview persist 分区；j.c:boss-login 返回 platforms 映射）
+  const [webviewPlatforms, setWebviewPlatforms] = useState<Record<string, boolean>>({});
+  const refreshWebviewStatus = useCallback(async () => {
+    try {
+      const r: any = await (window.electron?.bossLogin as any)?.();
+      if (r && typeof r === 'object' && r.platforms) setWebviewPlatforms(r.platforms);
+    } catch { /* webview 登录态获取失败时忽略 */ }
+  }, []);
+
   // ===== CloakBrowser 隐身浏览器（设置页检测与操作）=====
   const [cloakBinaryInfo, setCloakBinaryInfo] = useState<any>(null);
   const [cloakReady, setCloakReady] = useState(false);
@@ -221,13 +250,17 @@ export default function Settings() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const cloakE: any = (typeof window !== 'undefined' ? window.electron : undefined) || {};
 
-  // 页面首次加载时静默刷新连接状态
+  // 页面首次加载时静默刷新连接状态，并轮询 webview 登录态
   useEffect(() => {
     refreshBridge();
     refreshCamoufox(true);
+    refreshAllPlatformStatus();
+    refreshWebviewStatus();
     if (cloakE.cloakStatus) {
       cloakE.cloakStatus().then((st: any) => setCloakReady(Boolean(st?.ready))).catch(() => {});
     }
+    const wvTimer = setInterval(() => refreshWebviewStatus(), 5000);
+    return () => clearInterval(wvTimer);
   }, []);
 
   const refreshCloakBinary = async () => {
@@ -262,6 +295,75 @@ export default function Settings() {
     // 依赖首次安装中不算「不可用」，不自动关闭引擎开关
     if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
     if (!silent) setCfxLoading(false);
+  };
+
+  // ===== 多平台适配：刷新各平台 Camoufox 登录态 =====
+  const refreshAllPlatformStatus = async () => {
+    const out: Record<string, CamoufoxStatus | null> = {};
+    for (const p of PLATFORM_IDS) {
+      try { out[p] = await camoufoxStatus(p); } catch { out[p] = null; }
+    }
+    setCfxPlatforms(out);
+  };
+
+  const onPlatformLogin = (p: string) => {
+    const meta = PLATFORM_META[p as JobPlatform];
+    // 改为在工作台 webview 新标签页打开对应平台登录页，由 persist:bossclaw 会话持久化登录态
+    requestBrowserLogin(p as JobPlatform, meta.loginUrl);
+    setRoute('workbench');
+    message.info(`${meta.label} 登录页已在工作台打开，请在右侧内置浏览器中完成扫码/账号登录`);
+  };
+
+  // 当前启用中的招聘平台数（用于「至少启用一个平台」约束：唯一启用平台禁止取消勾选）
+  const enabledPlatformCount = PLATFORM_IDS.filter((id) => platformEnabled(config, id)).length;
+
+  const togglePlatformEnabled = (p: JobPlatform, enabled: boolean) => {
+    // 招聘平台至少启用一个：取消勾选时若「除本平台外已无启用平台」，阻止并提示，保证不出现全空选择。
+    if (!enabled && enabledPlatformCount <= 1) {
+      message.warning(`至少需要保留一个启用的招聘平台，无法取消「${PLATFORM_META[p].label}」`);
+      return;
+    }
+    setConfig({
+      platforms: {
+        ...(config.platforms || {}),
+        [p]: { ...(config.platforms || {})[p], enabled },
+      },
+    });
+  };
+
+  // 调整某平台的每日投递目标（多平台独立配额，0 表示不限；上限按平台适配——输入值被本平台上限
+  // min(平台侧上限, MAX_SAFE_DAILY=150) 封顶，如智联最多 100/日）
+  const setPlatformDailyTarget = (p: JobPlatform, v: number) => {
+    const cap = platformDailyCap(p);
+    setConfig({
+      platforms: {
+        ...(config.platforms || {}),
+        [p]: { ...(config.platforms || {})[p], dailyTarget: Math.max(0, Math.min(Number(v) || 0, cap)) },
+      },
+    });
+  };
+
+  // 平台搜索/投递优先级：与相邻平台交换 priority（数字小=排前=先搜索/先投递）。
+  // 基于全部平台（含未启用）的优先级升序交换，保证 priority 唯一连续；UI「上移=优先一级」。
+  const movePlatformPriority = (p: JobPlatform, dir: -1 | 1) => {
+    const cur = config.platforms || {};
+    const sorted = (PLATFORM_IDS as JobPlatform[]).slice().sort(
+      (a, b) => platformPriority(config, a) - platformPriority(config, b)
+    );
+    const idx = sorted.indexOf(p);
+    if (idx < 0) return;
+    const j = idx + dir;
+    if (j < 0 || j >= sorted.length) return;
+    const other = sorted[j];
+    const a = cur[p] || { enabled: true, priority: 1 };
+    const b = cur[other] || { enabled: true, priority: 1 };
+    setConfig({
+      platforms: {
+        ...cur,
+        [p]: { enabled: a.enabled !== false, priority: b.priority ?? 1 },
+        [other]: { enabled: b.enabled !== false, priority: a.priority ?? 1 },
+      },
+    });
   };
 
   const onCamoufoxLogin = async () => {
@@ -341,6 +443,96 @@ export default function Settings() {
     message.success('已导出数据备份');
   };
 
+  // 保存「达标岗位」数据到本地：从工作台队列收集评分达标的岗位 → 按「每日一个新文件」写入本地磁盘。
+  // 达标 = 岗位分析评分 >= 投递时设置的最低分（minScore）。
+  // 去重范围：仅当天内去重（同一天已导出的岗位不再重复追写）；当天重复点击只追新增并去重。
+  // 已导出记录持久化于 useDataStore.qualifiedExports（日期 → 该日达标岗位），保证当日数据累积完整。
+  const [exportingQualified, setExportingQualified] = useState(false);
+  const [qualifiedJobsDir, setQualifiedJobsDir] = useState('');
+  const onSaveQualifiedJobs = async () => {
+    const minScore = Number(config?.minScore ?? 0);
+    const d = new Date();
+    const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const dataStore = useDataStore.getState();
+    const existed = dataStore.qualifiedExports[dateKey] || [];
+    const existedKeys = new Set(existed.map((e) => e.key));
+    const newly = dataStore.pending
+      .filter((p) => p.analysis && Number(p.analysis.score) >= minScore)
+      .filter((p) => !existedKeys.has(qualifiedJobKey(p)))
+      .map((p) => ({
+        key: qualifiedJobKey(p),
+        minScore,
+        score: Number(p.analysis?.score),
+        decision: p.analysis?.decision || '',
+        title: p.job?.title || '',
+        company: p.job?.company || '',
+        salary: p.job?.salary || '',
+        location: p.job?.location || '',
+        url: p.job?.url || '',
+        platform: p.job?.platform || 'boss',
+        recruiterName: p.job?.recruiterName || '',
+        status: p.status,
+        createdAt: p.createdAt,
+      }))
+      // 队列内按去重键再兜底去重（同一岗位可能在队列中出现多次）
+      .filter((e, i, arr) => arr.findIndex((x) => x.key === e.key) === i);
+    if (!newly.length) {
+      message.info(existed.length ? `今天（${dateKey}）已保存 ${existed.length} 条达标岗位，无新增` : `当前队列中没有新的达标岗位（评分 ≥ 最低分 ${minScore}）`);
+      return;
+    }
+    const merged = [...existed, ...newly];
+    const jsonText = JSON.stringify(
+      {
+        exportedAt: new Date().toISOString(),
+        日期: dateKey,
+        最低分: minScore,
+        达标数量: merged.length,
+        jobs: merged,
+      },
+      null,
+      2
+    );
+    const defaultName = `bossclaw-qualified-jobs-${dateKey}.json`;
+    setExportingQualified(true);
+    try {
+      let savedPath = '';
+      if (electronApi.saveQualifiedJobs) {
+        const r = await electronApi.saveQualifiedJobs(defaultName, jsonText, qualifiedJobsDir || undefined);
+        if (r.canceled) return; // 用户取消保存对话框（未设置导出目录时），不落记录
+        if (!r.ok) {
+          message.warning(r.error === 'saveQualifiedJobs API 不可用（仅 Electron 可用）' ? '本地保存仅桌面端可用' : `保存失败：${r.error || '未知错误'}`);
+          return;
+        }
+        savedPath = r.filePath || '';
+      } else {
+        // 浏览器预览降级：走下载
+        const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      // 写入成功后才记入本地去重记录，保证「当天数据完整」且不因重复点击重复追写
+      dataStore.mergeQualifiedExports(dateKey, merged);
+      message.success(`新增保存 ${newly.length} 条达标岗位，今天共 ${merged.length} 条${savedPath ? `：${savedPath}` : ''}`);
+    } catch (e: any) {
+      message.error('保存失败：' + (e?.message || e));
+    } finally {
+      setExportingQualified(false);
+    }
+  };
+
+  // 选一个本地文件夹作为达标岗位导出目录（选择即应用并持久化；设置后导出自动按天写进该目录）
+  const onPickQualifiedJobsDir = async () => {
+    const r = await electronApi.qualifiedJobsDir.pick();
+    if (r.canceled) return;
+    if (!r.ok) { message.error('选择失败：' + (r.error || '未知错误')); return; }
+    setQualifiedJobsDir(r.dir || '');
+    message.success(`达标岗位将自动保存到：${r.dir}`);
+  };
+
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -384,6 +576,10 @@ export default function Settings() {
       .then((r) => setAutostart(r.openAtLogin))
       .catch(() => setAutostart(false));
     getBackupDir().then(setBackupDir).catch(() => setBackupDir(''));
+    electronApi.qualifiedJobsDir
+      .get()
+      .then(setQualifiedJobsDir)
+      .catch(() => setQualifiedJobsDir(''));
   }, []);
 
   const onToggleAutostart = async (v: boolean) => {
@@ -425,16 +621,8 @@ export default function Settings() {
     setTimeout(() => window.location.reload(), 600);
   };
 
-  // ===== 早中晚分批投递配置助手 =====
-  const batch = config.batchDelivery;
-  const patchBatch = (p: Partial<typeof batch>) => setConfig({ batchDelivery: { ...batch, ...p } });
-  const patchBatchCount = (id: keyof typeof batch.counts, v: number) =>
-    setConfig({ batchDelivery: { ...batch, counts: { ...batch.counts, [id]: v } } });
-  const BATCH_SLOT_ROWS: { id: keyof typeof batch.counts; label: string }[] = [
-    { id: 'morning', label: '早间' },
-    { id: 'noon', label: '午间' },
-    { id: 'evening', label: '晚间' },
-  ];
+  // 早中晚分批投递已并入「定时任务」模块（2026-09-09）：由多条「限量定时投递」任务表达，
+  // config.batchDelivery 已退役（老配置在启动时一次性迁移为定时任务）。
 
   // 定义 5 大分类 Tab
   const tabItems = [
@@ -477,69 +665,6 @@ export default function Settings() {
             </Paragraph>
           </div>
 
-          <div className="settings-section-card">
-            <div className="settings-section-header">
-              <div className="settings-section-header__title">
-                <div className="section-icon-box">
-                  <ClockCircleOutlined />
-                </div>
-                早中晚分批投递
-              </div>
-              {batch.enabled && config.executionMode !== 'auto' ? (
-                <Tag color="orange">需全自动模式生效</Tag>
-              ) : batch.enabled ? (
-                <Tag color="green">已启用·按时段分批</Tag>
-              ) : (
-                <Tag>已关闭</Tag>
-              )}
-            </div>
-            <div className="sg-item">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                <span className="field-label">启用早中晚分批投递</span>
-                <Switch checked={batch.enabled} onChange={(v) => patchBatch({ enabled: v })} />
-              </div>
-            </div>
-            {batch.enabled && (
-              <>
-                <div className="settings-grid" style={{ marginTop: 8 }}>
-                  {BATCH_SLOT_ROWS.map((row) => {
-                    const timeKey: 'morningTime' | 'noonTime' | 'eveningTime' =
-                      row.id === 'morning' ? 'morningTime' : row.id === 'noon' ? 'noonTime' : 'eveningTime';
-                    return (
-                      <div key={row.id} className="sg-item">
-                        <span className="field-label">{row.label}时段开始时间</span>
-                        <TimePicker
-                          format="HH:mm"
-                          style={{ width: '100%' }}
-                          value={dayjs(batch[timeKey], 'HH:mm')}
-                          onChange={(t) => patchBatch({ [timeKey]: t ? t.format('HH:mm') : '09:00' })}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="settings-grid">
-                  {BATCH_SLOT_ROWS.map((row) => (
-                    <div key={row.id} className="sg-item">
-                      <span className="field-label">{row.label}时段投递配额</span>
-                      <InputNumber
-                        min={0}
-                        style={{ width: '100%' }}
-                        placeholder="0=不限"
-                        value={batch.counts[row.id]}
-                        onChange={(v) => patchBatchCount(row.id, v ?? 0)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              开启后，在<b>全自动投递模式</b>下，自动沟通将按 早 / 午 / 晚 三个时段窗口分批进行，而非一次性集中投递；
-              每个时段开始时点可单独设置，并限定该时段的本次投递配额（0 表示不限，仍受每日 / 每分钟安全上限约束）。
-              在「人工确认（半自动）」模式下本开关不生效；三个时段依次为：早间（早→午）、午间（午→晚）、晚间（晚→次日 0 点）。
-            </Paragraph>
-          </div>
 
           <div className="settings-section-card">
             <div className="settings-section-header">
@@ -619,6 +744,163 @@ export default function Settings() {
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
               开启后，超过设定时长未被切换或导航的后台标签页将自动关闭；当前正在查看的标签页不会被关闭，且系统会自动保留至少一个标签页，保证浏览器始终可用。
             </Paragraph>
+          </div>
+        </div>
+      ),
+    },
+
+    {
+      key: 'platforms',
+      label: (
+        <span>
+          <GlobalOutlined style={{ marginRight: 6 }} />
+          招聘平台
+        </span>
+      ),
+      children: (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <GlobalOutlined />
+                </div>
+                招聘平台
+              </div>
+              <Tag color="blue">多平台</Tag>
+            </div>
+            <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>
+              启用后在「工作台」搜索栏可选平台，且内置浏览器新建标签页可选对应平台首页；各平台独立在工作台
+              内置浏览器扫码/账号登录，登录态由 Electron 持久化会话自动保存，投递动作按平台语义适配。
+              <b>BOSS 直聘与其余平台一样支持自主勾选</b>：取消勾选后该平台不再参与搜索采集与自动沟通，
+              已采集岗位仍保留在队列中，重新勾选后继续处理。
+            </Paragraph>
+            <div style={{ marginTop: 6, padding: '8px 12px', background: 'var(--hover-bg)', borderRadius: 8, fontSize: 13, color: 'var(--fg-muted)' }}>
+              平台优先级（<ArrowUpOutlined style={{ fontSize: 11 }} /> <ArrowDownOutlined style={{ fontSize: 11 }} /> 调整，数字 1 = 最高优先）：
+              决定「工作台搜索栏」的平台顺序，以及多平台任务执行顺序 —— 自动沟通会<b>先完成优先级较高平台的全部
+              已确认任务，再切换下一优先级平台</b>（同级不重复，交换式调整）。
+            </div>
+            <div style={{ marginTop: 10 }}>
+              {[...PLATFORM_IDS]
+                .sort((a, b) => platformPriority(config, a) - platformPriority(config, b))
+                .map((p) => {
+                const meta = PLATFORM_META[p];
+                const st = cfxPlatforms[p];
+                const cfxLoggedIn = Boolean(st?.engine?.loggedIn);
+                const wvLoggedIn = Boolean(webviewPlatforms[p]);
+                const enabled = platformEnabled(config, p);
+                const pri = platformPriority(config, p);
+                // 至少启用一个平台的约束：唯一仍启用的平台禁止取消勾选（UI 禁用 + togglePlatformEnabled 逻辑兜底）
+                const lastEnabledOnly = enabled && enabledPlatformCount === 1;
+                // 本平台上限（平台侧收窄后，如智联=100；其余=MAX_SAFE_DAILY=150）与适配后的每日目标
+                const dailyCap = platformDailyCap(p);
+                const storedTarget = Number(config.platforms?.[p]?.dailyTarget ?? PLATFORM_DEFAULT_DAILY_TARGET[p]) || 0;
+                const dailyTarget = storedTarget > 0 ? Math.min(storedTarget, dailyCap) : storedTarget;
+                const overCap = storedTarget > dailyCap;
+                const orderIdx = [...PLATFORM_IDS].sort((a, b) => platformPriority(config, a) - platformPriority(config, b)).indexOf(p);
+                const canUp = orderIdx > 0;
+                const canDown = orderIdx < PLATFORM_IDS.length - 1;
+                return (
+                  <div key={p} className="field-group" style={{ marginTop: 10, padding: '10px 12px', border: '1px solid var(--border-color)', borderRadius: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <Tooltip title={lastEnabledOnly ? '至少需保留一个启用的招聘平台：请先启用其他平台，再取消本平台' : undefined}>
+                        <Checkbox
+                          checked={enabled}
+                          disabled={lastEnabledOnly}
+                          onChange={(e) => togglePlatformEnabled(p, e.target.checked)}
+                        >
+                          <Text strong>{meta.label}</Text>
+                        </Checkbox>
+                      </Tooltip>
+                      {!enabled && <Tag style={{ marginRight: 0 }}>未启用</Tag>}
+                      {lastEnabledOnly && (
+                        <Tag color="orange" style={{ marginRight: 0 }}>最后启用平台（不可取消）</Tag>
+                      )}
+                      <span style={{ flex: 1 }} />
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                        <Tooltip title={canUp ? '提高优先级（优先搜索 / 先投递）' : '已是最高优先级'}>
+                          <Button size="small" type="text" icon={<ArrowUpOutlined />} disabled={!canUp} onClick={() => movePlatformPriority(p, -1)} />
+                        </Tooltip>
+                        <Tooltip title={canDown ? '降低优先级（延后搜索 / 后投递）' : '已是最低优先级'}>
+                          <Button size="small" type="text" icon={<ArrowDownOutlined />} disabled={!canDown} onClick={() => movePlatformPriority(p, 1)} />
+                        </Tooltip>
+                        <Tag color={pri === 1 ? 'gold' : 'default'} style={{ margin: '0 4px 0 0', minWidth: 24, textAlign: 'center' }}>
+                          {pri}
+                        </Tag>
+                      </span>
+                      <Button
+                        size="small"
+                        icon={<QrcodeOutlined />}
+                        disabled={wvLoggedIn}
+                        onClick={() => onPlatformLogin(p)}
+                      >
+                        {wvLoggedIn ? '已登录' : '扫码登录'}
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        disabled={!wvLoggedIn}
+                        onClick={async () => {
+                          const r = await electronApi.boss.logout(p);
+                          if (r.ok) {
+                            message.success(`${meta.label} 已退出登录`);
+                          } else {
+                            message.error('退出失败：' + (r.error || '未知错误'));
+                          }
+                          refreshWebviewStatus();
+                        }}
+                      >
+                        退出
+                      </Button>
+                    </div>
+                    <table style={{ marginTop: 8, width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--fg-muted)', borderBottom: '1px solid var(--border-color)' }}>模块</th>
+                          <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--fg-muted)', borderBottom: '1px solid var(--border-color)' }}>登录状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td style={{ padding: '4px 8px' }}>工作台（内置浏览器）</td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <Tag color={wvLoggedIn ? 'green' : 'default'} style={{ margin: 0 }}>{wvLoggedIn ? '已登录' : '未登录'}</Tag>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: '4px 8px' }}>自动沟通（Camoufox 隐身）</td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <Tag color={cfxLoggedIn ? 'green' : 'default'} style={{ margin: 0 }}>
+                              {!st?.ready ? '引擎未就绪' : (cfxLoggedIn ? '已登录' : '未登录')}
+                            </Tag>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    {meta.dailyHint && <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)' }}>{meta.dailyHint}</div>}
+                    {/* 每日投递目标（多平台独立配额；上限按平台适配收窄） */}
+                    <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                        <AimOutlined style={{ marginRight: 4 }} />
+                        每日投递目标
+                      </span>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={dailyCap}
+                        placeholder="0=不限"
+                        value={dailyTarget}
+                        onChange={(v) => setPlatformDailyTarget(p, v ?? 0)}
+                        style={{ width: 120 }}
+                      />
+                      <span style={{ fontSize: 11, color: overCap ? '#d46b08' : 'var(--fg-subtle)' }}>
+                        条 / 天；0 表示不限，本平台上限 {dailyCap} 条{overCap ? `（原设置 ${storedTarget} 已超出，按上限执行）` : '（按平台侧限制 / 防封号适配）'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       ),
@@ -712,25 +994,6 @@ export default function Settings() {
                   }))}
                 />
               </div>
-              <div className="sg-item">
-                <span className="field-label">每日目标投递数</span>
-                <InputNumber
-                  min={0}
-                  value={config.dailyTarget}
-                  onChange={(v) => setConfig({ dailyTarget: v ?? 0 })}
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div className="sg-item">
-                <span className="field-label">最低匹配要求分</span>
-                <InputNumber
-                  min={0}
-                  max={100}
-                  value={config.minScore}
-                  onChange={(v) => setConfig({ minScore: v ?? 75 })}
-                  style={{ width: '100%' }}
-                />
-              </div>
             </div>
           </div>
 
@@ -744,6 +1007,16 @@ export default function Settings() {
               </div>
             </div>
             <div className="settings-grid">
+              <div className="sg-item">
+                <span className="field-label">最低匹配要求分</span>
+                <InputNumber
+                  min={0}
+                  max={100}
+                  value={config.minScore}
+                  onChange={(v) => setConfig({ minScore: v ?? 75 })}
+                  style={{ width: '100%' }}
+                />
+              </div>
               <div className="sg-item">
                 <span className="field-label">HR 活跃度过滤</span>
                 <Select
@@ -763,9 +1036,6 @@ export default function Settings() {
                 />
               </div>
             </div>
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              HR 活跃度与面试方式过滤按设定的规则确定性跳过岗位（由页面解析 + 用户阈值共同判定，不消耗 AI Token）。
-            </Paragraph>
           </div>
 
           <div className="settings-section-card">
@@ -1407,7 +1677,7 @@ export default function Settings() {
                     showIcon
                     style={{ borderRadius: 8, marginBottom: 10 }}
                     message="隐身引擎未就绪"
-                    description={cfx?.message || '请确认已安装 Camoufox 隐身引擎内核（本地浏览器不可复用），或点击「检测状态」。'}
+                    description={cfx?.message || '请先下载 Camoufox 隐身引擎内核（暂未下载），或点击「检测状态」。'}
                   />
                 )}
                 <div className="settings-grid">
@@ -1547,6 +1817,45 @@ export default function Settings() {
             </div>
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
               数据（简历、画像、投递方向、任务记录、偏好设置）全量保存在本机浏览器 localStorage。建议定期导出 JSON 文件备份。
+            </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <AimOutlined />
+                </div>
+                达标岗位导出
+              </div>
+            </div>
+            {qualifiedJobsDir ? <Tag color="green">已设置导出目录</Tag> : <Tag>默认弹出保存框</Tag>}
+            <div className="data-actions setting-actions">
+              <Space size={12} wrap>
+                <Button
+                  size="middle"
+                  className="btn-uniform"
+                  icon={<SaveOutlined />}
+                  loading={exportingQualified}
+                  onClick={onSaveQualifiedJobs}
+                >
+                  保存达标岗位到本地
+                </Button>
+                <Button
+                  size="middle"
+                  className="btn-uniform"
+                  icon={<FolderOpenOutlined />}
+                  onClick={onPickQualifiedJobsDir}
+                >
+                  选择导出文件夹
+                </Button>
+              </Space>
+            </div>
+            <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
+              {qualifiedJobsDir
+                ? `导出目录：${qualifiedJobsDir}`
+                : '未设置导出目录：点击保存时弹出系统对话框自主选择保存位置。'}
+              从工作台岗位队列中，把分析评分≥最低分（minScore）的达标岗位写入本地磁盘。每个自然日一个文件（bossclaw-qualified-jobs-YYYY-MM-DD.json）；同一天重复点击只追新增并去重，当日数据累积完整，不跨天重算、不删除。
             </Paragraph>
           </div>
 

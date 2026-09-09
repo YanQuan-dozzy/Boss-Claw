@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { createSafePersistStorage } from '@/lib/persistSafe';
 import type { AppConfig, ModelProvider } from '@/lib/bossclaw/types';
 import { DEFAULT_CONFIG } from '@/lib/bossclaw/defaults';
 
@@ -10,6 +11,25 @@ export interface LLMConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+}
+
+/** 已退役的 config.batchDelivery（早中晚分批）在 merge 时被剥离前的老结构，仅用于一次性迁移。 */
+export interface LegacyBatchDelivery {
+  enabled?: boolean;
+  morningTime?: string;
+  noonTime?: string;
+  eveningTime?: string;
+  counts?: { morning?: number; noon?: number; evening?: number };
+}
+
+/** merge 时剥离到的旧分批配置（仅老用户升级后的首次启动存在，消费后置空） */
+export let legacyBatchDelivery: LegacyBatchDelivery | null = null;
+
+/** App 启动调用：取走一次性的旧分批配置（幂等；已消费后返回 null）。 */
+export function consumeLegacyBatchDelivery(): LegacyBatchDelivery | null {
+  const v = legacyBatchDelivery;
+  legacyBatchDelivery = null;
+  return v;
 }
 
 // 预设提供商的默认端点、默认模型与可选模型名建议（自定义可改）
@@ -98,6 +118,9 @@ export const useSettingsStore = create<SettingsState>()(
     {
       // v2 命名空间：本次回滚强制重置旧 bossclaw-settings（含已被删除的 engineMode:'cloak' 持久化值）
       name: 'bossclaw-settings-v2',
+      // P30：安全持久化——config 变更（含暂停冷却 pausedUntil 等安全字段）不得因 localStorage
+      // 配额异常向上抛错中断引擎/UI；防抖合批也避免高频 setConfig 触发全量序列化
+      storage: createSafePersistStorage(),
       // 浅合并持久化配置到最新 DEFAULT_CONFIG，自动补齐新增的安全字段
       // （老用户 localStorage 中缺少 maxDailySent 等字段时回退到安全默认值）
       merge: (persisted, current) => {
@@ -108,10 +131,36 @@ export const useSettingsStore = create<SettingsState>()(
         // 任一字段被用户改过则保留其设置，不覆盖。
         const migrateOld30 = pc.maxDailySent === 30 && pc.dailyTarget === 30;
         const migrated = migrateOld30 ? { maxDailySent: 120, dailyTarget: 120 } : {};
+        // 迁移（2026-09-09）：招聘平台 platforms 老数据只有 {enabled}，自动按 DEFAULT_CONFIG 补齐 priority；
+        // 用户手动修改过的 priority 保留（pc.platforms[k].priority 存在时优先采用）。
+        const defaultPlatforms = (current as SettingsState).config.platforms || ({} as AppConfig['platforms']);
+        const persistedPlatforms = (pc.platforms || {}) as Record<string, { enabled?: boolean; priority?: number; dailyTarget?: number }>;
+        // 迁移（2026-09-09）：每日投递目标 dailyTarget 从 AppConfig 顶层下放到 platforms[k].dailyTarget。
+        // 优先采用老用户已下放的 platforms[k].dailyTarget；否则按顶层 pc.dailyTarget 回填每个平台；
+        // 都没有则回退到 defaultPlatforms 的默认 dailyTarget。
+        const legacyDailyTarget = Number(pc.dailyTarget ?? defaultPlatforms.boss?.dailyTarget ?? 120);
+        const mergedPlatforms: AppConfig['platforms'] = { ...defaultPlatforms };
+        for (const [k, v] of Object.entries(persistedPlatforms)) {
+          if (k in defaultPlatforms) {
+            const def = (defaultPlatforms as Record<string, { enabled: boolean; priority: number; dailyTarget: number }>)[k];
+            (mergedPlatforms as Record<string, { enabled: boolean; priority: number; dailyTarget: number }>)[k] = {
+              enabled: v?.enabled !== false,
+              priority: Number.isFinite(Number(v?.priority)) ? Number(v.priority) : def.priority,
+              dailyTarget: Number.isFinite(Number(v?.dailyTarget)) ? Number(v.dailyTarget) : legacyDailyTarget,
+            };
+          }
+        }
+        const platformsMigrated = { platforms: mergedPlatforms };
+        // 迁移（2026-09-09）：早中晚分批投递从 config 迁出为「定时任务」——config.batchDelivery 已退役。
+        // 剥离旧字段并转存到模块级变量，由 App 启动一次性迁移为 3 条限量定时投递任务（幂等）。
+        const pcRaw = pc as unknown as { batchDelivery?: LegacyBatchDelivery };
+        if (pcRaw.batchDelivery) legacyBatchDelivery = pcRaw.batchDelivery;
+        delete pcRaw.batchDelivery;
+        const pcRest = pc as Partial<AppConfig>;
         return {
           ...current,
           ...p,
-          config: { ...(current as SettingsState).config, ...pc, ...migrated },
+          config: { ...(current as SettingsState).config, ...pcRest, ...migrated, ...platformsMigrated },
         };
       },
     }

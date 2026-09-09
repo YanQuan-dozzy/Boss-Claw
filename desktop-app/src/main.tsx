@@ -12,6 +12,31 @@ import 'antd/dist/reset.css';
 
 import { ThemeProvider } from './context/ThemeContext';
 
+// P30：渲染进程全局兜底——网络卡顿/异步异常导致的未捕获错误与 rejection 不应静默吞掉，
+// 统一记录到日志面板（addLog 低频、持久化已防抖，不会放大卡顿），便于定位「无故卡死」根因。
+function installGlobalErrorCatch(): void {
+  const report = (kind: string, detail: unknown): void => {
+    try {
+      const msg = String(
+        detail instanceof Error ? `${detail.name}: ${detail.message}` : typeof detail === 'object' ? JSON.stringify(detail) : String(detail)
+      ).slice(0, 400);
+      console.error(`[global:${kind}]`, detail);
+      // 懒加载 useDataStore，避免模块顶层循环依赖；错误写入低频日志
+      void import('./store/useDataStore').then(({ useDataStore }) => {
+        useDataStore.getState().addLog('error', `全局${kind}：${msg}`);
+      });
+    } catch {
+      /* 兜底失败不再抛 */
+    }
+  };
+  // 仅记录运行时异常（window.onerror）；资源加载失败等无 error 对象的事件跳过（避免噪音刷屏）
+  window.addEventListener('error', (e) => {
+    if (e?.error) report('错误', e.error);
+  });
+  window.addEventListener('unhandledrejection', (e) => report('未处理异常', e?.reason));
+}
+installGlobalErrorCatch();
+
 const root = document.getElementById('root')!;
 
 function Root() {

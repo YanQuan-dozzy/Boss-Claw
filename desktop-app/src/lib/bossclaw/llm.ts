@@ -306,27 +306,37 @@ export function clearAICache(scope?: AICacheScope): number {
 
 /** AI 缓存统计（供设置页展示） */
 export function getAICacheStats(): { entries: number; totalBytes: number; hits: number; misses: number; since: number } {
-  const map = loadAICache();
-  let hits = 0;
-  let bytes = 0;
-  for (const key of Object.keys(map)) {
-    const e = map[key];
-    hits += e.hits || 0;
-    bytes += key.length + JSON.stringify(e.value).length;
+  // P30：entries/totalBytes 直接读原始 key 字符串长度——旧实现对每条缓存重新 JSON.stringify
+  // 累加字节数，缓存接近 2.5MB 时设置页每次刷新统计都会触发一次全量序列化（主线程卡顿）。
+  let rawCache = '';
+  let entries = 0;
+  try {
+    rawCache = localStorage.getItem(AI_CACHE_KEY) || '';
+    const parsed = JSON.parse(rawCache) as Record<string, unknown> | null;
+    entries = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.keys(parsed).length : 0;
+  } catch {
+    entries = 0;
   }
+  const totalBytes = rawCache.length;
+  // P30：命中/未命中统计统一以轻量 stats key（bossclaw-ai-cache-stats）为准——
+  // 命中计数改为内存累加后不再写回每条缓存条目（避免读缓存触发整份缓存序列化），
+  // 原 hits 读的是条目内 e.hits（从未随 bumpCacheStats 落盘），与 misses 来源不一致，
+  // 现改为与 misses 同一来源（stats key），口径一致且不再随缓存条目的生命周期丢失。
+  let hits = 0;
   let misses = 0;
   let since = Date.now();
   try {
     const raw = localStorage.getItem(AI_CACHE_STATS_KEY);
     if (raw) {
       const s = JSON.parse(raw);
+      hits = Number(s?.hits || 0);
       misses = Number(s?.misses || 0);
       since = Number(s?.since || since);
     }
   } catch {
     /* 忽略 */
   }
-  return { entries: Object.keys(map).length, totalBytes: bytes, hits, misses, since };
+  return { entries, totalBytes, hits, misses, since };
 }
 
 // 并发去重：同一 key 的并发调用只发一次真实请求，其余等待同一 Promise
@@ -357,8 +367,9 @@ export async function cachedCallModel(
   const map = loadAICache();
   const hit = map[key];
   if (hit && hit.ts + hit.ttlMs > now) {
-    hit.hits = (hit.hits || 0) + 1; // 命中只计次，不滑动续期（TTL 保持绝对过期）
-    saveAICache(map);
+    // P30：命中不写盘——命中计数（hits）仅作内存统计，避免「读缓存」触发对整份缓存
+    // （上限 2.5MB）的全量 JSON.stringify + localStorage 写盘（网络慢/批量重复分析时
+    // 高频命中会造成渲染主线程阻塞、卡顿）。实际缓存条目仍在其写入时持久化，不受影响。
     bumpCacheStats(1, 0);
     return hit.value;
   }

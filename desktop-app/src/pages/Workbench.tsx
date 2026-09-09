@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Checkbox, Empty, Progress, Tag, Typography, message, Steps, Segmented, Tooltip, Space, Input } from 'antd';
+import { Button, Card, Checkbox, Empty, Progress, Tag, Typography, message, Steps, Segmented, Tooltip, Space, Input, Select } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   DownOutlined, RightOutlined, StopOutlined, UndoOutlined, ThunderboltOutlined,
@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
+import PlatformChip from '@/components/PlatformChip';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob } from '@/lib/bossclaw/matching';
@@ -17,20 +18,23 @@ import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
 import { makePendingItem } from '@/store/useDataStore';
-import { PHASE_LABELS, stageToPhase, taskStageMeta } from '@/lib/bossclaw/taskState';
+import { PHASE_LABELS, stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
+import { buildPlatformSearchQueue } from '@/lib/bossclaw/platformUrls';
+import { platformEnabled, platformLabel, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
-  ActionPacer, effectiveDailyCap, dailySentCount, isLockedOut,
+  ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
   cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS,
 } from '@/lib/bossclaw/safety';
 import { resolveCityCode, loadBossCityCodes } from '@/lib/bossclaw/searchUrl';
 import { camoufoxSearch, camoufoxSend, camoufoxStatus, isCamoufoxStopCode, isCamoufoxEnvCode, type CamoufoxJob } from '@/lib/bossclaw/camoufox';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
 import type { JobMeta, PendingItem, TaskStage } from '@/lib/bossclaw/types';
+import { useAutoChatStore } from '@/store/useAutoChatStore';
 
 const { Text } = Typography;
 
@@ -117,9 +121,11 @@ export default function Workbench() {
   const autoAssist = useAppStore((s) => s.autoAssist);
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
   const bossLoggedIn = useAppStore((s) => s.bossLoggedIn);
+  const browserLoginRequest = useAppStore((s) => s.browserLoginRequest);
+  const clearBrowserLogin = useAppStore((s) => s.clearBrowserLogin);
   const directionPlan = useDataStore((s) => s.directionPlan);
-  // 定时任务「采集」请求标志（调度器置位，常驻本组件消费后清除）
-  const collectRequested = useScheduleStore((s) => s.collectRequested);
+  // 定时任务「采集」请求（调度器置位，常驻本组件消费后清除；携带目标平台）
+  const collectRequest = useScheduleStore((s) => s.collectRequest);
   const [running, setRunning] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [applyStage, setApplyStage] = useState<TaskStage | null>(null);
@@ -162,6 +168,39 @@ export default function Workbench() {
   // ===== Camoufox 隐身采集（可选增强）=====
   const [cfxCollecting, setCfxCollecting] = useState(false);
   const cfxActiveRef = useRef(false);
+
+  // ===== 多平台适配：当前搜索/采集平台（多选；至少保留一个；仅显示已启用平台，按平台优先级排序）=====
+  const enabledPlatforms = useMemo<JobPlatform[]>(() => sortedEnabledPlatforms(config), [config]);
+  const [searchPlatforms, setSearchPlatforms] = useState<JobPlatform[]>(() => {
+    const enabled = sortedEnabledPlatforms(config);
+    return enabled.length ? [enabled[0]] : ['boss'];
+  });
+  // 用户全部取消/所选平台全部被禁用时，自动回填第一个已启用平台，保证至少有一个
+  const handleSearchPlatformsChange = useCallback((vals: JobPlatform[]) => {
+    if (!vals.length) {
+      const first = sortedEnabledPlatforms(config)[0];
+      if (first) {
+        message.info(`至少选择一个平台，已自动回填到「${platformLabel(first)}」`);
+        setSearchPlatforms([first]);
+      } else {
+        setSearchPlatforms([]);
+      }
+      return;
+    }
+    setSearchPlatforms(vals);
+  }, [config]);
+  useEffect(() => {
+    // 设置页关闭了某些平台 → 从已选项里剔除失效项
+    const filtered = searchPlatforms.filter((p) => platformEnabled(config, p));
+    if (filtered.length !== searchPlatforms.length) {
+      if (filtered.length === 0) {
+        const first = sortedEnabledPlatforms(config)[0];
+        setSearchPlatforms(first ? [first] : []);
+      } else {
+        setSearchPlatforms(filtered);
+      }
+    }
+  }, [config, searchPlatforms]);
 
   // ===== 防封号：限速器 + 投递节奏 =====
   const pacerRef = useRef<ActionPacer>(new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE));
@@ -342,7 +381,7 @@ export default function Workbench() {
       }
     }
     if (!finalGreeting) { message.warning('请先填写求职招呼语，再确认沟通'); return; }
-    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, deliveryGreeting: finalGreeting, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p)));
+    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, deliveryGreeting: finalGreeting, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p)), useSettingsStore.getState().config);
     setPending(next);
     addLog('info', '已确认沟通，岗位进入投递队列（等待「一键投递」）');
     preferIdRef.current = id;
@@ -351,7 +390,7 @@ export default function Workbench() {
   const onApproveAll = () => {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (!waiting.length) { message.info('没有待确认的岗位'); return; }
-    const next = rerankPending(pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: Date.now() } : p)));
+    const next = rerankPending(pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: Date.now() } : p)), useSettingsStore.getState().config);
     setPending(next);
     addLog('success', `已批准 ${waiting.length} 个岗位进入投递队列（等待「一键投递」）`);
   };
@@ -375,13 +414,13 @@ export default function Workbench() {
   const onSkip = (id: string) => updatePending(id, { status: 'skipped' });
 
   const onRevert = (id: string) => {
-    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, status: 'pending' as const } : p)));
+    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, status: 'pending' as const } : p)), useSettingsStore.getState().config);
     setPending(next);
     addLog('info', '已撤回岗位，返回待确认队列');
   };
 
   const onOneClickDeliver = () => {
-    const { next, count } = promoteApprovedToQueue(pending);
+    const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
     if (!count) { message.info('没有已批准、等待投递的岗位'); return; }
     setPending(next);
     addLog('success', `已将 ${count} 个已批准岗位加入投递中队列，开始投递`);
@@ -422,10 +461,12 @@ export default function Workbench() {
       pauseAssist(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟），已暂停投递，请勿重复启动以免升级封禁`);
       return false;
     }
-    const cap = effectiveDailyCap(cfg);
-    const sentToday = dailySentCount(useDataStore.getState().pending);
+    // 工作台「一键投递」只处理 BOSS 岗位 → 上限按 BOSS 平台独立适配
+    // （effectiveDailyCapFor：min(该平台每日目标, 平台侧上限, MAX_SAFE_DAILY=150)）
+    const cap = effectiveDailyCapFor(cfg, 'boss');
+    const sentToday = dailySentCountFor(useDataStore.getState().pending, 'boss');
     if (sentToday >= cap) {
-      pauseAssist(`今日已投递 ${sentToday} 条，达到安全上限 ${cap} 条，投递已暂停（避免账号受限）`);
+      pauseAssist(`今日 BOSS 已投递 ${sentToday} 条，达到该平台上限 ${cap} 条，投递已暂停（避免账号受限）`);
       return false;
     }
     const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
@@ -703,8 +744,8 @@ export default function Workbench() {
     if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
-  // ===== Camoufox 隐身采集（可选增强，保留）=====
-  const runCamoufoxCollect = async () => {
+  // ===== Camoufox 隐身采集（可选增强，保留）——多平台：按 platform 参数走对应平台模块 =====
+  const runCamoufoxCollect = async (platform: JobPlatform = 'boss') => {
     if (cfxActiveRef.current) return;
     const cfg0 = useSettingsStore.getState().config;
     const cfx0 = cfg0.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
@@ -715,28 +756,35 @@ export default function Workbench() {
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
-    const st = await camoufoxStatus();
+    const st = await camoufoxStatus(platform);
     if (!st.ready) { message.warning('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测并安装 camoufox')); return; }
-    await loadBossCityCodes();
-    const queue = buildSearchQueue(directionPlan, config);
+    if (!st.engine?.loggedIn) {
+      message.warning(`平台「${platformLabel(platform)}」未登录 Camoufox，请先到「设置 → 招聘平台」扫码登录后再采集`);
+      return;
+    }
+    if (platform === 'boss') await loadBossCityCodes();
+    const queue = platform === 'boss'
+      ? buildSearchQueue(directionPlan, config)
+      : buildPlatformSearchQueue(platform, directionPlan, config);
     if (!queue.length) { message.warning('没有可搜索的方向/条件，请先确认投递方向并设置城市/求职类型'); return; }
+    const pfLabel = platformLabel(platform);
 
     cfxActiveRef.current = true;
     setCfxCollecting(true);
     let collectedCount = 0;
     let lastCode: number | null = null;
-    addLog('info', `开始 Camoufox 隐身采集：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）`);
+    addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）`);
     for (const item of queue) {
       if (!cfxActiveRef.current) break;
-      const cityCode = resolveCityCode(item.location) || '100010000';
-      addLog('info', `隐身搜索「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}`);
+      const cityCode = platform === 'boss' ? (resolveCityCode(item.location) || '100010000') : String(item.location || '全国');
+      addLog('info', `隐身搜索（${pfLabel}）「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}`);
       try {
-        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os);
+        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform);
         if (result.ok && result.jobs?.length) {
           let added = 0;
           for (const j of result.jobs) {
             if (!cfxActiveRef.current) break;
-            const ingested = await ingestJob(camoufoxJobToMeta(j));
+            const ingested = await ingestJob(camoufoxJobToMeta(j, platform));
             if (ingested) added += 1;
             await sleep(600 + Math.random() * 900);
           }
@@ -764,11 +812,12 @@ export default function Workbench() {
     cfxActiveRef.current = false;
     setCfxCollecting(false);
     recomputeStats();
-    addLog(collectedCount > 0 ? 'success' : 'info', `Camoufox 隐身采集结束：共入库 ${collectedCount} 个岗位`);
+    addLog(collectedCount > 0 ? 'success' : 'info', `Camoufox 隐身采集结束（${pfLabel}）：共入库 ${collectedCount} 个岗位`);
     if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
-  const camoufoxJobToMeta = (j: CamoufoxJob): JobMeta => ({
+  const camoufoxJobToMeta = (j: CamoufoxJob, platform: JobPlatform = 'boss'): JobMeta => ({
+    platform,
     title: j.title,
     company: j.company,
     salary: j.salary,
@@ -782,9 +831,39 @@ export default function Workbench() {
     publishTime: '',
   });
 
+  /** 按指定平台执行一次采集（等待完成）：
+   * 非 BOSS 平台只能走 Camoufox 隐身引擎（webview 视觉采集为 BOSS 专属链路）；
+   * BOSS 按当前引擎模式分流（camoufox 启用 → 隐身采集，否则 webview 视觉采集）。 */
+  const runCollectFor = async (platform: JobPlatform) => {
+    if (platform !== 'boss') {
+      await runCamoufoxCollect(platform);
+      return;
+    }
+    if (config.camoufox?.enabled) await runCamoufoxCollect('boss');
+    else await runVisualCollect();
+  };
+
+  /** 手动「搜索采集」入口：按当前所选平台串行采集（不等待，引擎常驻执行） */
   const startCollect = () => {
-    if (config.camoufox?.enabled) runCamoufoxCollect();
-    else runVisualCollect();
+    // 至少一个平台：UI 已兜底回填，此处再做一次防御性检查
+    const targets = searchPlatforms.length
+      ? searchPlatforms
+      : (sortedEnabledPlatforms(config)[0] ? [sortedEnabledPlatforms(config)[0]] : []);
+    if (!targets.length) { message.warning('请先在「设置 → 招聘平台」启用至少一个招聘平台'); return; }
+    if (targets.length > 1) {
+      addLog('info', `手动串行采集（${targets.map((p) => platformLabel(p)).join(' → ')}）`);
+    }
+    void (async () => {
+      for (const pf of targets) {
+        // 中途有手动采集介入则不再启动剩余平台（各引擎入口自带 busy 防御）
+        if (visualActiveRef.current || cfxActiveRef.current) break;
+        try {
+          await runCollectFor(pf);
+        } catch (e) {
+          addLog('error', `采集平台「${platformLabel(pf)}」执行失败：${String((e as Error)?.message || e)}`);
+        }
+      }
+    })();
   };
 
   const stopAllCollect = () => {
@@ -794,19 +873,33 @@ export default function Workbench() {
     addLog('warn', '已停止采集');
   };
 
-  // 定时任务「采集」触发：消费 collectRequested 调用本组件采集入口（跨页可触发，因本组件常驻挂载）
+  // 定时任务「采集」触发：消费 collectRequest 调用本组件采集入口（跨页可触发，因本组件常驻挂载）。
+  // 目标平台：任务圈定（req.platforms）→ 逐一采集；未圈定 → 当前全部已启用平台。
   useEffect(() => {
-    if (!collectRequested) return;
-    // 防御：已有采集在进行中则不叠加，仅清除请求标志
+    if (!collectRequest) return;
+    // 防御：已有采集在进行中则不叠加，仅清除请求（下个周期到点会再次触发）
     if (visualActiveRef.current || cfxActiveRef.current) {
-      useScheduleStore.getState().setCollectRequested(false);
+      useScheduleStore.getState().setCollectRequest(null);
       return;
     }
-    useScheduleStore.getState().setCollectRequested(false);
-    addLog('info', '定时任务触发搜索采集');
-    startCollect();
+    useScheduleStore.getState().setCollectRequest(null);
+    const targets = collectRequest.platforms?.length
+      ? collectRequest.platforms
+      : sortedEnabledPlatforms(config);
+    addLog('info', `定时任务触发搜索采集（平台：${targets.length ? targets.map((p) => platformLabel(p)).join('/') : '无' }）`);
+    void (async () => {
+      for (const pf of targets) {
+        // 中途有手动采集介入则不再启动剩余平台（各引擎入口自带 busy 防御）
+        if (visualActiveRef.current || cfxActiveRef.current) break;
+        try {
+          await runCollectFor(pf);
+        } catch (e) {
+          addLog('error', `定时采集平台「${platformLabel(pf)}」执行失败：${String((e as Error)?.message || e)}`);
+        }
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectRequested, config.camoufox?.enabled]);
+  }, [collectRequest, config.camoufox?.enabled]);
 
   /** P01：经互斥守卫调度 runNext，所有入口统一走此函数避免并发重叠投递 */
   function requestRunNext() {
@@ -827,7 +920,18 @@ export default function Workbench() {
   }
 
   const runNext = async () => {
-    const ranked = rerankPending(useDataStore.getState().pending);
+    // 多平台适配：工作台「一键投递」仅处理 BOSS 岗位（webview/官方接口链路）；
+    // 猎聘/智联/51Job 岗位保持 approved，由「自动沟通」后台引擎按平台（Camoufox）投递
+    const rankedAll = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
+    const ranked = rankedAll.filter((p) => !p.job?.platform || p.job.platform === 'boss');
+    if (rankedAll.some((p) => p.job?.platform && p.job.platform !== 'boss' && p.status === 'approved_queue')) {
+      // 非 BOSS 岗位不应处于 approved_queue（应保持在 approved 由后台引擎取走）；此处兜底交回 approved
+      for (const p of rankedAll) {
+        if (p.job?.platform && p.job.platform !== 'boss' && p.status === 'approved_queue') {
+          useDataStore.getState().updatePending(p.id, { status: 'approved' });
+        }
+      }
+    }
     const candidate =
       (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue' && !isDeliveryClaimed(p.id))) ||
       ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id));
@@ -1002,6 +1106,19 @@ export default function Workbench() {
 
   useEffect(() => { loadBossCityCodes().catch(() => {}); }, []);
 
+  // 响应设置页「扫码登录」请求：在工作台 webview 新建标签页打开对应平台登录页
+  useEffect(() => {
+    if (!browserLoginRequest || !webviewApi.current) return;
+    const { platform, loginUrl } = browserLoginRequest;
+    const label = platformLabel(platform);
+    try {
+      const tabId = webviewApi.current.openInNewTab(loginUrl, `${label}登录`, 'main');
+      if (tabId) addLog('info', `已打开 ${label} 登录页，请在内置浏览器中完成登录`);
+    } finally {
+      clearBrowserLogin();
+    }
+  }, [browserLoginRequest, clearBrowserLogin, addLog]);
+
   useEffect(() => {
     if (running) requestRunNext();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1016,7 +1133,7 @@ export default function Workbench() {
     const item = useDataStore.getState().pending.find((p) => p.id === stuckId);
     const title = item?.job?.title || '岗位';
     const sec = Math.max(10, Number(useSettingsStore.getState().config.commStuckTimeoutSec) || 60);
-    addLog('info', `已进入沟通阶段「${taskStageMeta(applyStage).label}」，看门狗启动：若 ${sec} 秒内无进展将跳过该岗位转投下一个`);
+    addLog('info', `已进入沟通阶段「${taskStageMetaFor(item?.job?.platform, applyStage).label}」，看门狗启动：若 ${sec} 秒内无进展将跳过该岗位转投下一个`);
     commStuckTimerRef.current = setTimeout(() => {
       const cur = useDataStore.getState().pending.find((p) => p.id === stuckId);
       if (!cur || cur.status !== 'approved_queue') return;
@@ -1076,7 +1193,7 @@ export default function Workbench() {
     }
     if (TRACKED_STAGES.includes(stage as TaskStage)) {
       setApplyStage(stage as TaskStage);
-      const meta = taskStageMeta(stage as TaskStage);
+      const meta = taskStageMetaFor(active?.job?.platform, stage as TaskStage);
       addLog('info', `${active?.job?.title || '岗位'}：${meta.label}`);
       return;
     }
@@ -1085,21 +1202,41 @@ export default function Workbench() {
   const activeItem = pending.find((p) => p.id === activeId) || null;
   const currentPhase = applyStage ? stageToPhase(applyStage) : null;
 
+  // ===== 侧边栏底部「当前动作」状态（与 StatusBar 的 OpenClaw 连接状态区分开）=====
+  // chatRunning 作为重跑触发器：自动沟通停止后，若工作台仍在运行则恢复工作台文本
+  const chatRunning = useAutoChatStore((s) => s.chatRunning);
+  useEffect(() => {
+    let action: string | null = null;
+    if (cfxCollecting) action = '正在隐身搜集岗位信息';
+    else if (visualCollecting) action = '正在搜集岗位信息';
+    else if (running && applyStage) {
+      const label = taskStageMetaFor(activeItem?.job?.platform, applyStage).label;
+      if (COMM_PHASE_STAGES.includes(applyStage)) action = `正在自动沟通：${label}`;
+      else action = `正在投递：${label}`;
+    } else if (running) action = '投递引擎运行中';
+    else action = null;
+
+    const store = useAppStore.getState();
+    if (action) store.setCurrentAction('workbench', action);
+    else store.clearCurrentAction('workbench');
+  }, [cfxCollecting, visualCollecting, running, applyStage, activeItem, chatRunning]);
+
   const deliveryTasks = useMemo(() => {
     const list: { p: PendingItem; stage: TaskStage; label: string; progress: number }[] = [];
     for (const p of pending) {
+      const pf = p.job?.platform;
       if (p.status === 'approved_queue') {
         const stage: TaskStage = p.id === activeId && applyStage ? applyStage : 'queued';
-        const meta = taskStageMeta(stage);
+        const meta = taskStageMetaFor(pf, stage);
         list.push({ p, stage, label: meta.label, progress: meta.progress });
       } else if (p.status === 'pending') {
-        const meta = taskStageMeta('waiting_review');
+        const meta = taskStageMetaFor(pf, 'waiting_review');
         list.push({ p, stage: 'waiting_review', label: meta.label, progress: meta.progress });
       } else if (p.status === 'sent') {
-        const meta = taskStageMeta('success');
+        const meta = taskStageMetaFor(pf, 'success');
         list.push({ p, stage: 'success', label: meta.label, progress: meta.progress });
       } else if (p.status === 'failed') {
-        const meta = taskStageMeta('failed');
+        const meta = taskStageMetaFor(pf, 'failed');
         list.push({ p, stage: 'failed', label: meta.label, progress: meta.progress });
       }
     }
@@ -1121,7 +1258,7 @@ export default function Workbench() {
   const deliveryApprovedCount = pending.filter((p) => p.status === 'approved').length;
 
   const isHiddenStatus = (status: string) => status === 'ignored' || status === 'skipped';
-  const rankedAll = useMemo(() => rerankPending(pending), [pending]);
+  const rankedAll = useMemo(() => rerankPending(pending, config), [pending, config]);
   const ranked = useMemo(() => {
     const base = filter === 'all' ? rankedAll : rankedAll.filter((p) => p.status === filter);
     return showIgnored ? base : base.filter((p) => !isHiddenStatus(p.status));
@@ -1156,12 +1293,24 @@ export default function Workbench() {
       <div className="workbench-center">
         <Card size="small" className="wb-progress-card" title="岗位进度"
           extra={
-            <Space size={8}>
+            <Space size={6} wrap={false} style={{ flexShrink: 0 }}>
+              <Select
+                size="small"
+                mode="multiple"
+                style={{ minWidth: 140, maxWidth: 200 }}
+                maxTagCount="responsive"
+                value={searchPlatforms}
+                onChange={handleSearchPlatformsChange}
+                options={enabledPlatforms.map((p) => ({ value: p, label: platformLabel(p) }))}
+                placeholder="选择采集平台"
+              />
               {visualCollecting || cfxCollecting ? (
-                <Button size="small" danger icon={<StopOutlined />} onClick={stopAllCollect}>停止采集</Button>
+                <Button size="small" danger icon={<StopOutlined />} onClick={stopAllCollect}>停止</Button>
               ) : (
                 <Button size="small" type="primary" icon={<SearchOutlined />} onClick={() => { startCollect(); }}>
-                  {config.camoufox?.enabled ? '隐身采集' : '搜索采集'}
+                  {searchPlatforms.length > 1
+                    ? `采集 ${searchPlatforms.length} 平台`
+                    : (searchPlatforms[0] === 'boss' && config.camoufox?.enabled ? '隐身采集' : '搜索采集')}
                 </Button>
               )}
             </Space>
@@ -1258,7 +1407,10 @@ export default function Workbench() {
                 <div className="delivery-task-head">
                   <div style={{ minWidth: 0 }}>
                     <div className="delivery-task-title">{cleanTitle(activeItem.job?.title, activeItem.job?.salary)}</div>
-                    <div className="delivery-task-sub">{formatMetaLine(activeItem.job?.company, activeItem.job?.location, activeItem.job?.salary) || '岗位信息处理中'}</div>
+                    <div className="delivery-task-sub">
+                      <PlatformChip platform={activeItem.job?.platform} />
+                      {formatMetaLine(activeItem.job?.company, activeItem.job?.location, activeItem.job?.salary) || '岗位信息处理中'}
+                    </div>
                   </div>
                   <Tag color="processing" style={{ margin: 0, flex: '0 0 auto' }}>{currentPhase ? currentPhase.label : '投递中'}</Tag>
                 </div>
@@ -1289,9 +1441,10 @@ export default function Workbench() {
             options={WB_FILTERS.map((f) => ({ value: f.key, label: f.label }))}
           />
           <div className="wb-filter-toolbar">
-            <div className="wb-filter-toolbar__left">
-              <Checkbox checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)}>显示已忽略/跳过</Checkbox>
-            </div>
+            <label className="wb-filter-toolbar__left">
+              <Checkbox checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)} />
+              <span className="wb-toolbar-checkline-label">显示已忽略/跳过</span>
+            </label>
             <div className="wb-filter-toolbar__right">
               <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!pending.some((p) => p.status === 'approved')}>一键投递</Button>
               <Button size="small" icon={<CheckOutlined />} onClick={onApproveAll}>批量确认</Button>
@@ -1325,7 +1478,10 @@ export default function Workbench() {
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(p.id); } }}>
                       <div className="job-header-main">
                         <div className="job-title-row">
-                          <div className="job-title">{cleanTitle(p.job?.title, p.job?.salary)}</div>
+                          <div className="job-title">
+                            <PlatformChip platform={p.job?.platform} compact />
+                            {cleanTitle(p.job?.title, p.job?.salary)}
+                          </div>
                           <div className="job-header-badges">
                             {p.priorityRank != null && <span className="score-rank">#{p.priorityRank}</span>}
                             {chip.cls && <span className={'score-chip ' + chip.cls}>{chip.text}</span>}

@@ -281,7 +281,14 @@ const DEV_URL = 'http://localhost:5173';
 const APP_ID = 'com.bossclaw.desktop';
 
 app.setName('BossClaw');
-if (process.platform === 'win32') {
+// Windows 任务栏按钮图标机制（重要）：
+// - 调用 setAppUserModelId 后，任务栏按钮图标改从「与该 AUMID 匹配的快捷方式(.lnk)」获取；
+//   打包安装版由 NSIS 注册了同 AUMID 的快捷方式 → 显示嵌入 exe 的项目图标（正常）。
+// - dev / 便携运行（electron.exe .）没有该快捷方式 → Explorer 回退显示 exe 图标
+//   （electron.exe = Electron 默认图标），BrowserWindow.icon 不生效 → 任务栏图标错误。
+// 故仅在打包（app.isPackaged）时设置 AUMID；非打包运行让任务栏跟随窗口图标
+// （resources/icon.ico），从而在 start-bossclaw.cmd 下也能显示项目图标。
+if (process.platform === 'win32' && app.isPackaged) {
   app.setAppUserModelId(APP_ID);
 }
 
@@ -450,7 +457,8 @@ function probeMissingDeps(python) {
       "import importlib.util;ps=['playwright','camoufox'];print(','.join(p for p in ps if importlib.util.find_spec(p) is None))"],
       { timeout: 10000 }, (err, stdout) => {
         if (err) return resolve(['playwright', 'camoufox']);
-        resolve(String(stdout || '').split(',').filter(Boolean));
+        // 空输出（无缺失）时 stdout 为换行符，必须 trim 后再过滤，否则误判 missing=["\r\n"]
+        resolve(String(stdout || '').split(',').map((s) => s.trim()).filter(Boolean));
       });
   });
 }
@@ -536,7 +544,7 @@ async function startCamoufoxBridge(pythonOverride) {
     python = env.python || python;
   }
   const available = await checkCamoufoxEngine(python);
-  if (!available) return { running: false, error: '隐身引擎未就绪：本地浏览器不可复用，请安装 Camoufox 隐身引擎内核：pip install "camoufox[geoip]" && camoufox fetch' };
+  if (!available) return { running: false, error: '隐身引擎未就绪：暂未下载 Camoufox 内核，请安装 Camoufox 隐身引擎内核：pip install "camoufox[geoip]" && camoufox fetch' };
   try {
     const server = path.join(__dirname, '..', 'camoufox', 'camoufox_server.py');
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
@@ -584,6 +592,9 @@ function stopCamoufoxBridge() {
 
 // 后台预热：应用启动时加载持久化的「已就绪」状态并预拉起 Python 桥，
 // 让登录/自动沟通首次点击不再承担冷启动（import camoufox/numpy 等较重）与重复检测。
+// 性能口径：仅当「跨启动校验通过、依赖确实就绪」时才预拉 Python 进程（常驻内存 ~200-400MB）。
+// 依赖缺失/损坏（state 过期）时不再无条件 spawn——否则每次启动都会白跑一个 python 进程，
+// 造成启动后 CPU/内存占用升高；缺失场景交给首次使用时 ensureCamoufoxDeps 自愈。
 function warmUpCamoufox() {
   (async () => {
     const python = await detectPython();
@@ -592,22 +603,27 @@ function warmUpCamoufox() {
     // 但需用一次廉价探测校验依赖仍在（避免 playwright/camoufox 被卸载或残留损坏目录后，
     // 持久化「已就绪」掩盖问题；探测缺失则交给 ensure 后台自愈重装）。
     const state = loadEngineState();
+    let ready = false;
     if (state.python === python && state.depsReady) {
       let missing = [];
       try { missing = await probeMissingDeps(python); } catch { missing = ['playwright', 'camoufox']; }
       if (!missing.length) {
         markCamoufoxReady(python);
+        ready = true;
         dlog('info', 'camoufox engine state restored', { python });
       } else {
         dlog('warn', 'camoufox engine state stale, will re-probe/install', { python, missing });
       }
     }
+    if (!ready) return; // 依赖不可用：不预拉进程，等待首次使用时按需拉起
     await startCamoufoxBridge();
   })().catch((e) => dlog('warn', 'camoufox warm-up failed', { message: e?.message }));
 }
 
 // 渲染层查询 Camoufox 引擎状态（Python 探测 + camoufox 包检测 + 桥运行状态）
-safeHandle('jc:camoufox-status', async () => {
+// platform 参数（boss/liepin/zhaopin/job51）：/status 返回对应平台登录态
+safeHandle('jc:camoufox-status', async (_event, platform) => {
+  const pf = String(platform || 'boss');
   const python = await detectPython();
   if (!python) return { python: false, running: false, ready: false, message: '未检测到 Python 环境' };
   // 自愈依赖后再判定可用性，避免「检测到内核但缺 playwright 运行时崩溃」
@@ -619,7 +635,7 @@ safeHandle('jc:camoufox-status', async () => {
   const available = await checkCamoufoxEngine(readyPython);
   const base = { python: Boolean(readyPython), pythonCmd: readyPython, camoufox: available };
   if (!available) {
-    return { ...base, running: false, ready: false, message: '隐身引擎未就绪（仅支持 Camoufox 隐身引擎内核，本地浏览器不可复用）' };
+    return { ...base, running: false, ready: false, message: '隐身引擎未就绪（暂未下载 Camoufox 内核，请安装 Camoufox 隐身引擎内核）' };
   }
   // 桥未运行则尝试拉起
   if (!camoufoxProcess) {
@@ -627,7 +643,7 @@ safeHandle('jc:camoufox-status', async () => {
     if (!r.running) return { ...base, running: false, ready: false, message: r.error || '桥启动失败' };
   }
   try {
-    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}&platform=${encodeURIComponent(pf)}`, { signal: AbortSignal.timeout(3000) });
     const data = await res.json();
     return { ...base, running: true, ready: Boolean(data.ok), message: data.message || '', engine: data };
   } catch (e) {
@@ -640,7 +656,8 @@ ipcMain.on('jc:camoufox-stop', () => stopCamoufoxBridge());
 
 // 重启隐身引擎桥：先停后拉，返回最终状态（自动沟通误触关闭后自愈用；
 // 多次重启失败由渲染层判定并自动停止自动沟通）
-safeHandle('jc:camoufox-restart', async () => {
+safeHandle('jc:camoufox-restart', async (_event, platform) => {
+  const pf = String(platform || 'boss');
   stopCamoufoxBridge();
   const python = await detectPython();
   if (!python) return { python: false, running: false, ready: false, message: '未检测到 Python 环境' };
@@ -658,7 +675,7 @@ safeHandle('jc:camoufox-restart', async () => {
     return { python: Boolean(readyPython), camoufox: true, running: false, ready: false, message: r.error || '桥重启失败' };
   }
   try {
-    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}&platform=${encodeURIComponent(pf)}`, { signal: AbortSignal.timeout(3000) });
     const data = await res.json();
     return { python: Boolean(readyPython), camoufox: true, running: true, ready: Boolean(data.ok), message: data.message || '', engine: data };
   } catch (e) {
@@ -874,6 +891,47 @@ async function createMainWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('closed', () => { mainWindow = null; });
 
+  // ===== P30：渲染进程崩溃自愈 + 无响应检测 =====
+  // 背景：网络卡顿/大对象序列化可能导致渲染进程崩溃（render-process-gone）或主线程无响应
+  // （unresponsive）。原实现无任何处理——崩溃后窗口变白、点击无反应，用户关窗即整个应用退出。
+  // 这里做兜底：崩溃后自动 reload（限频防死循环）；无响应时记录日志便于定位。
+  let rendererGoneCount = 0;
+  let rendererGoneWindowStart = 0;
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    const reason = String((details && details.reason) || 'unknown');
+    const exitCode = details && details.exitCode;
+    dlog('error', 'renderer-gone', { reason, exitCode, count: rendererGoneCount + 1 });
+    if (reason === 'clean-exit') return; // 正常退出（非崩溃）不处理
+    // 限频防死循环：60s 窗口内超过 3 次崩溃则不再自动 reload，避免「崩→刷→崩」无限循环
+    const now = Date.now();
+    if (now - rendererGoneWindowStart > 60000) {
+      rendererGoneWindowStart = now;
+      rendererGoneCount = 0;
+    }
+    rendererGoneCount += 1;
+    if (rendererGoneCount > 3) {
+      dlog('warn', 'renderer-gone 超过限频，停止自动 reload，等待用户操作');
+      return;
+    }
+    setTimeout(() => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+          dlog('info', 'renderer-gone 自动 reload', { reason });
+          mainWindow.webContents.reload();
+        }
+      } catch (e) {
+        dlog('warn', 'renderer-gone reload 失败', { message: e && e.message });
+      }
+    }, 600);
+  });
+  // 主线程无响应/恢复：仅记录（自动杀进程风险大，等 Chromium 自行恢复；日志供根因定位）
+  mainWindow.webContents.on('unresponsive', () => {
+    dlog('warn', 'renderer-unresponsive 渲染进程主线程长时间无响应');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    dlog('info', 'renderer-responsive 渲染进程已恢复响应');
+  });
+
   // 通知渲染进程窗口最大化状态变化（自绘标题栏「最大化/还原」图标随状态切换）
   mainWindow.on('maximize', () => mainWindow.webContents.send('jc:window-maximized-changed', true));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('jc:window-maximized-changed', false));
@@ -913,11 +971,12 @@ safeHandle('jc:app-info', () => ({
 }));
 
 // 读取「使用前必读」文档（首页「阅读使用文档」入口）。
-// 打包版从 resources/docs/ 读（extraResources 拷贝）；开发版从仓库 docs/ 读（本文件上溯两级）。
+// 用户文档源统一为 desktop-app/resources/docs/（随应用分发）：
+// 打包版 = resources/docs/（extraResources 拷贝）；开发版 = app 目录下 resources/docs/。
 safeHandle('jc:read-doc', async () => {
   const candidates = [
     path.join(process.resourcesPath, 'docs', '使用前必读.md'),
-    path.join(__dirname, '..', '..', 'docs', '使用前必读.md'),
+    path.join(__dirname, '..', 'resources', 'docs', '使用前必读.md'),
   ];
   for (const p of candidates) {
     try {
@@ -927,7 +986,7 @@ safeHandle('jc:read-doc', async () => {
       /* 尝试下一个候选路径 */
     }
   }
-  return { ok: false, error: '未找到「使用前必读」文档（docs/使用前必读.md）' };
+  return { ok: false, error: '未找到「使用前必读」文档（resources/docs/使用前必读.md）' };
 });
 
 // 剪贴板写入（右键「查看网页源码」Modal 的复制按钮用；渲染进程 navigator.clipboard 在 file:// 下不可靠）
@@ -981,6 +1040,81 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
     return { ok: false, error: String((e && e.message) || e) };
   } finally {
     try { printWin.destroy(); } catch {}
+  }
+});
+
+// 保存「达标岗位」数据到本地：渲染进程整理好 JSON → 系统保存对话框 → 写盘。
+// 达标 = 岗位分析评分 >= 投递时设置的最低分（minScore）；达标岗位从工作台队列收集，由渲染层拼好传入。
+// dirOpt 非空且为绝对路径时，直接写入该目录（不弹框，文件名按天自动生成）；否则弹出保存对话框。
+safeHandle('jc:save-qualified-jobs', async (_event, defaultName, jsonText, dirOpt) => {
+  const name = String(defaultName || '').trim();
+  const json = String(jsonText || '');
+  if (!/^[\w\u4e00-\u9fa5()（）\-· ]{1,120}\.json$/i.test(name)) {
+    return { ok: false, error: '文件名不合法（须以 .json 结尾）' };
+  }
+  if (!json) return { ok: false, error: '无有效达标岗位数据' };
+  let filePath;
+  const dir = String(dirOpt || '').trim();
+  if (dir && path.isAbsolute(dir)) {
+    filePath = path.join(dir, name);
+  } else {
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: '保存达标岗位数据',
+      defaultPath: path.join(app.getPath('documents'), name),
+      filters: [
+        { name: 'JSON 数据', extensions: ['json'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    filePath = res.filePath;
+  }
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(filePath, json, 'utf8');
+  return { ok: true, filePath };
+});
+
+// ===== 达标岗位导出目录（可选；不设置则每次弹保存框，设置后在指定目录自动按天写文件）=====
+function qualJobsDirCtl() {
+  const pointer = () => path.join(app.getPath('userData'), '.qualified-jobs-dir.txt');
+  const readPointer = () => {
+    try { const d = fs.readFileSync(pointer(), 'utf8').trim(); if (d) return d; } catch {}
+    return '';
+  };
+  return { pointer, readPointer };
+}
+
+safeHandle('jc:qualified-jobs-dir-get', async () => {
+  try { return { dir: qualJobsDirCtl().readPointer() }; }
+  catch (e) { return { dir: '', error: String((e && e.message) || e) }; }
+});
+
+safeHandle('jc:qualified-jobs-dir-set', async (_event, dirPath) => {
+  const dir = String(dirPath || '').trim();
+  if (!dir || !path.isAbsolute(dir)) return { ok: false, error: '导出目录须为绝对路径' };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(qualJobsDirCtl().pointer(), dir);
+    return { ok: true, dir };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 系统目录选择对话框 → 持久化为达标岗位导出目录（选择即应用）
+safeHandle('jc:qualified-jobs-dir-pick', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: '选择达标岗位导出目录',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
+    const dir = filePaths[0];
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(qualJobsDirCtl().pointer(), dir);
+    return { ok: true, dir };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
@@ -1044,16 +1178,22 @@ safeHandle('jc:backup-dir-pick', async () => {
 });
 
 safeHandle('jc:backup-write', async (_event, bundle) => {
+  const ctl = backupCtl();
+  const dir = ctl.readPointer();
+  const filep = ctl.fileIn(dir);
+  const tmp = filep + '.tmp';
   try {
-    const ctl = backupCtl();
-    const dir = ctl.readPointer();
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
+    // 渲染层已按 '{"updatedAt":N,"keys":…}' 拼好文本直传；旧对象格式仍兼容（手动兜底序列化）
     const text = typeof bundle === 'string' ? bundle : JSON.stringify(bundle ?? {});
     if (text.length < 4) return { ok: false, error: '备份内容为空' };
-    const filep = ctl.fileIn(dir);
-    fs.writeFileSync(filep, text);
+    // 异步原子写（tmp + rename）：不阻塞主进程事件循环（同步 writeFileSync 在大包/慢盘时会卡窗口），
+    // 中途失败也不会损坏上一次完好备份
+    await fs.promises.writeFile(tmp, text, 'utf8');
+    await fs.promises.rename(tmp, filep);
     return { ok: true, file: filep, size: Buffer.byteLength(text) };
   } catch (e) {
+    try { if (fs.existsSync(tmp)) await fs.promises.unlink(tmp); } catch { /* 清理失败忽略 */ }
     return { ok: false, error: String((e && e.message) || e) };
   }
 });
@@ -1165,14 +1305,65 @@ ipcMain.on('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwa
 
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。
+// 多平台适配：同分区同时上报 猎聘/智联/51Job 的登录态（各自鉴权 cookie 名）。
+const WEBVIEW_AUTH_COOKIE_HINTS = {
+  boss: ['wt2'],
+  liepin: ['lp_login', 'lp_token'],
+  zhaopin: ['zp_auto', 'zp_sign'],
+  job51: ['j_ticket', 'sajssp'],
+};
+const WEBVIEW_PLATFORM_DOMAIN = {
+  boss: 'zhipin.com',
+  liepin: 'liepin.com',
+  zhaopin: 'zhaopin.com',
+  job51: '51job.com',
+};
+function cookieUrl(c) {
+  if (c.url) return c.url;
+  const d = String(c.domain || '').replace(/^\.+/, '');
+  return `https://${d || 'localhost'}`;
+}
 safeHandle('jc:boss-login', async () => {
   try {
     const ses = session.fromPartition('persist:bossclaw');
-    const cookies = await ses.cookies.get({ name: 'wt2' });
-    const wt2 = cookies.find((c) => c.name === 'wt2');
-    return { loggedIn: Boolean(wt2 && wt2.value), cookie: Boolean(wt2) };
+    const all = await ses.cookies.get({});
+    const hasAuth = (hints) => hints.some((h) => all.some((c) => c.name.toLowerCase().includes(h) && c.value));
+    const platforms = Object.fromEntries(
+      Object.entries(WEBVIEW_AUTH_COOKIE_HINTS).map(([pf, hints]) => [pf, hasAuth(hints)]),
+    );
+    const wt2 = all.find((c) => c.name === 'wt2');
+    return { loggedIn: Boolean(wt2 && wt2.value), cookie: Boolean(wt2), platforms };
   } catch (e) {
     return { loggedIn: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 清除指定平台在 persist:bossclaw 会话中的登录态 cookie（设置页「退出登录」用）
+safeHandle('jc:boss-logout', async (_event, platform) => {
+  try {
+    const target = String(platform || '');
+    const hints = WEBVIEW_AUTH_COOKIE_HINTS[target] || [];
+    const domainHint = WEBVIEW_PLATFORM_DOMAIN[target];
+    const ses = session.fromPartition('persist:bossclaw');
+    const all = await ses.cookies.get({});
+    let removed = 0;
+    for (const c of all) {
+      const name = String(c.name || '').toLowerCase();
+      const domain = String(c.domain || '').toLowerCase();
+      const matchHint = hints.some((h) => name.includes(h));
+      const matchDomain = domainHint && domain.includes(domainHint);
+      if (matchHint || matchDomain) {
+        try {
+          await ses.cookies.remove(cookieUrl(c), c.name);
+          removed += 1;
+        } catch {}
+      }
+    }
+    dlog('info', 'boss-logout', { platform: target, removed });
+    return { ok: true, removed };
+  } catch (e) {
+    dlog('error', 'boss-logout failed', { error: String((e && e.message) || e) });
+    return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
@@ -1332,6 +1523,16 @@ safeHandle('jc:cloak-status', async () => ({
   binary: cloakLauncher.binary,
   lastError: cloakLauncher.lastError,
 }));
+
+// 健康检查：探测 Playwright context 进程是否真的活着（防止 ready=true 但进程已死）。
+// 返回 { ok, alive, reason?, pages }，alive=false 时 UI 走 ensureCloakEngine 自动重启路径。
+safeHandle('jc:cloak-health', async () => {
+  try {
+    return await cloakLauncher.healthCheck();
+  } catch (e) {
+    return { ok: false, alive: false, error: String((e && e.message) || e), pages: 0 };
+  }
+});
 
 // 打开新标签页（返回 tabId）
 safeHandle('jc:cloak-page-new', async (_event, tabId, url) => {

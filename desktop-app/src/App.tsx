@@ -8,11 +8,14 @@ import { clearAllData } from './lib/storage';
 import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
 import { startScheduler } from './lib/scheduler';
+import { useScheduleStore } from './store/useScheduleStore';
+import { consumeLegacyBatchDelivery } from './store/useSettingsStore';
 import { restoreFromLocalBackup, startLocalBackup } from './lib/localBackup';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import TitleBar from './components/TitleBar';
 import { ErrorBoundary, SkeletonCard } from './components/feedback';
+import { useAutoChatStore } from './store/useAutoChatStore';
 
 // 数据版本号：与主进程 main.cjs 的 DATA_VERSION 对齐，v3 重建后首次启动清空旧数据
 const DATA_VERSION = 'v3-rebuild-20260815';
@@ -124,7 +127,12 @@ export default function App() {
       }
       if (hasData) return; // 主存储健在，以 localStorage 为准
       const r = await restoreFromLocalBackup();
-      if (!cancelled && r.restored) window.location.reload();
+      // 刷新守卫：只有恢复后主数据键 bossclaw-data 确实存在才整页刷新。
+      // 若备份中该项为 null（坏备份/全空备份），恢复后主数据仍缺失——
+      // 此时 reload 只会让启动路径再次进入恢复分支，造成无限整页刷新、界面假死。
+      if (!cancelled && r.restored && localStorage.getItem('bossclaw-data') != null) {
+        window.location.reload();
+      }
     };
     void run();
     return () => {
@@ -141,6 +149,31 @@ export default function App() {
   // 启动全局定时任务调度器（应用运行期间按设定时刻触发投递/采集/备份）
   useEffect(() => {
     startScheduler();
+  }, []);
+
+  // 一次性迁移（2026-09-09）：老用户 config.batchDelivery（早中晚分批）已退役，
+  // 若曾开启，则按其时刻与配额生成 3 条「限量定时投递」任务；幂等：仅当不存在同名任务时生成。
+  useEffect(() => {
+    const legacy = consumeLegacyBatchDelivery();
+    if (!legacy || legacy.enabled !== true) return;
+    const sched = useScheduleStore.getState();
+    const templateNames = ['早间限量投递', '午间限量投递', '晚间限量投递'];
+    if (sched.entries.some((e) => e.action === 'deliver' && templateNames.includes(e.name))) return;
+    const count = (slot: 'morning' | 'noon' | 'evening') => Math.max(0, Number(legacy.counts?.[slot]) || 0);
+    const mk = (name: string, time: string, slot: 'morning' | 'noon' | 'evening') => {
+      sched.addEntry({
+        name,
+        action: 'deliver',
+        time,
+        daysOfWeek: [],
+        enabled: true,
+        platforms: [],
+        limitPerRun: count(slot),
+      });
+    };
+    mk('早间限量投递', legacy.morningTime || '09:00', 'morning');
+    mk('午间限量投递', legacy.noonTime || '13:00', 'noon');
+    mk('晚间限量投递', legacy.eveningTime || '18:00', 'evening');
   }, []);
 
   const isWorkbench = activeRoute === 'workbench';
@@ -182,6 +215,23 @@ export default function App() {
         </main>
       </div>
       <StatusBar />
+      {/* 侧边栏「当前动作」协调器：自动沟通后台常驻运行（AutoChat 页切走会卸载），
+          由本组件统一上报「正在自动沟通」，优先级高于工作台投递/采集源 */}
+      <ActionReporter />
     </div>
   );
+}
+
+/** 常驻协调侧边栏底部「当前动作」：后台自动沟通运行时上报，停止时清除。
+ * 订阅 autoAssist 作为重跑触发器——工作台停止后若自动沟通仍在跑则恢复其文本。 */
+function ActionReporter() {
+  const chatRunning = useAutoChatStore((s) => s.chatRunning);
+  const autoAssist = useAppStore((s) => s.autoAssist);
+  const setCurrentAction = useAppStore((s) => s.setCurrentAction);
+  const clearCurrentAction = useAppStore((s) => s.clearCurrentAction);
+  useEffect(() => {
+    if (chatRunning) setCurrentAction('autochat', '正在自动沟通');
+    else clearCurrentAction('autochat');
+  }, [chatRunning, autoAssist, setCurrentAction, clearCurrentAction]);
+  return null;
 }

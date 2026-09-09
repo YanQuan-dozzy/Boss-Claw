@@ -9,7 +9,8 @@
 // 本模块只提供「检测 + 降频 + 冷却 + 上限」等防御性能力，
 // 不包含任何指纹伪装、验证码绕过、代理池、账号轮换、反检测逻辑。
 
-import type { AppConfig, PendingItem } from './types';
+import type { AppConfig, JobPlatform, PendingItem } from './types';
+import { PLATFORM_IDS, platformDailyCap, platformEnabled } from './platforms';
 
 // ===== 风险严重级别 =====
 export type RiskSeverity = 'login' | 'rate_limited' | 'challenge' | 'env' | 'banned';
@@ -173,11 +174,48 @@ export function dailySentCount(pending: PendingItem[], now = Date.now()): number
   return (pending || []).filter((p) => p.status === 'sent' && isSameDay(p.sentAt, now)).length;
 }
 
-/** 今日有效投递上限：min(用户设定 maxDailySent, 安全硬上限 MAX_SAFE_DAILY) */
+/** 今日某平台已成功投递数量（多平台适配：按 job.platform 分组，缺省视为 boss） */
+export function dailySentCountFor(pending: PendingItem[], platform: JobPlatform, now = Date.now()): number {
+  return (pending || []).filter(
+    (p) => p.status === 'sent' && isSameDay(p.sentAt, now) && ((p.job?.platform ?? 'boss') === platform),
+  ).length;
+}
+
+/** 某平台配置的每日投递目标（多平台独立配额；0 表示不设限，仍受平台侧上限/MAX_SAFE_DAILY 收窄） */
+export function platformDailyTarget(config: AppConfig, platform: JobPlatform): number {
+  return Math.max(0, Number(config?.platforms?.[platform]?.dailyTarget) || 0);
+}
+
+/**
+ * 指定平台今日有效投递上限（「上限适配各个平台数字」的执行口径）：
+ *   = min(该平台每日目标（0=不限时视为平台侧上限）, 平台侧上限（智联 100/日）, MAX_SAFE_DAILY=150)
+ * 取代旧「全局 maxDailySent」：多平台同时启用时，每个平台各自跑自己的额度，互不挤占。
+ */
+export function effectiveDailyCapFor(config: AppConfig, platform: JobPlatform): number {
+  const cap = platformDailyCap(platform); // 平台侧/安全上限收窄后的硬上限
+  const target = platformDailyTarget(config, platform);
+  if (target <= 0) return cap;
+  return Math.max(1, Math.min(target, cap));
+}
+
+/**
+ * 全局汇总上限 = 各「已启用」平台有效上限之和（用于汇总展示/兜底，如工作台首页目标、统计页）。
+ * 仅启用 BOSS 时即 BOSS 自身的上限，与旧全局 maxDailySent 语义等价；
+ * 多平台启用时这是合计值，单个平台的执行上限请用 effectiveDailyCapFor。
+ */
 export function effectiveDailyCap(config: AppConfig): number {
-  const userCap = Number(config?.maxDailySent) || 0;
-  const base = userCap > 0 ? userCap : SAFETY_LIMITS.MAX_SAFE_DAILY;
-  return Math.max(1, Math.min(base, SAFETY_LIMITS.MAX_SAFE_DAILY));
+  const cfg = config || ({} as AppConfig);
+  let sum = 0;
+  let enabledAny = false;
+  for (const p of PLATFORM_IDS) {
+    if (platformEnabled(cfg, p)) {
+      enabledAny = true;
+      sum += effectiveDailyCapFor(cfg, p);
+    }
+  }
+  if (enabledAny) return Math.max(1, sum);
+  // 兜底：无任何启用平台时按全部平台合计（兼容旧配置缺失场景）
+  return Math.max(1, PLATFORM_IDS.reduce((s, p) => s + effectiveDailyCapFor(cfg, p), 0));
 }
 
 /** 冷却锁：pausedUntil > now 表示处于冷却期，返回剩余毫秒 */

@@ -1,9 +1,16 @@
 import type { AppConfig, Profile, ProfileDraft, DirectionPlan, Stats, Workflow } from './types';
+import { PLATFORM_DEFAULT_DAILY_TARGET } from './platforms';
 
 // 对齐 job-claw-main\source\src\common.js 的 DEFAULTS
 export const DEFAULT_CONFIG: AppConfig = {
   executionMode: 'review',
+  // 每日投递目标已迁移到各平台 platforms[k].dailyTarget（多平台独立配额）
+  // 每日目标默认值按平台适配：BOSS/猎聘/51Job=120，智联=100（贴合其平台侧 ~100/日 上限）；
+  // 顶层字段仅作兼容读取，最终由 merge 函数下放到 platforms
   dailyTarget: 120,
+  // 每日上限（maxDailySent）亦已改为「按平台适配」：每平台实际上限 = min(该平台每日目标, 平台侧上限, MAX_SAFE_DAILY=150)，
+  // 见 safety.ts effectiveDailyCapFor。顶层字段保留仅为兼容旧数据读取，不再作为全局强制上限使用。
+  maxDailySent: 120,
   discoveryLimit: 0,
   aiLimit: 0,
   minScore: 75,
@@ -43,8 +50,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   collectResumeIndex: 0,
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）
   maxJobsPerRun: 1000,
-  // 防封号默认值（对齐 SAFETY_LIMITS，用户可调低）
-  maxDailySent: 120,
+  // 防封号默认值（对齐 SAFETY_LIMITS，用户可调低；maxDailySent 顶层字段见上方说明，实际按平台适配）
   maxActionsPerMinute: 6,
   autoCooldownMinutes: 30,
   pausedUntil: 0,
@@ -55,6 +61,18 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 用户可在设置页「隐身引擎」一项中切换到 cloak（CloakBrowser 隐身浏览器）或 camoufox
   // （Camoufox 隐身引擎，可选增强），两者均为可选增强，不绕过验证码/账户验证。
   engineMode: 'webview',
+  // 招聘平台启用（多平台适配）：默认仅 BOSS；猎聘/智联/51Job 需设置页手动启用。
+  // priority：投递顺序（数字小=靠前）；BOSS=1, liepin=2, zhaopin=3, job51=4。
+  // 用户可在设置页通过上下按钮调整；调整后 rerankPending 排序时按此顺序消费，
+  // 实现「完成一个平台全部任务再切下一个平台」。
+  platforms: {
+    // dailyTarget：每平台每日投递目标（多平台独立配额；0 表示不限，受 MAX_SAFE_DAILY=150 与平台侧上限双重约束）。
+    // 默认值按平台适配（PLATFORM_DEFAULT_DAILY_TARGET）：BOSS/猎聘/51Job=120，智联=100（贴合平台侧 ~100/日 上限）
+    boss: { enabled: true, priority: 1, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.boss },
+    liepin: { enabled: false, priority: 2, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.liepin },
+    zhaopin: { enabled: false, priority: 3, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.zhaopin },
+    job51: { enabled: false, priority: 4, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.job51 },
+  },
   // Camoufox 隐身引擎子配置（os / pages / prefer 与 engineMode='camoufox' 共用）；
   // 启用标志在设置页由 engineMode 切换时联动翻转（workbench 仍以本 enabled 作为
   // 「隐身通道是否启用」的功能开关判据）。
@@ -70,14 +88,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     apiKey: '',
     model: 'deepseek-v4-flash',
     temperature: 0.1,
-  },
-  // 早中晚分批投递：默认关闭；开启且处于全自动模式时按 3 个时段分批投递
-  batchDelivery: {
-    enabled: false,
-    morningTime: '09:00',
-    noonTime: '13:00',
-    eveningTime: '18:00',
-    counts: { morning: 40, noon: 40, evening: 40 },
   },
 };
 

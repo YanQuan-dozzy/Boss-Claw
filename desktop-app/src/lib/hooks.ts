@@ -22,13 +22,21 @@ export function useInterval(fn: () => void | Promise<void>, delayMs: number | nu
   const fnRef = useRef(fn);
   fnRef.current = fn;
   const immediate = Boolean(opts?.immediate);
+  // P30：in-flight 守卫——上一轮回调尚未结束（如网络慢导致心跳请求挂起）时跳过本轮，
+  // 避免慢网络下心跳逐次重叠堆积（请求积压 → 卡顿/内存增长）。
+  const busyRef = useRef(false);
 
   useEffect(() => {
     if (delayMs == null || delayMs <= 0) return undefined;
     let cancelled = false;
     const run = () => {
-      if (cancelled) return;
-      Promise.resolve(fnRef.current()).catch(() => {});
+      if (cancelled || busyRef.current) return;
+      busyRef.current = true;
+      Promise.resolve(fnRef.current())
+        .catch(() => {})
+        .finally(() => {
+          busyRef.current = false;
+        });
     };
     if (immediate) run();
     const t = setInterval(run, delayMs);

@@ -62,36 +62,38 @@ export const LogConsole = memo<LogConsoleProps>(function LogConsole({
   return (
     <div className={`log-console ${className}`}>
       <div className="log-console__head">
-        <div className="log-console__title-wrap">
-          <span className="log-console__terminal-dot" />
-          <span className="log-console__title">{title}</span>
+        <div className="log-console__head-row">
+          <div className="log-console__title-wrap">
+            <span className="log-console__terminal-dot" />
+            <span className="log-console__title">{title}</span>
+          </div>
+          <div className="log-console__actions">
+            {extraActions}
+            <span className="log-console__count">{filteredLogs.length} 条</span>
+            <Tooltip title="清空日志">
+              <Button
+                size="small"
+                type="text"
+                icon={<ClearOutlined />}
+                onClick={clearLogs}
+                className="log-console__clear-btn"
+              />
+            </Tooltip>
+          </div>
         </div>
-
-        <div className="log-console__filters">
-          {(['all', 'info', 'success', 'warn', 'error'] as FilterLevel[]).map((lvl) => (
-            <button
-              key={lvl}
-              type="button"
-              className={`log-console__filter-btn${activeFilter === lvl ? ' is-active' : ''} is-${lvl}`}
-              onClick={() => setActiveFilter(lvl)}
-            >
-              {lvl.toUpperCase()}
-            </button>
-          ))}
-        </div>
-
-        <div className="log-console__actions">
-          {extraActions}
-          <span className="log-console__count">{filteredLogs.length} 条</span>
-          <Tooltip title="清空日志">
-            <Button
-              size="small"
-              type="text"
-              icon={<ClearOutlined />}
-              onClick={clearLogs}
-              className="log-console__clear-btn"
-            />
-          </Tooltip>
+        <div className="log-console__head-row">
+          <div className="log-console__filters">
+            {(['all', 'info', 'success', 'warn', 'error'] as FilterLevel[]).map((lvl) => (
+              <button
+                key={lvl}
+                type="button"
+                className={`log-console__filter-btn${activeFilter === lvl ? ' is-active' : ''} is-${lvl}`}
+                onClick={() => setActiveFilter(lvl)}
+              >
+                {lvl.toUpperCase()}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

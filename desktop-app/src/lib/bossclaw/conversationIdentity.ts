@@ -15,16 +15,19 @@ export function deriveConversationReservationKey(
   expected: Record<string, unknown> = {},
   pendingId = ''
 ): string {
+  // 多平台适配：预留键加平台前缀，防跨平台（如 BOSS 与 智联 的同一公司 HR）去重冲突
+  const platform = String(context.platform || expected.platform || 'boss');
+  const pf = platform === 'boss' ? '' : `${platform}:`;
   const recruiterName = String(context.recruiterName || expected.recruiterName || '').trim();
   const company = String(context.companyName || expected.company || '').trim();
   const recruiterKey = normalizeConversationIdentity(recruiterName).slice(0, 80);
   const companyKey = normalizeConversationIdentity(company).slice(0, 100);
-  if (recruiterKey) return `hr:${recruiterKey}${companyKey ? `|company:${companyKey}` : ''}`;
+  if (recruiterKey) return `${pf}hr:${recruiterKey}${companyKey ? `|company:${companyKey}` : ''}`;
 
   const token = String(context.urlToken || '').trim();
-  if (/conversationid=|chatid=|relationid=|bossid=|uid=/i.test(token)) return `chat:${token}`;
+  if (/conversationid=|chatid=|relationid=|bossid=|uid=/i.test(token)) return `${pf}chat:${token}`;
   const observed = normalizeConversationIdentity(`${context.headerText || ''} ${context.selectedText || ''}`).slice(0, 160);
-  if (observed) return `observed:${observed}`;
+  if (observed) return `${pf}observed:${observed}`;
   return pendingId ? `task:${String(pendingId)}` : '';
 }
 

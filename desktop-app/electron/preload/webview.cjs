@@ -88,6 +88,169 @@ function jitterDelay(baseMs) {
   return sleep(Math.round(baseMs * (0.8 + Math.random() * 0.4)));
 }
 
+// ===== 平台分发（多平台适配：BOSS + 猎聘 + 智联 + 51Job）=====
+// BOSS 直聘走完整 boss-api / 视觉采集链路（下方原逻辑不变）；
+// 其余平台提供轻量适配：列表页判定 + 卡片提取 + 详情提取 + 「加入任务」（手动浏览/采集）。
+// 投递动作仍由 Camoufox Python 桥负责（本 preload 不重复实现）。
+function detectPlatform() {
+  const host = String(location.hostname || '').toLowerCase();
+  if (host.includes('liepin.com')) return 'liepin';
+  if (host.includes('zhaopin.com')) return 'zhaopin';
+  if (host.includes('51job.com')) return 'job51';
+  return 'boss';
+}
+const PLATFORM = detectPlatform();
+
+const PLATFORM_LIST_SELECTORS = {
+  liepin: ['li[data-tlg-ext]', '[class*="job-card"]', '[class*="jobCard"]', 'a[href*="/job/"]'],
+  zhaopin: ['[class*="joblist-box"] a', '[class*="joblist"] a', '[class*="job-card"]', 'a[href*="/jobdetail/"]'],
+  job51: ["a[href*='/pc/jobdetail?jobId=']", "a[href*='jobs.51job.com/']", '[class*="j_joblist"] li', '.joblist li', '.j_joblist .joblist-item'],
+};
+
+function pickText(selectors, root = document) {
+  for (const sel of selectors) {
+    const el = $(sel, root);
+    if (el) { const t = textOf(el); if (t) return t; }
+  }
+  return '';
+}
+
+function platformCollectCards() {
+  const sels = PLATFORM_LIST_SELECTORS[PLATFORM] || [];
+  const out = [];
+  const seen = new Set();
+  for (const sel of sels) {
+    for (const el of all(sel)) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      const card = el.closest('li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]') || el;
+      if (visible(card) && textOf(card).length > 5 && textOf(card).length <= 900) out.push(card);
+    }
+  }
+  return [...new Set(out)];
+}
+
+function platformListPage() {
+  const url = String(location.href || '');
+  const count = (() => { try { return platformCollectCards().length; } catch { return 0; } })();
+  let isList = false;
+  if (PLATFORM === 'liepin') isList = /\/zhaopin\//.test(url);
+  else if (PLATFORM === 'zhaopin') isList = /\/sou\//.test(url) || /sou\.zhaopin/.test(url);
+  else if (PLATFORM === 'job51') isList = /\/pc\/search/.test(url);
+  return { isListPage: isList && !/job_detail|jobdetail|\/job\/\d+/i.test(url), listCardCount: count };
+}
+
+// 非 BOSS 平台详情页岗位提取（URL jobId + 通用文本字段）
+function platformExtractJob() {
+  const url = location.href;
+  let jobId = '';
+  if (PLATFORM === 'liepin') {
+    const m = url.match(/\/job\/(\d+)/i) || url.match(/jobId=(\d+)/i);
+    if (m) jobId = m[1];
+  } else if (PLATFORM === 'zhaopin') {
+    const m = url.match(/jobdetail\/([^/?]+)/i);
+    if (m) jobId = m[1];
+  } else if (PLATFORM === 'job51') {
+    const m = url.match(/jobId=(\d+)/i) || url.match(/jobs\.51job\.com\/([^/]+)/i);
+    if (m) jobId = m[1];
+  }
+  const title = pickText(['h1', '[class*="job-title"]', '[class*="job-name"]', '[class*="position"] h3', 'title']) || document.title;
+  const company = pickText(['[class*="company"] .name', '[class*="company-name"]', '[class*="comp-name"]', '.cname', '[class*="company"]']);
+  const salary = pickText(['[class*="salary"]', '[class*="sal"]', '[class*="price"]', '[class*="money"]']);
+  const location = pickText(['[class*="job-area"]', '[class*="area"]', '[class*="address"]', '[class*="location"]']);
+  const description = textOf(document.body).slice(0, 6000);
+  notify('job-extracted', {
+    platform: PLATFORM,
+    url,
+    title,
+    company,
+    salary,
+    location,
+    description,
+    jobId,
+    ...platformListPage(),
+  });
+}
+
+
+// ===== 横向滚动兜底（修复智联等 PC 招聘站页面被截断、无法左右滑动）=====
+// 根因：智联等站点 html/body 设了 overflow-x:hidden + 固定宽度布局，当内置 webview 视口
+// 宽度小于其设计最小宽度时，右侧内容被裁剪且无横向滚动条，用户无法左右拖动。
+// BOSS 直聘为响应式布局、已知可正常横向滚动，跳过避免回归。
+// 修复：强制 html/body 允许横向滚动并显示滚动条；部分站点用 JS 反复重置 overflow，
+// 用 MutationObserver 兜底覆盖。外部容器 .browser-viewport/.browser-pane 的 overflow:hidden
+// 不影响 webview 内部 OOPIF 自身滚动，故此处从页面上下文修复。
+function injectHorizontalScrollFix() {
+  if (PLATFORM === 'boss') return; // BOSS 响应式，已知正常，跳过避免回归
+  const CSS = [
+    // 把 html 锁成视口高度的滚动容器：横向滚动条因此固定在 webview 视口底边（与纵向一致常驻），
+    // 而非随文档流出现在整页底部（须拉到最底才出现）。body 的 overflow 设为 visible，
+    // 让横向/纵向溢出统一由 html 处理（CSS overflow 传播规则）。
+    'html {',
+    '  height: 100% !important;',
+    '  max-height: 100% !important;',
+    '  overflow-x: auto !important;',
+    '  overflow-y: auto !important;',
+    '  -ms-overflow-style: auto !important;',
+    '  scrollbar-width: auto !important;',
+    '}',
+    'body {',
+    '  min-height: 100% !important;',
+    '  max-width: none !important;',
+    '  width: auto !important;',
+    '  overflow-x: visible !important;',
+    '  overflow-y: visible !important;',
+    '}',
+    '::-webkit-scrollbar { width: 11px !important; height: 11px !important; display: block !important; }',
+    '::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.28) !important; border-radius: 6px !important; }',
+    '::-webkit-scrollbar-track { background: rgba(0,0,0,0.04) !important; }',
+  ].join('\n');
+
+  const applyStyle = () => {
+    if (document.getElementById('bossclaw-scrollfix')) return;
+    const s = document.createElement('style');
+    s.id = 'bossclaw-scrollfix';
+    s.textContent = CSS;
+    (document.head || document.documentElement).appendChild(s);
+  };
+
+  // 兜底：部分站点用 JS 反复重置 html/body 的 overflow 为 hidden，强制改回
+  // （html 改 auto 作为视口滚动容器，body 改 visible 让溢出传播给 html）
+  const enforceOverflow = () => {
+    try {
+      const html = document.documentElement;
+      const body = document.body;
+      if (html && (html.style.overflowX === 'hidden' || html.style.overflow === 'hidden')) {
+        html.style.overflowX = 'auto';
+        html.style.overflow = 'auto';
+      }
+      if (body && (body.style.overflowX === 'hidden' || body.style.overflow === 'hidden')) {
+        body.style.overflowX = 'visible';
+        body.style.overflow = 'visible';
+      }
+    } catch {}
+  };
+
+  const start = () => {
+    applyStyle();
+    enforceOverflow();
+    try {
+      const obs = new MutationObserver(() => enforceOverflow());
+      if (document.documentElement) obs.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+      if (document.body) obs.observe(document.body, { attributes: true, attributeFilter: ['style'] });
+    } catch {}
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+  // SPA 路由切换 / 延迟脚本重置后二次兜底
+  setTimeout(enforceOverflow, 800);
+  setTimeout(enforceOverflow, 2000);
+}
+
 // ===== 页面信息回传 =====
 // SPA 历史栈：BOSS 直聘内部分页/岗位跳转走 history.pushState/replaceState，
 // Electron <webview> 原生 goBack/goForward 只认「整页导航」，pushState 不计入，
@@ -128,14 +291,15 @@ ipcRenderer.on('spa-back', () => { try { spaRecord(); history.back(); } catch {}
 ipcRenderer.on('spa-forward', () => { try { spaRecord(); history.forward(); } catch {} });
 ipcRenderer.on('force-resize', () => { try { window.dispatchEvent(new Event('resize')); } catch {} });
 
+let lastNavSig = ''; // 导航状态变化去重：内容未变则不重复上报（BOSS 页 DOM 高频变动时防止每帧 IPC 风暴）
 function reportNav() {
   try {
-    notify('nav', {
-      url: location.href,
-      title: document.title,
-      canGoBack: spaIndex > 0,
-      canGoForward: spaIndex >= 0 && spaIndex < spaHistory.length - 1,
-    });
+    const canGoBack = spaIndex > 0;
+    const canGoForward = spaIndex >= 0 && spaIndex < spaHistory.length - 1;
+    const sig = location.href + '\u0001' + document.title + '\u0001' + (canGoBack ? '1' : '0') + (canGoForward ? '1' : '0');
+    if (sig === lastNavSig) return;
+    lastNavSig = sig;
+    notify('nav', { url: location.href, title: document.title, canGoBack, canGoForward });
   } catch {}
 }
 
@@ -157,7 +321,8 @@ function detectLogin() {
     return { loggedIn: false, error: String(e?.message || e) };
   }
 }
-function reportLogin() { notify('login-state', detectLogin()); }
+let lastLoginSig = ''; // 登录态变化去重：结果与上次一致则不重复上报
+function reportLogin() { try { const d = detectLogin(); const sig = JSON.stringify(d); if (sig === lastLoginSig) return; lastLoginSig = sig; notify('login-state', d); } catch {} }
 
 // ===== 风控码 =====
 function riskCodeMessage(code) {
@@ -1228,37 +1393,43 @@ function domDump() {
 }
 
 // ===== IPC 通道注册 =====
-// boss-api：BOSS 官方 API（joblist / jobCard / jobDetail / friendAdd），seq 用于上层 promise 化
-ipcRenderer.on('boss-api', async (_e, arg) => {
-  const { seq, action, params } = (arg && typeof arg === 'object') ? arg : {};
-  const result = await handleBossApi(action, params);
-  notify('boss-api-result', { seq, ok: !result.error, code: result.code, data: result, error: result.error, riskCodeMessage: result.code ? riskCodeMessage(result.code) : '' });
-});
+// BOSS 专属通道仅在 BOSS 页面注册；其余平台注册轻量提取（多平台适配）
+if (PLATFORM === 'boss') {
+  // boss-api：BOSS 官方 API（joblist / jobCard / jobDetail / friendAdd），seq 用于上层 promise 化
+  ipcRenderer.on('boss-api', async (_e, arg) => {
+    const { seq, action, params } = (arg && typeof arg === 'object') ? arg : {};
+    const result = await handleBossApi(action, params);
+    notify('boss-api-result', { seq, ok: !result.error, code: result.code, data: result, error: result.error, riskCodeMessage: result.code ? riskCodeMessage(result.code) : '' });
+  });
 
-// extract-job：提取当前详情页岗位（API 优先，DOM 兜底）
-ipcRenderer.on('extract-job', () => { extractJob(); });
+  // start-apply：DOM 兜底投递（API 失败时由上层调用）
+  ipcRenderer.on('start-apply', (_e, arg) => { domApply(arg || {}); });
 
-// start-apply：DOM 兜底投递（API 失败时由上层调用）
-ipcRenderer.on('start-apply', (_e, arg) => { domApply(arg || {}); });
+  // open-chat：工作台「点击立即沟通」——仅打开聊天窗口（不发送文字，发文字交给「自动沟通」页）
+  ipcRenderer.on('open-chat', () => { openChatOnly(); });
 
-// open-chat：工作台「点击立即沟通」——仅打开聊天窗口（不发送文字，发文字交给「自动沟通」页）
-ipcRenderer.on('open-chat', () => { openChatOnly(); });
+  // visual-collect：可视化采集（对齐 job-claw-main，逐卡片滚动高亮点击展开）
+  ipcRenderer.on('visual-collect', (_e, arg) => {
+    const opts = (arg && typeof arg === 'object') ? arg : {};
+    visualCollect(opts).catch((e) => notify('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
+  });
+  // collect-control：运行时控制（暂停 / 继续 / 停止 / 调速）
+  ipcRenderer.on('collect-control', (_e, arg) => {
+    const action = (arg && arg.action) || '';
+    if (action === 'pause') collectCtl.paused = true;
+    else if (action === 'resume') collectCtl.paused = false;
+    else if (action === 'stop') { collectCtl.stopped = true; collectCtl.paused = false; }
+    else if (action === 'speed') {
+      const ms = Number((arg && arg.settleMs) || 0);
+      if (ms >= 300) collectCtl.settleMs = Math.min(5000, ms);
+    }
+  });
+}
 
-// visual-collect：可视化采集（对齐 job-claw-main，逐卡片滚动高亮点击展开）
-ipcRenderer.on('visual-collect', (_e, arg) => {
-  const opts = (arg && typeof arg === 'object') ? arg : {};
-  visualCollect(opts).catch((e) => notify('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
-});
-// collect-control：运行时控制（暂停 / 继续 / 停止 / 调速）
-ipcRenderer.on('collect-control', (_e, arg) => {
-  const action = (arg && arg.action) || '';
-  if (action === 'pause') collectCtl.paused = true;
-  else if (action === 'resume') collectCtl.paused = false;
-  else if (action === 'stop') { collectCtl.stopped = true; collectCtl.paused = false; }
-  else if (action === 'speed') {
-    const ms = Number((arg && arg.settleMs) || 0);
-    if (ms >= 300) collectCtl.settleMs = Math.min(5000, ms);
-  }
+// extract-job：提取当前详情页岗位（BOSS=API 优先/DOM 兜底；其余平台=轻量通用提取）
+ipcRenderer.on('extract-job', () => {
+  if (PLATFORM === 'boss') extractJob();
+  else platformExtractJob();
 });
 
 // webview-command：主进程右键菜单触发的通用命令（dom-dump 等）
@@ -1280,16 +1451,17 @@ function safeReport(kind) {
 spaRecord(); // 种子：把初始页面加入历史栈
 reportNav();
 reportLogin();
+// 横向滚动兜底：修复智联等 PC 站页面被截断、无法左右滑动（非 BOSS 平台生效）
+injectHorizontalScrollFix();
+// 节流：连续 mutation 合并到节流窗口（150ms）。相比 rAF 逐帧执行——
+// BOSS 直聘首页 DOM 高频变动（骨架屏/懒加载/动画）时每帧都会触发上报，
+// 而 URL/标题/登录态绝大多数帧并无变化；150ms 节流 + 变化去重后，
+// 只有真正变化才产生 IPC，消除 guest → 宿主渲染层的持续消息与重渲染开销。
 let obsTick = 0;
 const obs = new MutationObserver(() => {
-  // 节流：连续 mutation 时合并到下一帧（rAF；退化环境下用 setTimeout 16ms）
   if (obsTick) return;
   obsTick = 1;
-  const flush = () => { obsTick = 0; safeReport('nav'); safeReport('login'); };
-  try {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
-    else setTimeout(flush, 16);
-  } catch { setTimeout(flush, 32); }
+  setTimeout(() => { obsTick = 0; safeReport('nav'); safeReport('login'); }, 150);
 });
 try { obs.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
 document.addEventListener('DOMContentLoaded', () => { spaRecord(); safeReport('nav'); safeReport('login'); });
@@ -1297,7 +1469,10 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 1200);
 setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
-['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control'].forEach((channel) => {
+const ipcChannels = PLATFORM === 'boss'
+  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command']
+  : ['extract-job', 'webview-command'];
+ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);
   ipcRenderer.on(channel, async (...args) => {
