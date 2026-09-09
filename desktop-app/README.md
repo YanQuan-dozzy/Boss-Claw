@@ -8,9 +8,11 @@
 
 ## 功能闭环
 
-* **岗位来源**：内置浏览器打开 BOSS 直聘岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据；岗位详情自动清洗页面噪音（`jdCleaner.ts` 渲染层 + `webview.cjs` 同步）。
+* **岗位来源**：内置浏览器打开招聘平台岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据；岗位详情自动清洗页面噪音（`jdCleaner.ts` 渲染层 + `webview.cjs` 同步）。岗位卡片带**平台标识 chip**（BOSS 直聘绿 / 智联招聘蓝 / 猎聘橙 / 前程无忧紫，`PlatformChip` 组件，配色集中定义于 `platforms.ts`）。
 
-* **半自动投递**：中栏批准岗位 → 浏览器跳转 → AI 草稿预填沟通框 → 用户发送。
+* **多平台（BOSS 直聘 / 猎聘 / 智联招聘 / 前程无忧 51Job）**：设置页「招聘平台」分区启用平台、调整平台优先级（数字 1 = 最高，决定工作台搜索顺序与自动沟通先完成高优先级平台再切换）、配置每平台「每日投递目标」（BOSS / 猎聘 / 前程无忧默认 120/日，智联 100/日，0 = 不限，均受平台侧上限 / `MAX_SAFE_DAILY=150` 收窄，智联平台侧约 100/日）并查看两通道登录状态。各平台登录态本地独立持久化：内置浏览器经 Electron 分区会话（工作台扫码登录），Camoufox 自动沟通经 `~/.bossclaw/camoufox-cookies-{platform}.json`（BOSS 保持 `camoufox-cookies.json`）。至少保留一个启用平台（唯一启用平台不可取消）。
+
+* **半自动投递**：中栏批准岗位 → 浏览器跳转 → AI 草稿预填沟通框 → 用户发送。**工作台「一键投递」仅处理 BOSS 直聘岗位**（webview / 官方接口链路）；猎聘 / 智联 / 前程无忧岗位确认后保持投递队列，由「自动沟通」批量引擎投递。
 
 * **自动辅助**：启动后按匹配优先级依次投递 `approved_queue` 队列；webview 回传投递阶段（打开沟通 → 填写 → 发送 → 确认文字气泡 → 确认结果），失败自动暂停交人工核对；**首次成功投递后强制暂停验收**（安全不变量）。
 
@@ -30,21 +32,23 @@
 
 * **可选隐身增强（默认关闭）**：
 
-  * **Camoufox** —— Python 桥（127.0.0.1:18767），**仅使用 Camoufox 原生隐身内核**（本地 Chrome / Edge 不可复用，需自行 `pip install "camoufox[geoip]" && camoufox fetch` 安装内核）。
+  * **Camoufox** —— Python 桥（127.0.0.1:18767），**仅使用 Camoufox 原生隐身内核**（本地 Chrome / Edge 不可复用，需自行 `pip install "camoufox[geoip]" && camoufox fetch` 安装内核）。多平台模块在 `camoufox/platforms/`（common 基座 + liepin / zhaopin / job51）；Cookie 按平台独立持久化。非 BOSS 平台的搜索采集与投递均须经此通道。
 
-  * **CloakBrowser** —— Playwright 持久上下文 + 多 Page（需要时自动从 `~/.cloakbrowser/` 加载约 200MB 隐身 Chromium）。
+  * **CloakBrowser** —— Playwright 持久上下文 + 多 Page（需要时自动从 `~/.cloakbrowser/` 加载约 200MB 隐身 Chromium）；含健康检查（`jc:cloak-health`），进程被外部关闭 / 崩溃时 UI 自动重启。
 
   * **不绕过验证码 / 账户验证**：code 35/36/32 立即停止并交人工。
 
+* **自动沟通**（「自动沟通」页）：Camoufox 隐身引擎**多平台批量沟通**，按平台优先级串行消费（先完成高优先级平台的全部已确认岗位，再切下一平台）。投递语义按平台适配：BOSS 输入并发送打招呼语（**文字气泡确认**）；猎聘点「聊一聊」→ 平台用 **App 预设招呼语自动发送**（须先在猎聘 App 设置招呼语文案，脚本不注入文本），确认聊天窗打开 / 按钮变「继续聊」即计成功；智联 / 前程无忧点「投递」（前程无忧按「批量投递」+ 成功数量确认），确认「投递成功」/「已投递」即计成功。**AI 跟聊（needsReply）仅 BOSS 聊天链路支持**，其余平台回复请在平台 App 内人工跟进。平台卡片实时显示各平台引擎 / 登录状态，可逐平台「登录 / 退出」；未确认投递结果不计成功、code 35/36/32/37 立即停止交人工。
+
 * **主题**：浅色 / 深色 / 跟随系统（antd + CSS 变量，状态持久化）。
 
-* **定时任务**：侧栏「定时任务」页配置，按设定时刻（HH:mm + 星期，空 = 每天）自动触发「投递 / 采集 / 备份」三类动作；全局调度器每 15s 心跳扫描、按目标时刻去重（同一分钟只触发一次），投递复用自动投递引擎全部安全守卫（冷却 / 每日上限 / 分批 / 首条验收 / 风控交人工）；「采集」经跨页标志交常驻工作台消费；最小化时仍触发（主进程关闭背景节流 `backgroundThrottling: false`）。
+* **定时任务**：侧栏「定时任务」页配置，按设定时刻（HH:mm + 星期，空 = 每天）自动触发「投递 / 采集 / 备份」三类动作；全局调度器每 15s 心跳扫描、按目标时刻去重（同一分钟只触发一次）。每条任务可圈定**目标平台**（留空 = 全部已启用平台）；「投递」任务可设**单轮条数上限**（>0 时成功满该数即结束本轮，等待下一触发时刻——多条限量定时投递即构成「分批投递」）；「分批投递模板」卡片一键创建 早间 09:00 / 午间 13:00 / 晚间 18:00 三条任务（默认每轮 40 条、全部启用平台）；旧版 `config.batchDelivery`（早中晚分批）启动时一次性迁移为「早/午/晚间限量投递」三条任务（幂等，仅迁移曾开启者）。投递复用自动投递引擎全部安全守卫（冷却 / 每日上限 / 平台配额 / 首条验收 / 风控交人工），引擎已在运行时跳过本次触发；「采集」经跨页标志（携带目标平台）交常驻工作台按平台逐一消费；最小化时仍触发（主进程关闭背景节流 `backgroundThrottling: false`）。
 
 * **本地自动备份**：`localStorage` 为主存储，另按可配置目录（默认 `userData/backup`，写在 `userData/.backup-dir.txt` 指针）做周期写盘；每 5 分钟脏检查（序列化 keys 未变化则不重写文件），覆盖 `bossclaw-app / -settings-v2 / -data / -schedule` 四组键；`localStorage` 缺失或「清空全部数据」后，可从本地备份文件自动回签恢复。
 
 * **开机自启动**：设置页开关，写入 Windows 登录项（`setLoginItemSettings`，打包安装版生效），配合定时任务实现应用运行期间自动投递 / 采集 / 备份。
 
-* **首页「阅读使用文档」**：首页操作区提供「阅读使用文档」按钮，主进程读取 `docs/使用前必读.md`（开发读仓库/docs，打包读 `resources/docs/`，`extraResources` 已配置）经 MarkdownView 抽屉渲染。
+* **首页「阅读使用文档」**：首页操作区提供「阅读使用文档」按钮，主进程读取用户文档 `resources/docs/使用前必读.md`（开发与打包同源，均指向应用 resources/docs/，`extraResources` 已配置）经 MarkdownView 抽屉渲染。
 
 * **公司规模筛选**：设置页新增「公司规模」单选，映射 BOSS web 端 scale 参数（0-20人=301 … 10000人以上=306，不限 = 不附加过滤），参与搜索采集与搜索 URL 构造。
 
@@ -81,7 +85,8 @@ desktop-app/
 │       └── cloakPreload.cjs          # CloakBrowser 页面预加载
 ├── bridge/                           # Node 桥接服务（mammoth / 文件 / 任务恢复）
 ├── camoufox/
-│   ├── camoufox_server.py            # Python 隐身搜索/发送桥
+│   ├── camoufox_server.py            # Python 隐身搜索/发送桥（多平台调度基座）
+│   ├── platforms/                    # 平台模块：common.py（公共基座/人类化/Cookie 按平台持久化）+ liepin.py / zhaopin.py / job51.py
 │   └── requirements.txt
 ├── resources/
 │   └── icon.ico
@@ -95,8 +100,8 @@ desktop-app/
 └── src/
     ├── main.tsx / App.tsx / theme.ts / index.css
     ├── store/                        # useAppStore / useDataStore / useSettingsStore / useScheduleStore
-    ├── lib/                          # storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
-    ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / MarkdownView / feedback
+    ├── lib/                          # storage / electronApi / bridgeClient / localBackup / scheduler / bossclaw/*（platforms 平台注册 / matching / profile / greetings / jobMatch / jobAssistant / jdCleaner / skills 等）
+    ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / CloakView / PlatformChip / MarkdownView / feedback
     └── pages/                        # Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant（定制简历）/ OpenClaw / AutoChat / Settings
 ```
 
@@ -234,12 +239,13 @@ release/
 | ----------------------------- | ------------------------------------------------- |
 | `jc:app-info` / `jc:window-*` | 应用信息、窗口控制（标题栏按钮）                                  |
 | `jc:open-external`            | 用系统浏览器打开外部链接                                      |
-| `jc:read-doc`                 | 读取「使用前必读」文档（首页阅读入口；打包读 resources/docs/）   |
+| `jc:read-doc`                 | 读取「使用前必读」文档（首页阅读入口；文档源 resources/docs/，开发与打包一致）   |
 | `jc:fetch-url`                | 主进程代理跨域 fetch（城市编码表）                              |
-| `jc:boss-login`               | 检查 BOSS 直聘登录态（读 wt2 cookie）                       |
+| `jc:boss-login`               | 检查各平台在「内置浏览器（工作台）」会话中的登录态（BOSS 读 wt2 cookie，返回 platforms 映射） |
+| `jc:boss-logout`              | 退出指定平台的内置浏览器会话登录态                              |
 | `jc:webview-input`            | webview 真实键盘输入（CDP 等价）                            |
-| `jc:camoufox-*`               | Camoufox Python 桥（status / search / send / login） |
-| `jc:cloak-*`                  | CloakBrowser 隐身浏览器（启动 / 标签 / 输入）                  |
+| `jc:camoufox-*`               | Camoufox Python 桥（status / search / send / login / logout / restart，按平台） |
+| `jc:cloak-*`                  | CloakBrowser 隐身浏览器（启动 / 标签 / 输入 / health 健康检查自动重启）                  |
 | `jc:bridge-control`           | OpenClaw Node 桥启停                                 |
 | `jc:autostart-*`              | 开机自启动（Windows 登录项，get / set）                       |
 | `jc:backup-*`                 | 本地备份（dir-get / dir-set / dir-pick / write / read / delete） |
