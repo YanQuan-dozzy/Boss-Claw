@@ -180,9 +180,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.4.0-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.4.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.4.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-2.5.0-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.5.0-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.5.0-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
 
@@ -276,6 +276,7 @@ release/
 
 ## 变更记录
 
+* v2.5.0 — 多平台投递适配与安全加固：Camoufox 引擎按平台细分（job51 / liepin / zhaopin），「自动沟通」支持 BOSS 文字气泡、猎聘「聊一聊」、智联 / 前程无忧投递简历，各平台独立登录态与每日计数；HR 来消息后 AI 跟聊回复不再计入单日投递上限；会话去重 / 投递锁 / 持久化安全细节收敛。
 * v2.4.0 — 定时任务（投递 / 采集 / 备份，HH:mm + 星期，心跳去重）；本地自动备份（5 分钟脏检查写盘 + 缺失自动回签恢复）；开机自启动（Windows 登录项）；首页「阅读使用文档」入口；公司规模筛选（BOSS scale）；新增 great-resume / job-match 增强技能；关闭后台节流保证最小化定时仍触发。
 * v2.3.0 — 批量自动沟通引擎重构（遵循首次验收 / 打招呼语非空 / 频率限制等安全不变量）；隐身引擎（Camoufox）/ 隐身浏览器（CloakBrowser）与贡献模块细节优化；通信模块实现优化。
 * v2.1.0 — AI 技能体系（内置 4 技能 + 自定义技能导入/新建/删除）；定制简历求职助手（JobAssistant，侧栏新增入口）；岗位匹配本地确定性多维匹配与 AI 融合；岗位采集页面噪音清洗（jdCleaner）；版本 / productName 统一为 BossClaw，新增 macOS / Linux 打包配置。

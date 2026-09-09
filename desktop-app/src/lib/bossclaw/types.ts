@@ -323,6 +323,8 @@ export interface PendingItem {
   retryable?: boolean;
   /** 成功投递时间戳（用于单日投递上限统计） */
   sentAt?: number;
+  /** HR 来消息后 AI 跟聊回复的成功时间戳（不计入单日投递上限统计；sentAt 仍为空表示仅回复未投递） */
+  replySentAt?: number;
   /** 已打开沟通窗口时间戳（工作台「点击立即沟通」后、尚未发送文字） */
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */
