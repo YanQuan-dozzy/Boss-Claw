@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -6,28 +6,42 @@ import {
   Input,
   Modal,
   Popconfirm,
-  Select,
   Space,
   Switch,
   Tag,
   Typography,
   message,
 } from 'antd';
+import type { InputRef } from 'antd';
 import {
   PlusOutlined,
   ReloadOutlined,
   CheckCircleOutlined,
+  CloseOutlined,
+  RobotOutlined,
   AimOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
-import { buildDirectionPlan, normalizeDirectionPlan, selectedDirectionItems } from '@/lib/bossclaw/directions';
+import { useSettingsStore } from '@/store/useSettingsStore';
+import {
+  buildDirectionPlan,
+  directionPreset,
+  normalizeDirectionPlan,
+  selectedDirectionItems,
+} from '@/lib/bossclaw/directions';
+import { generateDirectionKeywords } from '@/lib/bossclaw/directionKeywordsAI';
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
 import type { DirectionItem } from '@/lib/bossclaw/types';
 
 const { Paragraph, Text } = Typography;
+
+/** 第一行关键词折叠时默认显示的数量；因为该行恒定单行不换行，这里取小值保证不挤 */
+const KEYWORD_COLLAPSE_COUNT = 2;
+/** 单个方向最多保留的搜索词数量（与 normalizeDirectionItem 的 12 上限一致） */
+const KEYWORD_LIMIT = 12;
 
 export default function Directions() {
   const profile = useDataStore((s) => s.profile);
@@ -36,10 +50,51 @@ export default function Directions() {
   const [items, setItems] = useState<DirectionItem[]>(directionPlan?.items || []);
   const [customOpen, setCustomOpen] = useState(false);
   const [customName, setCustomName] = useState('');
+  // 每个方向卡片的「待添加」输入草稿（受控，便于「＋」按钮一键添加并清空输入）
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 第一行关键词是否展开（默认折叠，只显示前 KEYWORD_COLLAPSE_COUNT 个）
+  const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
+  // 当前展开候选面板的方向 id（同一时刻只开一个）
+  const [openSuggest, setOpenSuggest] = useState<string | null>(null);
+  // 正在调用 AI 生成搜索词的方向 id
+  const [aiBusyId, setAiBusyId] = useState<string | null>(null);
+  const inputRefs = useRef<Record<string, InputRef | null>>({});
+  const config = useSettingsStore((s) => s.config);
 
   useEffect(() => {
     setItems(directionPlan?.items || []);
   }, [directionPlan]);
+
+  // 点击候选面板与输入行之外的任意位置（或按 Esc）关闭面板
+  useEffect(() => {
+    if (!openSuggest) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('.direction-add') || target?.closest?.('.direction-suggest')) return;
+      setOpenSuggest(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenSuggest(null);
+    };
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openSuggest]);
+
+  // 每张卡片的候选搜索词：只放「本方向」自己的词（方向名 + 该方向目录关键词）。
+  // 刻意不混入画像搜索词——那里包含其他方向的岗位名（如「全栈开发工程师」「后端开发工程师」），
+  // 混进来会让本方向的下拉里出现跨方向关键词，用户会被误导。
+  const suggestionMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const it of items) {
+      const preset = directionPreset(it.name);
+      map.set(it.id, normalizeStringList([it.name, ...(preset?.keywords || [])], 18));
+    }
+    return map;
+  }, [items]);
 
   const ensurePlan = () => {
     if (!profile) {
@@ -93,6 +148,156 @@ export default function Directions() {
 
   const onKeywords = (id: string, v: string[]) =>
     update(items.map((it) => (it.id === id ? { ...it, keywords: normalizeStringList(v, 12) } : it)));
+
+  const onKeywordDraft = (id: string, v: string) =>
+    setDrafts((prev) => (prev[id] === v ? prev : { ...prev, [id]: v }));
+
+  const toggleExpanded = (id: string) =>
+    setExpandedKeys((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  // 增删搜索词统一入口：去重 + 12 条上限告警
+  const applyKeywords = (id: string, next: string[]) => {
+    const merged = normalizeStringList(next, KEYWORD_LIMIT);
+    if (merged.length < normalizeStringList(next, 99).length) {
+      message.warning(`每个方向最多 ${KEYWORD_LIMIT} 个搜索词，超出的已忽略`);
+    }
+    onKeywords(id, merged);
+  };
+
+  const removeKeyword = (id: string, keyword: string) => {
+    const target = items.find((it) => it.id === id);
+    if (!target) return;
+    applyKeywords(id, target.keywords.filter((k) => k !== keyword));
+  };
+
+  // 候选词行点击：已加入则删除，未加入则添加
+  const toggleKeyword = (id: string, keyword: string) => {
+    const target = items.find((it) => it.id === id);
+    if (!target) return;
+    if (target.keywords.includes(keyword)) {
+      applyKeywords(id, target.keywords.filter((k) => k !== keyword));
+      return;
+    }
+    applyKeywords(id, [...target.keywords, keyword]);
+    onKeywordDraft(id, '');
+  };
+
+  // 第二行输入「回车 / 点＋」：有草稿则添加为搜索词并清空输入，无草稿则聚焦展开候选
+  const commitKeywordDraft = (id: string) => {
+    const draft = (drafts[id] || '').trim();
+    const target = items.find((it) => it.id === id);
+    if (!target) return;
+    if (!draft) {
+      inputRefs.current[id]?.focus();
+      setOpenSuggest(id);
+      return;
+    }
+    if (!target.keywords.includes(draft)) {
+      applyKeywords(id, [...target.keywords, draft]);
+      message.success(`已添加搜索词：${draft}`);
+    }
+    onKeywordDraft(id, '');
+  };
+
+  // 候选词面板：本方向目录词 + 输入中的新词，右侧「＋ 添加 / × 删除」，底部 AI 生成
+  const renderSuggestPanel = (it: DirectionItem) => {
+    const draft = (drafts[it.id] || '').trim();
+    const preset = suggestionMap.get(it.id) || [];
+    const query = draft.toLowerCase();
+    const candidates = query
+      ? preset.filter((k) => k !== draft && k.toLowerCase().includes(query))
+      : preset;
+    const draftIsNew = Boolean(draft) && !preset.includes(draft);
+    return (
+      <div className="direction-suggest">
+        <div className="direction-suggest__list">
+          {draftIsNew && (
+            <button
+              type="button"
+              className="direction-suggest__row is-draft"
+              onClick={() => commitKeywordDraft(it.id)}
+            >
+              <span className="direction-suggest__label">新增「{draft}」</span>
+              <span className="direction-option__act direction-option__add">
+                <PlusOutlined />
+              </span>
+            </button>
+          )}
+          {candidates.map((keyword) => {
+            const added = it.keywords.includes(keyword);
+            return (
+              <button
+                type="button"
+                key={keyword}
+                className={`direction-suggest__row ${added ? 'is-added' : ''}`}
+                onClick={() => toggleKeyword(it.id, keyword)}
+              >
+                <span className="direction-suggest__label">{keyword}</span>
+                {added ? (
+                  <span
+                    className="direction-option__act direction-option__remove"
+                    title="点击删除该搜索词"
+                  >
+                    <CloseOutlined />
+                  </span>
+                ) : (
+                  <span
+                    className="direction-option__act direction-option__add"
+                    title="点击添加为该方向的搜索词"
+                  >
+                    <PlusOutlined />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          {!candidates.length && !draftIsNew && (
+            <div className="direction-suggest__empty">没有匹配的候选词，直接输入后回车即可新增</div>
+          )}
+        </div>
+        <div className="direction-suggest__foot">
+          <Button
+            size="small"
+            type="text"
+            className="direction-ai-btn"
+            icon={<RobotOutlined />}
+            loading={aiBusyId === it.id}
+            disabled={Boolean(aiBusyId) && aiBusyId !== it.id}
+            title="调用 AI 为该方向生成 3 条新的搜索关键词"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void onGenerateKeywords(it.id)}
+          >
+            AI 生成 3 条新搜索词
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
+  // 下拉底部「AI 生成 3 条新搜索词」：只针对当前方向生成，去重后直接追加为该方向搜索词
+  const onGenerateKeywords = async (id: string) => {
+    const target = items.find((it) => it.id === id);
+    if (!target || aiBusyId) return;
+    if (!config.model?.apiKey) {
+      message.warning('请先在「设置」页填写 AI API Key 后使用 AI 生成搜索词');
+      return;
+    }
+    setAiBusyId(id);
+    try {
+      const fresh = await generateDirectionKeywords({ item: target, profile }, config.model);
+      if (!fresh.length) {
+        message.info('AI 没有生成新的关键词，当前方向的关键词已较完整');
+        return;
+      }
+      applyKeywords(id, [...target.keywords, ...fresh]);
+      onKeywordDraft(id, '');
+      message.success(`已为「${target.name}」新增 ${fresh.length} 条搜索词：${fresh.join('、')}`);
+    } catch (e: any) {
+      message.warning(`AI 生成搜索词失败：${e?.message || String(e)}`);
+    } finally {
+      setAiBusyId(null);
+    }
+  };
 
   const onDelete = (id: string) => {
     const it = items.find((i) => i.id === id);
@@ -204,7 +409,9 @@ export default function Directions() {
             <Card
               key={it.id}
               size="small"
-              className={`direction-card ${!it.enabled ? 'is-disabled' : ''}`}
+              className={`direction-card ${!it.enabled ? 'is-disabled' : ''} ${
+                openSuggest === it.id ? 'is-suggesting' : ''
+              }`}
               title={
                 <div className="direction-card__head">
                   <div className="direction-card__title">
@@ -255,15 +462,68 @@ export default function Directions() {
                 <Text type="secondary" className="direction-card__label">
                   搜索词
                 </Text>
-                <Select
-                  mode="tags"
-                  size="small"
-                  className="direction-card__select"
-                  value={it.keywords}
-                  onChange={(v) => onKeywords(it.id, v)}
-                  placeholder="输入后回车添加搜索关键词"
-                  maxTagCount="responsive"
-                />
+
+                {/* 第一行：已有关键词，恒定单行不换行；超出用「+N / 收起」展开 */}
+                <div className={`direction-keys ${expandedKeys[it.id] ? 'is-expanded' : ''}`}>
+                  {(expandedKeys[it.id] ? it.keywords : it.keywords.slice(0, KEYWORD_COLLAPSE_COUNT)).map(
+                    (keyword) => (
+                      <span key={keyword} className="direction-tag" title={keyword}>
+                        <span className="direction-tag__text">{keyword}</span>
+                        <span
+                          className="direction-tag__close"
+                          role="button"
+                          aria-label={`删除搜索词 ${keyword}`}
+                          title="删除该搜索词"
+                          onClick={() => removeKeyword(it.id, keyword)}
+                        >
+                          <CloseOutlined />
+                        </span>
+                      </span>
+                    )
+                  )}
+                  {it.keywords.length > KEYWORD_COLLAPSE_COUNT && (
+                    <button
+                      type="button"
+                      className="direction-tag direction-tag--more"
+                      title={expandedKeys[it.id] ? '收起关键词' : '展开全部关键词'}
+                      onClick={() => toggleExpanded(it.id)}
+                    >
+                      {expandedKeys[it.id] ? '收起' : `+${it.keywords.length - KEYWORD_COLLAPSE_COUNT}`}
+                    </button>
+                  )}
+                  {!it.keywords.length && (
+                    <span className="direction-keys__empty">暂无搜索词，在下方输入框添加</span>
+                  )}
+                </div>
+
+                {/* 第二行：输入新增（回车或点「＋」添加，聚焦展开候选词面板） */}
+                <div className="direction-add">
+                  <Input
+                    ref={(node) => {
+                      inputRefs.current[it.id] = node;
+                    }}
+                    size="small"
+                    className="direction-card__input"
+                    value={drafts[it.id] || ''}
+                    onChange={(e) => onKeywordDraft(it.id, e.target.value)}
+                    onPressEnter={() => commitKeywordDraft(it.id)}
+                    onFocus={() => setOpenSuggest(it.id)}
+                    onClick={() => setOpenSuggest(it.id)}
+                    placeholder="输入关键字，回车或点「＋」添加"
+                    suffix={
+                      <span
+                        className="direction-add__btn"
+                        role="button"
+                        aria-label="添加搜索词"
+                        title={drafts[it.id] ? '添加当前关键字' : '展开候选搜索词'}
+                        onClick={() => commitKeywordDraft(it.id)}
+                      >
+                        <PlusOutlined />
+                      </span>
+                    }
+                  />
+                  {openSuggest === it.id && renderSuggestPanel(it)}
+                </div>
               </div>
 
               {it.matchedSkills.length > 0 && (

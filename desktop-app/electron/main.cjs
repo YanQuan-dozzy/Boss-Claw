@@ -4,10 +4,12 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
+// 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
+const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
 
 // ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
 // 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
@@ -281,6 +283,10 @@ const DEV_URL = 'http://localhost:5173';
 const APP_ID = 'com.bossclaw.desktop';
 
 app.setName('BossClaw');
+// 主窗口图标（nativeImage 加载 .ico，可同时作为大/小图标源：
+// Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
+const APP_ICON_ICO = path.join(__dirname, '..', 'resources', 'icon.ico');
+const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
 // Windows 任务栏按钮图标机制（重要）：
 // - 调用 setAppUserModelId 后，任务栏按钮图标改从「与该 AUMID 匹配的快捷方式(.lnk)」获取；
 //   打包安装版由 NSIS 注册了同 AUMID 的快捷方式 → 显示嵌入 exe 的项目图标（正常）。
@@ -319,6 +325,9 @@ const DIST_INDEX = path.join(__dirname, '..', 'dist', 'index.html');
 
 let mainWindow = null;
 let bridgeProcess = null;
+// 本地控制桥句柄（BOSSCLAW_CONTROL=1 时才非空）
+let controlBridge = null;
+
 // Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口 18767
 let camoufoxProcess = null;
 const CAMOUFOX_PORT = 18767;
@@ -725,7 +734,7 @@ async function createMainWindow() {
     minWidth: 960,
     minHeight: 680,
     title: 'BossClaw',
-    icon: path.join(__dirname, '..', 'resources', 'icon.ico'),
+    icon: APP_ICON,
     backgroundColor: '#f6f7f9',
     show: false,
     autoHideMenuBar: true,
@@ -888,7 +897,11 @@ async function createMainWindow() {
     });
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    // 显式重设窗口图标：确保 Windows 任务栏缩略图/右键预览小窗（取 ICON_SMALL）也用 BossClaw 而非 Electron 默认。
+    if (process.platform === 'win32' && !APP_ICON.isEmpty()) mainWindow.setIcon(APP_ICON);
+    mainWindow.show();
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
 
   // ===== P30：渲染进程崩溃自愈 + 无响应检测 =====
@@ -1462,6 +1475,21 @@ app.whenReady().then(() => {
   // 后台预热隐身引擎（读取持久化状态 + 预拉起 Python 桥），登录不再承担冷启动卡顿
   warmUpCamoufox();
 
+  // ===== 本地控制桥（可选；开启条件见 control-bridge.cjs：BOSSCLAW_CONTROL=1 或 --control-bridge）=====
+  // 供 bossclaw-mcp 等外部 agent 读取实时状态 / 执行白名单动作（切页、暂停投递、截图…）。
+  // 只监听 127.0.0.1 且要求 token；单向链路：仅 agent→MCP→应用，应用从不反向调 agent。
+  try {
+    const enablement = resolveEnablement();
+    console.log(`[control-bridge] ${enablement.enabled ? '启用' : '未启用'}（${enablement.via}）`);
+    controlBridge = startControlBridge({
+      app,
+      getWindow: () => mainWindow,
+      log: (level, msg, extra) => dlog(level, msg, extra),
+    });
+  } catch (e) {
+    console.error('[control-bridge] 初始化失败：', e?.message || e);
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
@@ -1473,6 +1501,8 @@ app.on('window-all-closed', () => {
   stopCamoufoxBridge();
   // 关闭 CloakBrowser 隐身浏览器（如已启动）
   try { cloakLauncher.stop(); } catch {}
+  // 关闭本地控制桥并清理信息文件（避免残留 stale 记录被 MCP 读到）
+  if (controlBridge) { try { controlBridge.stop(); } catch {} controlBridge = null; }
   if (process.platform !== 'darwin') app.quit();
 });
 

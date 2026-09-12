@@ -77,7 +77,7 @@ export default function TitleBar() {
 
         <div className="theme-seg" role="group" aria-label="外观主题">
           {THEME_OPTIONS.map((opt) => (
-            <Tooltip key={opt.value} title={opt.label} delayMs={400}>
+            <Tooltip key={opt.value} title={opt.label} delayMs={400} placement="bottom">
               <button
                 type="button"
                 className={`theme-seg-item${theme === opt.value ? ' is-active' : ''}`}

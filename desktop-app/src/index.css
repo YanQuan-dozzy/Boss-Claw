@@ -1061,6 +1061,30 @@ html[data-theme='dark'],
   }
 }
 
+/* ===== 自动沟通：待沟通队列滚动容器（默认最多展示 3 张卡片，其余在容器内滚动） ===== */
+.autochat-queue-scroll {
+  /* 四周留 2px，避免卡片描边 / 激活态外发光被 overflow 裁切（上下 2px 已计入 JS 的 max-height） */
+  padding: 2px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.autochat-queue-scroll.is-scrollable {
+  /* 预留滚动条槽位，避免出现/消失时卡片宽度抖动 */
+  scrollbar-gutter: stable;
+}
+
+.autochat-queue-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+
 /* ===== 设置行 (左侧标题与描述，右侧开关/控件) ===== */
 .setting-row {
   display: flex !important;
@@ -1176,22 +1200,230 @@ html[data-theme='dark'],
   font-size: 12px;
   margin-bottom: 4px;
 }
-.direction-card__select {
-  width: 100%;
+/* ===== 投递方向 · 搜索词字段（第一行关键词单行可折叠 / 第二行输入新增） ===== */
+/* 候选面板展开时把整张卡片抬到同级卡片之上，避免被下一张卡片盖住 */
+.direction-card.is-suggesting {
+  z-index: 30;
 }
-.direction-card__tag-list {
+
+/* 第一行：已有关键词标签（白底中性描边，右侧 × 删除）。
+   恒定单行不换行：标签可收缩 + 文字省略号，一定不会折到第二行。 */
+.direction-keys {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  margin-bottom: 6px;
+  overflow: hidden;
 }
-.direction-card__foot {
-  margin-top: auto;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
+.direction-keys.is-expanded {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.direction-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 20px;
+}
+.direction-tag__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.direction-tag__close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  color: var(--fg-subtle);
+  font-size: 9px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.direction-tag__close:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--status-danger);
+}
+/* 「+N / 收起」折叠开关：不参与收缩，始终留在行尾 */
+.direction-tag--more {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border-style: dashed;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.direction-tag--more:hover {
+  color: var(--brand);
+  border-color: var(--border-brand);
+  background: var(--accent-soft);
+}
+.direction-keys__empty {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+
+/* 第二行：输入新增（框内「＋」添加） */
+.direction-add {
+  position: relative;
+}
+.direction-card__input.ant-input-affix-wrapper {
+  border-radius: 8px;
+  background: var(--card-bg);
+  border-color: var(--border);
+}
+.direction-card__input.ant-input-affix-wrapper:hover {
+  border-color: var(--border-strong);
+}
+.direction-card__input.ant-input-affix-wrapper-focused {
+  border-color: var(--border-brand);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.direction-card__input .ant-input {
+  font-size: 13px;
+}
+.direction-card__input .ant-input::placeholder {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.direction-add__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--fg-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.direction-add__btn:hover {
+  border-color: var(--border-brand);
+  background: var(--accent-soft);
+  color: var(--brand);
+}
+.direction-add__btn:active {
+  transform: scale(0.94);
+}
+
+/* 候选词面板：贴输入行下方展开，整块白底、选项无彩色底 */
+.direction-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: var(--shadow-md);
+}
+.direction-suggest__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.direction-suggest__row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.direction-suggest__row:hover {
+  background: var(--hover-bg);
+}
+.direction-suggest__row.is-added .direction-suggest__label {
+  color: var(--fg-muted);
+}
+.direction-suggest__row.is-draft .direction-suggest__label {
+  color: var(--brand);
+}
+.direction-suggest__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.direction-suggest__empty {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.direction-suggest__foot {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+/* 候选行右侧动作图标：已加入 = ×（点即删除）/ 未加入 = ＋ */
+.direction-option__act {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--fg-subtle);
+  font-size: 10px;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.direction-option__remove:hover {
+  color: var(--status-danger);
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.10);
+}
+.direction-option__add:hover {
+  color: var(--brand);
+  border-color: var(--border-brand);
+  background: var(--accent-soft);
+}
+.direction-ai-btn {
+  width: 100%;
+  justify-content: flex-start;
+  height: 28px;
+  padding-inline: 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.direction-ai-btn:hover {
+  color: var(--brand);
+  background: var(--accent-soft);
 }
 
 /* ===== 设置页 & 安全配置表单网格 (输入框并列) ===== */
@@ -1952,6 +2184,8 @@ html[data-theme='dark'],
 }
 .custom-tooltip--top { bottom: 100%; left: 50%; transform: translateX(-50%) translateY(-6px); }
 .custom-tooltip--bottom { top: 100%; left: 50%; transform: translateX(-50%) translateY(6px); }
+/* 标题栏内向下弹出的提示：给流内占位，避免被标题栏 overflow/层级裁剪 */
+.title-bar .custom-tooltip--bottom { top: calc(100% + 2px); z-index: 1200; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* ===== 工作台 Filter & Toolbar 区域 ===== */
@@ -2379,6 +2613,18 @@ html[data-theme='dark'],
 }
 .task-row:hover {
   background: var(--accent-soft);
+}
+
+/* 执行任务列表右侧操作区：状态标签 + 开始/继续 + 删除（等宽紧凑、不换行） */
+.task-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+.task-row-actions .btn-uniform {
+  min-width: 76px !important;
 }
 
 .task-list-scrollable {

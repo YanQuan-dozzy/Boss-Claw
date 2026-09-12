@@ -100,6 +100,8 @@ interface DataState {
   upsertTaskRun: (run: TaskRun) => void;
   updateTaskRun: (id: string, patch: Partial<TaskRun>) => void;
   setTaskRuns: (runs: TaskRun[]) => void;
+  /** 删除单条任务（仅移除该卡片，不动其它任务与岗位记录） */
+  removeTaskRun: (id: string) => void;
   /** 追加某日的达标岗位导出记录（用于当天内去重累积） */
   mergeQualifiedExports: (date: string, items: QualifiedJobExport[]) => void;
 
@@ -167,6 +169,7 @@ export const useDataStore = create<DataState>()(
       updateTaskRun: (id, patch) =>
         set((s) => ({ taskRuns: s.taskRuns.map((r) => (r.id === id ? { ...r, ...patch } : r)) })),
       setTaskRuns: (runs) => set({ taskRuns: runs }),
+      removeTaskRun: (id) => set((s) => ({ taskRuns: s.taskRuns.filter((r) => r.id !== id) })),
       mergeQualifiedExports: (date, items) =>
         set((s) => {
           const next = { ...s.qualifiedExports, [date]: items };

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import {
   Alert, Button, Card, Input, InputNumber, Space, Switch, Tag, Typography, Upload, message, Progress,
 } from 'antd';
@@ -7,7 +7,7 @@ import {
   ReloadOutlined, SafetyCertificateOutlined, StopOutlined, DeleteOutlined,
   UploadOutlined, CheckOutlined, CaretRightOutlined,
   LockOutlined, EyeOutlined, PictureOutlined, FileTextOutlined,
-  UsergroupAddOutlined, FieldTimeOutlined,
+  UsergroupAddOutlined, FieldTimeOutlined, DownOutlined,
   ThunderboltOutlined, HourglassOutlined, PlusOutlined, CodeOutlined,
   RobotOutlined, SyncOutlined,
 } from '@ant-design/icons';
@@ -24,7 +24,7 @@ import {
   isLockedOut, cooldownRemaining,
 } from '@/lib/bossclaw/safety';
 import { rerankPending } from '@/lib/bossclaw/priority';
-import { cleanTitle, formatMetaLine } from '@/lib/bossclaw/jobDisplay';
+import { cleanTitle, cleanSalary, formatMetaLine } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { PLATFORM_META, PLATFORM_IDS, platformLabel, platformEnabled, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
 import type { PendingItem, ImageResume } from '@/lib/bossclaw/types';
@@ -44,6 +44,9 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
   skipped: { color: 'default', label: '已跳过' },
   ignored: { color: 'default', label: '已忽略' },
 };
+
+/** 待沟通队列默认最多展示的卡片数；超出部分改为容器内滚动，避免整页被拉长。 */
+const QUEUE_VISIBLE_COUNT = 3;
 
 export default function AutoChat() {
   // ===== Store 订阅（按字段选择并使用 useShallow 避免全量重渲染） =====
@@ -171,6 +174,41 @@ export default function AutoChat() {
   );
   const sentCount = useMemo(() => pending.filter((p) => p.status === 'sent').length, [pending]);
   const failedCount = useMemo(() => pending.filter((p) => p.status === 'failed').length, [pending]);
+
+  // ===== 队列滚动展示：默认只露出前 3 张卡片，其余在容器内滚动 =====
+  // 直接量测「第 1 张 → 第 4 张」的垂直跨度，把它（含容器上下内边距）设为 max-height，
+  // 这样无论卡片因招呼语多行/失败提示而变高，都恰好完整展示 3 张、不出现半截卡片。
+  const queueScrollRef = useRef<HTMLDivElement | null>(null);
+  const [queueMaxHeight, setQueueMaxHeight] = useState<number | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    const el = queueScrollRef.current;
+    if (!el) return;
+    const measure = () => {
+      const kids = Array.from(el.children) as HTMLElement[];
+      if (kids.length <= QUEUE_VISIBLE_COUNT) {
+        setQueueMaxHeight(undefined);
+        return;
+      }
+      const firstTop = kids[0].getBoundingClientRect().top;
+      const nextTop = kids[QUEUE_VISIBLE_COUNT].getBoundingClientRect().top;
+      const span = nextTop - firstTop;
+      if (!(span > 0)) return;
+      const cs = getComputedStyle(el);
+      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const next = Math.round(span + pad);
+      setQueueMaxHeight((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    // 卡片高度会随招呼语行数 / 失败提示变化，逐个监听卡片尺寸以便跟随重算
+    const ro = new ResizeObserver(measure);
+    Array.from(el.children).forEach((c) => ro.observe(c as HTMLElement));
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [queueItems]);
 
   const handleStartBatch = useCallback(async () => {
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
@@ -379,89 +417,105 @@ export default function AutoChat() {
                 description="请先在工作台搜索采集岗位并确认加入队列。"
               />
             ) : (
-              <div className="wb-jobs">
-                {queueItems.map((p: PendingItem) => {
-                  const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
-                  const isActive = p.id === activeChatId;
-                  const canChat = p.status !== 'sent';
-                  return (
-                    <div key={p.id} className={'job-card' + (isActive ? ' is-active' : '')} style={{ marginBottom: 12 }}>
-                      <div className="job-header">
-                        <div className="job-header-main" style={{ minWidth: 0 }}>
-                          <div className="job-title-row">
-                            <div className="job-title">
-                              <PlatformChip platform={p.job?.platform} compact />
-                              {cleanTitle(p.job?.title, p.job?.salary)}
-                              {p.job?.salary && <span className="job-salary-tag">{p.job.salary}</span>}
+              <>
+                {/* 默认最多露出前 3 张卡片，其余在容器内滚动，避免整页被队列拉长 */}
+                <div
+                  ref={queueScrollRef}
+                  className={'wb-jobs autochat-queue-scroll' + (queueItems.length > QUEUE_VISIBLE_COUNT ? ' is-scrollable' : '')}
+                  style={queueMaxHeight ? { maxHeight: queueMaxHeight } : undefined}
+                >
+                  {queueItems.map((p: PendingItem) => {
+                    const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
+                    const isActive = p.id === activeChatId;
+                    const canChat = p.status !== 'sent';
+                    // 薪资：cleanSalary 已还原 BOSS 直聘的字体混淆（PUA 数字），并过滤无效/占位值
+                    const salaryText = cleanSalary(p.job?.salary);
+                    return (
+                      <div key={p.id} className={'job-card' + (isActive ? ' is-active' : '')} style={{ marginBottom: 12 }}>
+                        <div className="job-header">
+                          <div className="job-header-main" style={{ minWidth: 0 }}>
+                            <div className="job-title-row">
+                              <div className="job-title">
+                                <PlatformChip platform={p.job?.platform} compact />
+                                {cleanTitle(p.job?.title, p.job?.salary)}
+                                {salaryText && <span className="job-salary-tag">{salaryText}</span>}
+                              </div>
+                              {p.priorityRank != null && <span className="score-rank">#{p.priorityRank}</span>}
                             </div>
-                            {p.priorityRank != null && <span className="score-rank">#{p.priorityRank}</span>}
+                            <div className="job-company">{formatMetaLine(p.job?.company, p.job?.location, null)}</div>
                           </div>
-                          <div className="job-company">{formatMetaLine(p.job?.company, p.job?.location, p.job?.salary)}</div>
+                          <Tag color={st.color} style={{ margin: 0, flex: '0 0 auto', borderRadius: 6, fontWeight: 600 }}>
+                            {st.label}
+                          </Tag>
                         </div>
-                        <Tag color={st.color} style={{ margin: 0, flex: '0 0 auto', borderRadius: 6, fontWeight: 600 }}>
-                          {st.label}
-                        </Tag>
-                      </div>
-                      <div className="job-body" style={{ paddingTop: 10 }}>
-                        <div className="job-greeting-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <span>
-                            <MessageOutlined style={{ color: 'var(--brand)', marginRight: 4 }} />
-                            {isActive ? '正在沟通中，请勿遮挡浏览器窗口' : '沟通招呼语（可编辑）'}
-                          </span>
-                          <span style={{ fontSize: 11, color: 'var(--fg-subtle)' }}>
-                            {(p.deliveryGreeting || p.analysis?.greeting || '').length} 字
-                          </span>
+                        <div className="job-body" style={{ paddingTop: 10 }}>
+                          <div className="job-greeting-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <span>
+                              <MessageOutlined style={{ color: 'var(--brand)', marginRight: 4 }} />
+                              {isActive ? '正在沟通中，请勿遮挡浏览器窗口' : '沟通招呼语（可编辑）'}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--fg-subtle)' }}>
+                              {(p.deliveryGreeting || p.analysis?.greeting || '').length} 字
+                            </span>
+                          </div>
+                          <Input.TextArea
+                            value={p.deliveryGreeting || p.analysis?.greeting || ''}
+                            onChange={(e) => updatePending(p.id, { deliveryGreeting: e.target.value })}
+                            autoSize={{ minRows: 2, maxRows: 5 }}
+                            placeholder="请输入你希望发送给招聘方的求职招呼语"
+                            disabled={p.status === 'sent'}
+                            style={{ fontSize: 12, lineHeight: 1.65, borderRadius: 8 }}
+                          />
                         </div>
-                        <Input.TextArea
-                          value={p.deliveryGreeting || p.analysis?.greeting || ''}
-                          onChange={(e) => updatePending(p.id, { deliveryGreeting: e.target.value })}
-                          autoSize={{ minRows: 2, maxRows: 5 }}
-                          placeholder="请输入你希望发送给招聘方的求职招呼语"
-                          disabled={p.status === 'sent'}
-                          style={{ fontSize: 12, lineHeight: 1.65, borderRadius: 8 }}
-                        />
-                      </div>
-                      {p.error && <div className="job-error">⚠ {p.error}</div>}
-                      <div className="job-actions" style={{ marginTop: 10 }}>
-                        <div className="job-actions-right">
-                          {canChat ? (
-                            <Button
-                              size="small"
-                              type="primary"
-                              icon={<MessageOutlined />}
-                              loading={isActive}
-                              disabled={chatRunning && !isActive}
-                              onClick={() => chatOne(p)}
-                              style={{ borderRadius: 6 }}
-                            >
-                              沟通
+                        {p.error && <div className="job-error">⚠ {p.error}</div>}
+                        <div className="job-actions" style={{ marginTop: 10 }}>
+                          <div className="job-actions-right">
+                            {canChat ? (
+                              <Button
+                                size="small"
+                                type="primary"
+                                icon={<MessageOutlined />}
+                                loading={isActive}
+                                disabled={chatRunning && !isActive}
+                                onClick={() => chatOne(p)}
+                                style={{ borderRadius: 6 }}
+                              >
+                                沟通
+                              </Button>
+                            ) : (
+                              <Button size="small" type="primary" icon={<CheckOutlined />} disabled style={{ borderRadius: 6 }}>
+                                已沟通
+                              </Button>
+                            )}
+                          </div>
+                          <div className="job-actions-left">
+                            <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)} style={{ borderRadius: 6 }}>
+                              打开岗位
                             </Button>
-                          ) : (
-                            <Button size="small" type="primary" icon={<CheckOutlined />} disabled style={{ borderRadius: 6 }}>
-                              已沟通
-                            </Button>
-                          )}
-                        </div>
-                        <div className="job-actions-left">
-                          <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)} style={{ borderRadius: 6 }}>
-                            打开岗位
-                          </Button>
-                          {p.status === 'failed' && !p.riskBlocked && (
-                            <Button
-                              size="small"
-                              icon={<ReloadOutlined />}
-                              onClick={() => updatePending(p.id, { status: 'pending', retryCount: (p.retryCount || 0) + 1, error: '' })}
-                              style={{ borderRadius: 6 }}
-                            >
-                              重试
-                            </Button>
-                          )}
+                            {p.status === 'failed' && !p.riskBlocked && (
+                              <Button
+                                size="small"
+                                icon={<ReloadOutlined />}
+                                onClick={() => updatePending(p.id, { status: 'pending', retryCount: (p.retryCount || 0) + 1, error: '' })}
+                                style={{ borderRadius: 6 }}
+                              >
+                                重试
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+
+                {queueItems.length > QUEUE_VISIBLE_COUNT && (
+                  <div className="autochat-queue-more">
+                    <DownOutlined aria-hidden="true" />
+                    <span>共 {queueItems.length} 个岗位，向下滚动查看全部</span>
+                  </div>
+                )}
+              </>
             )}
           </Card>
 

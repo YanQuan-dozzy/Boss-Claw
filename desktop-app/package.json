@@ -1,7 +1,7 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.5.0",
-  "description": "BossClaw —— 面向求职者的本地 AI 投递助手（Electron + React）",
+  "version": "2.5.2",
+  "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
   "private": true,
   "author": "YanQuan",
   "license": "Apache-2.0",
@@ -30,6 +30,8 @@
     "productName": "BossClaw",
     "copyright": "Copyright © 2026 BossClaw",
     "icon": "resources/icon.ico",
+    "afterPack": "build/after-pack-win-icon.js",
+    "publish": null,
     "asar": false,
     "directories": {
       "output": "release",

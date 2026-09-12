@@ -55,8 +55,11 @@ export function taskStageMetaFor(
   return { label: platformStageLabel(platform, stage, base.label), progress: base.progress };
 }
 
-// 需求文档 6.2：任务进度条阶段标签（整理 / 匹配 / 排序 / 沟通 / 投递）
-export const PHASE_LABELS = ['整理', '匹配', '排序', '沟通', '投递'] as const;
+// 需求文档 6.2：任务进度条阶段标签（搜索 / 匹配 / 确认 / 投递 / 完成）
+// 口径：阶段标签面向用户的实际操作节点——「搜索」= 采集并读取岗位详情、
+//   「匹配」= AI 匹配分析、「确认」= 人工确认沟通对象（原「沟通」文案易被误读为自动发消息）、
+//   「投递」= 发送招呼语并确认结果、「完成」= 投递成功/失败等终态。
+export const PHASE_LABELS = ['搜索', '匹配', '确认', '投递', '完成'] as const;
 
 const STAGE_TO_PHASE: Record<TaskStage, number> = {
   discovered: 0,

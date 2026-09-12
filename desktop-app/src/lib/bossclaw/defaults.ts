@@ -47,6 +47,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   listScrollRounds: 12,
   // 可视化采集节奏（可调，越大越慢越像人工）
   collectSpeedMs: 1500,
+  // 搜索页加载等待上限：BOSS 搜索页含骨架屏/重定向/无限列表首屏，给足 30s 再判定超时（旧值 8s 常整组跳过）
+  collectPageTimeoutMs: 30000,
   collectResumeIndex: 0,
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）
   maxJobsPerRun: 1000,

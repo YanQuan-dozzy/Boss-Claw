@@ -50,6 +50,10 @@ export interface WebviewApi {
   hasTab: (id: string) => boolean;
   // 指定标签的 webview preload 是否已注入（IPC 监听器就绪，可保证 send 不丢消息）
   isPreloadReady: (id: string) => boolean;
+  /** CloakBrowser 通道无独立加载遮罩（page 就绪由 isPreloadReady 表达），恒为 false */
+  isLoading: (id: string) => boolean;
+  /** CloakBrowser 通道不支持页面状态探测（无 preload 通道），恒返回 {error} */
+  pageStatus: (id?: string) => Promise<any>;
   getActiveTabId: () => string;
   getFirstTabId: () => string;
 }
@@ -397,15 +401,19 @@ export default function CloakView(props: Props) {
   // 这里用「标签页存在 + cloakPageSend 可用」近似等价 webview 的 preloadReady=true，
   // 让 Workbench 的 trySend 在第一帧就能完成发送，避免与 webview 路径出现行为差异。
   const isPreloadReady = useCallback((id: string) => Boolean(id && tabsRef.current.some((t) => t.id === id) && typeof e.cloakPageSend === 'function'), []);
+  // CloakBrowser 无独立加载遮罩：page 就绪统一由 isPreloadReady 表达
+  const isLoading = useCallback((_id: string) => false, []);
+  // CloakBrowser 无 preload 通道，无法探测页面就绪事实（宿主会据此跳过探测、只用 isPreloadReady）
+  const pageStatus = useCallback(async (_id?: string) => ({ error: 'cloak 通道不支持页面状态探测' }), []);
 
   useEffect(() => {
     if (apiRef) apiRef.current = {
       send, loadURL, closeTab: closeTabById, openInNewTab, openEngineTab,
-      loadURLInTab, sendInTab, hasTab, isPreloadReady,
+      loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, pageStatus,
       getActiveTabId: () => activeIdRef.current,
       getFirstTabId: () => tabsRef.current[0]?.id || '',
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, pageStatus]);
 
   const activateTab = useCallback((id: string) => {
     setState((s) => (s.activeId === id ? s : { ...s, activeId: id, tabs: s.tabs.map((t) => (t.id === id ? { ...t, lastUsed: Date.now() } : t)) }));

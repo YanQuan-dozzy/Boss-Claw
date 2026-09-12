@@ -30,6 +30,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import electronApi from '@/lib/electronApi';
 import { PLATFORM_META, PLATFORM_IDS, PLATFORM_CHIP_PALETTE, platformEnabled, resolvePlatform, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { registerBrowser, unregisterBrowser } from '@/lib/browserRegistry';
 import CloakView from '@/components/CloakView';
 
 // 默认加载 BOSS 直聘（多平台：按 defaultPlatform 加载对应平台首页）
@@ -85,6 +86,8 @@ export interface WebviewApi {
   sendInTab: (id: string, channel: string, ...args: any[]) => void;
   hasTab: (id: string) => boolean;
   isPreloadReady: (id: string) => boolean;
+  /** 该标签的加载遮罩是否仍在展示（true = 页面尚未就绪，仍不可交互） */
+  isLoading: (id: string) => boolean;
   /** 主标签（采集页，永不被自动关闭） */
   getMainTabId: () => string;
   /** 所有 detail 标签 id */
@@ -93,6 +96,12 @@ export interface WebviewApi {
   getFirstTabId: () => string;
   /** 在指定标签页面上下文执行 BOSS 官方 API，返回原始响应（{code, zpData, ...} 或 {error}） */
   bossApi: (action: string, params?: Record<string, any>, tabId?: string) => Promise<any>;
+  /**
+   * 只读探测页面自身的就绪事实（readyState / 岗位卡片命中数 / 选择器计数 / 骨架屏启发式）。
+   * 采集侧以此为**权威**判定「搜索页是否真的加载完成」——加载遮罩状态机只作参考，
+   * 避免事件序列异常时一直误判「加载中」。返回 {error} 表示探测失败（preload 未就绪等）。
+   */
+  pageStatus: (tabId?: string) => Promise<any>;
 }
 
 interface Props {
@@ -107,6 +116,12 @@ interface Props {
   onCollectDone?: (data: any) => void;
   onDomDump?: (data: any) => void;
   apiRef?: React.MutableRefObject<WebviewApi | null>;
+  /**
+   * 采集/投递期间抑制「正在加载 XX…」遮罩：可视化采集的价值就在于让用户看到逐卡片
+   * 滚动/高亮/展开动画，遮罩会在每次切换搜索组合时盖住整页，反而让人以为「卡在加载动画」。
+   * 抑制仅影响遮罩渲染，加载状态机与事件照常运行（isLoading 仍可查询）。
+   */
+  overlaySuppressed?: boolean;
 }
 
 interface TabState {
@@ -138,7 +153,7 @@ export default function BrowserView(props: Props) {
   return <BrowserViewImpl {...props} />;
 }
 
-function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJobExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, onDomDump, apiRef }: Props) {
+function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJobExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, onDomDump, apiRef, overlaySuppressed = false }: Props) {
   const homeMeta = PLATFORM_META[defaultPlatform] || PLATFORM_META.boss;
   const [tabs, setTabs] = useState<TabState[]>(() => {
     const tab = makeTab(homeMeta.homeUrl, homeMeta.label, 'main');
@@ -166,6 +181,9 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   });
   // 淡出动画阶段（已停止加载但遮罩还在淡出中）
   const [fadingTabs, setFadingTabs] = useState<Set<string>>(new Set());
+  // 加载态的 ref 镜像：供 WebviewApi.isLoading 同步查询（避免把 state 闭包进 apiRef 拿到旧值）
+  const loadingTabsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { loadingTabsRef.current = loadingTabs; }, [loadingTabs]);
 
   // ===== 加载遮罩生命周期控制（导航序号 + 多级兜底）=====
   // loadSeqRef：每个标签的「当前导航序号」。did-start-navigation 时 +1；
@@ -371,10 +389,25 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         case 'collect-done':
           cb.onCollectDone?.(payload);
           break;
+        case 'preload-ready':
+          // preload 顶层脚本执行完毕 = IPC 监听器已注册（最权威的就绪信号）。
+          // 兜底 dom-ready 未按预期到达（重定向/子框架干扰）时采集侧仍能判定页面可注入。
+          preloadReady.current[tabId] = true;
+          break;
         case 'dom-dump':
           cb.onDomDump?.(payload);
           break;
         case 'boss-api-result': {
+          const resolve = apiResolvers.current.get(String(payload?.seq));
+          if (resolve) {
+            apiResolvers.current.delete(String(payload?.seq));
+            resolve(payload);
+          }
+          break;
+        }
+        case 'page-read-result':
+        case 'page-status-result':
+        case 'prefill-greeting-result': {
           const resolve = apiResolvers.current.get(String(payload?.seq));
           if (resolve) {
             apiResolvers.current.delete(String(payload?.seq));
@@ -411,12 +444,18 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       forceResizeWebview(tabId);
     };
     const ctl = () => loadingCtlRef.current;
-    el.addEventListener('did-start-navigation', () => {
+    // did-start-navigation：**仅主框架**导航才重置「preload 就绪」与遮罩。
+    // 根因修复：旧实现未过滤子框架，页面内嵌 iframe/广告子框架导航会把 preloadReady 置 false，
+    // 而 dom-ready 只对主框架触发 → 标记可能永久停在 false，采集侧等待 preload 一路超时
+    // （表现为逐个搜索组合全部「搜索页加载超时，跳过该组合」、最终处理 0 个岗位）。
+    el.addEventListener('did-start-navigation', ((event: any, _url?: string, _isInPlace?: boolean, legacyIsMainFrame?: boolean) => {
+      const isMainFrame = typeof event?.isMainFrame === 'boolean' ? event.isMainFrame : legacyIsMainFrame !== false;
+      if (!isMainFrame) return;
       preloadReady.current[tabId] = false;
       loadSeqRef.current[tabId] = (loadSeqRef.current[tabId] || 0) + 1; // 导航代际 +1，令旧定时器失效
       ctl().markLoading(tabId, true);
       ctl().scheduleHide(tabId, HARD_HIDE_MS); // 硬兜底：加载挂起/黑洞时遮罩最长展示 HARD_HIDE_MS
-    });
+    }) as any);
     el.addEventListener('dom-ready', () => {
       markReady();
       // 软兜底：HTML 已解析且 defer/module 脚本已执行（SPA 首屏通常已完成），
@@ -556,7 +595,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     if (!tabId) return;
     const el = webviewEls.current[tabId];
     if (el) {
-      try { el.loadURL(url); } catch {}
+      try { (el.loadURL(url) as unknown as Promise<unknown>).catch(() => {}); } catch {}
     }
     patchTab(tabId, { url, canGoForward: false });
   }, [patchTab]);
@@ -601,7 +640,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       patchTab(id, { url: home.homeUrl, title: home.label, canGoBack: false, canGoForward: false });
       const el = webviewEls.current[id];
       if (el) {
-        try { el.loadURL(home.homeUrl); } catch {}
+        try { (el.loadURL(home.homeUrl) as unknown as Promise<unknown>).catch(() => {}); } catch {}
       }
       return;
     }
@@ -636,6 +675,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return Boolean(tabId && preloadReady.current[tabId]);
   }, []);
 
+  const isLoading = useCallback((id: string) => {
+    const tabId = id || tabsRef.current.find((t) => t.kind === 'main')?.id || tabsRef.current[0]?.id;
+    return Boolean(tabId && loadingTabsRef.current.has(tabId));
+  }, []);
+
   const getMainTabId = useCallback(() => {
     return tabsRef.current.find((t) => t.kind === 'main')?.id || tabsRef.current[0]?.id || '';
   }, []);
@@ -660,7 +704,30 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     });
   }, [sendInTab]);
 
+  // ===== 控制桥所需：webview 只读探索 / 半自动预填 / 全自动投递（经 browserRegistry 暴露给 controlRuntime）=====
+  // 与 bossApi 相同的 seq 关联回执：由 preload 在 page-read/prefill-greeting 通道回传结果。
+  const cmdOnce = useCallback((channel: string, args: Record<string, any>, timeoutMs = 15000, tabId?: string) => {
+    return new Promise<any>((resolve) => {
+      const id = tabId || activeIdRef.current || tabsRef.current[0]?.id || '';
+      if (!id) return resolve({ error: '无可用标签页' });
+      const seq = String((seqRef.current += 1));
+      const timer = setTimeout(() => {
+        if (apiResolvers.current.has(seq)) {
+          apiResolvers.current.delete(seq);
+          resolve({ error: `${channel} 超时（${timeoutMs}ms）` });
+        }
+      }, timeoutMs);
+      apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); resolve(payload); });
+      sendInTab(id, channel, { seq, ...args });
+    });
+  }, [sendInTab]);
+
+  const readPage = useCallback((tabId?: string) => cmdOnce('page-read', {}, 15000, tabId), [cmdOnce]);
+  // 页面就绪事实探测：短超时（6s）——探测失败本身也是有效信息（preload 未就绪）
+  const pageStatus = useCallback((tabId?: string) => cmdOnce('page-status', {}, 6000, tabId), [cmdOnce]);
+
   // ===== 暴露 apiRef（多标签版本）=====
+  // 位置要求：必须在 pageStatus / cmdOnce 等成员定义之后（否则 TDZ 报错）
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = {
@@ -673,13 +740,51 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       sendInTab,
       hasTab,
       isPreloadReady,
+      isLoading,
       getMainTabId,
       getDetailTabIds,
       bossApi,
+      pageStatus,
       getActiveTabId: () => activeIdRef.current || '',
       getFirstTabId: () => tabsRef.current[0]?.id || '',
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, getMainTabId, getDetailTabIds, bossApi]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, pageStatus]);
+  const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
+  const runDomDump = useCallback((tabId?: string) => {
+    sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });
+    return { ok: true, note: '已触发 DOM 诊断（结果见日志区）' };
+  }, [sendInTab]);
+  const sendApply = useCallback((payload: Record<string, any> = {}) => {
+    const id = activeIdRef.current || tabsRef.current[0]?.id || '';
+    if (!id) return Promise.resolve({ ok: false, reason: '无可用标签页' });
+    sendInTab(id, 'start-apply', payload);
+    // domApply 自带招呼语非空/外部网申跳过/气泡确认/风控即停；触发后结果经 apply-stage 回传。
+    return Promise.resolve({ ok: true, hint: '已触发自动投递（domApply），结果见 apply-stage/日志；首次成功会自动暂停验收' });
+  }, [sendInTab]);
+
+  // ===== 把浏览器句柄注册进全局注册表（供 controlRuntime 只读探索 / 投递动作）=====
+  useEffect(() => {
+    registerBrowser({
+      mode: 'webview',
+      activeTab: () => {
+        const t = tabsRef.current.find((x) => x.id === activeIdRef.current) || tabsRef.current[0];
+        if (!t) return null;
+        return { ...t, active: t.id === activeIdRef.current };
+      },
+      tabs: () => tabsRef.current.map((t) => ({ ...t, active: t.id === activeIdRef.current })),
+      loadURL: (url, tabId) => {
+        const id = tabId || tabsRef.current.find((t) => t.kind === 'main')?.id || activeIdRef.current || '';
+        if (id) loadURLInTab(id, url);
+      },
+      joblist: (q, city, page, pageSize) => bossApi('joblist', { query: q, city, page, pageSize }),
+      jobCard: (jid) => bossApi('jobCard', { encryptJobId: jid }),
+      readPage,
+      domDump: runDomDump,
+      prefillGreeting,
+      sendApply,
+    });
+    return () => unregisterBrowser();
+  }, [loadURLInTab, bossApi, readPage, runDomDump, prefillGreeting, sendApply]);
 
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
   const autoAssist = useAppStore((s) => s.autoAssist);
@@ -860,8 +965,9 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
                 webpreferences="sandbox=no, backgroundThrottling=no"
                 src={t.url}
               />
-              {/* 加载中遮罩：仅在 active 标签且正在加载时可见，避免影响其他标签 */}
-              {t.id === activeId && (isLoading || isFading) && (
+              {/* 加载中遮罩：仅在 active 标签且正在加载时可见，避免影响其他标签。
+                  采集期间由 overlaySuppressed 抑制——遮罩会盖住可视化采集的滚动/高亮动画。 */}
+              {t.id === activeId && !overlaySuppressed && (isLoading || isFading) && (
                 <div
                   className={
                     'browser-loading-overlay' +

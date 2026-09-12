@@ -77,6 +77,7 @@ import {
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
+import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
 import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
 import {
   PLATFORM_META, PLATFORM_IDS, platformEnabled, platformPriority,
@@ -466,7 +467,7 @@ export default function Settings() {
         decision: p.analysis?.decision || '',
         title: p.job?.title || '',
         company: p.job?.company || '',
-        salary: p.job?.salary || '',
+        salary: cleanSalary(p.job?.salary) || '',
         location: p.job?.location || '',
         url: p.job?.url || '',
         platform: p.job?.platform || 'boss',
@@ -660,8 +661,8 @@ export default function Settings() {
             />
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
               {config.executionMode === 'auto'
-                ? '全自动投递：岗位由 AI 评估符合要求后，自动确认并直接进入投递队列唤起沟通。'
-                : '人工确认：由 AI 筛选评分后，岗位保留在待确认队列，需在工作台手动点击「确认」或「批量确认」后才进入投递队列。'}
+                ? '全自动投递：岗位由 AI 评估符合要求后自动确认，直接进入「待投递」并按顺序发送。'
+                : '人工确认：由 AI 筛选评分后，岗位停在「待确认」，需在工作台点「确认」或「批量确认」后才进入「待投递」。'}
             </Paragraph>
           </div>
 
@@ -1147,7 +1148,7 @@ export default function Settings() {
               </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              以下过滤器均为确定性规则（不依赖 AI，不消耗 Token）：加入任务的岗位所在地、公司名或招聘方姓名命中黑名单（子串匹配），或岗位标题 / 卡片 / 描述文本中出现任一排除关键字，会被自动跳过、不进入投递队列。与「目标城市」互补。
+              以下过滤器均为确定性规则（不依赖 AI，不消耗 Token）：加入任务的岗位所在地、公司名或招聘方姓名命中黑名单（子串匹配），或岗位标题 / 卡片 / 描述文本中出现任一排除关键字，会被自动跳过、不进入「待投递」。与「目标城市」互补。
             </Paragraph>
           </div>
 
@@ -1190,6 +1191,17 @@ export default function Settings() {
                   onChange={(v) => setConfig({ collectSpeedMs: v })}
                   tooltip={{ formatter: (v) => `${v}ms` }}
                   style={{ margin: '6px 8px 0 0' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">搜索页加载等待上限（秒）</span>
+                <InputNumber
+                  min={5}
+                  max={120}
+                  step={5}
+                  value={Math.round((config.collectPageTimeoutMs || 30000) / 1000)}
+                  onChange={(v) => setConfig({ collectPageTimeoutMs: Math.max(5000, (v ?? 30) * 1000) })}
+                  style={{ width: '100%' }}
                 />
               </div>
               <div className="sg-item">

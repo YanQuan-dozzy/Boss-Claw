@@ -58,6 +58,8 @@ export interface CallOptions {
   maxTokens?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** 用途标签（如「职业画像」「打招呼语」），用于日志/展示 */
+  purpose?: string;
 }
 
 // P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
@@ -87,10 +89,17 @@ async function requestModel(url: string, payload: any, apiKey: string, timeoutMs
   }
 }
 
+/**
+ * 发起模型调用。
+ * 未配置 API Key 时直接抛 AI_CONFIG（不转交 agent 代答）：由上层业务走**本地规则**兜底
+ * （职业画像 buildLocalProfile、求职信/定制简历 localFallback 等）。单向链路：应用不再反向调 agent。
+ */
 export async function callModel(messages: ChatMessage[], config: AppConfig['model'], options: CallOptions = {}): Promise<any> {
-  if (!config.apiKey) throw new AIError('AI_CONFIG', '请先填写 AI API Key');
-  const url = `${String(config.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
   const jsonMode = options.jsonMode ?? true;
+  if (!config.apiKey) {
+    throw new AIError('AI_CONFIG', '尚未配置 AI API Key，请在「设置 → AI」填写密钥；未配置时使用本地规则生成。');
+  }
+  const url = `${String(config.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
   // DeepSeek V4 默认开启思考模式（官方文档：thinking 默认 enabled，effort 默认 high），
   // 思维链放在 reasoning_content、最终答案放 content；max_tokens 偏小时 content 会为空。
   // 本项目需要模型直接输出结构化 JSON，无需思维链，故对 DeepSeek 端点显式关闭思考，
@@ -207,14 +216,21 @@ const AI_CACHE_STATS_KEY = 'bossclaw-ai-cache-stats';
 const AI_CACHE_MAX_ENTRIES = 300;
 const AI_CACHE_MAX_BYTES = 2_500_000; // localStorage 建议上限 5MB，缓存控制在 2.5MB 内
 
-const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {
-  // 画像 / 打招呼语：key 已含简历与画像全文哈希，内容不变结果必然有效，仅设长 TTL 防陈旧
+const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {  // 画像 / 打招呼语：key 已含简历与画像全文哈希，内容不变结果必然有效，仅设长 TTL 防陈旧
   profile: 90 * 24 * 3600 * 1000,
   greetings: 90 * 24 * 3600 * 1000,
   // 岗位分析：key 含岗位描述全文，描述更新自动失效；TTL 仅防「很久以前的同 jobId 缓存」被命中
   'job-analysis': 7 * 24 * 3600 * 1000,
   // 求职助手（定制简历/求职信、评估报告）：key 含简历/画像/岗位全文，内容变化自动失效
   assistant: 7 * 24 * 3600 * 1000,
+};
+
+/** 缓存作用域 → 中文用途标签（用于「转交 agent 代答」时的任务描述与日志） */
+const AI_SCOPE_LABELS: Record<AICacheScope, string> = {
+  profile: '职业画像',
+  greetings: '打招呼语',
+  'job-analysis': '岗位分析',
+  assistant: '定制简历 / 求职助手',
 };
 
 // djb2 双哈希（碰撞概率足够低），渲染进程无 node crypto，用稳定字符串哈希
@@ -379,7 +395,7 @@ export async function cachedCallModel(
   if (inFlight) return inFlight;
 
   const task = (async () => {
-    const result = await callModel(messages, config, options);
+    const result = await callModel(messages, config, { ...options, purpose: options.purpose ?? AI_SCOPE_LABELS[scope] });
     map[key] = { key, value: result, ts: Date.now(), ttlMs, hits: 0, scope };
     trimAICache(map);
     saveAICache(map);
