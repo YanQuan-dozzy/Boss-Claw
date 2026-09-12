@@ -11,6 +11,9 @@ import './index.css';
 import 'antd/dist/reset.css';
 
 import { ThemeProvider } from './context/ThemeContext';
+// 渲染层控制运行时：为「本地控制桥」(BOSSCLAW_CONTROL=1) 提供状态快照与白名单动作。
+// 未开启控制桥时它只是挂一个 window.__bossclawControl，不产生任何副作用。
+import { installControlRuntime } from './lib/controlRuntime';
 
 // P30：渲染进程全局兜底——网络卡顿/异步异常导致的未捕获错误与 rejection 不应静默吞掉，
 // 统一记录到日志面板（addLog 低频、持久化已防抖，不会放大卡顿），便于定位「无故卡死」根因。
@@ -36,6 +39,7 @@ function installGlobalErrorCatch(): void {
   window.addEventListener('unhandledrejection', (e) => report('未处理异常', e?.reason));
 }
 installGlobalErrorCatch();
+installControlRuntime();
 
 const root = document.getElementById('root')!;
 

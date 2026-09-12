@@ -16,6 +16,7 @@ import { cachedCallModel } from './llm';
 import { ensureSkillsLoaded, skillInstructionsFor } from './skills';
 import { stableProfileView, fallbackApplicantGreeting } from './matching';
 import { normalizeStringList } from './helpers';
+import { decodeSalaryDigits } from './jobDisplay';
 import {
   analyzeJdKeywords,
   buildLocalSuggestions,
@@ -195,7 +196,7 @@ export async function tailorForJob(
   const jobView = {
     title: job.title,
     company: job.company,
-    salary: job.salary,
+    salary: decodeSalaryDigits(job.salary),
     location: job.location,
     description: job.description,
   };

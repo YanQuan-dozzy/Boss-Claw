@@ -72,6 +72,11 @@ export interface AppConfig {
   listScrollRounds: number;
   /** 可视化采集滚动间隔（毫秒，每步 settleMs），越大越慢越像人工 */
   collectSpeedMs: number;
+  /**
+   * 搜索页加载等待上限（毫秒）：每次采集切换搜索组合后，等待「preload 就绪 + 加载遮罩消失」的最长时间，
+   * 超时则重载重试一次、仍失败才跳过该组合。默认 30000（BOSS 搜索页较重，旧实现仅 8s 易整组跳过）。
+   */
+  collectPageTimeoutMs: number;
   /** 断点续采起始序号：0 表示从头；>0 表示跳过前 N 个岗位（已入库岗位会自动去重跳过） */
   collectResumeIndex: number;
   /** 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）。0 表示不限 */
@@ -263,6 +268,13 @@ export interface JobAnalysis {
   greeting: string;
   /** 本地确定性维度分解（可解释匹配；analyzeJob 计算后附加） */
   dimensions?: MatchDimensions;
+  /**
+   * 评分来源（UI 提示口径：AI 计算优先，缺 AI 才回退本地）：
+   * - 'ai'：AI 分析分有效（主导评分，本地六维作为校准依据）；
+   * - 'local'：AI 未参与（返回缺 score 等），分数由本地确定性规则兜底。
+   * 缺省（历史数据）按 'ai' 处理。
+   */
+  scoreSource?: 'ai' | 'local';
 }
 
 export interface JobMeta {
@@ -282,6 +294,12 @@ export interface JobMeta {
   hrActive?: string;
   /** 是否为猎头岗位（BOSS 页面标签识别，用于「排除猎头」过滤） */
   isHeadhunter?: boolean;
+  /**
+   * 福利 / 工作制度标签（如「周末双休」「大小周」「六险一金」）。
+   * 采集来源：BOSS job/card.json 的 welfareList 与详情页标签区。用于识别工作制度，
+   * 决定日薪/时薪折算月薪的工作日基数（见 workSchedule.ts，双休 22 / 大小周 24 / 单休 26）。
+   */
+  welfare?: string[];
   /** 面试方式（从岗位标题/描述/卡片文本提取：线上/线下/未识别），用于「面试方式筛选」 */
   interviewMode?: 'online' | 'offline' | 'unknown';
   /** 招聘方姓名（BOSS 详情页识别，用于投递前核对沟通对象） */

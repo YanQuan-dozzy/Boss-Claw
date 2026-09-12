@@ -26,8 +26,8 @@ const { Text } = Typography;
 /* ---------- 口径常量（对齐 recomputeStats / rerankPending） ---------- */
 
 const STATUS_META: { key: PendingStatus; label: string; color: string }[] = [
-  { key: 'pending', label: '确认队列', color: '#8c8c8c' },
-  { key: 'approved', label: '投递队列', color: '#1677ff' },
+  { key: 'pending', label: '待确认', color: '#8c8c8c' },
+  { key: 'approved', label: '待投递', color: '#1677ff' },
   { key: 'approved_queue', label: '投递中', color: '#13c2c2' },
   { key: 'sent', label: '已投递', color: '#52c41a' },
   { key: 'failed', label: '失败', color: '#ff4d4f' },
@@ -189,7 +189,7 @@ export default function Stats() {
   }> = [
     { icon: <TeamOutlined />, cls: 'teal', title: '岗位总数', value: agg.total, note: '全部已记录岗位', badge: '记录' },
     { icon: <CheckCircleFilled />, cls: 'green', title: '已投递', value: agg.sent, note: '投递成功', pct: agg.total > 0 ? Math.round((agg.sent / agg.total) * 100) : 0 },
-    { icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: agg.waiting, note: '确认 / 投递队列中', pct: agg.total > 0 ? Math.round((agg.waiting / agg.total) * 100) : 0 },
+    { icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: agg.waiting, note: '待确认 / 待投递 / 投递中', pct: agg.total > 0 ? Math.round((agg.waiting / agg.total) * 100) : 0 },
     { icon: <CloseCircleFilled />, cls: 'red', title: '失败', value: agg.failed, note: '可重试 / 忽略', pct: agg.total > 0 ? Math.round((agg.failed / agg.total) * 100) : 0 },
     { icon: <StopOutlined />, cls: 'orange', title: '跳过 / 忽略', value: agg.skippedIgnored, note: '未投递岗位', pct: agg.total > 0 ? Math.round((agg.skippedIgnored / agg.total) * 100) : 0 },
     { icon: <AimOutlined />, cls: 'purple', title: '已确认方向', value: directionCount, note: '投递方向模板', badge: '模板' },

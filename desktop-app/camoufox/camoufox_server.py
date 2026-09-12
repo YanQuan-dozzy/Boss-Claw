@@ -219,6 +219,8 @@ def format_jobs(raw_jobs: list) -> list:
             "degree": j.get('jobDegree', ''),
             "labels": j.get('jobLabels', []),
             "skills": j.get('skills', []),
+            # 福利/工作制度标签（如「周末双休」）：日薪折算月薪的工作日基数识别来源
+            "welfare": j.get('welfareList', []),
             "description": j.get('jobDesc', ''),
             "recruiterName": j.get('bossName', ''),
             "bossTitle": j.get('bossTitle', ''),

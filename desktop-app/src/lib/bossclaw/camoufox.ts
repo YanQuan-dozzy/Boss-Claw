@@ -50,6 +50,8 @@ export interface CamoufoxJob {
   degree: string;
   labels: string[];
   skills: string[];
+  /** 福利/工作制度标签（如「周末双休」）：日薪折算月薪的工作日基数识别来源 */
+  welfare?: string[];
   description: string;
   recruiterName: string;
   bossTitle: string;

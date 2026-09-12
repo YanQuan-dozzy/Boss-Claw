@@ -38,7 +38,7 @@ export default memo(function StatusBar() {
         </span>
         <span className="sep">·</span>
         <span>
-          确认队列 <span className="num danger">{awaiting}</span>
+          待确认 <span className="num danger">{awaiting}</span>
         </span>
       </div>
     </footer>

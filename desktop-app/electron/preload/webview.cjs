@@ -47,6 +47,13 @@ function visible(el) {
 
 function textOf(el) { return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim(); }
 
+// BOSS 直聘薪资「字体混淆」还原：平台把薪资里的数字替换为 Unicode 私有区（PUA）码位，
+// 再用自定义字体渲染，DOM 文本因此不含可读数字（'0-9' → U+E031-U+E03A，'.' → U+E02F）。
+// 实测为固定线性偏移（PUA = 数字 ASCII + 0xE001），还原后才能正常展示/解析薪资区间。
+function decodeSalaryDigits(s) {
+  return String(s == null ? '' : s).replace(/[\uE02F\uE031-\uE03A]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xE001));
+}
+
 // 岗位描述清洗：DOM 兜底抓取详情容器时可能匹配到过大的节点（整页文本），
 // 混入页面级噪音——「去App 与BOSS随时沟通」「求职工具 升级VIP」「热门职位/热门城市/
 // 热门企业/附近城市」推荐区、以及标题行操作按钮「收藏/立即沟通/举报/微信扫码分享」。
@@ -156,7 +163,7 @@ function platformExtractJob() {
   }
   const title = pickText(['h1', '[class*="job-title"]', '[class*="job-name"]', '[class*="position"] h3', 'title']) || document.title;
   const company = pickText(['[class*="company"] .name', '[class*="company-name"]', '[class*="comp-name"]', '.cname', '[class*="company"]']);
-  const salary = pickText(['[class*="salary"]', '[class*="sal"]', '[class*="price"]', '[class*="money"]']);
+  const salary = decodeSalaryDigits(pickText(['[class*="salary"]', '[class*="sal"]', '[class*="price"]', '[class*="money"]']));
   const location = pickText(['[class*="job-area"]', '[class*="area"]', '[class*="address"]', '[class*="location"]']);
   const description = textOf(document.body).slice(0, 6000);
   notify('job-extracted', {
@@ -408,16 +415,31 @@ function extractEncryptJobIdFromUrl(url) {
 }
 
 // DOM 兜底：从详情页 banner 提取岗位基本信息（API 失败时用）
+// 工作制度 / 福利标签提取（如「周末双休」「大小周」「单休」「做六休一」）。
+// 用途：日薪（元/天）折算月薪时的月工作日基数（双休 22 / 大小周 24 / 单休 26），
+// 见渲染层 src/lib/bossclaw/workSchedule.ts。只保留短标签，避免把整段 JD 文本混进来。
+function extractWelfareTags(root) {
+  const scope = root || document;
+  const nodes = all(
+    '.job-tags span, .tag-all span, [class*="job-tag"] span, [class*="tag-list"] span, [class*="job-labels"] span, [class*="welfare"] span',
+    scope
+  );
+  const out = nodes
+    .map((el) => textOf(el))
+    .filter((t) => t && t.length <= 12 && /休|班|工作制|弹性|双休|大小周|单休|轮休/.test(t));
+  return [...new Set(out)].slice(0, 8);
+}
+
 function extractJobFromDom() {
   const banner = $('.job-banner, .job-detail-header, .job-header');
   const scopeText = ((banner && banner.textContent) || document.body.innerText || '').slice(0, 2000);
   const pick = (sels) => { for (const s of sels) { const t = textOf($(s)); if (t) return t; } return ''; };
   const title = pick(['.job-banner .name', 'h1.job-name', '.job-title', '.name']) || document.title;
   const company = pick(['.job-banner .company', '.company-name', '.business-name']);
-  const salary = pick(['.job-banner .salary', '.salary', '[class*="salary"]']);
+  const salary = decodeSalaryDigits(pick(['.job-banner .salary', '.salary', '[class*="salary"]']));
   const location = pick(['.job-banner .location', '.job-area', '[class*="location"]']);
   const description = cleanJobDescription((banner && banner.innerText) || '').slice(0, 1500);
-  return { url: location.href, title, company, salary, location, description };
+  return { url: location.href, title, company, salary, location, description, welfare: extractWelfareTags(banner || document) };
 }
 
 // 列表页判定：URL 是推荐/搜索列表页，或页面上存在 >1 张岗位卡片（供上层「加入任务」守卫用）
@@ -438,7 +460,7 @@ async function extractJob() {
         url: location.href,
         title: d.jobName || d.jobTitle || document.title,
         company: d.brandName || d.companyName || '',
-        salary: d.salaryDesc || '',
+        salary: decodeSalaryDigits(d.salaryDesc || ''),
         location: d.cityName || d.areaDistrict || '',
         description: d.jobDesc || d.postDescription || '',
         jobId: jid,
@@ -447,6 +469,8 @@ async function extractJob() {
         bossTitle: d.bossTitle || '',
         skills: Array.isArray(d.skills) ? d.skills : [],
         labels: Array.isArray(d.jobLabels) ? d.jobLabels : [],
+        // 福利/工作制度标签（如「周末双休」）：日薪折算月薪的工作日基数识别来源之一
+        welfare: Array.isArray(d.welfareList) ? d.welfareList.map(String) : [],
         scaleName: d.scaleName || '',
         typeName: d.typeName || '',
         ...listPageInfo(),
@@ -928,8 +952,9 @@ function cardIdentity(card) {
 // 薪资 / 地区 / 经验学历 / HR 职位 / HR 活跃度 / 猎头标记
 function cardFields(card) {
   const cardText = textOf(card);
-  const salary = pickFromCard(card, ['.salary', '.job-salary', '[class*="salary"]'])
-    || cardText.match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
+  // 薪资：选择器命中值优先；兜底正则在「还原混淆后的文本」上跑，否则 PUA 数字永远匹配不到
+  const salary = decodeSalaryDigits(pickFromCard(card, ['.salary', '.job-salary', '[class*="salary"]']))
+    || decodeSalaryDigits(cardText).match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
     || '';
   const location = pickFromCard(card, ['.job-area', '.job-area-wrapper', '.job-address-desc', '.job-location', '.company-location', '[class*="job-area"]'])
     || cardText.match(/北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|全国/)?.[0]
@@ -1086,7 +1111,8 @@ function extractJobDetail(card) {
   // 招聘方姓名（job-claw-main detailRecruiterIdentity 口径）
   const recruiterName = textOf(root?.querySelector('[class*="boss-name"],[class*="bossName"],[class*="recruiter-name"],[class*="job-boss"] [class*="name"],[class*="boss-info"] [class*="name"]'))
     || '';
-  const salaryMatch = `${cardText} ${detailText}`.match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/);
+  // 薪资兜底正则同样跑在「还原混淆后」的文本上；title/company 亦做还原，避免把 PUA 写进库
+  const salaryMatch = decodeSalaryDigits(`${cardText} ${detailText}`).match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/);
   const token = jobUrlToken(anchor?.href || '');
   const jobId = token || dataJobId || '';
   const realUrl = anchor?.href
@@ -1094,12 +1120,12 @@ function extractJobDetail(card) {
   const chatBtn = communicateButton();
   const chatUrl = String(chatBtn?.href || chatBtn?.closest?.('a')?.href || '');
   return {
-    title,
+    title: decodeSalaryDigits(title),
     company,
     salary: fields.salary || salaryMatch?.[0] || '',
     location: fields.location,
-    description: cleanJobDescription(detailText).slice(0, 9000),
-    cardText: cardText.slice(0, 1000),
+    description: cleanJobDescription(decodeSalaryDigits(detailText)).slice(0, 9000),
+    cardText: decodeSalaryDigits(cardText).slice(0, 1000),
     url: realUrl,
     jobId,
     chatUrl,
@@ -1107,6 +1133,8 @@ function extractJobDetail(card) {
     isHeadhunter: fields.isHeadhunter,
     recruiterName,
     recruiterTitle: fields.recruiterTitle,
+    // 工作制度/福利标签（「周末双休」等）：日薪折算月薪的工作日基数识别来源
+    welfare: extractWelfareTags(root || document),
   };
 }
 
@@ -1217,9 +1245,15 @@ async function visualCollect(opts = {}) {
   } catch {}
 
   // 关键修复：先等 BOSS 列表出现，避免初次 collectCards() 拿到 0 卡就 emptyRounds=2 提前结束。
-  // BOSS 列表通常在搜索 URL load 完后 ~2-4s 才渲染完成。
-  const listReadyDeadline = Date.now() + 15000;
-    let initialWaitCount = 0;
+  // BOSS 列表通常在搜索 URL load 完后 ~2-4s 才渲染完成；页面较重（骨架屏 + 推荐接口 + 无限列表
+  // 首屏）时会明显更久，因此超时改为由宿主传入（默认 30s），等待期间按秒回传进度便于用户判断。
+  // 另：页面已 complete 且已有大量 li 但卡片命中 0 时，多半是列表选择器与新版 DOM 不匹配，
+  // 不再空等到死——提前回传选择器诊断并交给主循环（主循环会滚动促加载并回传 no-cards-diag）。
+  const listTimeoutMs = Math.max(5000, Number(opts.listTimeoutMs) || 30000);
+  const listReadyDeadline = Date.now() + listTimeoutMs;
+  const listWaitStartedAt = Date.now();
+  const earlyBreakAfterMs = Math.max(8000, Math.round(listTimeoutMs * 0.4));
+  let initialWaitCount = 0;
   while (Date.now() < listReadyDeadline && !collectCtl.stopped) {
     try {
       const initial = collectCards();
@@ -1231,9 +1265,31 @@ async function visualCollect(opts = {}) {
       notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: 0, maxJobs, status: `列表查询异常：${String(e?.message || e).slice(0, 80)}` });
       await sleep(settleMs);
     }
+    // 页面自身已加载完（readyState=complete）且 DOM 已有内容，却仍然一张卡都命中不到 →
+    // 判定为选择器不匹配，提前结束等待并回传诊断（避免日志长时间停在「等待列表渲染」）。
+    if (Date.now() - listWaitStartedAt > earlyBreakAfterMs && String(document.readyState) === 'complete' && all('li').length > 5) {
+      const diag = {
+        readyState: String(document.readyState),
+        liCount: all('li').length,
+        selectorHits: {
+          '.job-list-box .job-card-wrapper': all('.job-list-box .job-card-wrapper').length,
+          'li.job-card-wrapper': all('li.job-card-wrapper').length,
+          'li.job-card-box': all('li.job-card-box').length,
+          '.job-card-box': all('.job-card-box').length,
+          '.job-list-box li': all('.job-list-box li').length,
+          'a[href*="/job_detail/"]': all('a[href*="/job_detail/"]').length,
+        },
+        listRootCls: String(($('.job-list-box, .search-job-result, .job-list, [class*="job-list"]') || {}).className || '').slice(0, 100),
+        bodySnippet: String(document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 200),
+      };
+      notify('collect-progress', { phase: 'list-selector-warn', index: 0, total: 0, processed: 0, maxJobs, status: `页面已加载完但未命中岗位卡片（选择器可能失效）：${JSON.stringify(diag)}` });
+      break;
+    }
     initialWaitCount += 1;
     if (initialWaitCount === 1 || initialWaitCount % 4 === 0) {
-      notify('collect-progress', { phase: 'waiting-list', index: 0, total: 0, processed: 0, maxJobs, status: '等待列表渲染' });
+      const waitedSec = Math.round((Date.now() - listWaitStartedAt) / 1000);
+      const state = String(document.readyState);
+      notify('collect-progress', { phase: 'waiting-list', index: 0, total: 0, processed: 0, maxJobs, status: `等待列表渲染（已 ${waitedSec}s / 上限 ${Math.round(listTimeoutMs / 1000)}s，页面 ${state}）` });
     }
     await sleep(settleMs * 0.6);
   }
@@ -1392,6 +1448,101 @@ function domDump() {
   notify('dom-dump', out);
 }
 
+// ===== 页面状态探测（page-status）：供宿主判定「搜索页是否真的加载完成」=====
+// 背景：宿主原先靠自身的加载遮罩状态机（webview 导航事件 + 定时器）判断页面是否就绪，
+// 一旦事件序列异常（重定向/子框架/被新导航顶掉的定时器）就会一直判定「加载中」，
+// 而页面其实早已可用 —— 日志刷「页面加载中…」但用户看到的页面是好的。
+// 这里直接读页面自身的事实：document.readyState / 正文长度 / 岗位卡片命中数 / 选择器逐一命中数 /
+// 列表容器 / 骨架屏启发式；宿主以这些事实为权威，遮罩状态只作参考。
+function pageStatusData() {
+  const selectors = [
+    '.job-list-box .job-card-wrapper',
+    'li.job-card-wrapper',
+    '.search-job-result .job-card-wrapper',
+    'li.job-card-box',
+    '.job-card-box',
+    '.job-list-box li',
+    'a[href*="/job_detail/"]',
+  ];
+  const counts = {};
+  for (const s of selectors) {
+    try { counts[s] = all(s).length; } catch { counts[s] = -1; }
+  }
+  let cards = -1;
+  try { cards = collectCards(true).length; } catch {}
+  const bodyText = String(document.body?.innerText || '');
+  const listRoot = $('.job-list-box, .search-job-result, .job-list, [class*="job-list"]');
+  return {
+    url: location.href,
+    title: document.title,
+    readyState: String(document.readyState || ''),
+    bodyLen: bodyText.length,
+    cards,
+    counts,
+    listRootCls: listRoot ? String(listRoot.className || '').slice(0, 120) : '',
+    skeleton: all('[class*="skeleton"], [class*="loading"], [class*="spinner"], [class*="placeholder"]').length,
+    loginWall: /请登录|扫码登录|安全验证|验证码/.test(bodyText.slice(0, 500)),
+  };
+}
+
+// ===== 只读页面抽取（page-read）：供外部 agent 探索当前页面 =====
+// 返回 URL/标题/正文文本（截断）+ 列表卡摘要（仅当前页面，不滚动、不点击）。
+function pageReadData() {
+  let cards = [];
+  let count = 0;
+  try {
+    const allCards = collectCards(true) || [];
+    count = allCards.length;
+    cards = allCards.slice(0, 30).map((card) => {
+      try {
+        const id = cardIdentity(card);
+        const f = cardFields(card);
+        return { title: id.title, company: id.company, salary: f.salary, url: id.href || '', location: f.location };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  } catch {}
+  return {
+    url: location.href,
+    title: document.title,
+    bodyText: (() => { try { return String(document.body?.innerText || document.body?.textContent || '').slice(0, 12000); } catch { return ''; } })(),
+    listCards: cards,
+    listCount: count,
+  };
+}
+
+// ===== 半自动预填（prefill-greeting）：打开沟通 + 填入草稿，绝不自动发送 =====
+// 对齐 domApply 的 fill_message 步，但删除 send_message / verify_message —— 发送交给用户点。
+async function prefillGreetingText(rawText) {
+  const greeting = String(rawText || '').replace(/\s+/g, ' ').trim();
+  try {
+    if (greeting.length < 8) return { ok: false, reason: '招呼语为空或过短，无法预填' };
+    let input = chatInput();
+    if (!input) input = await enterChat();
+    if (!input) {
+      // enterChat 可能在需要跨域跳转时不返回输入框（新页面 preload 会重新注入）
+      const btn = communicateButton();
+      return { ok: false, reason: btn ? '沟通入口需要跳转页面，请在新页面重试' : '未找到聊天输入框，且无「立即沟通」入口（岗位可能已下架）' };
+    }
+    input.scrollIntoView({ block: 'center' });
+    input.focus();
+    await sleep(200);
+    if (document.activeElement !== input && input.matches('[contenteditable]')) {
+      const inner = input.querySelector('[contenteditable]') || input;
+      inner.focus();
+    }
+    await trustedInput('selectAll');
+    await trustedInput('delete');
+    const ins = await trustedInput('insertText', greeting);
+    if (!ins.ok) return { ok: false, reason: '真实输入写入失败（无权限/输入框失焦），请人工发送' };
+    notify('apply-stage', { stage: 'prefill', label: '已预填招呼语草稿（未发送，请人工核对后发送）' });
+    return { ok: true, href: location.href };
+  } catch (e) {
+    return { ok: false, reason: String(e?.message || e) };
+  }
+}
+
 // ===== IPC 通道注册 =====
 // BOSS 专属通道仅在 BOSS 页面注册；其余平台注册轻量提取（多平台适配）
 if (PLATFORM === 'boss') {
@@ -1432,6 +1583,28 @@ ipcRenderer.on('extract-job', () => {
   else platformExtractJob();
 });
 
+// page-read：只读抽取当前页面（URL/标题/正文文本/列表卡摘要），seq 供宿主 promise 化
+ipcRenderer.on('page-read', (_e, arg) => {  const { seq } = (arg && typeof arg === 'object') ? arg : {};
+  let data = { error: 'page-read 失败' };
+  try { data = pageReadData(); } catch (e) { data = { error: String(e?.message || e), url: location.href }; }
+  notify('page-read-result', { seq, ...data });
+});
+
+// prefill-greeting：半自动预填招呼语草稿（不发送），seq 供宿主 promise 化
+ipcRenderer.on('prefill-greeting', (_e, arg) => {
+  const { seq, greeting } = (arg && typeof arg === 'object') ? arg : {};
+  prefillGreetingText(greeting).then((result) => notify('prefill-greeting-result', { seq, ...result }));
+});
+
+// page-status：页面自身的就绪事实（readyState / 卡片命中 / 选择器计数 / 骨架屏启发式），
+// seq 供宿主 promise 化。宿主据此判定「搜索页是否真的加载完成」，不再只信加载遮罩状态机。
+ipcRenderer.on('page-status', (_e, arg) => {
+  const { seq } = (arg && typeof arg === 'object') ? arg : {};
+  let data = { error: 'page-status 失败' };
+  try { data = pageStatusData(); } catch (e) { data = { error: String(e?.message || e), url: location.href }; }
+  notify('page-status-result', { seq, ...data });
+});
+
 // webview-command：主进程右键菜单触发的通用命令（dom-dump 等）
 ipcRenderer.on('webview-command', (_e, arg) => {
   const action = (arg && arg.action) || '';
@@ -1470,8 +1643,8 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
 const ipcChannels = PLATFORM === 'boss'
-  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command']
-  : ['extract-job', 'webview-command'];
+  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting']
+  : ['extract-job', 'webview-command', 'page-read', 'page-status', 'prefill-greeting'];
 ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);

@@ -198,6 +198,11 @@ export interface PlatformSearchQueueItem {
   keyword: string;
   location: string;
   employmentType: string;
+  /** 来源投递方向（用于「任务进度」卡片归属，采集时同步生成 TaskRun） */
+  directionId: string;
+  directionName: string;
+  directionPriority: number;
+  directionScore: number;
 }
 
 /**
@@ -224,7 +229,13 @@ export function buildPlatformSearchQueue(
           });
           if (seen.has(url)) continue;
           seen.add(url);
-          queue.push({ platform, url, keyword, location, employmentType });
+          queue.push({
+            platform, url, keyword, location, employmentType,
+            directionId: direction.id,
+            directionName: direction.name,
+            directionPriority: direction.priority,
+            directionScore: direction.score,
+          });
         }
       }
     }

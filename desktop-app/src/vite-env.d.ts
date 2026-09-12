@@ -24,8 +24,7 @@ interface ElectronBridgeApi {
   winAlwaysOnTopSet?: (value: boolean) => void;
   onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
   // Camoufox 隐身引擎（可选增强，Python 桥）——platform 参数（boss/liepin/zhaopin/job51）
-  camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;
-  camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
+  camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;  camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;
   camoufoxRestart?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; installing?: boolean; message?: string; engine?: unknown }>;
   // CloakBrowser 隐身浏览器（可选增强，Node + Playwright）

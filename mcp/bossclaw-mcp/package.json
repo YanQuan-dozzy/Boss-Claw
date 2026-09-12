@@ -1,0 +1,19 @@
+{
+  "name": "bossclaw-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BossClaw 项目操作 MCP 服务 —— 让 agent 能够构建、运行、诊断并驱动 BossClaw 桌面应用（零依赖，stdio）",
+  "type": "module",
+  "bin": {
+    "bossclaw-mcp": "bin/bossclaw-mcp.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node bin/bossclaw-mcp.mjs",
+    "selftest": "node test/selftest.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

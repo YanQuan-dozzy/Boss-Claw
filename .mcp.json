@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bossclaw": {
+      "command": "C:\\Users\\DELL\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "args": [
+        "F:\\projects\\Boss-claw\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"
+      ],
+      "env": {}
+    }
+  }
+}

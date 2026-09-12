@@ -8,6 +8,8 @@ REM                                    dist/ directly (no Vite server). If
 REM                                    sources changed it rebuilds first.
 REM  start-bossclaw.cmd --dev       : start Vite dev server (HMR) + Electron.
 REM  start-bossclaw.cmd --visible   : keep the console open and show logs.
+REM  start-bossclaw.cmd --no-agent : do NOT enable the local agent bridge
+REM                                 (MCP / control bridge is ON by default).
 REM  Flags can be combined, e.g.  --dev --visible
 REM ============================================================
 
@@ -38,11 +40,28 @@ set "NODE_OPTIONS="
 set "ELECTRON_RUN_AS_NODE="
 set "PYTHONPATH="
 
+REM ---- local agent bridge (MCP): ON by default for this launcher ----
+REM      Enables electron/control-bridge.cjs (127.0.0.1 + token, port 17650) and the
+REM      'no API key -> let the agent answer' fallback.
+REM      Passed as a CLI switch instead of an env var, because this script starts
+REM      Electron through a shortcut (env inheritance is less reliable than argv).
+REM      Turn it off with:  start-bossclaw.cmd --no-agent
+set "AGENT_FLAG=--control-bridge"
+echo %* | findstr /I /C:"--no-agent" >nul 2>&1 && set "AGENT_FLAG="
+if defined AGENT_FLAG echo [INFO] Agent bridge ON (MCP can control this instance).
+
+
 REM ---- locate the app folder ----
 cd /d "%~dp0" 2>nul || goto :fail
 set "APP_DIR=%~dp0desktop-app"
 if not exist "%APP_DIR%" (set "ERRMSG=desktop-app folder not found next to this script" & goto :fail)
 cd /d "%APP_DIR%" 2>nul || goto :fail
+
+REM ---- taskbar name fix: launch via a shortcut so Windows shows "BossClaw" instead of "Electron" ----
+set "SC_DIR=%LOCALAPPDATA%\BossClaw"
+if not exist "%SC_DIR%" mkdir "%SC_DIR%"
+set "ELECTRON_EXE=%APP_DIR%\node_modules\electron\dist\electron.exe"
+set "ICON_PATH=%APP_DIR%\resources\icon.ico"
 
 REM ---- preflight checks ----
 where node >nul 2>&1 || (set "ERRMSG=Node.js not found in PATH" & goto :fail)
@@ -63,7 +82,14 @@ if not exist "dist\index.html" goto :rebuild
 node "scripts\check-fresh.mjs" >nul 2>&1
 if errorlevel 1 goto :rebuild
 echo [INFO] Launching BossClaw (build is up-to-date) ...
-start "" "node_modules\electron\dist\electron.exe" . %NO_SANDBOX%
+set "SC_PATH=%SC_DIR%\BossClaw.lnk"
+powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut('%SC_PATH%'); $sc.TargetPath='%ELECTRON_EXE%'; $sc.Arguments='. %NO_SANDBOX% %AGENT_FLAG%'; $sc.WorkingDirectory='%APP_DIR%'; $sc.IconLocation='%ICON_PATH%,0'; $sc.Description='BossClaw'; $sc.Save()" >nul 2>&1
+if exist "%SC_PATH%" (
+  start "" "%SC_PATH%"
+) else (
+  echo [WARN] Shortcut creation failed, falling back to direct launch ...
+  start "" "%ELECTRON_EXE%" . %NO_SANDBOX% %AGENT_FLAG%
+)
 echo [OK] BossClaw launched in background. Close it from the taskbar or Task Manager.
 if defined VISIBLE pause
 exit /b 0
@@ -73,7 +99,14 @@ echo [INFO] Sources changed (or first run) - rebuilding, about 15s ...
 node "node_modules\vite\bin\vite.js" build
 if errorlevel 1 (set "ERRMSG=vite build failed" & goto :fail)
 echo [INFO] Build OK. Launching BossClaw ...
-start "" "node_modules\electron\dist\electron.exe" . %NO_SANDBOX%
+set "SC_PATH=%SC_DIR%\BossClaw.lnk"
+powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut('%SC_PATH%'); $sc.TargetPath='%ELECTRON_EXE%'; $sc.Arguments='. %NO_SANDBOX% %AGENT_FLAG%'; $sc.WorkingDirectory='%APP_DIR%'; $sc.IconLocation='%ICON_PATH%,0'; $sc.Description='BossClaw'; $sc.Save()" >nul 2>&1
+if exist "%SC_PATH%" (
+  start "" "%SC_PATH%"
+) else (
+  echo [WARN] Shortcut creation failed, falling back to direct launch ...
+  start "" "%ELECTRON_EXE%" . %NO_SANDBOX% %AGENT_FLAG%
+)
 echo [OK] BossClaw launched in background. Close it from the taskbar or Task Manager.
 if defined VISIBLE pause
 exit /b 0
@@ -85,7 +118,14 @@ powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -WindowStyle H
 powershell -NoProfile -Command "$deadline=(Get-Date).AddSeconds(12); do { try { $r=Invoke-WebRequest -Uri http://127.0.0.1:5173 -UseBasicParsing -TimeoutSec 1; if($r.StatusCode -lt 400){ exit 0 } } catch {}; Start-Sleep -Milliseconds 600 } while((Get-Date) -lt $deadline); exit 1"
 if errorlevel 1 echo [WARN] Vite not ready in time - Electron will fall back to the last build
 echo [INFO] Launching Electron (dev mode) ...
-start "" "node_modules\electron\dist\electron.exe" . --dev %NO_SANDBOX%
+set "SC_PATH=%SC_DIR%\BossClaw-Dev.lnk"
+powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut('%SC_PATH%'); $sc.TargetPath='%ELECTRON_EXE%'; $sc.Arguments='. --dev %NO_SANDBOX% %AGENT_FLAG%'; $sc.WorkingDirectory='%APP_DIR%'; $sc.IconLocation='%ICON_PATH%,0'; $sc.Description='BossClaw (Dev)'; $sc.Save()" >nul 2>&1
+if exist "%SC_PATH%" (
+  start "" "%SC_PATH%"
+) else (
+  echo [WARN] Shortcut creation failed, falling back to direct launch ...
+  start "" "%ELECTRON_EXE%" . --dev %NO_SANDBOX% %AGENT_FLAG%
+)
 echo [OK] BossClaw launched in background. Close it from the taskbar or Task Manager.
 if defined VISIBLE pause
 exit /b 0

@@ -36,6 +36,12 @@ export interface ScheduleEntry {
 /** 定时采集请求（调度器置位，常驻 Workbench 消费后清除）。platforms 空/缺省 = 全部已启用平台。 */
 export interface CollectRequest {
   platforms?: JobPlatform[];
+  /**
+   * 定向采集：「任务进度」页点「开始/继续」时携带，只重跑这些 runId 对应的搜索组合
+   * （runId = cr_<platform>_<keyword>_<location>_<employmentType>，见 Workbench.collectRunId）。
+   * 空/缺省 = 按 platforms 跑完整搜索队列。
+   */
+  runIds?: string[];
 }
 
 interface ScheduleState {

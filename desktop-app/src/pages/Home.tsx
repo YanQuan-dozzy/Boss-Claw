@@ -61,7 +61,6 @@ export default function Home() {
   const setPending = useDataStore((s) => s.setPending);
   const addLog = useDataStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
-  const upsertTaskRun = useDataStore((s) => s.upsertTaskRun);
   const setTaskRuns = useDataStore((s) => s.setTaskRuns);
   const setRoute = useAppStore((s) => s.setRoute);
   const autoAssist = useAppStore((s) => s.autoAssist);
@@ -143,8 +142,10 @@ export default function Home() {
     if (!profile) { message.warning('请先生成职业画像'); setRoute('resume'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先确认投递方向'); setRoute('directions'); return; }
     const runs = createTasks(profile, config, directionPlan);
-    runs.forEach((run) => upsertTaskRun(run));
-    setTaskRuns(runs);
+    // 「新建任务」只重建「投递任务」；采集任务（cr_ 前缀，由工作台「搜索采集」自动生成）必须保留，
+    // 否则一次新建任务会把任务进度页的采集卡片全部清空（两模块共用 taskRuns 数据源）。
+    const keptCollectRuns = useDataStore.getState().taskRuns.filter((r) => String(r.id || '').startsWith('cr_'));
+    setTaskRuns([...runs, ...keptCollectRuns]);
     addLog('success', `已基于 ${runs.length} 个「方向×关键词×城市」组合新建任务`);
     message.success(`已新建 ${runs.length} 个任务`);
     setRoute('workbench');
@@ -158,7 +159,7 @@ export default function Home() {
       useSettingsStore.getState().config
     );
     setPending(next);
-    addLog('success', `已批准 ${waiting.length} 个岗位进入投递队列（等待「开始投递」）`);
+    addLog('success', `已确认 ${waiting.length} 个岗位，等待「开始投递」`);
     message.success(`已批准 ${waiting.length} 个岗位（待投递）`);
     setRoute('workbench');
   };
@@ -195,7 +196,7 @@ export default function Home() {
       <div className="hero">
         <h2 className="hero-title">欢迎回来，开始今天的投递</h2>
         <p className="hero-sub">
-          在右侧浏览器中打开 BOSS 直聘岗位 → 点「加入任务」→ AI 分析评分 → 批准后进入投递队列。首次成功投递后会自动暂停，供你核对沟通对象与内容。
+          在右侧浏览器中打开 BOSS 直聘岗位 → 点「加入任务」→ AI 分析评分 → 确认后进入「待投递」队列。首次成功投递后会自动暂停，供你核对沟通对象与内容。
         </p>
         <div className="hero-actions">
           <Button type="primary" size="large" className="btn-uniform-lg" icon={<ThunderboltOutlined />} onClick={() => setRoute('workbench')}>
@@ -230,7 +231,7 @@ export default function Home() {
           value={stats.pending}
           suffix="个"
           type="pending"
-          subText="需要在工作台或确认队列核对"
+          subText="需要在工作台或「待确认」队列核对"
           icon={<ProfileOutlined />}
         />
         <MetricCard

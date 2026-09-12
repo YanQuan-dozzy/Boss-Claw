@@ -4,8 +4,11 @@ import { normalizeStringList, isHeadingLine } from './helpers';
 import { cachedCallModel } from './llm';
 import { ensureSkillsLoaded, skillInstructionsFor } from './skills';
 import { buildAnalyzeSystemPrompt } from './prompts';
-import { detectInterviewMode } from './interviewMode';
-import { computeLocalMatch, enhancedLocalScore } from './jobMatch';
+import { computeLocalMatch, enhancedLocalScore, parseExpectedSalary, parseSalaryRange } from './jobMatch';
+import { decodeSalaryDigits } from './jobDisplay';
+import { detectWorkSchedule } from './workSchedule';
+import { calibrateSalaryScore, collectMismatchedSalaryMentions, stripMismatchedSalarySentences } from './salaryCalibration';
+import type { Decision } from './types';
 
 // 本地确定性匹配分（0-100）：基于岗位标题+描述的文本与画像技能/搜索词/方向的命中。
 // 标题命中是强信号（岗位方向核心在标题），描述命中是弱信号；映射到 0-100，供 AI 分轻微平滑兜底。
@@ -152,6 +155,11 @@ export function fallbackApplicantGreeting(job: JobMeta, profile: Profile | null)
   return parts.join('').replace(/。{2,}/g, '。').slice(0, 200);
 }
 
+// 谨慎档（cautious）入队最低分：低于该值的谨慎档视为「方向弱匹配」，不入队；
+// 达到该值则保留真实融合分进入队列，交由人工把关（与 AI 提示词 55-74 档位对齐：
+// 「方向匹配但存在 1-2 项实质缺口 → cautious」值得人工确认，而非被 minScore 一刀切跳过）。
+export const CAUTIOUS_INGEST_MIN_SCORE = 55;
+
 // 岗位视图净化：只把匹配分析真正需要的字段交给 AI。
 // 剥离 hrActive / cardText / chatUrl 等字段——招聘方在线状态只用于展示与用户设置的活跃度过滤，
 // 绝不能成为 AI 的推荐理由；cardText 整页文本里的「在线/刚刚活跃」字样同样会误导 AI。
@@ -159,7 +167,7 @@ function aiJobView(job: JobMeta): Record<string, unknown> {
   return {
     title: job.title,
     company: job.company,
-    salary: job.salary,
+    salary: decodeSalaryDigits(job.salary),
     location: job.location,
     description: job.description,
     jobId: job.jobId,
@@ -223,8 +231,10 @@ export async function analyzeJob(
   const systemPrompt = buildAnalyzeSystemPrompt(inputGreeting || undefined) + skillInstructionsFor('job-analysis') + greetingsSkill;
   // 本地确定性多维匹配（deal-breaker 硬约束 + 可解释维度 + 兜底分），先于 AI 计算：
   //   - 硬约束不依赖模型判断，信息充分即拦截（学历/经验/地点/求职类型/黑名单/猎头/外部网申/面试方式）；
-  //   - 维度分（技能/方向/地点/薪资/学历/经验）用于 UI 可解释展示与 AI 分校准。
-  const local = computeLocalMatch(job, profile, config);
+  //   - 维度分（技能/方向/地点/薪资/学历/经验）用于 UI 可解释展示与 AI 分校准；
+  //   - 缺口判定同时纳入简历原文（简历里的技能表述可能只写在经历行、未落入结构化 facts，
+  //     只查画像会误报缺失——如「熟练使用 ChatGPT/Claude/Cursor」）。
+  const local = computeLocalMatch(job, profile, config, resumeText);
   // 输入瘦身：简历原文截短至 6000 字（profile.facts 已含教育/经历/项目/技能的结构化摘录，
   // 足够 AI 引用真实事实；岗位分析费用大头在简历全文，截短后单次输入省约 9K 字符）。
   // 前缀稳定性（服务端 prompt cache 命中的关键）：system 提示词 + 稳定画像 + 简历 恒定在前，
@@ -236,6 +246,14 @@ export async function analyzeJob(
   const skipGreetingNote = local.hardBlocks.length
     ? `\n\n（提示：本岗位经本地硬条件检查存在不满足项【${local.hardBlocks.slice(0, 2).join('；')}】，已判定为不推荐投递，无需为它生成打招呼语，greeting 字段直接输出空字符串即可。）`
     : '';
+  // 本地确定性六维初筛（系统生成、可信）：作为 AI 打分基线校准（见 system 提示词「本地校准信息」一节）。
+  // 放在岗位数据之后、序列末尾，保持 system + 画像 + 简历 前缀恒定以命中服务端 prompt cache。
+  const localAnchorSection = `\n<<<本地校准信息（系统基于画像关键词与简历事实的确定性规则生成，可信；仅作打分基线参考）>>>\n${JSON.stringify({
+    dimensions: local.dimensions,
+    hardBlocks: local.hardBlocks,
+    evidence: local.evidence.slice(0, 5),
+    gaps: local.gaps.slice(0, 5),
+  })}\n<<<本地校准信息结束>>>`;
   const result: any = await cachedCallModel(
       [
         { role: 'system', content: systemPrompt },
@@ -243,7 +261,7 @@ export async function analyzeJob(
           role: 'user',
           content: `职业画像：${JSON.stringify(stableProfileView(profile))}
 简历：${String(resumeText || '').slice(0, 6000)}
-${untrustedJobSection(job)}${skipGreetingNote}`,
+${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
         },
       ],
       model,
@@ -264,10 +282,55 @@ ${untrustedJobSection(job)}${skipGreetingNote}`,
   const mergedGaps = [...new Set([...(Array.isArray(result.gaps) ? result.gaps.map((g: unknown) => String(g)) : []), ...local.gaps])];
   if (mergedGaps.length) result.gaps = mergedGaps;
   if (mergedBlocks.length) result.decision = 'reject';
-  // 4. 分数：AI 分主导；AI 未给出有效分数时用本地加权分兜底（增强版，替代纯关键词命中）
+  // 3.5 AI 薪资表述校准（防幻觉）：AI 文本（reason/匹配点/缺口/风险）里出现的薪资数字，
+  //     若与「本地解析的岗位薪资」和「画像期望薪资」都对不上，判定为编造 → 剔除该句并附校准说明。
+  const schedule = detectWorkSchedule(job);
+  const jdRange = parseSalaryRange(job.salary, schedule.monthlyWorkDays);
+  const expectedRange = parseExpectedSalary(profile);
+  const salaryView = {
+    valid: jdRange.valid,
+    monthlyLow: jdRange.low,
+    monthlyHigh: jdRange.high,
+    daily: jdRange.daily,
+    hourly: jdRange.hourly,
+    monthlyWorkDays: schedule.monthlyWorkDays,
+    expectedLow: expectedRange.valid ? expectedRange.low : null,
+    expectedHigh: expectedRange.valid ? expectedRange.high : null,
+    salaryText: decodeSalaryDigits(String(job.salary || '')).trim(),
+  };
+  const badSalaryMentions = collectMismatchedSalaryMentions(
+    [
+      result.reason,
+      ...(Array.isArray(result.matchedEvidence) ? result.matchedEvidence : []),
+      ...(Array.isArray(result.gaps) ? result.gaps : []),
+      ...(Array.isArray(result.risks) ? result.risks : []),
+    ],
+    salaryView
+  );
+  if (badSalaryMentions.length) {
+    const stripOne = (v: unknown): string => stripMismatchedSalarySentences(String(v || ''), badSalaryMentions);
+    const stripList = (arr: unknown): string[] => (Array.isArray(arr) ? arr.map(stripOne).filter(Boolean) : []);
+    if (result.reason) result.reason = stripOne(result.reason);
+    if (Array.isArray(result.matchedEvidence)) result.matchedEvidence = stripList(result.matchedEvidence);
+    if (Array.isArray(result.gaps)) result.gaps = stripList(result.gaps);
+    if (Array.isArray(result.risks)) result.risks = stripList(result.risks);
+    const aiNumbers = badSalaryMentions.map((m) => m.raw).join('、');
+    const localRef = jdRange.valid
+      ? `本地确定性解析：${salaryView.salaryText} ≈ ${jdRange.low.toFixed(1)}-${jdRange.high.toFixed(1)}K/月`
+      : `本地薪资：${salaryView.salaryText || '未识别'}`;
+    result.reason = `${String(result.reason || '').trim()}【本地薪资校准】AI 描述中的薪资（${aiNumbers}）与本地数据不符，已忽略该表述并采用本地数据（${localRef}）。`;
+  }
+  // 4. 分数：AI 分主导并与本地综合分融合（压住 AI 逐岗随机漂移），AI 分缺失时用本地加权分兜底（增强版）。
+  //    本地维度来自确定性关键词匹配，信息充分(confidence>=0.4)时以 30% 权重参与融合，不改相对序但更稳定。
   const aiScore = Number(result.score);
+  const localOverall = local.dimensions.overall;
+  // 评分来源标记（UI 提示口径：AI 计算优先，AI 未参与时才标本地确定性计算）：
+  // AI 返回了可用分数即视为 AI 计算；模型输出缺 score（NaN）才落到本地兜底分。
+  result.scoreSource = Number.isFinite(aiScore) ? 'ai' : 'local';
   let score: number;
-  if (Number.isFinite(aiScore)) {
+  if (Number.isFinite(aiScore) && localOverall != null && local.dimensions.confidence >= 0.4) {
+    score = Math.round(0.7 * aiScore + 0.3 * localOverall);
+  } else if (Number.isFinite(aiScore)) {
     score = Math.max(0, Math.min(100, aiScore));
   } else {
     score = enhancedLocalScore(job, profile, config) ?? 0;
@@ -281,37 +344,50 @@ ${untrustedJobSection(job)}${skipGreetingNote}`,
   if (mergedBlocks.length) {
     score = Math.min(score, 35);
   }
+  const ms = Math.max(0, Number(config?.minScore) || 75);
   // 6. AI 分校准（sanity check）：AI 报高分但本地核心维度严重背离时降级——
   //    本地技能/方向维度来自确定性关键词命中，若两者加权明显低于推荐档位，AI 存在误判/幻觉风险。
+  //    只降级为「谨慎」并封顶到 minScore（可进入人工确认把关），不再压到 65 制造「永远够不着门槛」。
   const dims = local.dimensions;
   if (result.decision === 'recommend' && local.dimensions.confidence >= 0.5) {
     const coreDims = [dims.skill, dims.direction].filter((v): v is number => v != null);
     if (coreDims.length && coreDims.reduce((a, b) => a + b, 0) / coreDims.length < 45) {
-      score = Math.min(score, 65);
+      score = Math.min(score, ms);
       result.decision = 'cautious';
       result.reason = `${String(result.reason || '').trim()}【本地维度校准】本地技能/方向命中明显偏低（${Math.round(coreDims.reduce((a, b) => a + b, 0) / coreDims.length)} 分），AI 高分存疑，已降级为谨慎。`;
     }
   }
-  // 7. 分数与决策档位确定性对齐：消灭「recommend 却 60 分」的模糊中间态，拉开评分梯度
-  if (result.decision === 'recommend') score = Math.max(score, 80);
-  else if (result.decision === 'cautious') score = Math.min(score, 74);
+  // 6.5 薪资专项校准（防幻觉）：AI 综合分与本地薪资维度「方向相反且差距过大」时以本地确定性数据为准。
+  //     AI 报推荐档但本地判定薪资明显不达标 → 压回谨慎档；AI 给低分但本地判定薪资显著高于期望 → 托底。
+  //     硬约束拦截 / 已判 reject 时不动分（硬拦截语义优先）。
+  const salaryCal = calibrateSalaryScore({
+    score,
+    decision: result.decision as Decision,
+    localSalaryScore: dims.salary,
+    minScore: ms,
+    hasHardBlocks: mergedBlocks.length > 0,
+    salaryText: salaryView.salaryText,
+    monthlyLow: jdRange.low,
+    monthlyHigh: jdRange.high,
+  });
+  if (salaryCal.changed) {
+    score = salaryCal.score;
+    result.decision = salaryCal.decision;
+    result.reason = `${String(result.reason || '').trim()}${salaryCal.note}`;
+  }
+  // 7. 分数与决策档位确定性对齐（相对 minScore）：
+  //    recommend 恒 ≥ minScore（推荐必达标，可放心投递）；reject ≤35（硬伤拦截）。
+  //    不再把 cautious 封顶到 minScore——那会让所有谨慎档都显示成门槛值（75），
+  //    既失真又造成「可投递岗位全是低分」的观感；cautious 保留真实融合分（55-74 区间），
+  //    由入库侧按 CAUTIOUS_INGEST_MIN_SCORE 单独放行、交人工把关。
+  if (result.decision === 'recommend') score = Math.max(score, ms);
   else if (result.decision === 'reject') score = Math.min(score, 35);
   result.score = Math.max(0, Math.min(100, score));
-  if (result.score < Number(config?.minScore ?? 75) && result.decision === 'recommend') {
+  if (result.score < ms && result.decision === 'recommend') {
     result.decision = 'cautious';
   }
-  // 8. 面试方式筛选已由本地硬约束覆盖（computeLocalMatch → hardBlocks → score≤35），
-  //    旧的「-1000 强扣分」逻辑移除，避免重复惩罚与展示重复。保留 detectInterviewMode 兜底：
-  //    若岗位文本有明确线上/线下信号但 job.interviewMode 未预填充，本地引擎仍能识别。
-  if (config?.interviewModeFilter && config.interviewModeFilter !== 'any' && !local.hardBlocks.some((b) => b.includes('面试'))) {
-    const mode = detectInterviewMode(job);
-    if (mode !== 'unknown' && mode !== config.interviewModeFilter) {
-      const required = mode === 'offline' ? '线下' : '线上';
-      const wanted = config.interviewModeFilter === 'online' ? '线上' : '线下';
-      result.hardBlocks = [...result.hardBlocks, `岗位要求${required}面试，与设定的「仅${wanted}」冲突`];
-      result.score = Math.min(result.score, 35);
-      if (result.decision === 'recommend') result.decision = 'cautious';
-    }
-  }
+  // 8. 面试方式筛选已由本地硬约束统一处理（computeLocalMatch → detectInterviewMode → hardBlocks → score≤35）。
+  //    判定以本地关键字为准（单一来源），未在说明中明确披露的岗位判为「合格」不拦截；
+  //    AI 不再单独判定面试方式，避免此处重复惩罚 / 展示重复 / 拉低或拉高评分。
   return result as JobAnalysis;
 }

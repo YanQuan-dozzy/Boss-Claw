@@ -204,6 +204,12 @@ export default function Resume() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 外部（如 agent 经 MCP dataSetResume 写过简历）更新 store 后，同步到本地输入框 state，
+  // 否则输入框仍显示旧原文。用户手动输入时 store 不变，不会打断编辑。
+  useEffect(() => {
+    setText(resumeText);
+  }, [resumeText]);
+
   const handleFile = async (file: File) => {
     const kind = resumeFileKind(file.name);
     if (kind === 'unsupported') {

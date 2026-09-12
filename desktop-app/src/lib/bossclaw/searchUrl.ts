@@ -287,6 +287,11 @@ export interface SearchQueueItem {
   experience: string;
   degree: string;
   scale: string;
+  /** 来源投递方向（用于「任务进度」卡片归属，采集时同步生成 TaskRun） */
+  directionId: string;
+  directionName: string;
+  directionPriority: number;
+  directionScore: number;
 }
 
 // 由「已确认投递方向 × 城市 × 求职类型」生成去重后的搜索 URL 队列，供工作台搜索采集使用
@@ -316,6 +321,10 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
             experience: experience.join(','),
             degree: degree.join(','),
             scale,
+            directionId: direction.id,
+            directionName: direction.name,
+            directionPriority: direction.priority,
+            directionScore: direction.score,
           });
         }
       }
