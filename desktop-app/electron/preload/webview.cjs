@@ -1100,7 +1100,12 @@ function extractJobDetail(card) {
   const title = textOf(root?.querySelector('h1,h2,[class*="job-name"],[class*="name"]'))
     || identity.title
     || '岗位';
-  const company = textOf(root?.querySelector('[class*="company-name"],a[href*="gongsi"],[class*="company"]'))
+  // 公司名：不用「详情根 querySelector(a,b,c)」——它的选择器并集会命中宽泛的
+  // [class*="company"] 容器（如 .company-info，先于精确的 .company-name 出现），
+  // 把「地点 · 公司规模」一并带出，导致「数据统计 · 公司 Top」把地点误当公司名。
+  // 改为有序 pickText：优先精确的窄选择器（详情根 → 卡片 → 卡片身份）。
+  const company = pickText(['[class*="company-name"]', '[class*="companyName"]', '[class*="company-brand"]', 'a[href*="gongsi"]'], root)
+    || pickText(['[class*="company-name"]', '[class*="companyName"]', '[class*="company"]'], card)
     || identity.company
     || '';
   // HR 活跃度：卡片优先，详情面板兜底（对齐 AI-BossJob-plus boss-online-tag / boss-active-time）
@@ -1613,6 +1618,86 @@ ipcRenderer.on('webview-command', (_e, arg) => {
   }
 });
 
+// ===== 通用 UI 接管（ui-eval）：仅 query/click/type/scroll 白名单，禁止任意脚本执行 / 跳转 =====
+const UV_TEXT_MAX = 120;
+function uvVisibleCheck(el) { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch { return false; } }
+function uvText(el) { return String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, UV_TEXT_MAX); }
+function uvPick(sel, label, index) {
+  let nodes;
+  if (typeof sel === 'string' && sel.trim()) {
+    try { nodes = Array.from(document.querySelectorAll(sel)); } catch { nodes = []; }
+  } else {
+    nodes = Array.from(document.querySelectorAll(
+      'button,input,textarea,select,a[href],[role="button"],[role="checkbox"],[role="radio"],[role="switch"],[role="tab"],[data-testid]'
+    ));
+  }
+  const visible = nodes.filter(uvVisibleCheck);
+  let out = visible;
+  if (typeof label === 'string' && label) {
+    out = visible.filter((el) => uvText(el).includes(label) || (el.getAttribute('aria-label') || '').includes(label) || (el.placeholder || '').includes(label));
+  }
+  if (!out.length) return null;
+  return out[Math.min(Math.max(Number(index) || 0, 0), out.length - 1)];
+}
+function uvSnapshot(sel, limit) {
+  let nodes;
+  if (typeof sel === 'string' && sel.trim()) {
+    try { nodes = Array.from(document.querySelectorAll(sel)); } catch { nodes = []; }
+  } else {
+    nodes = Array.from(document.querySelectorAll(
+      'button,input,textarea,select,a[href],[role="button"],[role="checkbox"],[role="radio"],[role="switch"],[role="tab"],[data-testid]'
+    ));
+  }
+  const cap = Math.min(Math.max(Number(limit) || 60, 1), 200);
+  return nodes.filter(uvVisibleCheck).slice(0, cap).map((el) => {
+    const tag = el.tagName.toLowerCase();
+    return {
+      role: el.getAttribute('role') || undefined,
+      ariaLabel: el.getAttribute('aria-label') || undefined,
+      text: uvText(el),
+      placeholder: el.placeholder || undefined,
+      tag,
+      type: el.type || undefined,
+      id: el.id || undefined,
+      visible: true,
+    };
+  });
+}
+ipcRenderer.on('ui-eval', (_e, arg) => {
+  const { seq, op, selector, label, index } = (arg && typeof arg === 'object') ? arg : {};
+  let res = { error: '未知操作' };
+  try {
+    if (op === 'query') {
+      res = { elements: uvSnapshot(selector, arg.limit), count: uvSnapshot(selector, arg.limit).length };
+    } else if (op === 'click') {
+      const el = uvPick(selector, label, index);
+      if (!el) res = { error: '未命中元素' };
+      else { try { (typeof el.click === 'function') ? el.click() : el.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e) { res = { error: '点击失败: ' + (e && e.message) }; } res = { ok: true }; }
+    } else if (op === 'type') {
+      const el = uvPick(selector, label, index);
+      if (!el) res = { error: '未命中输入框' };
+      else if (el.matches && el.matches('[contenteditable]')) res = { error: 'contenteditable 聊天框请用 deliveryDraft' };
+      else if (!(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') || el.disabled) res = { error: '目标不是可输入的 input/textarea' };
+      else {
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value') && Object.getOwnPropertyDescriptor(proto, 'value').set;
+        el.focus();
+        if (setter) setter.call(el, String(arg.value == null ? '' : arg.value)); else el.value = String(arg.value || '');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        res = { ok: true };
+      }
+    } else if (op === 'scroll') {
+      const el = selector && typeof selector === 'string' ? uvPick(selector) : null;
+      const target = el || document.scrollingElement || document.documentElement;
+      if (arg.to === 'top' || arg.to === 'bottom') target.scrollIntoView({ block: arg.to === 'top' ? 'start' : 'end', behavior: 'smooth' });
+      else if (Number(arg.dy)) target.scrollBy(0, Number(arg.dy));
+      res = { ok: true };
+    }
+  } catch (e) { res = { error: String((e && e.message) || e) }; }
+  notify('ui-eval-result', { seq, ok: !res.error, result: res });
+});
+
 // ===== 页面监听 =====
 // MutationObserver 在跨域导航 / 文档撕裂时偶发抛错（document 状态切换的瞬间），
 // 这里把回调包一层 try/catch，避免一条 MutationObserver 抛错后整个 preload 监听链路失效。
@@ -1643,8 +1728,8 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
 const ipcChannels = PLATFORM === 'boss'
-  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting']
-  : ['extract-job', 'webview-command', 'page-read', 'page-status', 'prefill-greeting'];
+  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval']
+  : ['extract-job', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
 ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);

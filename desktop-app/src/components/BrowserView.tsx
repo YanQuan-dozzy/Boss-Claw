@@ -762,6 +762,13 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return Promise.resolve({ ok: true, hint: '已触发自动投递（domApply），结果见 apply-stage/日志；首次成功会自动暂停验收' });
   }, [sendInTab]);
 
+  // ===== 通用 UI 接管（ui-eval）：对 webview 页面执行白名单 DOM 操作（query/click/type/scroll）=====
+  const uiExec = useCallback(
+    (op: 'query' | 'click' | 'type' | 'scroll', args: Record<string, any> = {}, timeoutMs = 10000, tabId?: string) =>
+      cmdOnce('ui-eval', { op, ...args }, timeoutMs, tabId),
+    [cmdOnce]
+  );
+
   // ===== 把浏览器句柄注册进全局注册表（供 controlRuntime 只读探索 / 投递动作）=====
   useEffect(() => {
     registerBrowser({
@@ -782,9 +789,10 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       domDump: runDomDump,
       prefillGreeting,
       sendApply,
+      uiExec,
     });
     return () => unregisterBrowser();
-  }, [loadURLInTab, bossApi, readPage, runDomDump, prefillGreeting, sendApply]);
+  }, [loadURLInTab, bossApi, readPage, runDomDump, prefillGreeting, sendApply, uiExec]);
 
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
   const autoAssist = useAppStore((s) => s.autoAssist);

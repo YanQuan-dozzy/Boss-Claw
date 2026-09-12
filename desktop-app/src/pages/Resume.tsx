@@ -12,6 +12,7 @@ import {
   Space,
   Spin,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -25,6 +26,10 @@ import {
   CommentOutlined,
   PictureOutlined,
   DownloadOutlined,
+  UserOutlined,
+  CloseOutlined,
+  PlusOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -43,6 +48,31 @@ import { EmptyState } from '@/components/feedback';
 
 const { TextArea } = Input;
 const { Text } = Typography;
+
+// ===== 职业画像多选字段：下拉面板对齐「投递方向」的候选词面板 =====
+// 口径（与 Directions.tsx 的 .direction-suggest 面板一致）：
+//   · 无 antd 多选的青绿选中底 / 无 ✓（menuItemSelectedIcon=null）；
+//   · 每行 = 左文案 + 右侧小方按钮：已加入 = ×（点击移除）/ 未加入 = ＋（点击新增）；
+//   · 点整行即切换该关键词，与投递方向「点行=切换」一致。
+const KW_SELECT_CLASS_NAMES = { popup: { root: 'profile-kw-dropdown' } };
+const KW_NOT_FOUND = <div className="direction-suggest__empty">没有匹配的候选词，直接输入后回车即可新增</div>;
+
+const kwOptionRender = (values: string[]) => (opt: any) => {
+  const value = String(opt?.value ?? '');
+  const label = String(opt?.label ?? value);
+  const added = values.includes(value);
+  return (
+    <>
+      <span className={`profile-kw-opt__label${added ? ' is-added' : ''}`}>{label}</span>
+      <span
+        className={`direction-option__act ${added ? 'direction-option__remove' : 'direction-option__add'}`}
+        title={added ? '点击删除该关键词' : '点击添加该关键词'}
+      >
+        {added ? <CloseOutlined /> : <PlusOutlined />}
+      </span>
+    </>
+  );
+};
 
 // 打招呼语预览的测试岗位 JD（可修改，预填一份真实岗位描述便于直接体验工作台提示词的效果）
 const TEST_JOB_DESC = `职位描述
@@ -351,7 +381,7 @@ export default function Resume() {
   };
 
   return (
-    <div className="page">
+    <div className="page resume-page">
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -368,7 +398,7 @@ export default function Resume() {
           type="warning"
           showIcon
           closable
-          className="mb-12"
+          className="resume-warn-alert"
           message="解析提示"
           description={
             <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -378,18 +408,19 @@ export default function Resume() {
         />
       )}
 
-      <Row gutter={16}>
+      {/* 顶部双栏：简历原文 | 职业画像 —— 两卡等高、底边对齐 */}
+      <Row gutter={[16, 16]} className="resume-row">
         <Col xs={24} lg={12}>
-          <Card size="small" className="mb-12"
+          <Card size="small" className="resume-card"
             title={
-              <Space>
-                <span>简历原文</span>
+              <Space size={6} wrap>
+                <FileTextOutlined style={{ color: 'var(--brand)', marginRight: 6 }} />简历原文
                 {method && <Tag color="blue">{methodLabel[method] || method}</Tag>}
                 {resumeFileName && <Tag>{resumeFileName}</Tag>}
               </Space>
             }
             extra={
-              <Space>
+              <Space size={8} wrap>
                 <Button icon={<PictureOutlined />} loading={desenBusy} onClick={openDesen}
                   disabled={!text.trim()}>脱敏转图片</Button>
                 <Button onClick={() => { setResumeText(text, resumeFileName); message.success('原文已保存'); }}>保存原文</Button>
@@ -431,83 +462,20 @@ export default function Resume() {
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={text.trim() ? 18 : 6}
-              className={!text.trim() ? "mt-12" : ""}
+              className={'resume-src-input' + (text.trim() ? '' : ' resume-src-input--empty')}
               placeholder="在此粘贴简历正文，或点击右上角「重新导入」导入 PDF / DOCX / MD / TXT"
             />
           </Card>
 
-          <Card size="small" title={<Space><CommentOutlined /> AI 打招呼语提示词（工作台定制）</Space>}
-            extra={
-              <Space>
-                <Button icon={<SaveOutlined />} size="small" onClick={onSavePrompt}>保存提示词</Button>
-                <Button size="small" onClick={onResetPrompt} disabled={customPrompt === DEFAULT_ANALYZE_GREETING_INSTRUCTIONS}>恢复默认</Button>
-              </Space>
-            }>
-            <TextArea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              rows={8}
-              placeholder="在此编辑 AI 打招呼语提示词，控制生成口吻、开头格式、长度、安全红线等..."
-              style={{ fontSize: 12, lineHeight: 1.7, fontFamily: 'monospace' }}
-            />
-
-            <div style={{ marginTop: 14, borderTop: '1px dashed var(--border)', paddingTop: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <Text strong style={{ fontSize: 13 }}>打招呼语预览（测试岗位 JD）</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>按工作台提示词为指定岗位生成 1 条招呼语，与工作台真实生成一致</Text>
-              </div>
-              <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                <Input
-                  value={testJobTitle}
-                  onChange={(e) => setTestJobTitle(e.target.value)}
-                  placeholder="岗位名称，如：全栈开发实习生"
-                  maxLength={60}
-                />
-                <TextArea
-                  value={testJobDesc}
-                  onChange={(e) => setTestJobDesc(e.target.value)}
-                  rows={6}
-                  placeholder="粘贴测试岗位 JD（职位描述 / 任职要求）…"
-                  style={{ fontSize: 12, lineHeight: 1.6 }}
-                />
-              </Space>
-              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Button type="primary" icon={<ThunderboltOutlined />} loading={greetingBusy} onClick={onGeneratePreview}>生成打招呼语</Button>
-                {previewGreeting && (
-                  <>
-                    <Tag color={previewMeta?.method === 'ai' ? 'green' : 'orange'}>
-                      {previewMeta?.method === 'ai' ? 'AI 生成' : '本地兜底'}
-                    </Tag>
-                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopyGreeting(previewGreeting)}>复制</Button>
-                    <Button size="small" type="text" onClick={() => { setPreviewGreeting(''); setPreviewMeta(null); }}>清空</Button>
-                  </>
-                )}
-              </div>
-              {previewMeta?.warning && (
-                <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>{previewMeta.warning}</Text>
-              )}
-              {previewGreeting ? (
-                <div className="greeting-item" style={{ marginTop: 8 }}>
-                  <span className="greeting-index">1</span>
-                  <Text style={{ flex: 1, minWidth: 0 }}>{previewGreeting}</Text>
-                </div>
-              ) : (
-                <EmptyState
-                  title="尚未生成打招呼语预览"
-                  description="填写测试岗位 JD 后点击「生成打招呼语」，按工作台提示词生成针对该岗位的 1 条招呼语。请勿替用户承诺薪资、到岗或面试时间。"
-                />
-              )}
-            </div>
-          </Card>
         </Col>
 
         <Col xs={24} lg={12}>
           <Card
-            title="职业画像（可编辑草稿）"
+            title={<><UserOutlined style={{ color: 'var(--brand)', marginRight: 6 }} />职业画像（可编辑草稿）</>}
             size="small"
-            className="mb-12"
+            className="resume-card"
             extra={
-              <Space>
+              <Space size={8} wrap>
                 <Button type="primary" icon={<ThunderboltOutlined />} loading={busy} onClick={onGenerate}>
                   生成职业画像
                 </Button>
@@ -518,7 +486,7 @@ export default function Resume() {
             {!draft ? (
               <EmptyState
                 title="尚未生成职业画像"
-                description="导入简历后点击「提取画像」或先在工作台开启一次自动辅助。"
+                description="导入简历后点击「生成职业画像」，或先在工作台开启一次自动辅助。"
               />
             ) : (
               <Space direction="vertical" style={{ width: '100%' }} size="small">
@@ -531,6 +499,10 @@ export default function Resume() {
                   <Select
                     mode="tags"
                     style={{ width: '100%' }}
+                    classNames={KW_SELECT_CLASS_NAMES}
+                    menuItemSelectedIcon={null}
+                    optionRender={kwOptionRender(draft.primaryDirections)}
+                    notFoundContent={KW_NOT_FOUND}
                     value={draft.primaryDirections}
                     onChange={(v) => patch('primaryDirections', normalizeStringList(v, 3))}
                     placeholder="如：前端开发工程师"
@@ -541,6 +513,10 @@ export default function Resume() {
                   <Select
                     mode="tags"
                     style={{ width: '100%' }}
+                    classNames={KW_SELECT_CLASS_NAMES}
+                    menuItemSelectedIcon={null}
+                    optionRender={kwOptionRender(draft.searchKeywords)}
+                    notFoundContent={KW_NOT_FOUND}
                     value={draft.searchKeywords}
                     onChange={(v) => patch('searchKeywords', normalizeStringList(v, 12))}
                     placeholder="如：前端开发、React 开发"
@@ -549,17 +525,44 @@ export default function Resume() {
                 <Row gutter={8}>
                   <Col span={12}>
                     <span className="field-label">技能</span>
-                    <Select mode="tags" style={{ width: '100%' }} value={draft.skills} onChange={(v) => patch('skills', normalizeStringList(v, 40))} />
+                    <Select
+                      mode="tags"
+                      style={{ width: '100%' }}
+                      classNames={KW_SELECT_CLASS_NAMES}
+                      menuItemSelectedIcon={null}
+                      optionRender={kwOptionRender(draft.skills)}
+                      notFoundContent={KW_NOT_FOUND}
+                      value={draft.skills}
+                      onChange={(v) => patch('skills', normalizeStringList(v, 40))}
+                    />
                   </Col>
                   <Col span={12}>
                     <span className="field-label">城市</span>
-                    <Select mode="tags" style={{ width: '100%' }} value={draft.locations} onChange={(v) => patch('locations', normalizeStringList(v, 20))} />
+                    <Select
+                      mode="tags"
+                      style={{ width: '100%' }}
+                      classNames={KW_SELECT_CLASS_NAMES}
+                      menuItemSelectedIcon={null}
+                      optionRender={kwOptionRender(draft.locations)}
+                      notFoundContent={KW_NOT_FOUND}
+                      value={draft.locations}
+                      onChange={(v) => patch('locations', normalizeStringList(v, 20))}
+                    />
                   </Col>
                 </Row>
                 <Row gutter={8}>
                   <Col span={12}>
                     <span className="field-label">求职类型</span>
-                    <Select mode="tags" style={{ width: '100%' }} value={draft.employmentTypes} onChange={(v) => patch('employmentTypes', normalizeStringList(v, 10))} />
+                    <Select
+                      mode="tags"
+                      style={{ width: '100%' }}
+                      classNames={KW_SELECT_CLASS_NAMES}
+                      menuItemSelectedIcon={null}
+                      optionRender={kwOptionRender(draft.employmentTypes)}
+                      notFoundContent={KW_NOT_FOUND}
+                      value={draft.employmentTypes}
+                      onChange={(v) => patch('employmentTypes', normalizeStringList(v, 10))}
+                    />
                   </Col>
                   <Col span={12}>
                     <span className="field-label">学历</span>
@@ -578,7 +581,16 @@ export default function Resume() {
                 </Row>
                 <div>
                   <span className="field-label">排除方向</span>
-                  <Select mode="tags" style={{ width: '100%' }} value={draft.excludeDirections} onChange={(v) => patch('excludeDirections', normalizeStringList(v, 20))} />
+                  <Select
+                    mode="tags"
+                    style={{ width: '100%' }}
+                    classNames={KW_SELECT_CLASS_NAMES}
+                    menuItemSelectedIcon={null}
+                    optionRender={kwOptionRender(draft.excludeDirections)}
+                    notFoundContent={KW_NOT_FOUND}
+                    value={draft.excludeDirections}
+                    onChange={(v) => patch('excludeDirections', normalizeStringList(v, 20))}
+                  />
                 </div>
                 {profile?.generation && (
                   <Tag color={profile.generation.aiStatus === 'success' || profile.generation.aiStatus === 'success-after-retry' ? 'green' : 'orange'}>
@@ -590,6 +602,104 @@ export default function Resume() {
           </Card>
         </Col>
       </Row>
+
+      {/* 底部整宽区块：AI 打招呼语提示词（工作台定制）
+          独立成行 —— 窄屏（xs 单列堆叠）时必然落在「职业画像」之后，即页面最下方 */}
+      <Card
+        size="small"
+        className="resume-card resume-prompt-card"
+        title={<><CommentOutlined style={{ color: 'var(--brand)', marginRight: 6 }} />AI 打招呼语提示词（工作台定制）</>}
+      >
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}>
+            <div className="resume-block">
+              <div className="resume-block__head">
+                <span className="resume-block__title">提示词正文</span>
+                <Space size={8} wrap>
+                  <Button icon={<SaveOutlined />} size="small" onClick={onSavePrompt}>保存提示词</Button>
+                  <Button size="small" onClick={onResetPrompt} disabled={customPrompt === DEFAULT_ANALYZE_GREETING_INSTRUCTIONS}>恢复默认</Button>
+                </Space>
+              </div>
+              <TextArea
+                className="resume-prompt-ta"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                rows={10}
+                placeholder="在此编辑 AI 打招呼语提示词，控制生成口吻、开头格式、长度、安全红线等..."
+              />
+              <p className="resume-block__hint resume-hint-row">
+                <span>留空或默认值用系统内置；同步工作台 / 简历预览 / 求职信</span>
+                <Tooltip
+                  title={
+                    '留空或与默认一致（=「恢复默认」后的文本）时，生成走系统内置提示词；点「保存提示词」后同步到「工作台岗位分析」「简历中心预览」与「定制简历求职信」。'
+                    + '注意：「设置 → AI / LLM 配置 → AI 技能（Skills 层）」里的「打招呼语（工作台定制）」技能默认启用且优先生效——'
+                    + '需先关闭该技能，此处的自定义提示词才会生效。'
+                  }
+                >
+                  <span className="resume-hint-row__skill">
+                    <InfoCircleOutlined />
+                    设置里关闭该技能后生效
+                  </span>
+                </Tooltip>
+              </p>
+            </div>
+          </Col>
+
+          <Col xs={24} lg={12}>
+            <div className="resume-block">
+              <div className="resume-block__head">
+                <span className="resume-block__title">打招呼语预览（测试岗位 JD）</span>
+              </div>
+              <p className="resume-block__hint" style={{ marginTop: 0 }}>
+                按上面的提示词为指定岗位生成 1 条招呼语，与工作台真实生成完全一致。
+              </p>
+              <div className="resume-preview-form">
+                <Input
+                  value={testJobTitle}
+                  onChange={(e) => setTestJobTitle(e.target.value)}
+                  placeholder="岗位名称，如：全栈开发实习生"
+                  maxLength={60}
+                />
+                <TextArea
+                  value={testJobDesc}
+                  onChange={(e) => setTestJobDesc(e.target.value)}
+                  rows={7}
+                  placeholder="粘贴测试岗位 JD（职位描述 / 任职要求）…"
+                  style={{ fontSize: 12, lineHeight: 1.6 }}
+                />
+              </div>
+              <div className="resume-preview-actions">
+                <Button type="primary" icon={<ThunderboltOutlined />} loading={greetingBusy} onClick={onGeneratePreview}>生成打招呼语</Button>
+                {previewGreeting && (
+                  <>
+                    <Tag color={previewMeta?.method === 'ai' ? 'green' : 'orange'}>
+                      {previewMeta?.method === 'ai' ? 'AI 生成' : '本地兜底'}
+                    </Tag>
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => onCopyGreeting(previewGreeting)}>复制</Button>
+                    <Button size="small" type="text" onClick={() => { setPreviewGreeting(''); setPreviewMeta(null); }}>清空</Button>
+                  </>
+                )}
+              </div>
+              {previewMeta?.warning && (
+                <Text type="warning" className="resume-preview-warn">{previewMeta.warning}</Text>
+              )}
+              <div className="resume-preview-result">
+                {previewGreeting ? (
+                  <div className="greeting-item">
+                    <span className="greeting-index">1</span>
+                    <Text style={{ flex: 1, minWidth: 0 }}>{previewGreeting}</Text>
+                  </div>
+                ) : (
+                  <EmptyState
+                    title="尚未生成打招呼语预览"
+                    description="填写测试岗位 JD 后点击「生成打招呼语」，按工作台提示词生成针对该岗位的 1 条招呼语。请勿替用户承诺薪资、到岗或面试时间。"
+                  />
+                )}
+              </div>
+            </div>
+          </Col>
+        </Row>
+      </Card>
 
       <Spin spinning={busy} tip={busyMsg}>
         <div style={{ height: 1 }} />

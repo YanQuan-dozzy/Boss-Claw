@@ -20,6 +20,9 @@ const __dirname = path.dirname(__filename);
 const DEV_REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 export const MCP_DIR = path.resolve(__dirname, '..');
 
+/** 持久化「用户指定工作区根」的覆盖文件（纯文本一行绝对路径）；由 bossclaw_workspace 工具读写 */
+export const WORKSPACE_FILE = path.join(MCP_DIR, '.workspace-root');
+
 const isWin = process.platform === 'win32';
 
 /** 已安装打包版的候选安装根目录（含用户自定义的 F:\BOSSClaw 等）。 */
@@ -47,19 +50,119 @@ function detectInstalledRootSync() {
 }
 
 /**
- * 推导「工作区 / 项目根」：
- *   BOSSCLAW_REPO 环境变量（显式指定，优先级最高）
- *   > 已安装的打包版根目录（如 F:\BOSSClaw，含 BossClaw.exe）
- *   > 从本入口位置推导的开发仓库根（mcp/bossclaw-mcp/bin → <dev 根>）。
+ * 判断一个根目录是否为「BossClaw 工作区」及其完整度。用于自寻路径与工具展示。
+ * @returns {{root:string,type:'installed'|'dev',hasExe:boolean,packageJson:boolean,hasDesktopApp:boolean,bossclawRoot:boolean,complete:boolean}}
  */
-function resolveRepoRoot() {
-  if (process.env.BOSSCLAW_REPO) return path.resolve(process.env.BOSSCLAW_REPO);
-  const installed = detectInstalledRootSync();
-  if (installed) return installed;
+export function workspaceHealth(root) {
+  if (!root) root = '';
+  const hasExe = existsFileSync(path.join(root, 'BossClaw.exe'));
+  const hasDesktopApp = existsDirSync(path.join(root, 'desktop-app'));
+  const installedPkg = existsFileSync(path.join(root, 'resources', 'app', 'package.json'));
+  const devPkg = hasDesktopApp && existsFileSync(path.join(root, 'desktop-app', 'package.json'));
+  const bossclawRoot = existsFileSync(path.join(root, 'AGENTS.md')) || hasDesktopApp || existsDirSync(path.join(root, 'mcp'));
+  const type = hasExe ? 'installed' : 'dev';
+  const complete = hasExe ? installedPkg : devPkg;
+  return { root, type, hasExe, packageJson: hasExe ? installedPkg : devPkg, hasDesktopApp, bossclawRoot, complete };
+}
+
+/** 列出所有可被解析为工作区的候选根（安装根 + 开发仓库根），附健康度与原因。 */
+export function listWorkspaceCandidates() {
+  const roots = [...installedAppRootCandidates(), DEV_REPO_ROOT];
+  const seen = new Set();
+  const out = [];
+  for (const root of roots) {
+    if (!root || seen.has(root)) continue;
+    seen.add(root);
+    const h = workspaceHealth(root);
+    let reason;
+    if (h.type === 'installed' && !h.complete) reason = '存在 BossClaw.exe 但缺 resources/app/package.json（可能为旧副本）';
+    else if (h.complete) reason = '完整可用的工作区';
+    else if (!h.hasExe && !h.hasDesktopApp) reason = '未发现 BossClaw 标志，跳过';
+    else reason = '不完整';
+    out.push({ ...h, reason });
+  }
+  return out;
+}
+
+/**
+ * 自寻路径：在候选里优先选择「完整 bundle」的工作区。
+ *   - 优先返回「完整」的安装版（有 BossClaw.exe 且 resources/app/package.json 存在）；
+ *   - 若无完整安装版，但有完整开发仓库（desktop-app/package.json 存在）则返回开发仓库；
+ *   - 否则回退到首个安装根（保持现状兜底），最后才是开发仓库根。
+ */
+function bestWorkspaceRoot() {
+  const candidates = listWorkspaceCandidates();
+  const completeInstalled = candidates.find((c) => c.type === 'installed' && c.complete);
+  if (completeInstalled) return completeInstalled.root;
+  const completeDev = candidates.find((c) => c.type === 'dev' && c.complete);
+  if (completeDev) return completeDev.root;
+  const notBrokenInstalled = candidates.find((c) => c.type === 'installed' && !c.complete);
+  if (notBrokenInstalled) return notBrokenInstalled.root;
   return DEV_REPO_ROOT;
 }
 
+/** 读取持久化覆盖的工作区根（无有效值返回 ''）。 */
+function readWorkspaceOverride() {
+  try {
+    const p = fs.readFileSync(WORKSPACE_FILE, 'utf8').trim();
+    return p && existsDirSync(p) ? p : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 原子写入持久化覆盖（UTF-8 一行）。 */
+export function setWorkspaceOverride(root) {
+  const target = path.normalize(String(root || '').trim());
+  if (!target) return false;
+  fs.mkdirSync(MCP_DIR, { recursive: true });
+  const tmp = `${WORKSPACE_FILE}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, target, 'utf8');
+  fs.renameSync(tmp, WORKSPACE_FILE);
+  return true;
+}
+
+/** 清除持久化覆盖，返回是否成功。 */
+export function clearWorkspaceOverride() {
+  try {
+    fs.unlinkSync(WORKSPACE_FILE);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function existsFileSync(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+function existsDirSync(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 推导「工作区 / 项目根」：
+ *   BOSSCLAW_REPO 环境变量（显式指定，优先级最高）
+ *   > WORKSPACE_FILE 持久化覆盖（bossclaw_workspace 工具写入）
+ *   > bestWorkspaceRoot()（自寻路径：优先完整 bundle，避免旧安装副本）
+ *   > DEV_REPO_ROOT（最后兜底）
+ */
+function resolveRepoRoot() {
+  if (process.env.BOSSCLAW_REPO) return path.resolve(process.env.BOSSCLAW_REPO);
+  const override = readWorkspaceOverride();
+  if (override) return override;
+  return bestWorkspaceRoot();
+}
+
 export const REPO_ROOT = resolveRepoRoot();
+export const WORKSPACE_OVERRIDE_ACTIVE = Boolean(readWorkspaceOverride());
 
 /** 目标形态：installed（已安装打包版）/ dev（开发仓库）/ custom（BOSSCLAW_REPO 显式指定） */
 export const MODE = process.env.BOSSCLAW_REPO
@@ -167,9 +270,6 @@ export const PATHS = {
   electronBin: MODE === 'installed'
     ? path.join(REPO_ROOT, 'BossClaw.exe')
     : path.join(DESKTOP_DIR, 'node_modules', 'electron', 'dist', isWin ? 'electron.exe' : 'electron'),
-  tscBin: path.join(DESKTOP_DIR, 'node_modules', 'typescript', 'bin', 'tsc'),
-  viteBin: path.join(DESKTOP_DIR, 'node_modules', 'vite', 'bin', 'vite.js'),
-  checkFresh: path.join(DESKTOP_DIR, 'scripts', 'check-fresh.mjs'),
   distDir: path.join(DESKTOP_DIR, 'dist'),
   releaseDir: path.join(DESKTOP_DIR, 'release'),
   builtinSkills: path.join(DESKTOP_DIR, 'skills'),
@@ -278,8 +378,6 @@ export function sanitizedEnv(extra = {}) {
 // 进程执行
 // ===========================================================================
 
-export const NODE_BIN = process.execPath;
-
 const MAX_STREAM_BYTES = 512 * 1024;
 
 function clipStream(buf) {
@@ -368,17 +466,6 @@ export function spawnDetached(cmd, args = [], opts = {}) {
   });
   child.unref();
   return { pid: child.pid, cmd: [cmd, ...args].join(' ') };
-}
-
-export async function spawnBackground(cmd, args = [], opts = {}) {
-  const { cwd = DESKTOP_DIR, env = {} } = opts;
-  return spawn(cmd, args, {
-    cwd,
-    env: sanitizedEnv(env),
-    windowsHide: true,
-    shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
 }
 
 export function killTree(pid) {

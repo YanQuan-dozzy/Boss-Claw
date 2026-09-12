@@ -146,6 +146,27 @@ function matchCount(source: string, pattern: RegExp): number {
   return matched ? matched.length : 0;
 }
 
+// 术语命中：ASCII 词用词边界（避免 Java 误命中 JavaScript），中文用子串
+function termHit(term: string, text: string): boolean {
+  const t = String(term || '').trim().toLowerCase();
+  const source = String(text || '').toLowerCase();
+  if (!t) return false;
+  if (/^[\x00-\x7F]+$/.test(t)) {
+    return new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(source);
+  }
+  return source.includes(t);
+}
+
+// 关键字文档加权：统计该方向 relevantSkills + keywords 在简历/技能中的命中数（keyword 文档驱动方向置信）
+function countKeywordHits(source: string, skills: string[], rule: any): number {
+  const terms = [...(rule?.relevantSkills || []), ...(rule?.keywords || [])];
+  let count = 0;
+  for (const term of terms) {
+    if (termHit(term, source) || termHit(term, skills.join(' '))) count += 1;
+  }
+  return count;
+}
+
 export function inferDirections(text: string, skills: string[]): string[] {
   const source = cleanResumeText(text);
   const student = isStudentResume(source);
@@ -198,12 +219,14 @@ export function inferDirections(text: string, skills: string[]): string[] {
     scored.push({ name: techName('data-viz'), score: 55 });
   }
 
-  // 通用/其他行业方向：只按目录关键词命中打分（相关技能仅用于证据展示，不参与打分，避免共享技能误触发）
+  // 通用/其他行业方向：先按 test 命中门控，再叠加「keywords/relevantSkills 文档命中」加权，
+  // 使本地方向生成更精细、更依赖关键字目录（单一数据源驱动）。技能仅用于证据展示不直接打分。
   for (const rule of DIRECTION_RULES) {
     if (rule.tech) continue;
     const hits = matchCount(source, rule.test);
     if (hits <= 0) continue;
-    scored.push({ name: student ? rule.internName : rule.name, score: 30 + Math.min(hits, 6) * 8 });
+    const keywordHits = countKeywordHits(source, skills, rule);
+    scored.push({ name: student ? rule.internName : rule.name, score: 30 + Math.min(hits, 6) * 8 + Math.min(keywordHits, 5) * 4 });
   }
 
   // 按分数降序，去重后取前 3

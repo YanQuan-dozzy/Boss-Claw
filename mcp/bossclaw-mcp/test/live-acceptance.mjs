@@ -127,20 +127,14 @@ try {
   );
   record('  └ 识别到控制桥', !!info.data?.appRuntime?.controlBridge && !info.data.appRuntime.controlBridge.stale, `port=${info.data?.appRuntime?.controlBridge?.port}`);
 
-  const fresh = await tool('bossclaw_check_fresh');
-  record('bossclaw_check_fresh', !fresh.isError, fresh.text.split('\n')[0].slice(0, 80));
+  const fresh = await tool('bossclaw_state_summary');
+  record('bossclaw_state_summary', !fresh.isError, fresh.text.split('\n')[0].slice(0, 80));
 
   const search = await tool('bossclaw_search', { pattern: 'resolveEnablement', glob: 'cjs', subdir: 'desktop-app/electron', maxResults: 5 });
   record('bossclaw_search', !search.isError && (search.data?.hits?.length || 0) > 0, `命中 ${search.data?.hits?.length} 行`);
 
   const read = await tool('bossclaw_read_file', { path: 'desktop-app/electron/main.cjs', offset: 1, limit: 4 });
   record('bossclaw_read_file', !read.isError, read.text.split('\n')[0].slice(0, 90));
-
-  const ipc = await tool('bossclaw_ipc_surface', { channel: 'jc:cloak' });
-  record('bossclaw_ipc_surface', !ipc.isError, ipc.text.split('\n')[0].slice(0, 90));
-
-  const git = await tool('bossclaw_git', { action: 'log', maxCount: 3 });
-  record('bossclaw_git', !git.isError, (git.text.split('\n')[2] || '').slice(0, 80));
 
   // ---- 4) 运行态（真实应用）----
   const st = await tool('bossclaw_app_status');

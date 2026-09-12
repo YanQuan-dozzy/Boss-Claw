@@ -50,6 +50,34 @@ const RENDERER_ACTIONS = [
   'deliverySetMode',
   'deliveryDraft',
   'deliverySendNow',
+  // A. 通用 UI 接管（app / webview）
+  'uiSnapshot',
+  'uiClick',
+  'uiType',
+  'uiSubmit',
+  'uiScroll',
+  'uiWait',
+  // B. 自动沟通引擎接管
+  'autochatStart',
+  'autochatStop',
+  'autochatStep',
+  'autochatStatus',
+  // C. 完整数据读取
+  'appDataFull',
+  // D. 队列与任务深度接管
+  'pendingApprove',
+  'pendingReject',
+  'pendingRerank',
+  'pendingPromote',
+  'pendingRemove',
+  'taskStage',
+  // E. 模块级控制（简历中心 / 定制简历 / 投递方向 / 任务进度）
+  'profileRebuild',
+  'greetingsAppend',
+  'resumeTailor',
+  'directionPlanRebuild',
+  'directionItem',
+  'tasksGenerate',
 ];
 
 /** 主进程侧动作（electron/control-bridge.cjs） */
@@ -160,6 +188,15 @@ export const controlTools = [
       'browserReadPage{tabId?}｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
       '  - 投递：deliverySetMode{mode:"auto"|"review"}｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
       'deliverySendNow{greeting?}（仅 executionMode==\'auto\' 且复用安全引擎）\n' +
+      '  - 通用 UI 接管（scope:"app" 操作应用界面 / "webview" 操作右栏 BOSS 页；禁止任意脚本与跳转）：uiSnapshot{scope?,selector?,limit?}｜' +
+      'uiClick{scope?,selector?,label?,index?}｜uiType{scope?,selector?/into?,value,clear?}（contenteditable 聊天框请用 deliveryDraft）｜' +
+      'uiSubmit{scope?,selector?}｜uiScroll{scope?,selector?,dy?,to?:top|bottom}｜uiWait{ms?|selector?,timeoutMs?}\n' +
+      '  - 自动沟通引擎：autochatStart{platforms?,maxCount?}（受冷却/每日上限保护）｜autochatStop｜autochatStep{id?}（单步，含冷却/上限/招呼语守卫）｜autochatStatus\n' +
+      '  - 完整数据读取：appDataFull{sections?,maxPending?,maxLogs?}（sections 见描述；不含 base64）\n' +
+      '  - 队列与任务：pendingApprove{id|ids} / pendingReject{id|ids} / pendingRerank / pendingPromote{ids?}（只升 approved→approved_queue）/ pendingRemove{id} / taskStage{id,direct:next|prev|阶段}（不改 status 为 success）\n' +
+      '  - 模块级（简历中心/定制简历/方向/任务）：profileRebuild{ }（重建职业画像）｜' +
+      'resumeTailor{job, saveTo?:none|greetings|resume}（定制简历；saveTo 缺省 none 仅返回不落盘，resume 会追加定制章节到简历）｜' +
+      'greetingsAppend{items}｜directionPlanRebuild{ }｜directionItem{id,patch{enabled?,priority?}}｜tasksGenerate{ }（按方向重建任务卡片，不投递）\n' +
       '主进程动作：focusWindow / minimize / maximize / windowState / reloadRenderer / openDevTools / screenshot: {}',
     annotations: WRITE_LOCAL,
     inputSchema: obj(

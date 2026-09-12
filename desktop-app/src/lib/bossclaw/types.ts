@@ -155,6 +155,12 @@ export interface ProfileFacts {
   projects: string[];
   skills: string[];
   certificates: string[];
+  /**
+   * 细粒度能力清单（用于投递方向缺口/匹配技能的精确比对）：
+   * 把简历里的能力按「能力名 + 细分」展开，如 `数据库(PostgreSQL/MySQL)`、`SQL 调优`、
+   * `索引设计`、`事务处理`、`pgvector 向量检索`。AI 画像生成时产出，本地规则兜底推导。
+   */
+  capabilities: string[];
 }
 
 export interface PrimaryDirection {

@@ -31,6 +31,62 @@ function explainProfileFallbackReason(reason = '', kind = ''): string {
   return 'AI 连接可用，但返回内容未通过完整性校验；系统已自动精简重试，仍未成功，因此本次初稿全部来自本地规则。';
 }
 
+// 常见能力细分词（用于从「能力名：…」描述行中提炼可操作的具体能力；确定性，非 AI）
+const CAPABILITY_SUB_KEYWORDS: Array<[RegExp, string]> = [
+  [/pgvector|向量检索/i, 'pgvector'],
+  [/索引/i, '索引设计'],
+  [/事务/i, '事务处理'],
+  [/\bACID\b|隔离级别|锁/i, '事务一致性'],
+  [/调优|优化|explain|执行计划/i, '性能调优'],
+  [/sql/i, 'SQL'],
+  [/缓存|redis/i, '缓存'],
+  [/并发|多线程|协程|异步/i, '并发/异步'],
+  [/分布式|微服务|rpc|消息队列/i, '分布式/微服务'],
+  [/容器|docker|k8s|kubernetes/i, '容器化'],
+  [/部署|发布|ci\/cd|jenkins/i, '部署/CI/CD'],
+  [/监控|告警|日志/i, '监控运维'],
+  [/安全|注入|越权|加密/i, '安全'],
+  [/测试|单测|集成测试/i, '测试'],
+];
+
+// 从能力描述片段中提炼细分子能力 token（技能目录命中 + 常见细分词）
+function extractCapabilityTokens(rest: string): string[] {
+  const tokens: string[] = [];
+  for (const [re, name] of CAPABILITY_SUB_KEYWORDS) {
+    if (re.test(rest)) tokens.push(name);
+  }
+  for (const s of extractSkills(rest)) tokens.push(s);
+  return [...new Set(tokens)];
+}
+
+// 本地兜底推导细粒度能力清单（AI 不可用时仍可用）：
+// 优先取简历里「能力名：…」这类能力化表述行（如「数据库：熟练 PostgreSQL/MySQL…」），
+// 提炼为「能力名(细分/细分)」；无结构化能力行时退化为规范技能名。只引用简历事实。
+function extractFineGrainedCapabilities(text: string, skills: string[]): string[] {
+  const lines = cleanResumeText(text)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 4 && line.length <= 160);
+  const caps: string[] = [];
+  for (const line of lines) {
+    if (isHeadingLine(line)) continue;
+    if (!/[:：]/.test(line)) continue;
+    const idx = line.search(/[:：]/);
+    const name = line.slice(0, idx).trim().replace(/[、，,.;。\s]+$/, '').slice(0, 12);
+    if (name.length < 2) continue;
+    const rest = line.slice(idx + 1).trim();
+    if (!rest) continue;
+    const subs = rest.length <= 40 ? extractCapabilityTokens(name) : [];
+    const detail = extractCapabilityTokens(rest);
+    const combined = [...subs, ...detail];
+    if (combined.length) caps.push(`${name}(${combined.join('/')})`);
+    else caps.push(name);
+  }
+  const result = uniq(caps);
+  if (!result.length) return uniq(skills).slice(0, 25);
+  return result.slice(0, 25);
+}
+
 export function validateGeneratedProfile(profile: any): any {
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
     throw new AIError('AI_PROFILE_INCOMPLETE', 'AI 画像字段不完整');
@@ -101,10 +157,11 @@ export function buildLocalProfile(resumeText: string, reason = '', failureKind =
       8
     )
   );
+  const capabilities = extractFineGrainedCapabilities(text, skills);
   const resolvedKind = failureKind || (reason ? aiFailureKind({ message: reason }) : 'not-requested');
 
   return normalizeProfile({
-    facts: { education, experiences, projects, skills, certificates },
+    facts: { education, experiences, projects, skills, capabilities, certificates },
     primaryDirections: primaryDirections.map((name) => ({ name, confidence: 0.72, evidence: ['根据简历中的技能、项目和求职阶段生成'] })),
     secondaryDirections: [],
     searchKeywords,
@@ -206,6 +263,10 @@ export function mergeProfileWithFallback(aiProfile: any, fallbackProfile: Profil
   const primaryDirections = mergeDirections(ai.primaryDirections, fallbackProfile.primaryDirections, student);
   const searchKeywords = mergeSearchKeywords(ai.searchKeywords, fallbackProfile.searchKeywords, primaryDirections, fallbackFacts.skills || []);
   const skills = mergeSkills(aiFacts.skills, fallbackFacts.skills || []);
+  // 细粒度能力：AI 非空优先，空则回退本地（AI 抽取更智能，本地为确定性兜底）
+  const capabilities = normalizeStringList(aiFacts.capabilities, 30).length
+    ? normalizeStringList(aiFacts.capabilities, 30)
+    : normalizeStringList(fallbackFacts.capabilities, 30);
   const locations = uniq([...fallbackHard.locations, ...normalizeStringList(hard.locations, 20)]).slice(0, 6);
   const employmentTypes = uniq([...fallbackHard.employmentTypes, ...normalizeStringList(hard.employmentTypes, 10)]).slice(0, 4);
 
@@ -219,6 +280,7 @@ export function mergeProfileWithFallback(aiProfile: any, fallbackProfile: Profil
       experiences: Array.isArray(aiFacts.experiences) && aiFacts.experiences.length ? aiFacts.experiences : fallbackFacts.experiences,
       projects: Array.isArray(aiFacts.projects) && aiFacts.projects.length ? aiFacts.projects : fallbackFacts.projects,
       skills,
+      capabilities,
       certificates: Array.isArray(aiFacts.certificates) && aiFacts.certificates.length ? aiFacts.certificates : fallbackFacts.certificates,
     },
     primaryDirections,
@@ -344,6 +406,7 @@ export function normalizeProfile(incoming: any, current: any = null): Profile {
       ...(base.facts || {}),
       ...(next.facts || {}),
       skills: normalizeStringList(next.facts?.skills ?? base.facts?.skills, 40),
+      capabilities: normalizeStringList(next.facts?.capabilities ?? base.facts?.capabilities, 30),
     },
     primaryDirections: normalizeDirections(next.primaryDirections ?? base.primaryDirections, base.primaryDirections),
     secondaryDirections: normalizeStringList(next.secondaryDirections ?? base.secondaryDirections, 10),

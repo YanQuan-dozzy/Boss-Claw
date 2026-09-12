@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Checkbox, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select } from 'antd';
+import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   DownOutlined, RightOutlined, StopOutlined, UndoOutlined, ThunderboltOutlined,
@@ -1839,10 +1839,17 @@ export default function Workbench() {
             options={WB_FILTERS.map((f) => ({ value: f.key, label: f.label }))}
           />
           <div className="wb-filter-toolbar">
-            <label className="wb-filter-toolbar__left">
-              <Checkbox checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)} />
-              <span className="wb-toolbar-checkline-label">显示已忽略/跳过</span>
-            </label>
+            <button
+              type="button"
+              className={`wb-ignored-toggle${showIgnored ? ' is-on' : ''}`}
+              aria-pressed={showIgnored}
+              onClick={() => setShowIgnored((v) => !v)}
+            >
+              <span className="wb-ignored-toggle__text">显示已忽略/跳过</span>
+              <span className="wb-ignored-toggle__switch" aria-hidden>
+                <span className="wb-ignored-toggle__knob" />
+              </span>
+            </button>
             <div className="wb-filter-toolbar__right">
               <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!pending.some((p) => p.status === 'approved')}>一键投递</Button>
               <Button size="small" icon={<CheckOutlined />} onClick={onApproveAll}>批量确认</Button>

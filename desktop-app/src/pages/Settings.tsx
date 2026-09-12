@@ -1840,10 +1840,18 @@ export default function Settings() {
                 </div>
                 达标岗位导出
               </div>
+              {qualifiedJobsDir ? <Tag color="green">已设置导出目录</Tag> : <Tag>未设置导出目录</Tag>}
             </div>
-            {qualifiedJobsDir ? <Tag color="green">已设置导出目录</Tag> : <Tag>默认弹出保存框</Tag>}
-            <div className="data-actions setting-actions">
+            <div className="setting-actions">
               <Space size={12} wrap>
+                <Button
+                  size="middle"
+                  className="btn-uniform"
+                  icon={<FolderOpenOutlined />}
+                  onClick={onPickQualifiedJobsDir}
+                >
+                  选择导出文件夹
+                </Button>
                 <Button
                   size="middle"
                   className="btn-uniform"
@@ -1853,21 +1861,18 @@ export default function Settings() {
                 >
                   保存达标岗位到本地
                 </Button>
-                <Button
-                  size="middle"
-                  className="btn-uniform"
-                  icon={<FolderOpenOutlined />}
-                  onClick={onPickQualifiedJobsDir}
-                >
-                  选择导出文件夹
-                </Button>
               </Space>
             </div>
-            <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
-              {qualifiedJobsDir
-                ? `导出目录：${qualifiedJobsDir}`
-                : '未设置导出目录：点击保存时弹出系统对话框自主选择保存位置。'}
-              从工作台岗位队列中，把分析评分≥最低分（minScore）的达标岗位写入本地磁盘。每个自然日一个文件（bossclaw-qualified-jobs-YYYY-MM-DD.json）；同一天重复点击只追新增并去重，当日数据累积完整，不跨天重算、不删除。
+            <Paragraph
+              type="secondary"
+              style={{ marginTop: 14, marginBottom: 0, fontSize: 13,
+                wordBreak: 'break-all', fontFamily: 'monospace' }}
+            >
+              当前导出目录：{qualifiedJobsDir || '（未设置，保存时弹出系统对话框选择）'}
+            </Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0, fontSize: 13 }}>
+              从工作台岗位队列中，把分析评分<strong>≥ 最低分（minScore）</strong>的达标岗位写入本地磁盘。
+              每个自然日一个文件（bossclaw-qualified-jobs-YYYY-MM-DD.json）；同一天重复点击只追新增并去重，当日数据累积完整，不跨天重算、不删除。
             </Paragraph>
           </div>
 

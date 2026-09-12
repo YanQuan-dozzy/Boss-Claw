@@ -5,13 +5,9 @@
 // 维护约定：AGENTS.md 或关键约定变更时同步更新本文件。
 export const CONVENTIONS = {
   commands: {
-    dev: 'npm run dev（仅 Vite 渲染层，5173 strictPort）',
-    devElectron: 'npm run dev:electron（vite build + electron . --dev）',
-    typecheck: 'node node_modules/typescript/bin/tsc -b --pretty',
-    build: 'node node_modules/vite/bin/vite.js build',
-    start: 'node_modules/electron/dist/electron.exe .（或 start-bossclaw.cmd）',
-    package: 'npm run package（electron-builder --win，输出 release/）',
-    verify: 'typecheck → build',
+    start: '启动推广版本：F:\\BOSSClaw\\BossClaw.exe（或 start-bossclaw.cmd）',
+    startBridge: '本地启动器 start-bossclaw.cmd 默认开启控制桥（--no-agent 关闭）',
+    env: 'BOSSCLAW_CONTROL=1 环境变量或 --control-bridge 开关开启控制桥',
   },
   sandboxTraps: [
     '沙箱会注入 NODE_OPTIONS / ELECTRON_RUN_AS_NODE / PYTHONPATH，必须清掉后再启动 Electron 与 tsc/vite（本 MCP 已自动清理）。',
@@ -71,9 +67,8 @@ export const REFERENCE_PROJECTS = [
 ];
 
 export const OPERATING_LOOP = [
-  '1) 先 bossclaw_guidelines 读约束（AGENTS.md + 不变量），再 bossclaw_project_info 建立全局认知。',
-  '2) 定位代码用 bossclaw_search / bossclaw_read_file；跨进程结构用 bossclaw_ipc_surface。',
-  '3) 改完必须 bossclaw_verify（typecheck + build）；UI/行为改动追加 bossclaw_smoke 确认能起来。',
-  '4) 要观察或驱动运行中的应用：bossclaw_app_start（自动开控制桥）→ bossclaw_app_state（看实时状态）→ bossclaw_app_action（白名单动作）。',
-  '5) 排查现场：bossclaw_logs（app/render/webview 三类日志）+ bossclaw_state_summary（任务与安全状态）。',
+  '1) 先 bossclaw_guidelines 读约束与安全不变量，再 bossclaw_project_info 建立对已安装应用（如 F:\\BOSSClaw）的总览。',
+  '2) 定位/理解应用用 bossclaw_list_dir / bossclaw_read_file / bossclaw_search（仅在安装包或显式指定的工作区根内）。',
+  '3) 要观察或驱动运行中的应用：bossclaw_app_start（默认开控制桥）→ bossclaw_app_state（实时状态）→ bossclaw_app_action（白名单动作）。',
+  '4) 排查现场：bossclaw_logs（app/render/webview）+ bossclaw_state_summary（任务与安全状态）。',
 ];

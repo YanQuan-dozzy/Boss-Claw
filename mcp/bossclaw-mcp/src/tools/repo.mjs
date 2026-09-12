@@ -1,13 +1,14 @@
-// src/tools/repo.mjs —— 项目认知工具组（只读）
+// src/tools/repo.mjs —— 应用认知工具组（只读）
 // ---------------------------------------------------------------------------
-// 让 agent 在动手前建立准确的项目认知：约束手册、目录与文件、正则检索、git 只读查询、
-// IPC 拓扑、以及项目级元信息汇总。
+// 让 agent 动手前建立对已安装 BossClaw 应用（如 F:\BOSSClaw）的认知：约束手册、
+// 目录与文件、正则检索、以及应用级元信息汇总。
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import {
   PATHS,
   REPO_ROOT,
   DESKTOP_DIR,
+  MODE,
   resolveInRepo,
   walkFiles,
   readTextSafe,
@@ -15,15 +16,12 @@ import {
   statSafe,
   humanBytes,
   relToRepo,
-  truncate,
   ok,
   fail,
   DEFAULT_IGNORES,
   readSnapshot,
-  stateOf,
-  run,
 } from '../context.mjs';
-import { obj, str, num, bool, arr, enumStr, READ_ONLY } from '../schema.mjs';
+import { obj, str, num, bool, arr, READ_ONLY } from '../schema.mjs';
 import { CONVENTIONS, REQUIRED_READING, REFERENCE_PROJECTS, OPERATING_LOOP } from '../knowledge.mjs';
 import { listBossclawProcesses } from '../procs.mjs';
 
@@ -100,7 +98,7 @@ export const repoTools = [
           distExists: dist.exists,
           distMtime: dist.mtime,
           indexHtmlMtime: indexHtml.mtime,
-          staleHint: dist.exists && indexHtml.exists ? 'dist 比 src 新才算新鲜；改源码后需重新 bossclaw_build' : '尚未构建，请先 bossclaw_build',
+          staleHint: dist.exists && indexHtml.exists ? 'dist 比 src 新才算新鲜；改源码后需重新构建' : '尚未构建',
         },
         release: { dir: PATHS.releaseDir, artifacts: releases.slice(0, 8) },
         appRuntime: {
@@ -176,6 +174,13 @@ export const repoTools = [
       for (const l of OPERATING_LOOP) parts.push(`- ${l}`);
 
       parts.push('', '## 必读文档索引');
+      const isInstalled = MODE === 'installed';
+      if (isInstalled) {
+        parts.push(
+          `- 当前为「已安装打包版」模式（${REPO_ROOT}），不含开发仓库的 AGENTS.md / docs 文档，故不返回其全文。`,
+          '  以下开发文档仅在开发仓库（BOSSCLAW_REPO 显式指定）下可见：'
+        );
+      }
       for (const r of REQUIRED_READING) {
         const st = await statSafe(path.join(REPO_ROOT, r.path));
         parts.push(`- ${st.exists ? '✓' : '✗'} ${r.path}（${humanBytes(st.size)}，${st.mtime || '-'}）—— ${r.why}`);
@@ -186,7 +191,7 @@ export const repoTools = [
         parts.push(`- ${st.exists ? '✓' : '✗'} ${r.path} —— ${r.why}`);
       }
 
-      if (includeFull) {
+      if (includeFull && !isInstalled) {
         const agents = await readTextSafe(path.join(REPO_ROOT, 'AGENTS.md'), 256 * 1024).catch(() => ({ text: '', truncated: false }));
         parts.push('', '---', '', '# AGENTS.md 全文', '', agents.text || '(未找到 AGENTS.md)');
         data.agentsMd = agents.text;
@@ -377,97 +382,6 @@ export const repoTools = [
         for (const h of hits) lines.push(`${h.file}:${h.line}: ${h.text}`);
       }
       return ok(lines.join('\n'), { hits, files: fileSummary, scanned, truncated: hits.length >= maxResults });
-    },
-  },
-
-  {
-    name: 'bossclaw_git',
-    title: 'Git 只读查询',
-    description: '仓库 git 只读操作：status / log / diff / show / branch。用于了解未提交改动与近期提交，改代码前先看 status 很重要。',
-    annotations: READ_ONLY,
-    inputSchema: obj(
-      {
-        action: enumStr('操作类型', ['status', 'log', 'diff', 'show', 'branch']),
-        path: str('限定路径（status/diff 用，相对仓库根）'),
-        maxCount: num('log 的提交条数（默认 15）', { default: 15 }),
-        staged: bool('diff 是否看暂存区（--cached，默认 false）', { default: false }),
-        stat: bool('diff/log 是否只看统计（默认 status 时 true，其余 false）', { default: false }),
-      },
-      ['action']
-    ),
-    handler: async (args) => {
-      const p = args.path ? ['--', args.path] : [];
-      let argv;
-      switch (args.action) {
-        case 'status':
-          argv = ['status', '--short', '--branch'];
-          break;
-        case 'log':
-          argv = ['log', `-n${Math.min(Math.max(Number(args.maxCount) || 15, 1), 100)}`, '--date=iso', '--pretty=format:%h %ad %an %s'];
-          if (args.stat) argv.push('--stat');
-          break;
-        case 'diff':
-          argv = ['diff', ...(args.staged ? ['--cached'] : []), ...(args.stat ? ['--stat'] : []), ...p];
-          break;
-        case 'show':
-          argv = ['show', '--stat', ...p];
-          break;
-        case 'branch':
-          argv = ['branch', '-vv', '--all'];
-          break;
-        default:
-          return fail(`不支持的 action：${args.action}`);
-      }
-      const res = await run('git', argv, { cwd: REPO_ROOT, timeoutMs: 60_000 });
-      if (!res.ok && !res.stdout) return fail(`git ${args.action} 失败：${res.stderr || res.code}`, res);
-      return ok(`git ${res.cmd.replace(/^git\s/, '')}\n\n${truncate(res.stdout || res.stderr, 16000)}`, {
-        action: args.action,
-        code: res.code,
-        output: res.stdout,
-      });
-    },
-  },
-
-  {
-    name: 'bossclaw_ipc_surface',
-    title: 'IPC 通道拓扑',
-    description:
-      '扫描源码汇总 Electron IPC 拓扑：主进程 handle/on 通道、主窗口 preload 暴露的调用、webview preload 通道。' +
-      '改主进程/渲染层联调前用它确认通道名与两端是否配对。',
-    annotations: READ_ONLY,
-    inputSchema: obj({
-      channel: str('只显示名字包含该子串的通道（如 "cloak"）'),
-    }),
-    handler: async (args = {}) => {
-      const targets = [
-        { label: '主进程 ipcMain.handle', file: path.join(DESKTOP_DIR, 'electron', 'main.cjs'), re: /ipcMain\.handle\(\s*'([^']+)'/g },
-        { label: '主进程 ipcMain.on', file: path.join(DESKTOP_DIR, 'electron', 'main.cjs'), re: /ipcMain\.on\(\s*'([^']+)'/g },
-        { label: 'preload(app) invoke', file: path.join(DESKTOP_DIR, 'electron', 'preload', 'app.cjs'), re: /ipcRenderer\.invoke\(\s*'([^']+)'/g },
-        { label: 'preload(app) send', file: path.join(DESKTOP_DIR, 'electron', 'preload', 'app.cjs'), re: /ipcRenderer\.send\(\s*'([^']+)'/g },
-        { label: 'preload(app) on', file: path.join(DESKTOP_DIR, 'electron', 'preload', 'app.cjs'), re: /ipcRenderer\.on\(\s*'([^']+)'/g },
-        { label: 'preload(webview) sendToHost', file: path.join(DESKTOP_DIR, 'electron', 'preload', 'webview.cjs'), re: /sendToHost\(\s*'([^']+)'/g },
-        { label: '主进程 → webview send', file: path.join(DESKTOP_DIR, 'electron', 'main.cjs'), re: /webContents\.send\(\s*'([^']+)'/g },
-      ];
-      const filter = args.channel ? String(args.channel) : '';
-      const groups = [];
-      for (const t of targets) {
-        const txt = await readTextSafe(t.file, 8 * 1024 * 1024).catch(() => ({ text: '' }));
-        const found = [...txt.text.matchAll(t.re)].map((m) => m[1]).filter((c) => !filter || c.includes(filter));
-        groups.push({ label: t.label, file: relToRepo(t.file), channels: [...new Set(found)].sort() });
-      }
-      const lines = ['# IPC 拓扑', ''];
-      for (const g of groups) {
-        lines.push(`## ${g.label}（${g.channels.length}）— ${g.file}`);
-        lines.push(g.channels.length ? g.channels.map((c) => `  ${c}`).join('\n') : '  (无)');
-        lines.push('');
-      }
-      const mainHandled = new Set(groups.filter((g) => g.label.startsWith('主进程')).flatMap((g) => g.channels));
-      const preloadUsed = new Set(groups.filter((g) => g.label.startsWith('preload')).flatMap((g) => g.channels));
-      // preload 侧调用了、但主进程未见对应 handle/on —— 典型的「单边改动」缺口
-      const missing = [...preloadUsed].filter((c) => !mainHandled.has(c));
-      lines.push('## 配对提示');
-      lines.push(missing.length ? `  preload 调用了但主进程未见对应处理：${missing.join(', ')}` : '  preload 调用与主进程处理未发现明显缺口');
-      return ok(lines.join('\n'), { groups, missingFromMain: missing });
     },
   },
 ];
