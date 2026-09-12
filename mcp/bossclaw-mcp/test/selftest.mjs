@@ -1,14 +1,13 @@
 // test/selftest.mjs —— MCP 协议自检
 // 以真实子进程方式启动服务，完成 initialize / tools/list / tools/call 握手，
 // 并对若干只读工具做实际调用，验证服务可用。
-// 用法：node test/selftest.mjs [--all]
+// 用法：node test/selftest.mjs
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '..', 'bin', 'bossclaw-mcp.mjs');
-const runAll = process.argv.includes('--all');
 
 const spawnEnv = process.env.BOSSCLAW_REPO
   ? { ...process.env }
@@ -105,23 +104,20 @@ try {
   // 4) 只读工具实测
   const readOnlySamples = [
     ['bossclaw_project_info', {}],
-    ['bossclaw_check_fresh', {}],
     ['bossclaw_app_status', {}],
     ['bossclaw_state_summary', {}],
     ['bossclaw_engine_status', {}],
     ['bossclaw_search', { pattern: 'SAFETY_LIMITS', glob: 'ts', subdir: 'desktop-app/src', maxResults: 5 }],
     ['bossclaw_list_dir', { path: 'desktop-app/src/store', depth: 1 }],
     ['bossclaw_read_file', { path: 'desktop-app/package.json', limit: 5 }],
-    ['bossclaw_git', { action: 'status' }],
-    ['bossclaw_ipc_surface', { channel: 'jc:cloak' }],
     ['bossclaw_state_read', { key: 'bossclaw-app', mode: 'summary' }],
     ['bossclaw_logs', { target: 'app', lines: 3 }],
-    ['bossclaw_job', { action: 'list' }],
+    ['bossclaw_workspace', { action: 'list' }],
     ['bossclaw_app_state', {}],
     ['bossclaw_app_action', { action: 'navigate', params: { route: 'home' } }],
   ];
   const CONTROl_DEPENDENT = ['bossclaw_app_state', 'bossclaw_app_action', 'bossclaw_app_status'];
-  for (const [name, args] of runAll ? readOnlySamples : readOnlySamples.filter(([n]) => !['bossclaw_git'].includes(n))) {
+  for (const [name, args] of readOnlySamples) {
     const res = await rpc('tools/call', { name, arguments: args });
     const text = res.result?.content?.[0]?.text || '';
     const isError = res.result?.isError === true;

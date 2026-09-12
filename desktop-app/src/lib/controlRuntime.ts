@@ -14,12 +14,28 @@ import { useScheduleStore } from '@/store/useScheduleStore';
 import { useAutoChatStore } from '@/store/useAutoChatStore';
 import { writeLocalBackup, restoreFromLocalBackup } from '@/lib/localBackup';
 import { electronApi } from '@/lib/electronApi';
-import { PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
-import { SAFETY_LIMITS } from '@/lib/bossclaw/safety';
+import { PLATFORM_IDS, platformEnabled, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { SAFETY_LIMITS, isLockedOut, effectiveDailyCap, dailySentCount, cooldownRemaining } from '@/lib/bossclaw/safety';
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { tailorForJob } from '@/lib/bossclaw/jobAssistant';
+import { buildProfile } from '@/lib/bossclaw/profile';
+import { buildDirectionPlan } from '@/lib/bossclaw/directions';
+import { createTasks } from '@/lib/bossclaw/tasks';
+import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
+import { TASK_STAGE_META, TERMINAL_RUN_STATUSES, taskStageMetaFor } from '@/lib/bossclaw/taskState';
+import { isDeliveryClaimed } from '@/lib/bossclaw/deliveryLock';
 import { getBrowser } from '@/lib/browserRegistry';
-import type { JobMeta, Profile, PendingItem, TaskRun } from '@/lib/bossclaw/types';
+import {
+  queryInteractive,
+  snapshotInteractive,
+  clickElement,
+  typeInto,
+  submitBy,
+  scrollElement,
+  waitFor,
+  waitForSelector,
+} from '@/lib/uiOps';
+import type { JobMeta, Profile, PendingItem, TaskRun, TaskStage, PendingStatus, DirectionPlan } from '@/lib/bossclaw/types';
 import type { ScheduleEntry } from '@/store/useScheduleStore';
 
 interface ControlOp {
@@ -439,6 +455,362 @@ const handlers: Record<string, Handler> = {
     const out = await b.sendApply(greeting !== undefined ? { greeting: String(greeting) } : {});
     return { applied: out.ok, message: out.ok ? (out.hint || '已触发自动投递') : (out.reason || '触发失败'), next: out };
   },
+
+  // ===== A. 通用 UI 接管（scope: app → document；webview → browser.uiExec）=====
+  uiSnapshot: async ({ scope, selector, limit }) => {
+    if (scope === 'webview') {
+      const b = getBrowser();
+      if (!b) return { applied: false, message: 'webview 引擎不可用' };
+      const res = await b.uiExec('query', { selector, limit });
+      if (!res?.ok) return { applied: false, message: res?.result?.error || res?.error || '页面查询失败', next: res?.result };
+      const elements = res.result?.elements || res.result || [];
+      return { applied: true, message: 'webview 交互元素快照', next: { elements, count: elements?.length || 0 } };
+    }
+    const elements = snapshotInteractive(document, selector ? String(selector) : undefined, Number(limit) || undefined);
+    return { applied: true, message: '应用界面交互元素快照', next: { elements, count: elements.length } };
+  },
+
+  uiClick: async ({ scope, selector, label, index }) => {
+    if (scope === 'webview') {
+      const b = getBrowser();
+      if (!b) return { applied: false, message: 'webview 引擎不可用' };
+      const res = await b.uiExec('click', { selector, label, index });
+      if (!res?.ok) return { applied: false, message: res?.result?.error || res?.error || '点击失败', next: res?.result };
+      return { applied: true, message: '已在 webview 点击元素', next: res.result };
+    }
+    const el = queryInteractive(selector ? String(selector) : undefined, label ? String(label) : undefined, Number(index) || 0);
+    if (!el) return { applied: false, message: `未命中可见元素${selector ? `：${selector}` : '（无候选）'}` };
+    clickElement(el);
+    return { applied: true, message: '已点击元素', previous: { selector: selector || null }, next: { clicked: true } };
+  },
+
+  uiType: async ({ scope, selector, into, label, index, value, clear }) => {
+    const targetSel = String(into || selector || '');
+    const v = String(value ?? '');
+    if (!targetSel) return { applied: false, message: '需要 selector/into 指定输入框' };
+    if (scope === 'webview') {
+      const b = getBrowser();
+      if (!b) return { applied: false, message: 'webview 引擎不可用' };
+      const res = await b.uiExec('type', { selector: targetSel, label, index, value: v, clear: !!clear });
+      if (!res?.ok) return { applied: false, message: res?.result?.error || res?.error || '输入失败', next: res?.result };
+      return { applied: true, message: '已在 webview 写入输入框', next: res.result };
+    }
+    const el = queryInteractive(targetSel, label ? String(label) : undefined, Number(index) || 0);
+    if (!el) return { applied: false, message: `未命中输入框：${targetSel}` };
+    if (el.matches('[contenteditable]')) return { applied: false, message: 'contenteditable 聊天框请用 deliveryDraft' };
+    const ok = typeInto(el, v);
+    if (!ok) return { applied: false, message: '目标不是可输入的 input/textarea' };
+    return { applied: true, message: '已写入输入框', previous: { value: v }, next: { value: v, selector: targetSel } };
+  },
+
+  uiSubmit: async ({ scope, selector }) => {
+    if (scope === 'webview') {
+      const b = getBrowser();
+      if (!b) return { applied: false, message: 'webview 引擎不可用' };
+      const res = await b.uiExec('click', { selector: selector || 'button[type="submit"], input[type="submit"]' });
+      if (!res?.ok) return { applied: false, message: res?.result?.error || res?.error || '提交失败', next: res?.result };
+      return { applied: true, message: '已在 webview 触发提交', next: res.result };
+    }
+    const el = selector ? queryInteractive(String(selector)) : (document.activeElement as HTMLElement);
+    if (!el) return { applied: false, message: '未命中可提交元素' };
+    const ok = submitBy(el);
+    return { applied: ok, message: ok ? '已提交表单' : '该元素不是可提交目标', next: { submitted: ok } };
+  },
+
+  uiScroll: async ({ scope, selector, dy, to }) => {
+    const target = selector ? String(selector) : undefined;
+    if (scope === 'webview') {
+      const b = getBrowser();
+      if (!b) return { applied: false, message: 'webview 引擎不可用' };
+      const res = await b.uiExec('scroll', { selector: target, dy: dy ? Number(dy) : undefined, to });
+      if (!res?.ok) return { applied: false, message: res?.result?.error || res?.error || '滚动失败', next: res?.result };
+      return { applied: true, message: '已滚动 webview', next: res.result };
+    }
+    const el = target ? queryInteractive(target) : null;
+    const ok = scrollElement(el, dy ? Number(dy) : undefined, to === 'top' || to === 'bottom' ? to : undefined);
+    return { applied: ok, message: ok ? '已滚动' : '滚动参数无效', next: {} };
+  },
+
+  uiWait: async ({ ms, selector, timeoutMs }) => {
+    if (ms != null) {
+      await waitFor(Number(ms));
+      return { applied: true, message: `等待 ${ms}ms` };
+    }
+    if (selector && String(selector).trim()) {
+      const el = await waitForSelector(String(selector), Number(timeoutMs) || 10_000);
+      return { applied: !!el, message: el ? '元素已就绪' : `等待元素超时：${selector}`, next: { found: !!el } };
+    }
+    return { applied: false, message: 'uiWait 需要 ms 或 selector' };
+  },
+
+  // ===== B. 自动沟通引擎接管 =====
+  autochatStart: ({ platforms, maxCount }) => {
+    const auto = useAutoChatStore.getState();
+    if (auto.chatRunning) return { applied: false, message: '后台沟通已在运行' };
+    const cfg = useSettingsStore.getState().config;
+    if (isLockedOut(cfg)) return { applied: false, message: `冷却期内不可启动（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟）` };
+    auto.start({
+      platforms: Array.isArray(platforms) ? (platforms.map(String) as JobPlatform[]) : undefined,
+      maxCount: maxCount != null ? Number(maxCount) : undefined,
+    });
+    return { applied: true, message: '后台自动沟通已启动（持续处理队列，切页仍运行）', next: { chatRunning: true } };
+  },
+
+  autochatStop: () => {
+    useAutoChatStore.getState().stop();
+    return { applied: true, message: '已停止后台沟通', next: { chatRunning: false } };
+  },
+
+  autochatStep: ({ id }) => {
+    const auto = useAutoChatStore.getState();
+    if (auto.chatRunning) return { applied: false, message: '后台沟通运行中，请先 autochatStop 再单步' };
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    if (isLockedOut(cfg)) return { applied: false, message: `冷却期内不可投递（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟）` };
+    if (dailySentCount(data.pending) >= effectiveDailyCap(cfg)) return { applied: false, message: `今日已达上限 ${effectiveDailyCap(cfg)} 条` };
+    let item: PendingItem | undefined;
+    if (id) {
+      item = data.pending.find((p) => p.id === String(id));
+      if (!item) return { applied: false, message: `待沟通岗位不存在：${id}` };
+    } else {
+      item = rerankPending(data.pending, cfg).find(
+        (p) =>
+          (p.status === 'approved' || p.status === 'opened') &&
+          !isDeliveryClaimed(p.id) &&
+          platformEnabled(cfg, String(p.job?.platform || 'boss') as JobPlatform)
+      );
+    }
+    if (!item) return { applied: false, message: '没有可单步沟通的岗位（需 status∈approved/opened 且平台已启用）' };
+    if (!(item.deliveryGreeting || '').trim()) return { applied: false, message: '该岗位招呼语为空，拒绝发送' };
+    auto.chatOne(item);
+    return {
+      applied: true,
+      message: '已触发单条沟通（结果异步，可轮询 autochatStatus / bossclaw_app_state）',
+      next: { id: item.id, title: item.job?.title, company: item.job?.company, note: '异步' },
+    };
+  },
+
+  autochatStatus: () => {
+    const auto = useAutoChatStore.getState();
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const nextEligible = rerankPending(data.pending, cfg).find(
+      (p) =>
+        (p.status === 'approved' || p.status === 'opened') &&
+        platformEnabled(cfg, String(p.job?.platform || 'boss') as JobPlatform)
+    );
+    return {
+      applied: true,
+      message: '自动沟通状态',
+      next: {
+        chatRunning: auto.chatRunning,
+        activeChatId: auto.activeChatId,
+        progress: auto.progress,
+        eligibleNext: nextEligible
+          ? { id: nextEligible.id, title: nextEligible.job?.title, company: nextEligible.job?.company }
+          : null,
+      },
+    };
+  },
+
+  // ===== C. 完整数据读取 =====
+  appDataFull: ({ sections, maxPending, maxLogs }) => {
+    const data = useDataStore.getState();
+    const sched = useScheduleStore.getState();
+    const want = (k: string) => !Array.isArray(sections) || sections.length === 0 || (sections as string[]).map(String).includes(k);
+    const maxP = Math.min(Math.max(Number(maxPending) || 100, 1), 500);
+    const maxL = Math.min(Math.max(Number(maxLogs) || 200, 1), 500);
+    const sectionsOut: Record<string, unknown> = {};
+    if (want('resume')) sectionsOut.resume = { present: !!data.resumeText, chars: data.resumeText.length, fileName: data.resumeFileName, text: data.resumeText };
+    if (want('profile')) sectionsOut.profile = { present: !!data.profile, value: data.profile };
+    if (want('directionPlan')) sectionsOut.directionPlan = { present: !!data.directionPlan, value: data.directionPlan };
+    if (want('greetings')) sectionsOut.greetings = data.greetings || [];
+    if (want('greetingPrompt')) sectionsOut.greetingPrompt = data.greetingPrompt || '';
+    if (want('communicationInfo')) sectionsOut.communicationInfo = data.communicationInfo || '';
+    if (want('pending')) {
+      sectionsOut.pending = {
+        present: (data.pending || []).length > 0,
+        items: (data.pending || []).slice(0, maxP).map((p) => (p.job ? { ...p, job: { ...p.job, description: (p.job.description || '').slice(0, 200), cardText: (p.job.cardText || '').slice(0, 200) } } : p)),
+      };
+    }
+    if (want('taskRuns')) sectionsOut.taskRuns = { present: (data.taskRuns || []).length > 0, items: (data.taskRuns || []).slice(0, 200) };
+    if (want('schedule')) sectionsOut.schedule = { present: (sched.entries || []).length > 0, items: sched.entries };
+    if (want('chatLogs')) sectionsOut.chatLogs = { present: (data.chatLogs || []).length > 0, items: (data.chatLogs || []).slice(-maxL) };
+    if (want('imageResumes')) sectionsOut.imageResumes = (data.imageResumes || []).map((r) => ({ id: r.id, name: r.name, createdAt: r.createdAt }));
+    return {
+      applied: true,
+      message: '完整数据读取（不含 base64 图片）',
+      next: {
+        counts: {
+          pending: data.pending.length,
+          taskRuns: data.taskRuns.length,
+          greetings: data.greetings.length,
+          chatLogs: data.chatLogs.length,
+          schedule: sched.entries.length,
+          imageResumes: (data.imageResumes || []).length,
+        },
+        sections: sectionsOut,
+      },
+    };
+  },
+
+  // ===== D. 队列与任务深度接管 =====
+  pendingApprove: ({ id, ids }) => {
+    const data = useDataStore.getState();
+    const targets = Array.isArray(ids) ? ids.map(String) : id ? [String(id)] : [];
+    if (!targets.length) return { applied: false, message: '需要 id 或 ids' };
+    const updated: string[] = [];
+    const missing: string[] = [];
+    for (const t of targets) {
+      if (!data.pending.some((p) => p.id === t)) { missing.push(t); continue; }
+      data.updatePending(t, { status: 'approved' as PendingStatus, approvedAt: Date.now() });
+      updated.push(t);
+    }
+    return { applied: updated.length > 0, message: `已批准 ${updated.length} 条${missing.length ? `；缺失 ${missing.join(', ')}` : ''}`, next: { updated, missing } };
+  },
+
+  pendingReject: ({ id, ids }) => {
+    const data = useDataStore.getState();
+    const targets = Array.isArray(ids) ? ids.map(String) : id ? [String(id)] : [];
+    if (!targets.length) return { applied: false, message: '需要 id 或 ids' };
+    const updated: string[] = [];
+    const missing: string[] = [];
+    for (const t of targets) {
+      if (!data.pending.some((p) => p.id === t)) { missing.push(t); continue; }
+      data.updatePending(t, { status: 'rejected' as PendingStatus });
+      updated.push(t);
+    }
+    return { applied: updated.length > 0, message: `已拒绝 ${updated.length} 条${missing.length ? `；缺失 ${missing.join(', ')}` : ''}`, next: { updated, missing } };
+  },
+
+  pendingRerank: () => {
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const next = rerankPending(data.pending, cfg);
+    data.setPending(next);
+    return { applied: true, message: `已按优先级重排 ${next.length} 条`, next: { reordered: next.length } };
+  },
+
+  pendingPromote: ({ ids }) => {
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    let base = data.pending;
+    if (Array.isArray(ids) && ids.length) {
+      const set = new Set(ids.map(String));
+      base = base.filter((p) => set.has(p.id));
+    }
+    const r = promoteApprovedToQueue(base, cfg);
+    data.setPending(r.next);
+    return { applied: r.count > 0, message: `已将 ${r.count} 条 approved 提升为 approved_queue`, next: { count: r.count } };
+  },
+
+  pendingRemove: ({ id }) => {
+    const data = useDataStore.getState();
+    const tid = String(id ?? '');
+    if (!tid) return { applied: false, message: '需要 id' };
+    if (!data.pending.some((p) => p.id === tid)) return { applied: false, message: `待沟通岗位不存在：${tid}` };
+    data.setPending(data.pending.filter((p) => p.id !== tid));
+    return { applied: true, message: `已移除岗位 ${tid}`, next: { removed: true } };
+  },
+
+  taskStage: ({ id, direct }) => {
+    const data = useDataStore.getState();
+    const run = data.taskRuns.find((r) => r.id === String(id ?? ''));
+    if (!run) return { applied: false, message: `任务不存在：${id}` };
+    const ORDER = Object.keys(TASK_STAGE_META) as TaskStage[];
+    const terminal = TERMINAL_RUN_STATUSES.has(run.status);
+    let nextStage: TaskStage | null = null;
+    if (direct === 'next' || direct === 'prev') {
+      if (terminal) return { applied: false, message: '任务已到终态，无法默认 next/prev，请显式传 stage' };
+      const idx = ORDER.indexOf(run.stage);
+      const ni = direct === 'next' ? (idx < 0 ? 0 : Math.min(idx + 1, ORDER.length - 1)) : idx <= 0 ? 0 : idx - 1;
+      nextStage = ORDER[ni];
+    } else if (typeof direct === 'string' && ORDER.includes(direct as TaskStage)) {
+      nextStage = direct as TaskStage;
+    } else {
+      return { applied: false, message: `direct 必须是 next/prev 或合法阶段（${ORDER.join('/')}）` };
+    }
+    const meta = taskStageMetaFor(run.job?.platform, nextStage);
+    data.updateTaskRun(run.id, { stage: nextStage, progress: meta.progress, stageLabel: meta.label, updatedAt: Date.now() });
+    return { applied: true, message: `任务 ${run.id} 阶段 → ${nextStage}`, previous: { stage: run.stage }, next: { stage: nextStage, progress: meta.progress, stageLabel: meta.label } };
+  },
+
+  // ===== E. 模块级控制（简历中心 / 定制简历 / 投递方向 / 任务进度）=====
+  profileRebuild: async () => {
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const text = (data.resumeText || '').trim();
+    if (!text) return { applied: false, message: '尚未导入简历，无法生成职业画像' };
+    const profile = await buildProfile(text, cfg.model);
+    data.setProfile(profile);
+    return { applied: true, message: '职业画像已重建（简历中心 → 生成画像）', next: { method: profile.generation?.mode || 'local' } };
+  },
+
+  greetingsAppend: ({ items }) => {
+    const data = useDataStore.getState();
+    const list = (Array.isArray(items) ? items : []).map(String);
+    if (!list.length) return { applied: false, message: '缺少 items' };
+    const prev = data.greetings.length;
+    data.setGreetings([...data.greetings, ...list]);
+    const after = useDataStore.getState().greetings.length;
+    return { applied: true, message: '已追加打招呼语', previous: { count: prev }, next: { count: after } };
+  },
+
+  resumeTailor: async ({ job, saveTo }) => {
+    if (!job || typeof job !== 'object') return { applied: false, message: '缺少岗位对象 job（含 title/company/description 等）' };
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const out = await tailorForJob(job as JobMeta, data.resumeText, data.profile, cfg.model, data.greetingPrompt || undefined);
+    const save = String(saveTo || 'none');
+    if (save === 'greetings' && out.coverLetter?.trim()) {
+      data.setGreetings([...data.greetings, out.coverLetter.trim()]);
+    }
+    if (save === 'resume') {
+      const block = [
+        out.tailoredSummary,
+        ...(out.tailoredExperiences || []).map((e) => `- ${e}`),
+        `技能：${(out.highlightedSkills || []).join('、')}`,
+      ].filter(Boolean).join('\n');
+      const jm = job as JobMeta;
+      const label = `${jm.title || jm.company || '该岗位'}`;
+      data.setResumeText(`${data.resumeText.trim()}\n\n== 岗位定制版本（${label}）==\n${block}`, data.resumeFileName);
+    }
+    return {
+      applied: true,
+      message: `定制简历完成（method=${out.method}${save !== 'none' ? `，已存至 ${save}` : '，未落盘'}）`,
+      next: out,
+    };
+  },
+
+  directionPlanRebuild: () => {
+    const data = useDataStore.getState();
+    const next = buildDirectionPlan(data.profile, data.directionPlan, { preserveEdits: true, preserveSelections: true });
+    data.setDirectionPlan(next);
+    return { applied: true, message: '投递方向计划已重建', next: { count: next.items?.length || 0 } };
+  },
+
+  directionItem: ({ id, patch }) => {
+    const data = useDataStore.getState();
+    const plan = data.directionPlan;
+    if (!plan) return { applied: false, message: '尚未生成投递方向计划，请先 directionPlanRebuild' };
+    const tid = String(id ?? '');
+    const items = plan.items || [];
+    const idx = items.findIndex((it) => it.id === tid);
+    if (idx < 0) return { applied: false, message: `方向项不存在：${tid}` };
+    if (!patch || typeof patch !== 'object') return { applied: false, message: '需要 patch' };
+    const previous = { enabled: items[idx].enabled, priority: items[idx].priority };
+    const nextItems = items.map((it, i) => (i === idx ? { ...it, ...patch } : it));
+    data.setDirectionPlan({ ...plan, items: nextItems, updatedAt: Date.now() } as DirectionPlan);
+    return { applied: true, message: `方向项 ${tid} 已更新`, previous, next: { ...patch } };
+  },
+
+  tasksGenerate: () => {
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const tasks = createTasks(data.profile, cfg, data.directionPlan);
+    data.setTaskRuns(tasks);
+    return { applied: true, message: `已生成 ${tasks.length} 个任务进度卡片（不自动投递）`, next: { count: tasks.length } };
+  },
 };
 
 // ===========================================================================
@@ -476,7 +848,7 @@ export function installControlRuntime(): void {
   if (installed || typeof window === 'undefined') return;
   installed = true;
   window.__bossclawControl = {
-    version: '1.0.0',
+    version: '1.1.0',
     actions: Object.keys(handlers),
     dispatch,
     snapshot: snapshotState,

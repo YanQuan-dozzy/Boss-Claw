@@ -5,6 +5,7 @@ export const PROFILE_SCHEMA = JSON.stringify({
     experiences: [],
     projects: [],
     skills: [],
+    capabilities: [],
     certificates: [],
   },
   primaryDirections: [{ name: '', confidence: 0, evidence: [] }],
@@ -28,7 +29,7 @@ export const COMPACT_PROFILE_SCHEMA = JSON.stringify({
   excludeDirections: [],
 });
 
-export const PROFILE_SYSTEM_PROMPT = `你是严格的职业画像分析器。只能使用简历真实事实，不能根据项目业务场景推断用户职业。主方向最多3个，搜索词必须是真实岗位名称。判断主方向以整体技能栈权重为准：若简历同时具备后端、全栈或 AI 等较强信号，不得仅因出现 React/Vue/TypeScript 等前端关键词就把主方向判为前端。数组必须精简，教育/经历/项目各最多4条，每条不超过80字，技能最多15个，摘要不超过180字。即使信息不完整，也必须给出可编辑初稿，禁止返回空内容。输出严格 JSON：${PROFILE_SCHEMA}`;
+export const PROFILE_SYSTEM_PROMPT = `你是严格的职业画像分析器。只能使用简历真实事实，不能根据项目业务场景推断用户职业。主方向最多3个，搜索词必须是真实岗位名称。判断主方向以整体技能栈权重为准：若简历同时具备后端、全栈或 AI 等较强信号，不得仅因出现 React/Vue/TypeScript 等前端关键词就把主方向判为前端。数组必须精简，教育/经历/项目各最多4条，每条不超过80字，技能最多15个，能力清单最多30条，摘要不超过180字。即使信息不完整，也必须给出可编辑初稿，禁止返回空内容。输出严格 JSON：${PROFILE_SCHEMA}`;
 
 export const COMPACT_PROFILE_SYSTEM_PROMPT = `你是求职职业画像分析器。只使用简历事实。请输出极简 JSON，不要解释，不要证据长句。摘要120字以内；主方向最多3个；搜索词最多10个；技能最多12个；其余字段简短。主方向按整体技能栈权重判断，不要仅因出现前端关键词就把全栈/后端/AI 背景误判为前端。输出结构：${COMPACT_PROFILE_SCHEMA}`;
 
@@ -53,6 +54,7 @@ const PROFILE_OUTPUT_EXAMPLE = `{
     "experiences": ["XX科技有限公司 前端开发实习生（2025.06-2025.09）：负责商家后台页面开发"],
     "projects": ["XX商城项目：使用 React + TypeScript + Node.js 实现订单管理模块"],
     "skills": ["React", "TypeScript", "Node.js", "MySQL"],
+    "capabilities": ["数据库(MySQL)", "页面开发", "状态管理"],
     "certificates": ["CET-6"]
   },
   "primaryDirections": [
@@ -80,7 +82,8 @@ ${anchorJson}
 5. 个人定位摘要 120-180 字，只引用简历真实事实（学历/专业/技能/项目/实习），突出与主方向最相关的技能与经历，语言自然有说服力，不得添加简历中不存在的技能、经历或成果。
 6. 硬约束（城市/求职类型/学历/经验/薪资）应基于简历与本地初稿确定，不得凭空推断。
 7. 教育/经历/项目各最多 4 条，每条不超过 80 字，必须是简历原文中的真实内容；技能最多 15 个，使用规范技能名（如 React、Python、Spring Boot），不要写"熟悉/掌握/了解"等描述性长句。
-8. 即使信息不完整，也必须给出可编辑初稿，禁止返回空内容。
+8. 能力清单（facts.capabilities，最多 30 条）：把简历里的能力按「能力名 + 细分」展开，如"数据库(PostgreSQL/MySQL)"、"SQL 调优"、"索引设计"、"事务处理"、"pgvector 向量检索"、"Docker/容器化"。每条 ≤20 字，**完整列出、尽量细分，不要遗漏简历中的任何能力**，**只能从简历原文提取**，不得编造、不得把"熟悉/掌握/了解 XX"这类描述性长句原样照抄，而是提炼成可操作的具体能力。若简历没有细分项，可退化为规范技能名。
+9. 即使信息不完整，也必须给出可编辑初稿，禁止返回空内容。
 
 【输出示例】（仅格式参考，内容必须来自简历）：
 ${PROFILE_OUTPUT_EXAMPLE}

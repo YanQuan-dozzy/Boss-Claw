@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki 教程](docs/wiki/Home.md)
 
-![Version](https://img.shields.io/badge/version-v2.5.0-078A83)
+![Version](https://img.shields.io/badge/version-v2.5.2-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -26,12 +26,12 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.2-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.2-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.2-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.2-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
-> 当前最新发布 v2.5.0 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
+> 当前最新发布 v2.5.2 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -53,7 +53,8 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.0（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.2（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.0 | Windows x64 安装版 + 便携版 |
 | v2.3.0 | Windows x64 安装版 + 便携版 |
 | v2.1.0 | Windows / Linux（AppImage·deb·rpm·pacman·tar.gz）/ macOS（mac.tar.gz 自建档案） |
 
@@ -121,6 +122,10 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 | 岗位整理 | 内置浏览器打开岗位 → 点「加入任务」→ 中栏记录该岗位；页面噪音自动清洗（jdCleaner）；可附加公司规模过滤（BOSS scale） |
 | AI 匹配 | 本地确定性多维匹配（硬约束拦截 + 维度分）与 AI 结果融合，给出匹配分、判断理由、技能命中、能力缺口和待确认项 |
 | 智能排序 | 综合匹配度、硬性条件、HR 活跃度、地点、薪资、新鲜度和风险提示进行排序 |
+| 评分与采集优化 | 岗位评分改为「AI 分 ×0.7 + 本地综合分 ×0.3」融合、修正谨慎（cautious）档位、移除本地预筛开关，减少「大量岗位被跳过」；增设工作台会话级去重 + 合并重复跳过日志 |
+| 多页浏览 | 内置浏览器支持多标签 / 多页管理（browserRegistry），优化窗口尺寸变化的 force-resize 重绘，修复页面加载异常导致的崩溃 |
+| 方向智能校准 | 投递方向支持 AI 生成 / 校准搜索关键词；新增薪资校准模块与工作时间偏好，用于 AI 判断岗位匹配与约束沟通内容 |
+| Agent 控制桥 + MCP | 应用内置 Agent 控制桥（白名单动作、本地随机令牌鉴权、默认关闭需显式开启）；`mcp/bossclaw-mcp` 零依赖 stdio MCP 服务器，供外部 Agent 读取约束 / 状态并驱动应用（发送类能力默认不开放） |
 | 沟通草稿 | 根据简历证据和岗位要求生成可编辑的应聘沟通内容与个性化打招呼语 |
 | 定制简历 | 输入目标岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，失败回退本地规则 |
 | AI 技能 | 标准 SKILL.md 技能体系（内置 resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
@@ -299,7 +304,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.0）
+├── desktop-app/               当前主应用（Electron + React，v2.5.2）
 │   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs / cloakPreload.cjs）
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
 │   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py）
@@ -307,6 +312,7 @@ Boss-claw/
 │   ├── src/                   React 渲染进程（main / App / theme / store / components / pages / lib）
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts（dev / build / package）
+├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（外部 Agent 读取约束/状态与控制应用）
 ├── docs/
 │   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / FAQ 等）
 │   └── release-notes-*.md     版本发布说明
@@ -341,7 +347,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 [`docs/wiki/FAQ.md`](docs/wiki/FAQ.md)，再提交 Issue。提交时请包含：
 
-- BossClaw 版本（桌面版 v2.5.0）
+- BossClaw 版本（桌面版 v2.5.2）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图

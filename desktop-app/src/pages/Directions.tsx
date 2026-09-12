@@ -29,10 +29,12 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import {
   buildDirectionPlan,
   directionPreset,
+  filterGapsCoveredByProfile,
   normalizeDirectionPlan,
   selectedDirectionItems,
 } from '@/lib/bossclaw/directions';
 import { generateDirectionKeywords } from '@/lib/bossclaw/directionKeywordsAI';
+import { refineDirectionCapabilities, applyDirectionDetails } from '@/lib/bossclaw/directionDetailAI';
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
 import type { DirectionItem } from '@/lib/bossclaw/types';
 
@@ -45,6 +47,7 @@ const KEYWORD_LIMIT = 12;
 
 export default function Directions() {
   const profile = useDataStore((s) => s.profile);
+  const resumeText = useDataStore((s) => s.resumeText);
   const directionPlan = useDataStore((s) => s.directionPlan);
   const setDirectionPlan = useDataStore((s) => s.setDirectionPlan);
   const [items, setItems] = useState<DirectionItem[]>(directionPlan?.items || []);
@@ -58,6 +61,8 @@ export default function Directions() {
   const [openSuggest, setOpenSuggest] = useState<string | null>(null);
   // 正在调用 AI 生成搜索词的方向 id
   const [aiBusyId, setAiBusyId] = useState<string | null>(null);
+  // 正在经 AI 复核细化匹配技能/能力缺口（「根据画像更新」内的自动步骤，无独立按钮）
+  const [aiDetailBusy, setAiDetailBusy] = useState(false);
   const inputRefs = useRef<Record<string, InputRef | null>>({});
   const config = useSettingsStore((s) => s.config);
 
@@ -109,7 +114,7 @@ export default function Directions() {
     return directionPlan;
   };
 
-  const onGenerate = () => {
+  const onGenerate = async () => {
     const plan = ensurePlan();
     if (!plan) return;
     // 保留勾选/名称/自定义方向，但强制按画像重算搜索词，修复历史错误的「实习生」等关键词
@@ -120,7 +125,30 @@ export default function Directions() {
       preserveKeywords: false,
       confirmed: false,
     });
-    setDirectionPlan(fresh);
+    // 「只调用 AI 时一起做好」：若已配 AI Key 且画像/简历可用，自动对每个方向做一次细粒度
+    // 能力复核（细化匹配技能、剔除误报缺口，如简历已熟 PostgreSQL/MySQL 时不再把「数据库」列为缺口）。
+    // 无需新增按钮；AI 未配置或失败时静默保留本地结果。
+    // 无论本地还是 AI 的缺口，写入前都统一剔除「画像已具备」项，防止已具备技能误报为缺口。
+    const guardGaps = (list: DirectionItem[]) => list.map((it) => ({ ...it, gaps: filterGapsCoveredByProfile(it.gaps, profile) }));
+    const sanitized = guardGaps(fresh.items);
+    if (fresh.items.length && config.model?.apiKey) {
+      setAiDetailBusy(true);
+      try {
+        const details = await refineDirectionCapabilities(
+          { items: fresh.items, profile: profile || undefined, resumeText },
+          config.model
+        );
+        const refined = guardGaps(applyDirectionDetails(fresh.items, details));
+        setDirectionPlan(normalizeDirectionPlan({ ...fresh, items: refined }, profile, { confirmed: false }));
+        message.success('已根据画像更新方向计划（AI 已细化匹配与缺口）');
+        return;
+      } catch (error: any) {
+        message.warning(`已按画像更新方向计划；AI 缺口细化未完成：${error?.message || '请稍后重试'}`);
+      } finally {
+        setAiDetailBusy(false);
+      }
+    }
+    setDirectionPlan(normalizeDirectionPlan({ ...fresh, items: sanitized }, profile, { confirmed: false }));
     message.success('已根据画像更新方向计划');
   };
 
@@ -385,7 +413,7 @@ export default function Directions() {
         </div>
         <div className="page-head-extra">
           <Space wrap size={10}>
-            <Button size="middle" className="btn-uniform" icon={<ReloadOutlined />} onClick={onGenerate}>
+            <Button size="middle" className="btn-uniform" icon={<ReloadOutlined />} onClick={() => void onGenerate()} loading={aiDetailBusy}>
               根据画像更新
             </Button>
             <Button size="middle" className="btn-uniform" icon={<PlusOutlined />} onClick={onAddCustom}>

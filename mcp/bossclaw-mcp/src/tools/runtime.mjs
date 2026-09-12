@@ -1,6 +1,6 @@
-// src/tools/runtime.mjs —— 运行控制工具组（启动 / 停止 / 状态 / 冒烟）
+// src/tools/runtime.mjs —— 运行控制工具组（启动 / 停止 / 状态）
 import path from 'node:path';
-import { PATHS, DESKTOP_DIR, MODE, run, ok, fail, truncate, statSafe, probePort, tailTextFile, spawnDetached, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
+import { PATHS, DESKTOP_DIR, MODE, ok, fail, statSafe, probePort, tailTextFile, spawnDetached, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
 import { obj, str, num, bool, arr, WRITE_LOCAL, READ_ONLY } from '../schema.mjs';
 import { listBossclawProcesses } from '../procs.mjs';
 
@@ -97,7 +97,7 @@ export const runtimeTools = [
         `控制桥：${bridge && bridge.ok ? `✅ 可用 :${bridge.data?.port || ''}（${JSON.stringify(bridge.data || {})}）` : args.control === false ? '未启用（本次未开启）' : `❌ 未就绪 ${bridge?.error || ''}`}`,
         mode === 'installed'
           ? `启动目标：${exePath}（安装版打包应用）`
-          : `dist 产物：${(await statSafe(path.join(PATHS.distDir, 'index.html'))).exists ? '存在' : '缺失（生产模式会白屏，请先 bossclaw_build）'}`,
+          : `dist 产物：${(await statSafe(path.join(PATHS.distDir, 'index.html'))).exists ? '存在' : '缺失（生产模式会白屏）'}`,
         log ? `\n最近日志（${path.basename(log.file)}）：\n${log.lines.slice(-10).join('\n')}` : '',
       ];
       const data = { pid, cmd, mode, exe: exePath, alive, processCount: after.processes.length, bridge: bridge?.data || null, logTail: log?.lines || [] };
@@ -164,52 +164,6 @@ export const runtimeTools = [
       ].filter(Boolean);
       const data = { running: processes.length > 0, processes, bridge, warning: warning || null, camoufoxPort: camoufoxUp, logs };
       return ok(lines.join('\n'), data);
-    },
-  },
-
-  {
-    name: 'bossclaw_smoke',
-    title: 'Electron 冒烟测试',
-    description:
-      '在受限窗口内启动 Electron 主进程并观察其是否存活（存活到超时=正常，提前退出=异常），随后整棵结束进程。' +
-      '用于验证主进程改动没有引入启动期崩溃 / 白屏。会读取应用日志尾部辅助定位。',
-    annotations: WRITE_LOCAL,
-    inputSchema: obj({
-      timeoutSec: num('观察窗口秒数（默认 20）', { default: 20 }),
-      noGpu: bool('追加 --no-sandbox 与 BOSSCLAW_NO_GPU=1（无 GPU / 沙箱环境，默认 true）', { default: true }),
-      control: bool('同时开启控制桥（默认 false，避免侧效应）', { default: false }),
-    }),
-    handler: async (args = {}) => {
-      if (!(await statSafe(PATHS.electronBin)).exists) return fail(`未找到 Electron：${PATHS.electronBin}`);
-      const distIndex = await statSafe(path.join(PATHS.distDir, 'index.html'));
-      const before = await listBossclawProcesses();
-      if (before.processes.length) {
-        const killed = before.processes.map((p) => p.pid);
-        for (const pid of killed) await killTree(pid);
-        await sleep(1000);
-      }
-
-      const env = {};
-      if (args.noGpu !== false) env.BOSSCLAW_NO_GPU = '1';
-      if (args.control) env.BOSSCLAW_CONTROL = '1';
-      const argv = ['.', ...(args.noGpu !== false ? ['--no-sandbox'] : [])];
-      const timeoutSec = Math.min(Math.max(Number(args.timeoutSec) || 20, 5), 120);
-      const t0 = Date.now();
-      const res = await run(PATHS.electronBin, argv, { cwd: DESKTOP_DIR, env, timeoutMs: timeoutSec * 1000 });
-      const survived = res.timedOut; // 观察窗口内一直存活
-      const log = await tailLog(PATHS.logs.app, 30);
-
-      const lines = [
-        `冒烟结果：${survived ? `✅ 存活至 ${timeoutSec}s 观察窗口结束（正常）` : `❌ 提前退出（退出码 ${res.code}，${Date.now() - t0}ms）`}`,
-        `命令：${res.cmd}（cwd=desktop-app）`,
-        `dist/index.html：${distIndex.exists ? `存在（${distIndex.mtime}）` : '缺失 → 生产模式会白屏，请先 bossclaw_build'}`,
-        res.stdout.trim() ? `\n--- stdout 尾部 ---\n${truncate(res.stdout.slice(-3000), 3000)}` : '',
-        res.stderr.trim() ? `\n--- stderr 尾部 ---\n${truncate(res.stderr.slice(-3000), 3000)}` : '',
-        log ? `\n--- ${path.basename(log.file)} 尾部 ---\n${log.lines.slice(-12).join('\n')}` : '',
-      ].filter(Boolean);
-
-      const data = { survived, code: res.code, durationMs: Date.now() - t0, distExists: distIndex.exists, stderrTail: res.stderr.slice(-3000) };
-      return survived ? ok(lines.join('\n'), data) : fail(lines.join('\n'), data);
     },
   },
 ];

@@ -61,7 +61,7 @@
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.4.0）
+├── desktop-app/               当前主应用（Electron + React，v2.5.2）
 │   ├── electron/
 │   │   ├── main.cjs           主进程：单窗口 + webview + IPC + 子进程管理 + 备份目录/开机自启
 │   │   ├── preload/
@@ -81,6 +81,7 @@ Boss-claw/
 │   │   └── pages/             Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant / OpenClaw / AutoChat / Settings
 │   ├── resources/             应用图标等资源
 │   └── package.json           依赖与 scripts
+├── mcp/bossclaw-mcp/            Agent 操作通道：零依赖 stdio MCP（repo / runtime / state / control / workspace，详见本文「七」）
 ├── docs/
 │   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / Safety / FAQ）
 │   └── release-notes-*.md     版本发布说明
@@ -123,14 +124,28 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.1.0-x64.exe        # NSIS 安装包（推荐发行）
-├── BossClaw-2.1.0-portable.exe   # 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.5.2-x64.exe        # Windows NSIS 安装包（推荐发行，最新 v2.5.2）
+├── BossClaw-2.5.2-portable.exe   # Windows 绿色便携版（无需安装、解压即用）
 └── win-unpacked/                 # 解压目录（可手工分发）
 ```
 
 macOS 产物（`BossClaw-2.1.0-{x64,arm64}.dmg / .zip`）需在 macOS 上执行 `npm run package:mac` 构建；Linux 产物（AppImage / deb）由 `npm run package:linux` 在本机构建。
 
-## 七、可选依赖安装
+## 七、Agent 操作通道（外部 Agent → MCP → 应用）
+
+> 权威定义见 `AGENTS.md` 第 5 节（本小节为归档要点）。
+
+外部 Agent（MCP 客户端）可通过仓库 `mcp/bossclaw-mcp`（零依赖标准 stdio，**单向 agent→MCP**）自主：读取仓库约束 / 应用文件 → 启动 / 停止应用 → 诊断状态 → 驱动运行中的应用。应用侧对应 `electron/control-bridge.cjs` + `src/lib/controlRuntime.ts`。
+
+- **分层**：仓库层（5 组工具：`repo` 应用认知 / `runtime` 运行控制 / `state` 状态诊断 / `control` 应用控制 / `workspace` 工作区路径，读文件 / 进程启停 / 快照与日志诊断，无需应用运行）；应用层（`app_state` / `app_action` 内存实时状态 + 白名单动作 + 截图，需应用运行 + 控制桥）。
+- **控制桥默认关闭**：仅经 `BOSSCLAW_CONTROL=1` 或 `--control-bridge` 显式开启（显式关闭优先，`--no-control-bridge` / `--no-agent`）；仅监听 `127.0.0.1`，除 `/health` 外全部要求 `x-bossclaw-token`（随机生成，写 `userData/control-bridge.json`）；动作白名单唯一权威实现于 `src/lib/controlRuntime.ts`。
+- **发送类能力默认不开放**：仅当用户在应用内开启全自动（`config.executionMode === 'auto'`）时对 Agent 开放，且必须复用应用自带安全投递引擎（招呼语非空 / 外部网申跳过 / 文字气泡确认 / 风控码立即停止交人工）；人工确认（`review`）模式下 Agent 只能草拟、不得自动发送。
+- **严禁**经控制桥绕过验证码或速率限制、修改 `SAFETY_LIMITS`、抬高每日上限。
+- **单向链路**：应用不反向调 Agent；应用内 AI 在用户未配置 API Key 时一律回退本地规则（`buildLocalProfile` / `localFallback` 等），不转交外部 Agent。
+- **状态口径**：读走写盘备份快照（只读）；写一律经控制桥直达运行中的应用，**绝不直接改写备份快照文件**。
+- **验证**：`cd mcp/bossclaw-mcp && node test/selftest.mjs`（协议 + 只读，无需应用运行）；`node test/bridge-e2e.mjs`（起隔离实例全链路 + 清理）。
+
+## 八、可选依赖安装
 
 **隐身引擎（Camoufox / Playwright）**——需 Python 3.10+：
 
@@ -143,7 +158,7 @@ python -m venv .venv
 
 **CloakBrowser**——首次启用「隐身浏览器」时自动下载 ~200MB 隐身 Chromium 到 `~/.cloakbrowser/` 并校验 Ed25519 签名；离线环境可用 `CLOAKBROWSER_BINARY_PATH` 指向本地二进制。
 
-## 八、开发注意事项
+## 九、开发注意事项
 
 - 涉及业务逻辑改动时，请优先回查本地需求文档 `docs/桌面版改造需求文档.md`（v1.2，仅本地保留，不入仓库）与参考项目 `job-claw-main` 的实现口径，对齐既定口径，禁止凭空重写。
 - 修改 `electron/preload/webview.cjs` 等主进程 / preload 文件后，**必须重启 Electron** 才能生效（HMR 不覆盖 preload）。

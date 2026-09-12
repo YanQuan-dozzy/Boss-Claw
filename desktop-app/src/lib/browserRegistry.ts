@@ -63,6 +63,16 @@ export interface BrowserHandle {
    * 仅当 controlRuntime 判定 executionMode==='auto' 时才被调用。
    */
   sendApply: (payload?: { greeting?: string }) => Promise<BrowserApplyOutcome>;
+  /**
+   * 通用 UI 接管：对 webview 页面执行白名单 DOM 操作（query/click/type/scroll），
+   * 返回 { ok, result? , error? }。禁止任意脚本执行 / 跳转。
+   */
+  uiExec: (
+    op: 'query' | 'click' | 'type' | 'scroll',
+    args?: Record<string, unknown>,
+    timeoutMs?: number,
+    tabId?: string
+  ) => Promise<any>;
 }
 
 let registered: BrowserHandle | null = null;

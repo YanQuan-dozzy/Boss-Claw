@@ -73,7 +73,7 @@ try {
 
   if (!(await statSafe(PATHS.electronBin)).exists) throw new Error(`未找到 Electron：${PATHS.electronBin}`);
   const distIndex = await statSafe(path.join(PATHS.distDir, 'index.html'));
-  if (!distIndex.exists) throw new Error('dist 缺失，请先构建（bossclaw_build）');
+  if (!distIndex.exists) throw new Error('dist 缺失，请先在仓库内构建（npm run build:web / vite build）');
 
   const started = spawnDetached(
     PATHS.electronBin,
@@ -218,6 +218,38 @@ try {
   const sendNowGate = await tool(controlTools, 'bossclaw_app_action').handler({ action: 'deliverySendNow', params: {} });
   // 控制桥约定：动作「应被拒绝」时 applied===false（isError 为 true 是既有约定，与非法路由一致）
   record('review 模式下 deliverySendNow 被安全闸拒绝', sendNowGate.data?.applied === false && /全自动未开启/.test(sendNowGate.text || ''), sendNowGate.text?.split('\n')[1]?.slice(0, 90));
+
+  // ===== 阶段接管：驱动已运行实例 =====
+  const act = (action, params = {}) => tool(controlTools, 'bossclaw_app_action').handler({ action, params });
+  const pdf = await act('appDataFull', { sections: ['pending', 'greetings', 'taskRuns'], maxPending: 20 });
+  record('接管 appDataFull 分段读取', !pdf.isError && pdf.data?.applied === true && !!pdf.data?.next?.sections?.pending, pdf.text?.split('\n')[1]?.slice(0, 80));
+
+  const uiSnap = await act('uiSnapshot', { scope: 'app', limit: 10 });
+  record('接管 uiSnapshot(app) 返回交互元素', !uiSnap.isError && Array.isArray(uiSnap.data?.next?.elements) && uiSnap.data.next.elements.length > 0, `elements=${uiSnap.data?.next?.count}`);
+
+  const pendAdd = await act('dataPendingAdd', { item: { id: 'e2e-pending-1', status: 'pending', job: { title: '测试岗位', company: '测试公司' }, deliveryGreeting: '您好，我对贵司岗位很感兴趣，这是我的简历，期待沟通。', createdAt: Date.now() } });
+  record('接管 dataPendingAdd 造岗位', !pendAdd.isError && pendAdd.data?.applied === true);
+
+  const pendApprove = await act('pendingApprove', { id: 'e2e-pending-1' });
+  record('接管 pendingApprove → approved', !pendApprove.isError && (pendApprove.data?.next?.updated || []).includes('e2e-pending-1'), pendApprove.text?.split('\n')[1]?.slice(0, 80));
+
+  const pendPromote = await act('pendingPromote', {});
+  record('接管 pendingPromote 提升 approved→approved_queue', !pendPromote.isError && typeof pendPromote.data?.next?.count === 'number', pendPromote.text?.split('\n')[1]?.slice(0, 80));
+
+  const pendRemove = await act('pendingRemove', { id: 'e2e-pending-1' });
+  record('接管 pendingRemove 移除岗位', !pendRemove.isError && pendRemove.data?.applied === true, pendRemove.text?.split('\n')[1]?.slice(0, 80));
+
+  const tskStageBad = await act('taskStage', { id: 'e2e-no-run', direct: 'next' });
+  // 动作被拒（applied:false）时 MCP 工具约定 isError=true
+  record('接管 taskStage 未知任务拒绝', tskStageBad.isError === true && tskStageBad.data?.applied === false && /任务不存在/.test(tskStageBad.text || ''), tskStageBad.text?.split('\n')[1]?.slice(0, 80));
+
+  const pauseGuard = await act('pauseDelivery', { minutes: 30 });
+  const autochatCool = await act('autochatStep', {});
+  record('接管 autochatStep 冷却守卫生效', autochatCool.isError === true && autochatCool.data?.applied === false && /冷却/.test(autochatCool.text || ''), autochatCool.text?.split('\n')[1]?.slice(0, 90));
+  await act('resumeDelivery', {});
+
+  const badUi = await act('uiEvalRaw', { ops: ['eval'] });
+  record('接管 非法动作被拒', badUi.isError === true && /不支持的动作/.test(badUi.text || ''), (badUi.text || '').split('\n')[0]?.slice(0, 80));
 
   // ===== 阶段 2：端口回退 + CLI 开关（--control-bridge，不带环境变量）=====
   // 旧实现把端口写死，被占用时桥整个不可用；这里用一个占位服务顶住 17650 来验证回退。
