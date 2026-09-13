@@ -135,9 +135,26 @@ export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Re
 /** P10：Camoufox in-flight 锁集合 */
 const CAMOUFOX_IN_FLIGHT = new Set<string>();
 
-/** 隐身搜索岗位（platform 默认 boss；liepin/zhaopin/job51 走各自平台模块） */
-export function camoufoxSearch(query: string, city: string, pages = 1, os?: string, platform: string = 'boss'): Promise<CamoufoxSearchResult> {
-  return camoufoxCall<CamoufoxSearchResult>('search', { query, city, pages, os: os || undefined, platform });
+/**
+ * 隐身搜索岗位（platform 默认 boss；liepin/zhaopin/job51 走各自平台模块）。
+ *
+ * criteria = 设置页「基础求职条件」（全平台共用：薪资/求职类型/学历/经验/公司规模），
+ * 由 Python 侧 `camoufox/platforms/filters.py` 翻译成各平台自身筛选参数
+ * （字段名与码值口径见该文件的「口径来源」与 FILTER_CAPABILITIES 能力表）。
+ * BOSS 分支忽略该参数（BOSS 走 searchUrl.ts + webview 通道）。
+ */
+export function camoufoxSearch(
+  query: string,
+  city: string,
+  pages = 1,
+  os?: string,
+  platform: string = 'boss',
+  criteria?: Record<string, unknown>,
+): Promise<CamoufoxSearchResult> {
+  return camoufoxCall<CamoufoxSearchResult>('search', {
+    query, city, pages, os: os || undefined, platform,
+    criteria: criteria && Object.keys(criteria).length ? criteria : undefined,
+  });
 }
 
 /** 隐身发送招呼语 */
@@ -164,6 +181,8 @@ export function camoufoxChat(
     platform?: string;
     sendResumeImage?: boolean;
     sendOnlineResume?: boolean;
+    /** 附件延迟（秒）：文字沟通确认 → 发送简历图片/在线简历 之间的类人等待基准（0=不额外等待） */
+    attachmentDelaySeconds?: number;
     /** 目标岗位上下文（用于进入沟通后核验 HR/公司，防发错人） */
     recruiterName?: string;
     company?: string;
@@ -188,6 +207,7 @@ export function camoufoxChat(
     platform: opts?.platform || 'boss',
     sendResumeImage: Boolean(opts?.sendResumeImage),
     sendOnlineResume: Boolean(opts?.sendOnlineResume),
+    attachmentDelaySeconds: Math.max(0, Number(opts?.attachmentDelaySeconds) || 4),
     recruiterName: opts?.recruiterName || '',
     company: opts?.company || '',
     jobTitle: opts?.jobTitle || '',

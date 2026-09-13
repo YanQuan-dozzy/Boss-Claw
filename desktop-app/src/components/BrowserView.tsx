@@ -30,11 +30,17 @@ import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import electronApi from '@/lib/electronApi';
 import { PLATFORM_META, PLATFORM_IDS, PLATFORM_CHIP_PALETTE, platformEnabled, resolvePlatform, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { isWhitelistedUrl, whitelistSitesOf, WHITELIST_GROUPS, type BrowserSite as BrowserWhitelistSite } from '@/lib/bossclaw/browserWhitelist';
 import { registerBrowser, unregisterBrowser } from '@/lib/browserRegistry';
 import CloakView from '@/components/CloakView';
+import BrowserNewTabPage, { type NewTabGroup } from '@/components/BrowserNewTabPage';
 
 // 默认加载 BOSS 直聘（多平台：按 defaultPlatform 加载对应平台首页）
 const BOSS_HOME = PLATFORM_META.boss.homeUrl;
+
+// 空白标签页（便签页）占位 URL，同时作为下拉的常驻选项 value：选择后新建空白标签，用户自行输入网址访问（受白名单约束）
+const NEW_TAB_PAGE_URL = '__newtab__';
+type NewTabSelection = JobPlatform | typeof NEW_TAB_PAGE_URL;
 
 // ===== 加载遮罩生命周期计时 =====
 // 遮罩由 webview 加载事件驱动。旧实现只依赖 did-finish-load（页面 load 事件），
@@ -96,6 +102,14 @@ export interface WebviewApi {
   getFirstTabId: () => string;
   /** 在指定标签页面上下文执行 BOSS 官方 API，返回原始响应（{code, zpData, ...} 或 {error}） */
   bossApi: (action: string, params?: Record<string, any>, tabId?: string) => Promise<any>;
+  /**
+   * 非 BOSS 平台「一键投递」：为该平台新建 detail 标签打开岗位详情，等 preload 就绪后下发
+   * platform-apply，终态经 platform-apply-result 回传 resolve。返回 {ok, stage, external?, code?, message?, error?, tabId}。
+   * stage: success | external | skip | stop | risk | failed。
+   */
+  platformApply: (url: string, platform: JobPlatform, job: any) => Promise<{
+    ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string;
+  }>;
   /**
    * 只读探测页面自身的就绪事实（readyState / 岗位卡片命中数 / 选择器计数 / 骨架屏启发式）。
    * 采集侧以此为**权威**判定「搜索页是否真的加载完成」——加载遮罩状态机只作参考，
@@ -167,10 +181,23 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     () => PLATFORM_IDS.filter((p) => platformEnabled(config0, p)),
     [config0],
   );
-  const [newTabPlatform, setNewTabPlatform] = useState<JobPlatform>('boss');
+  const [newTabPlatform, setNewTabPlatform] = useState<NewTabSelection>('boss');
   useEffect(() => {
-    if (!platformEnabled(config0, newTabPlatform)) setNewTabPlatform('boss');
+    if (newTabPlatform !== NEW_TAB_PAGE_URL && !platformEnabled(config0, newTabPlatform)) setNewTabPlatform('boss');
   }, [config0, newTabPlatform]);
+
+  // 便签页白名单分组：平台（按启用状态过滤）+ 综合/中高端 + 应届生/实习 + 蓝领/兼职/生活
+  const newTabGroups = useMemo<NewTabGroup[]>(() => {
+    const platformSites: BrowserWhitelistSite[] = enabledPlatforms.map((p) => {
+      const m = PLATFORM_META[p];
+      return { domain: m.domain, label: m.label, homeUrl: m.homeUrl, group: 'platform' as const, groupLabel: '平台' };
+    });
+    const groups: NewTabGroup[] = [{ label: '平台', sites: platformSites }];
+    for (const g of WHITELIST_GROUPS) {
+      groups.push({ label: g.label, sites: whitelistSitesOf(g.group) });
+    }
+    return groups;
+  }, [enabledPlatforms]);
 
   // 每个标签独立的加载状态：加载中 = true，加载完成 = false
   // 初始时所有标签都处于加载中（BOSS_HOME 尚未加载完毕）
@@ -325,6 +352,26 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
 
+  // ===== 闲置标签自动关闭（设置约束 autoCloseIdleTabs / idleCloseMinutes）=====
+  // 每个标签的「最近活跃时间戳」（激活 / 导航 / 切换标签时刷新）。仅 webview 模式生效；
+  // 巡检不关激活标签、标签数 ≤1 不关；关闭逻辑复用 closeTab（含 webview destroy 与注册表清理）。
+  const lastActivityRef = useRef<Record<string, number>>({});
+  const touchTab = useCallback((id: string) => {
+    lastActivityRef.current[id] = Date.now();
+  }, []);
+  // 新标签创建时补充初始活跃时间（makeTab 无时间戳字段，用副作用统一登记）
+  useEffect(() => {
+    const now = Date.now();
+    for (const t of tabsRef.current) {
+      if (lastActivityRef.current[t.id] == null) lastActivityRef.current[t.id] = now;
+    }
+  }, [tabs]);
+  // 切换激活标签视为活跃
+  const activateTab = useCallback((id: string) => {
+    touchTab(id);
+    setActiveId((prev) => (prev === id ? prev : id));
+  }, [touchTab]);
+
 
   // ===== 注册 webview 元素 + 绑定事件监听 =====
   // 关键修复：handleRegister 内部不直接使用 useCallback 的回调函数，
@@ -362,6 +409,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           const nextUrl = payload?.url;
           const nextTitle = payload?.title;
           if (nextUrl || nextTitle) {
+            touchTab(tabId); // 页面导航视为活跃
             patchTab(tabId, {
               url: nextUrl || undefined,
               title: nextTitle || undefined,
@@ -398,6 +446,14 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           cb.onDomDump?.(payload);
           break;
         case 'boss-api-result': {
+          const resolve = apiResolvers.current.get(String(payload?.seq));
+          if (resolve) {
+            apiResolvers.current.delete(String(payload?.seq));
+            resolve(payload);
+          }
+          break;
+        }
+        case 'platform-apply-result': {
           const resolve = apiResolvers.current.get(String(payload?.seq));
           if (resolve) {
             apiResolvers.current.delete(String(payload?.seq));
@@ -492,6 +548,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     el.addEventListener('did-navigate', (event: any) => {
       const url = event?.url;
       if (!url) return;
+      touchTab(tabId);
       patchTab(tabId, { url });
       if (tabId === activeIdRef.current) reportNavigate(url, '');
       forceResizeWebview(tabId);
@@ -500,6 +557,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       if (event?.isMainFrame !== false) {
         const url = event?.url;
         if (url) {
+          touchTab(tabId);
           patchTab(tabId, { url });
           if (tabId === activeIdRef.current) reportNavigate(url, '');
         }
@@ -536,7 +594,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       patchTab(activeIdRef.current, { url });
       patchTab(activeIdRef.current, { url, canGoBack: true, canGoForward: false });
     }) as any);
-  }, [patchTab]); // 唯一依赖是最新的 patchTab
+  }, [patchTab, touchTab]); // 唯一依赖是最新的 patchTab / 稳定的 touchTab
 
   // ===== 创建标签页（多标签版本）=====
   const createTab = useCallback((url: string, title: string, _activate: boolean, kind: 'main' | 'detail' = 'main'): string => {
@@ -547,22 +605,42 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return tab.id;
   }, []);
 
-  const activateTab = useCallback((id: string) => {
-    setActiveId((prev) => (prev === id ? prev : id));
+  // 白名单拦截：非招聘平台网址不允许在内置浏览器访问，可转系统浏览器
+  const confirmOpenExternal = useCallback((url: string) => {
+    const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    Modal.confirm({
+      title: '该网址不在招聘平台白名单内',
+      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台，可在系统浏览器中打开。`,
+      okText: '在系统浏览器打开',
+      cancelText: '取消',
+      onOk: () => { electronApi.external.open(url); },
+    });
   }, []);
 
-  // ===== 用户点 + 号：按所选平台新建 main 标签（采集多任务并发用；与设置页启用状态联动）=====
+  // ===== 用户点 + 号：选中「空白标签页」走便签页，否则按所选平台新建 main 标签（采集多任务并发用）=====
   const addTab = useCallback(() => {
+    if (newTabPlatform === NEW_TAB_PAGE_URL) {
+      // 空白标签页（便签页）：新建占位标签，用户自行输入网址访问（受白名单约束）；React 页面非 webview，不出加载遮罩
+      const id = createTab(NEW_TAB_PAGE_URL, '新标签页', true, 'main');
+      setLoadingTabs((prev) => { const s = new Set(prev); s.delete(id); return s; });
+      setFadingTabs((prev) => { const s = new Set(prev); s.delete(id); return s; });
+      return id;
+    }
     const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
     createTab(meta.homeUrl, meta.label, true, 'main');
   }, [createTab, newTabPlatform]);
 
-  // ===== 在新标签打开 URL：默认 detail（沟通详情页，完成后自动关闭）=====
+  // ===== 在新标签打开 URL：默认 detail（沟通详情页，完成后自动关闭）；非白名单网址拦截 =====
   const openInNewTab = useCallback((url?: string, title?: string, kind: 'main' | 'detail' = 'detail'): string => {
     const target = url || BOSS_HOME;
+    // 白名单约束：仅招聘平台网址允许在内置浏览器新建标签（其余可转系统浏览器）
+    if (url && !isWhitelistedUrl(target)) {
+      confirmOpenExternal(target);
+      return '';
+    }
     const fallbackTitle = PLATFORM_META[resolvePlatform(target)]?.label || 'BOSS直聘';
     return createTab(target, title || fallbackTitle, true, kind);
-  }, [createTab]);
+  }, [createTab, confirmOpenExternal]);
 
   // ===== 右键菜单「在新标签打开链接」→ 主进程经 jc:webview-open-link 转发到此处 =====
   useEffect(() => {
@@ -585,7 +663,8 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   }, []);
 
   const openEngineTab = useCallback((): string => {
-    const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
+    // 「空白标签页」不适用于引擎标签内部通道，回退默认平台首页
+    const meta = PLATFORM_META[(newTabPlatform === NEW_TAB_PAGE_URL ? 'boss' : newTabPlatform)] || PLATFORM_META.boss;
     return createTab(meta.homeUrl, meta.label, false, 'main');
   }, [createTab, newTabPlatform]);
 
@@ -624,6 +703,20 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     loadURLInTab(mainId, finalUrl);
   }, [loadURLInTab]);
 
+  // ===== 用户级导航入口（白名单拦截）：地址栏前往/回车、便签页输入框统一走这里 =====
+  // 白名单内 → 正常加载（有 tabId 则加载到指定标签，否则加载到主标签）；白名单外 → 拦截并确认转系统浏览器
+  const userNavigate = useCallback((raw: string, tabId?: string) => {
+    const target = raw.trim();
+    if (!target) return;
+    const finalUrl = /^https?:\/\//.test(target) ? target : 'https://' + target;
+    if (!isWhitelistedUrl(finalUrl)) {
+      confirmOpenExternal(finalUrl);
+      return;
+    }
+    if (tabId) loadURLInTab(tabId, finalUrl);
+    else navigate(finalUrl);
+  }, [confirmOpenExternal, loadURLInTab, navigate]);
+
   const loadURL = useCallback((url: string) => navigate(url), [navigate]);
 
   // ===== 关闭标签：只要还剩至少一个标签就真正移除；（最后一个标签保底重置为首页，始终保留一个 webview）=====
@@ -636,7 +729,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     const hasOthers = tabsRef.current.length > 1;
     if (!hasOthers) {
       // 最后一个标签：退化为占位（导航回当前默认平台首页，保留一个 webview/登录态）
-      const home = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
+      const home = PLATFORM_META[newTabPlatform === NEW_TAB_PAGE_URL ? 'boss' : newTabPlatform] || PLATFORM_META.boss;
       patchTab(id, { url: home.homeUrl, title: home.label, canGoBack: false, canGoForward: false });
       const el = webviewEls.current[id];
       if (el) {
@@ -652,6 +745,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       delete preloadReady.current[id];
       delete registeredTabs.current[id];
     }
+    delete lastActivityRef.current[id];
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id);
       return next.length ? next : prev;
@@ -665,6 +759,31 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   const closeTabById = useCallback((id?: string) => {
     closeTab(id || activeIdRef.current);
   }, [closeTab]);
+
+  // ===== 闲置标签自动关闭巡检（设置约束 autoCloseIdleTabs / idleCloseMinutes）=====
+  // 仅 webview 引擎模式生效（cloak/camoufox 的标签有自己的生命周期管理，不受本巡检影响）；
+  // 每 30s 巡检一次：存在「非激活」且「lastActivity 超过 idleCloseMinutes」的标签 → closeTab。
+  // 安全护栏：不关激活标签、标签总数 ≤1 不关、用户未开启时不注册定时器。
+  useEffect(() => {
+    if (!config0.autoCloseIdleTabs) return;
+    if (config0.engineMode !== 'webview') return;
+    const thresholdMs = Math.max(1, Number(config0.idleCloseMinutes) || 5) * 60_000;
+    const timer = setInterval(() => {
+      const list = tabsRef.current;
+      if (list.length <= 1) return;
+      const now = Date.now();
+      for (const t of list) {
+        if (t.id === activeIdRef.current) continue; // 不关当前激活标签
+        if (t.kind === 'main') continue; // 采集岗位主标签固定化，永不自动关闭
+        const last = lastActivityRef.current[t.id];
+        if (last != null && now - last > thresholdMs) {
+          closeTab(t.id);
+          break; // 列表已变化，下一个巡检轮次再处理其余
+        }
+      }
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [config0.autoCloseIdleTabs, config0.engineMode, config0.idleCloseMinutes, closeTab]);
 
   const hasTab = useCallback((id: string) => {
     return tabsRef.current.some((t) => t.id === id);
@@ -726,6 +845,46 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // 页面就绪事实探测：短超时（6s）——探测失败本身也是有效信息（preload 未就绪）
   const pageStatus = useCallback((tabId?: string) => cmdOnce('page-status', {}, 6000, tabId), [cmdOnce]);
 
+  // ===== 非 BOSS 平台「一键投递」：新标签页 DOM 投递（promise 通道，终态经 platform-apply-result）=====
+  // 为该平台新建 detail 标签打开岗位详情 → 等 preload 就绪且不再 loading（含登录重定向等待）→
+  // 下发 platform-apply；终态由 webview.cjs 经 platform-apply-result 回传（复用 seqRef/apiResolvers）。
+  const platformApply = useCallback(
+    (url: string, platform: JobPlatform, job: any): Promise<{ ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string }> =>
+      new Promise((resolve) => {
+        const tabId = openInNewTab(url, PLATFORM_META[platform]?.label || '岗位投递', 'detail');
+        const start = () => {
+          const seq = String((seqRef.current += 1));
+          const timer = setTimeout(() => {
+            if (apiResolvers.current.has(seq)) {
+              apiResolvers.current.delete(seq);
+              resolve({ ok: false, stage: 'failed', error: 'platform-apply 超时（25s）', tabId });
+            }
+          }, 26000);
+          apiResolvers.current.set(seq, (payload: any) => {
+            clearTimeout(timer);
+            resolve({ ...(payload || {}), tabId });
+          });
+          sendInTab(tabId, 'platform-apply', {
+            seq,
+            platform,
+            job,
+            externalApplyHints: PLATFORM_META[platform]?.externalApplyHints || [],
+          });
+        };
+        const deadline = Date.now() + 25000;
+        const poll = setInterval(() => {
+          if (isPreloadReady(tabId) && !isLoading(tabId)) {
+            clearInterval(poll);
+            start();
+          } else if (Date.now() > deadline) {
+            clearInterval(poll);
+            resolve({ ok: false, stage: 'failed', error: '详情页加载超时', tabId });
+          }
+        }, 350);
+      }),
+    [openInNewTab, isPreloadReady, isLoading, sendInTab],
+  );
+
   // ===== 暴露 apiRef（多标签版本）=====
   // 位置要求：必须在 pageStatus / cmdOnce 等成员定义之后（否则 TDZ 报错）
   useEffect(() => {
@@ -744,11 +903,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       getMainTabId,
       getDetailTabIds,
       bossApi,
+      platformApply,
       pageStatus,
       getActiveTabId: () => activeIdRef.current || '',
       getFirstTabId: () => tabsRef.current[0]?.id || '',
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, pageStatus]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus]);
   const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
   const runDomDump = useCallback((tabId?: string) => {
     sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });
@@ -881,10 +1041,13 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         <Tooltip title="新标签页">
           <Select
             size="small"
-            style={{ width: 96 }}
+            style={{ width: 112 }}
             value={newTabPlatform}
-            onChange={(v) => setNewTabPlatform(v as JobPlatform)}
-            options={enabledPlatforms.map((p) => ({ value: p, label: PLATFORM_META[p].label }))}
+            onChange={(v) => setNewTabPlatform(v as NewTabSelection)}
+            options={[
+              { value: NEW_TAB_PAGE_URL, label: '空白标签页' },
+              ...enabledPlatforms.map((p) => ({ value: p, label: PLATFORM_META[p].label })),
+            ]}
           />
           <Button size="small" type="text" icon={<PlusCircleOutlined />} onClick={addTab} aria-label="新标签页" />
         </Tooltip>
@@ -925,11 +1088,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           size="small"
           value={activeTab?.url || ''}
           onChange={(ev) => updateActiveUrl(ev.target.value)}
-          onPressEnter={() => activeTab && navigate(activeTab.url)}
+          onPressEnter={() => activeTab && userNavigate(activeTab.url)}
           placeholder="输入网址后回车"
           prefix={<span style={{ fontSize: 11, opacity: 0.6 }}>链接</span>}
         />
-        <Button size="small" type="primary" onClick={() => activeTab && navigate(activeTab.url)}>前往</Button>
+        <Button size="small" type="primary" onClick={() => activeTab && userNavigate(activeTab.url)}>前往</Button>
         <Tooltip title="把当前页面加入投递任务">
           <Button
             size="small"
@@ -954,6 +1117,18 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       {/* ===== webview 视口 ===== */}
       <div ref={viewportRef} className="browser-viewport">
         {tabs.map((t) => {
+          // 空白标签页（便签页）：React 渲染的白名单快捷页，无 <webview>
+          if (t.kind === 'main' && t.url === NEW_TAB_PAGE_URL) {
+            return (
+              <div key={t.id} className={'browser-pane browser-pane-newtab' + (t.id === activeId ? ' is-active' : '')}>
+                <BrowserNewTabPage
+                  groups={newTabGroups}
+                  onOpenSite={(site) => loadURLInTab(t.id, site.homeUrl)}
+                  onNavigate={(raw) => userNavigate(raw, t.id)}
+                />
+              </div>
+            );
+          }
           const isLoading = loadingTabs.has(t.id);
           const isFading = fadingTabs.has(t.id);
           // 加载动画按「标签当前 URL」所在平台动态展示（默认 BOSS，未知域名自动回退）

@@ -19,7 +19,14 @@ const SYSTEM_PROMPT = `你是求职方向的能力匹配核对助手。用户会
 2. gaps：该方向岗位通常需要、但求职者简历**明显没有**的真实能力缺口。要求：**完整梳理后按缺口重要性从高到低取前 5**（每项 ≤20 字，共 5 项）；**不得为了凑数而把已具备的能力报成缺口**；只写确属缺失的实质能力；**严禁**把简历已体现的能力报成缺口（例如简历已熟练 PostgreSQL/MySQL/SQL 调优/索引/事务，就**不得**把「数据库」列为缺口，应细化为它真正缺的部分）。
 
 注意：要与简历实际内容逐一对齐。matchedSkills 与 gaps 都尽量细化、具体、可操作，不要用「数据库」「接口设计」这类宽泛词；简历已覆盖的领域不得进入 gaps；**若确实没有实质缺口，就如实只列 1 项或留空，严禁编造/凑数**。
-只输出 JSON：{"items":[{"name":"方向名","matchedSkills":["..."],"gaps":["..."]}]}，不要任何解释文字。`;
+
+【输出 schema】只输出以下字段（字段名与类型不可变更；items 需覆盖用户给出的每一个方向）：
+{"items":[{"name":"方向名","matchedSkills":["..."],"gaps":["..."]}]}
+
+【输出样例】（仅示意字段格式与写法，内容必须来自简历素材真实事实，不得照抄样例内容）：
+{"items":[{"name":"后端开发","matchedSkills":["PostgreSQL 索引与事务","SQL 调优","Spring Boot 接口开发"],"gaps":["Kubernetes：岗位常要求容器编排与集群运维，简历未体现相关经历，建议补充实操项目"]}]}
+
+只输出一个 json 对象，不要任何解释文字、不要代码块围栏。`;
 
 export interface DirectionDetailRefineInput {
   items: DirectionItem[];
@@ -41,6 +48,7 @@ export function parseDirectionDetails(raw: unknown): DirectionDetailRefineResult
     try {
       parsed = extractJson(raw);
     } catch {
+      console.warn('[directionDetailAI] AI 返回 JSON 解析/修复失败，本次方向细化将回退为本地：', raw.slice(0, 240));
       parsed = null;
     }
   }

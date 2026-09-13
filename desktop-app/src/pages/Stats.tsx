@@ -1,73 +1,92 @@
-import { useMemo } from 'react';
-import { Card, Progress, Space, Tag, Tooltip, Typography } from 'antd';
+// 数据统计页
+// ---------------------------------------------------------------------------
+// 数据来源：`statsAggregate.buildStatsSnapshot` —— 页面 / CSV 导出 / PDF 报表 / 控制桥
+// 四处的**唯一聚合源**，口径不允许各自再算一遍。
+//
+// 本轮修正的问题（原实现）：
+//   1) 趋势「已投递」用 createdAt（加入日期）冒充投递日期 → 改用 sentAt；
+//   2) 「今日目标达成」用累计已投递当分子 → 改用今日 sentAt，与每日上限同口径；
+//   3) 状态分布漏了 `opened`（已打开沟通窗）→ 各状态占比合计不再是 100-n；
+//   4) `mb-16` / `mt-12` 是死类（index.css 未定义）→ 改为显式 CSS 类；
+//   5) 两处栅格列宽内联硬编码，窄屏不塌陷 → 移入 CSS 并按断点收起；
+//   6) 同一份 pending 在渲染期被反复全量遍历 → 单遍扫描建 Map。
+//
+// 视觉口径（redesign 审计后收敛）：
+//   - 去掉指标卡顶部 6 色渐变色条（AI 指纹），改 2px 实心语义色脊线；
+//   - 数值统一 tabular-nums（等宽对齐），等宽字体走主题变量 `--font-mono`；
+//   - 趋势图独占整行（30 日桶需要宽度），打破「全是等宽两栏」的呆板节奏；
+//   - 空态从「暂无数据」升级为三步上手引导 + 主操作。
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Card, Dropdown, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
-  BarChartOutlined,
   AimOutlined,
+  ArrowRightOutlined,
+  BarChartOutlined,
   CheckCircleFilled,
-  CloseCircleFilled,
   ClockCircleOutlined,
+  CloseCircleFilled,
+  DownOutlined,
+  DownloadOutlined,
+  EnvironmentOutlined,
+  FlagOutlined,
+  QuestionCircleOutlined,
+  RiseOutlined,
   RocketOutlined,
   StopOutlined,
   TeamOutlined,
-  EnvironmentOutlined,
-  FlagOutlined,
-  RiseOutlined,
-  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { effectiveDailyCap } from '@/lib/bossclaw/safety';
-import { selectedDirectionItems } from '@/lib/bossclaw/directions';
-import { EmptyState } from '@/components/feedback';
-import type { Decision, PendingStatus } from '@/lib/bossclaw/types';
+import { useAppStore } from '@/store/useAppStore';
+import { electronApi } from '@/lib/electronApi';
+import {
+  STATS_DECISION_META,
+  STATS_RANGES,
+  STATS_STATUS_META,
+  buildStatsSnapshot,
+  formatRate,
+  formatScore,
+  pct,
+  rangeText,
+  type CrossRow,
+  type StatsRangeKey,
+  type StatsSnapshot,
+  type TrendBucket,
+} from '@/lib/bossclaw/statsAggregate';
+import { buildDetailRows, buildSummaryRows, exportFilename, toCsv, type ExportKind } from '@/lib/bossclaw/statsExport';
+import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
+import { revealFile, saveCsvFile, saveReportPdf, type ExportOutcome } from '@/lib/bossclaw/statsExportRun';
 
 const { Text } = Typography;
 
-/* ---------- 口径常量（对齐 recomputeStats / rerankPending） ---------- */
+/* ============================ 小组件 ============================ */
 
-const STATUS_META: { key: PendingStatus; label: string; color: string }[] = [
-  { key: 'pending', label: '待确认', color: '#8c8c8c' },
-  { key: 'approved', label: '待投递', color: '#1677ff' },
-  { key: 'approved_queue', label: '投递中', color: '#13c2c2' },
-  { key: 'sent', label: '已投递', color: '#52c41a' },
-  { key: 'failed', label: '失败', color: '#ff4d4f' },
-  { key: 'skipped', label: '已跳过', color: '#bfbfbf' },
-  { key: 'ignored', label: '已忽略', color: '#d9d9d9' },
-  { key: 'rejected', label: '不推荐', color: '#fa8c16' },
-];
-
-const DECISION_META: Record<Decision, { label: string; color: string }> = {
-  recommend: { label: '推荐投递', color: '#52c41a' },
-  cautious: { label: '谨慎投递', color: '#fa8c16' },
-  reject: { label: '不推荐', color: '#ff4d4f' },
-};
-
-const dayKey = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-const countBy = (items: (string | undefined)[]) => {
-  const map = new Map<string, number>();
-  items.forEach((v) => {
-    if (v) map.set(v, (map.get(v) || 0) + 1);
-  });
-  return [...map.entries()].sort((a, b) => b[1] - a[1]);
-};
-
-/* ---------- 自绘小组件（不引入图表库） ---------- */
-
-function HBar({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
-  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+function HBar({
+  label,
+  value,
+  total,
+  color,
+  hint,
+}: {
+  label: string;
+  value: number;
+  total: number;
+  color: string;
+  hint?: string;
+}) {
+  const percent = pct(value, total);
   return (
     <div className="hbar">
       <div className="hbar-head">
-        <span className="hbar-label">{label}</span>
+        <span className="hbar-label" title={hint}>{label}</span>
         <span className="hbar-value">
-          {value} <span className="hbar-pct">{pct}%</span>
+          {value} <span className="hbar-pct">{percent}%</span>
         </span>
       </div>
       <div className="hbar-track">
-        <Tooltip title={`${label}：${value} 个（${pct}%）`}>
-          <div className="hbar-fill" style={{ width: `${pct}%`, background: color }} />
+        <Tooltip title={hint ? `${label}：${value} 个（${percent}%）· ${hint}` : `${label}：${value} 个（${percent}%）`}>
+          <div className="hbar-fill" style={{ width: `${percent}%`, background: color }} />
         </Tooltip>
       </div>
     </div>
@@ -75,150 +94,297 @@ function HBar({ label, value, total, color }: { label: string; value: number; to
 }
 
 function TopList({ items, icon }: { items: [string, number][]; icon: React.ReactNode }) {
-  if (items.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>暂无数据</Text>;
+  if (items.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>范围内暂无数据</Text>;
   const max = items[0][1] || 1;
   return (
     <div className="top-list">
-      {items.map(([name, n]) => (
+      {items.map(([name, n], i) => (
         <div className="top-item" key={name}>
           <span className="top-rank">{icon}</span>
           <span className="top-name" title={name}>{name}</span>
           <span className="top-count">{n}</span>
-          <span className="top-track"><span className="top-fill" style={{ width: `${Math.round((n / max) * 100)}%` }} /></span>
+          <span className="top-track">
+            <span className="top-fill" style={{ width: `${Math.round((n / max) * 100)}%`, opacity: i === 0 ? 1 : 0.72 }} />
+          </span>
         </div>
       ))}
     </div>
   );
 }
 
-function TrendChart({ days }: { days: { label: string; added: number; sent: number }[] }) {
-  const max = Math.max(1, ...days.map((d) => d.added), ...days.map((d) => d.sent));
+/** 轴标签抽样步长：桶多时避免标签糊成一团 */
+function axisStepFor(count: number): number {
+  if (count <= 12) return 1;
+  return Math.ceil(count / 10);
+}
+
+function TrendChart({ buckets }: { buckets: TrendBucket[] }) {
+  const max = Math.max(1, ...buckets.map((d) => d.added), ...buckets.map((d) => d.sent));
+  const step = axisStepFor(buckets.length);
   return (
     <div className="trend">
-      {days.map((d) => (
-        <div className="trend-col" key={d.label}>
-          <div className="trend-bars">
-            <Tooltip title={`加入 ${d.added} 个`}>
-              <div className="trend-bar added" style={{ height: `${Math.max(2, Math.round((d.added / max) * 100))}%` }} />
-            </Tooltip>
-            <Tooltip title={`已投递 ${d.sent} 个`}>
-              <div className="trend-bar sent" style={{ height: `${Math.max(2, Math.round((d.sent / max) * 100))}%` }} />
-            </Tooltip>
+      <div className="trend-cols">
+        {buckets.map((d) => (
+          <div className="trend-col" key={d.key}>
+            <div className="trend-bars">
+              <Tooltip title={`${d.fullLabel} · 加入 ${d.added} 个`}>
+                <div className="trend-bar added" style={{ height: `${Math.max(2, (d.added / max) * 100)}%` }} />
+              </Tooltip>
+              <Tooltip title={`${d.fullLabel} · 已投递 ${d.sent} 个`}>
+                <div className="trend-bar sent" style={{ height: `${Math.max(2, (d.sent / max) * 100)}%` }} />
+              </Tooltip>
+            </div>
           </div>
-          <div className="trend-label">{d.label}</div>
-        </div>
-      ))}
+        ))}
+      </div>
+      <div className="trend-axis">
+        {buckets.map((d, i) => (
+          <span key={d.key}>{i % step === 0 || i === buckets.length - 1 ? d.label : ''}</span>
+        ))}
+      </div>
     </div>
   );
 }
 
-/* ---------- 页面 ---------- */
+/** 匹配分数趋势：纵轴固定 0-100（分数本身是百分制），叠加 70 / 40 参考线 */
+function ScoreTrend({ buckets }: { buckets: TrendBucket[] }) {
+  const withSample = buckets.filter((b) => b.avgScore !== null).length;
+  if (withSample === 0) return <Text type="secondary" style={{ fontSize: 12 }}>范围内暂无 AI 分数</Text>;
+  const step = axisStepFor(buckets.length);
+  return (
+    <div className="score-chart">
+      <div className="score-chart-frame">
+        <div className="score-chart-body">
+          <div className="score-guide" style={{ bottom: '70%' }}><span>70</span></div>
+          <div className="score-guide" style={{ bottom: '40%' }}><span>40</span></div>
+          <div className="score-cols">
+            {buckets.map((b) => (
+              <Tooltip
+                key={b.key}
+                title={
+                  b.avgScore === null
+                    ? `${b.fullLabel} · 无样本`
+                    : `${b.fullLabel} · 均分 ${b.avgScore.toFixed(1)}（${b.analyzed} 条）`
+                }
+              >
+                <div className="score-col">
+                  <div
+                    className="score-bar"
+                    style={{ height: b.avgScore === null ? '0%' : `${Math.max(2, b.avgScore)}%` }}
+                  />
+                </div>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="trend-axis">
+        {buckets.map((b, i) => (
+          <span key={b.key}>{i % step === 0 || i === buckets.length - 1 ? b.label : ''}</span>
+        ))}
+      </div>
+      <p className="stats-note">
+        仅统计已有 AI 分数的 {withSample} 个时间桶；虚线为 70 分与 40 分参考线。
+      </p>
+    </div>
+  );
+}
+
+function CrossTable({ rows }: { rows: CrossRow[] }) {
+  if (rows.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>范围内暂无数据</Text>;
+  return (
+    <div className="stats-table-wrap">
+      <table className="stats-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th className="num">岗位数</th>
+            <th className="num">已投递</th>
+            <th className="num">失败</th>
+            <th className="num">待处理</th>
+            <th className="num">成功率</th>
+            <th className="num">平均分</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td className="name">{r.label}</td>
+              <td className="num">{r.total}</td>
+              <td className="num">{r.sent}</td>
+              <td className="num">{r.failed}</td>
+              <td className="num">{r.waiting}</td>
+              <td className="num">{formatRate(r.successRate)}</td>
+              <td className="num">{formatScore(r.avgScore)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ============================ 页面 ============================ */
 
 export default function Stats() {
   const pending = useDataStore((s) => s.pending);
   const taskRuns = useDataStore((s) => s.taskRuns);
   const directionPlan = useDataStore((s) => s.directionPlan);
+  const addLog = useDataStore((s) => s.addLog);
   const config = useSettingsStore((s) => s.config);
+  const setRoute = useAppStore((s) => s.setRoute);
 
-  const agg = useMemo(() => {
-    const byStatus = (s: PendingStatus) => pending.filter((p) => p.status === s).length;
-    const total = pending.length;
+  const [range, setRange] = useState<StatsRangeKey>('7d');
+  const [crossBy, setCrossBy] = useState<'platform' | 'direction'>('platform');
+  const [exporting, setExporting] = useState<ExportKind | null>(null);
+  const [appVersion, setAppVersion] = useState('');
 
-    const decisions: Record<Decision, number> = { recommend: 0, cautious: 0, reject: 0 };
-    const scoreBands = { high: 0, mid: 0, low: 0, none: 0 };
-    let analyzed = 0;
-    pending.forEach((p) => {
-      const a = p.analysis;
-      if (a?.decision) decisions[a.decision] += 1;
-      if (a) {
-        analyzed += 1;
-        const s = a.score ?? -1;
-        if (s >= 70) scoreBands.high += 1;
-        else if (s >= 40) scoreBands.mid += 1;
-        else scoreBands.low += 1;
-      } else {
-        scoreBands.none += 1;
+  useEffect(() => {
+    let alive = true;
+    electronApi
+      .getAppInfo()
+      .then((info) => { if (alive && info?.version) setAppVersion(info.version); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const snapshot = useMemo<StatsSnapshot>(
+    () => buildStatsSnapshot({ pending, taskRuns, directionPlan, config, range }),
+    [pending, taskRuns, directionPlan, config, range]
+  );
+
+  /* ---------- 导出（硬契约：每次都由用户在弹出的系统对话框里选保存位置） ---------- */
+  const runExport = useCallback(
+    async (kind: ExportKind) => {
+      if (exporting) return;
+      setExporting(kind);
+      try {
+        // 导出时重建快照：拿到「此刻」的数据与生成时间，避免用上一次渲染的旧快照
+        const snap = buildStatsSnapshot({ pending, taskRuns, directionPlan, config, range, now: Date.now() });
+        let outcome: ExportOutcome;
+        if (kind === 'report') {
+          outcome = await saveReportPdf(exportFilename('report', snap, 'pdf'), buildStatsReportHtml(snap, appVersion));
+        } else {
+          const rows =
+            kind === 'detail'
+              ? buildDetailRows(pending, snap)
+              : buildSummaryRows(snap, { pending, taskRuns, config });
+          outcome = await saveCsvFile(exportFilename(kind, snap, 'csv'), toCsv(rows), kind);
+        }
+
+        if (outcome.ok) {
+          const label = kind === 'detail' ? '岗位明细' : kind === 'summary' ? '统计汇总' : '统计报表';
+          addLog('info', `导出${label}：${outcome.filePath}`);
+          if (outcome.viaDownload) {
+            // 浏览器兜底只有文件名，没有真实路径
+            message.success(`已下载 ${outcome.filePath}`);
+          } else {
+            const filePath = outcome.filePath;
+            message.success({
+              content: (
+                <span className="stats-export-toast">
+                  已保存到 {filePath}
+                  <Button type="link" size="small" icon={<RocketOutlined />} onClick={() => revealFile(filePath)}>
+                    打开所在文件夹
+                  </Button>
+                </span>
+              ),
+              duration: 8,
+            });
+          }
+        } else if (!outcome.canceled) {
+          // 用户取消保存不属于失败：按契约不写盘、不报错、不提示
+          message.error(`导出失败：${outcome.error}`);
+        }
+      } catch (e) {
+        message.error(`导出失败：${(e as Error).message}`);
+      } finally {
+        setExporting(null);
       }
-    });
+    },
+    [exporting, pending, taskRuns, directionPlan, config, range, appVersion, addLog]
+  );
 
-    const sent = byStatus('sent');
-    const failed = byStatus('failed');
-    const skippedIgnored = byStatus('skipped') + byStatus('ignored');
-    const waiting = byStatus('pending') + byStatus('approved') + byStatus('approved_queue');
-
-    const companyTop = countBy(pending.map((p) => p.job?.company)).slice(0, 8);
-    const cityTop = countBy(pending.map((p) => p.job?.location)).slice(0, 8);
-    const directionTop = countBy(taskRuns.map((r) => r.directionName)).slice(0, 8);
-
-    const runStatus: Record<string, number> = {};
-    taskRuns.forEach((r) => { runStatus[r.status] = (runStatus[r.status] || 0) + 1; });
-
-    // 近 7 日趋势（按记录创建日期）
-    const days: { label: string; added: number; sent: number }[] = [];
-    const now = new Date();
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const key = dayKey(d);
-      const added = pending.filter((p) => dayKey(new Date(p.createdAt)) === key).length;
-      const s = pending.filter((p) => p.status === 'sent' && dayKey(new Date(p.createdAt)) === key).length;
-      days.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, added, sent: s });
-    }
-
-    return {
-      total, sent, failed, skippedIgnored, waiting,
-      decisions, scoreBands, analyzed,
-      companyTop, cityTop, directionTop, runStatus, days,
-    };
-  }, [pending, taskRuns]);
-
-  const directionCount = selectedDirectionItems(directionPlan).length;
-  const decisionTotal = agg.decisions.recommend + agg.decisions.cautious + agg.decisions.reject;
-  const scoreTotal = agg.scoreBands.high + agg.scoreBands.mid + agg.scoreBands.low + agg.scoreBands.none;
-  // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
-  const target = Math.max(1, effectiveDailyCap(config));
-  const goalPct = Math.min(100, Math.round((agg.sent / target) * 100));
-
-  const overviewCards: Array<{
-    icon: React.ReactNode;
-    cls: string;
-    title: string;
-    value: number;
-    note: string;
-    badge?: string;
-    pct?: number;
-  }> = [
-    { icon: <TeamOutlined />, cls: 'teal', title: '岗位总数', value: agg.total, note: '全部已记录岗位', badge: '记录' },
-    { icon: <CheckCircleFilled />, cls: 'green', title: '已投递', value: agg.sent, note: '投递成功', pct: agg.total > 0 ? Math.round((agg.sent / agg.total) * 100) : 0 },
-    { icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: agg.waiting, note: '待确认 / 待投递 / 投递中', pct: agg.total > 0 ? Math.round((agg.waiting / agg.total) * 100) : 0 },
-    { icon: <CloseCircleFilled />, cls: 'red', title: '失败', value: agg.failed, note: '可重试 / 忽略', pct: agg.total > 0 ? Math.round((agg.failed / agg.total) * 100) : 0 },
-    { icon: <StopOutlined />, cls: 'orange', title: '跳过 / 忽略', value: agg.skippedIgnored, note: '未投递岗位', pct: agg.total > 0 ? Math.round((agg.skippedIgnored / agg.total) * 100) : 0 },
-    { icon: <AimOutlined />, cls: 'purple', title: '已确认方向', value: directionCount, note: '投递方向模板', badge: '模板' },
+  /* ---------- 指标卡 ---------- */
+  const overviewCards = [
+    { icon: <TeamOutlined />, cls: 'teal', title: '岗位总数', value: snapshot.total, note: '范围内已记录岗位', badge: '记录' },
+    {
+      icon: <CheckCircleFilled />, cls: 'green', title: '已投递', value: snapshot.sent,
+      note: '投递成功', pctText: `${pct(snapshot.sent, snapshot.total)}%`,
+    },
+    {
+      icon: <ClockCircleOutlined />, cls: 'blue', title: '待处理', value: snapshot.waiting,
+      note: '待确认 / 待投递 / 投递中 / 已打开', pctText: `${pct(snapshot.waiting, snapshot.total)}%`,
+    },
+    {
+      icon: <CloseCircleFilled />, cls: 'red', title: '失败', value: snapshot.failed,
+      note: '可重试或忽略', pctText: `${pct(snapshot.failed, snapshot.total)}%`,
+    },
+    {
+      icon: <StopOutlined />, cls: 'orange', title: '跳过 / 忽略', value: snapshot.skippedIgnored,
+      note: '未投递岗位', pctText: `${pct(snapshot.skippedIgnored, snapshot.total)}%`,
+    },
+    { icon: <AimOutlined />, cls: 'purple', title: '已确认方向', value: snapshot.directionCount, note: '投递方向模板', badge: '模板' },
   ];
 
+  const empty = pending.length === 0 && taskRuns.length === 0;
+
+  const exportMenu = {
+    items: [
+      { key: 'detail', label: '岗位明细 CSV', icon: <DownloadOutlined /> },
+      { key: 'summary', label: '统计汇总 CSV', icon: <DownloadOutlined /> },
+      { type: 'divider' as const },
+      { key: 'report', label: '统计报表 PDF（A4 横版）', icon: <DownloadOutlined /> },
+    ],
+    onClick: ({ key }: { key: string }) => void runExport(key as ExportKind),
+  };
+
   return (
-    <div className="page">
+    <div className="page stats-page">
       <div className="page-head">
         <div>
           <h1 className="page-title">
             <BarChartOutlined className="page-title-icon" />数据统计
           </h1>
           <p className="page-sub">
-            基于本地任务与岗位记录实时聚合，无需联网。口径与「任务进度」一致：已投递 / 失败 / 待处理 / 跳过忽略等按岗位状态统计。
+            基于本地任务与岗位记录实时聚合，无需联网。岗位指标按「加入时间」落在所选范围内统计；
+            趋势「已投递」按投递成功时间归桶。每次导出都会弹出系统保存对话框，由你选择保存位置。
           </p>
         </div>
-        <div className="page-head-extra">
-          <Tag icon={<RiseOutlined />} color="processing" style={{ borderRadius: 999 }}>
-            AI 分析 {agg.analyzed} / {agg.total}
-          </Tag>
+        <div className="page-head-extra stats-head-extra">
+          <Segmented
+            value={range}
+            onChange={(v) => setRange(v as StatsRangeKey)}
+            options={STATS_RANGES.map((r) => ({ label: r.label, value: r.key }))}
+          />
+          <Dropdown menu={exportMenu} trigger={['click']} placement="bottomRight">
+            <Button type="primary" icon={<DownloadOutlined />} loading={Boolean(exporting)}>
+              导出 <DownOutlined style={{ fontSize: 10 }} />
+            </Button>
+          </Dropdown>
         </div>
       </div>
 
-      {agg.total === 0 && taskRuns.length === 0 ? (
+      {empty ? (
         <Card>
-          <EmptyState
-            title="暂无统计数据"
-            description="到「工作台」加入岗位或新建任务后，这里会展示完整统计。"
-          />
+          <div className="stats-empty">
+            <div className="stats-empty-icon"><BarChartOutlined /></div>
+            <h2 className="stats-empty-title">还没有可统计的数据</h2>
+            <p className="stats-empty-desc">
+              统计页只读取本地记录，不联网也不会上传。走完下面三步，指标、趋势与交叉视图会自动出现。
+            </p>
+            <ol className="stats-empty-steps">
+              <li><b>配置投递方向</b><span>在「投递方向」确认关键词与城市，让筛选有依据</span></li>
+              <li><b>采集岗位</b><span>在「工作台」用内置浏览器打开岗位并加入队列</span></li>
+              <li><b>确认并投递</b><span>在「任务进度」确认后由安全引擎执行投递</span></li>
+            </ol>
+            <div className="stats-empty-actions">
+              <Button type="primary" icon={<ArrowRightOutlined />} onClick={() => setRoute('workbench')}>
+                前往工作台
+              </Button>
+              <Button onClick={() => setRoute('directions')}>先配置方向</Button>
+            </div>
+          </div>
         </Card>
       ) : (
         <>
@@ -226,12 +392,12 @@ export default function Stats() {
           <div className="stat-cards-grid">
             {overviewCards.map((c) => (
               <div className={`stat-card stat-card-${c.cls}`} key={c.title}>
-                <div className="stat-card-top-accent" />
+                <div className="stat-card-spine" />
                 <div className="stat-card-content">
                   <div className="stat-card-header">
                     <div className={'stat-icon ' + c.cls}>{c.icon}</div>
-                    {c.pct !== undefined ? (
-                      <span className={`stat-badge ${c.cls}`}>{c.pct}%</span>
+                    {c.pctText ? (
+                      <span className={`stat-badge ${c.cls}`}>{c.pctText}</span>
                     ) : c.badge ? (
                       <span className={`stat-badge ${c.cls}`}>{c.badge}</span>
                     ) : null}
@@ -246,108 +412,195 @@ export default function Stats() {
             ))}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)', gap: 20, marginBottom: 20 }}>
-            {/* 岗位状态分布 */}
-            <Card size="small" title="岗位状态分布" className="mb-16"
-              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {agg.total} 条记录</Text>}>
-              {STATUS_META.map((m) => (
-                <HBar key={m.key} label={m.label} value={pending.filter((p) => p.status === m.key).length} total={agg.total} color={m.color} />
+          {/* 状态分布 + AI 匹配分析 */}
+          <div className="stats-row stats-row--2">
+            <Card size="small" title="岗位状态分布"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {snapshot.total} 条记录</Text>}>
+              {STATS_STATUS_META.map((m) => (
+                <HBar
+                  key={m.key}
+                  label={m.label}
+                  hint={m.hint}
+                  value={snapshot.counts[m.key] ?? 0}
+                  total={snapshot.total}
+                  color={m.color}
+                />
               ))}
             </Card>
 
-            {/* AI 匹配分析 */}
-            <Card size="small" title="AI 匹配分析" className="mb-16">
+            <Card
+              size="small"
+              title="AI 匹配分析"
+              extra={
+                <Tag icon={<RiseOutlined />} color="processing" style={{ borderRadius: 6 }}>
+                  已分析 {snapshot.analyzed} / {snapshot.total}
+                </Tag>
+              }
+            >
               <div className="stats-2col">
                 <div>
                   <div className="block-label">决策分布</div>
-                  {decisionTotal === 0 ? (
+                  {snapshot.decisionTotal === 0 ? (
                     <Text type="secondary" style={{ fontSize: 12 }}>尚无 AI 分析结果</Text>
                   ) : (
-                    (Object.keys(DECISION_META) as Decision[]).map((k) => (
-                      <HBar key={k} label={DECISION_META[k].label} value={agg.decisions[k]} total={decisionTotal} color={DECISION_META[k].color} />
+                    (Object.keys(STATS_DECISION_META) as (keyof typeof STATS_DECISION_META)[]).map((k) => (
+                      <HBar
+                        key={k}
+                        label={STATS_DECISION_META[k].label}
+                        value={snapshot.decisions[k]}
+                        total={snapshot.decisionTotal}
+                        color={STATS_DECISION_META[k].color}
+                      />
                     ))
                   )}
                 </div>
                 <div>
                   <div className="block-label">匹配分数分布</div>
-                  {scoreTotal === 0 ? (
+                  {snapshot.scoreBands.total === 0 ? (
                     <Text type="secondary" style={{ fontSize: 12 }}>尚无匹配分数</Text>
                   ) : (
                     <>
-                      <HBar label="高（≥70）" value={agg.scoreBands.high} total={scoreTotal} color="#52c41a" />
-                      <HBar label="中（40-69）" value={agg.scoreBands.mid} total={scoreTotal} color="#fa8c16" />
-                      <HBar label="低（&lt;40）" value={agg.scoreBands.low} total={scoreTotal} color="#ff4d4f" />
-                      <HBar label="未分析" value={agg.scoreBands.none} total={scoreTotal} color="#d9d9d9" />
+                      <HBar label="高（70 及以上）" value={snapshot.scoreBands.high} total={snapshot.scoreBands.total} color="#10B981" />
+                      <HBar label="中（40-69）" value={snapshot.scoreBands.mid} total={snapshot.scoreBands.total} color="#F59E0B" />
+                      <HBar label="低（40 以下）" value={snapshot.scoreBands.low} total={snapshot.scoreBands.total} color="#EF4444" />
+                      <HBar label="未分析" value={snapshot.scoreBands.none} total={snapshot.scoreBands.total} color="#CBD5E1" />
                     </>
                   )}
-                </div>
-              </div>
-
-              {/* 今日目标达成 */}
-              <div className="block-label mt-12" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                今日目标达成
-                <Tooltip title="今日目标 = 各已启用平台每日目标合计，可在「设置 → 招聘平台」逐平台调整（每平台上限于平台侧限制与防封号上限）">
-                  <QuestionCircleOutlined style={{ fontSize: 12, color: 'var(--fg-muted)' }} />
-                </Tooltip>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <Progress type="circle" size={72} percent={goalPct} strokeColor={{ from: '#13b5ac', to: '#078A83' }} />
-                <div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{agg.sent}<span style={{ fontSize: 13, fontWeight: 400, color: 'var(--fg-muted)' }}> / {target}</span></div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>累计已投递 / 目标</Text>
                 </div>
               </div>
             </Card>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)', gap: 20, marginBottom: 20 }}>
-            {/* 近 7 日趋势 */}
-            <Card size="small" title="近 7 日趋势" className="mb-16"
+          {/* 投递趋势（独占整行：30 日桶需要宽度） */}
+          <div className="stats-block">
+            <Card
+              size="small"
+              title="投递趋势"
               extra={
                 <Space size={12}>
                   <span className="legend"><i className="legend-dot added" />新增岗位</span>
                   <span className="legend"><i className="legend-dot sent" />已投递</span>
                 </Space>
-              }>
-              <TrendChart days={agg.days} />
-              <Text type="secondary" style={{ fontSize: 11 }}>按岗位记录创建日期统计；已投递按同一加入日期归类。</Text>
+              }
+            >
+              <TrendChart buckets={snapshot.trend} />
+              <p className="stats-note">
+                时间范围 {rangeText(snapshot)}；「新增」按岗位加入日期归桶，「已投递」按投递成功时间归桶 ——
+                两者依据不同，因此柱子合计与「已投递」卡片可能不相等。
+              </p>
+            </Card>
+          </div>
+
+          {/* 分数趋势 + 投递质量 */}
+          <div className="stats-row stats-row--2">
+            <Card size="small" title="匹配分数趋势"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>样本 {snapshot.scored} 条</Text>}>
+              <ScoreTrend buckets={snapshot.trend} />
             </Card>
 
-            {/* 任务概览 */}
-            <Card size="small" title="任务概览" className="mb-16"
-              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {taskRuns.length} 个任务</Text>}>
-              {taskRuns.length === 0 ? (
+            <Card size="small" title="投递质量与目标">
+              <div className="quality-grid">
+                <div className="quality-item">
+                  <div className="quality-label">平均匹配分</div>
+                  <div className="quality-value">{formatScore(snapshot.avgScore)}</div>
+                  <div className="quality-note">仅统计已有 AI 分数的岗位</div>
+                </div>
+                <div className="quality-item">
+                  <div className="quality-label">投递成功率</div>
+                  <div className="quality-value">{formatRate(snapshot.successRate)}</div>
+                  <div className="quality-note">已投递 {snapshot.sent} / 失败 {snapshot.failed}</div>
+                </div>
+              </div>
+
+              <div className="block-label stats-mt stats-label-row">
+                <span>今日目标达成</span>
+                <Tooltip title="今日目标 = 各已启用平台每日目标合计，可在「设置 → 招聘平台」逐平台调整（上限于平台侧限制与防封号上限）。统计口径为今日投递成功数，与每日投递上限一致">
+                  <QuestionCircleOutlined className="stats-help-icon" />
+                </Tooltip>
+              </div>
+              <div className="quality-goal">
+                <Progress
+                  type="circle"
+                  size={72}
+                  percent={snapshot.goalPct}
+                  strokeColor={{ from: '#13b5ac', to: '#078A83' }}
+                />
+                <div>
+                  <div className="quality-goal-value">
+                    {snapshot.todaySent}
+                    <span className="quality-goal-target"> / {snapshot.dailyTarget}</span>
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>今日已投递 / 每日目标</Text>
+                </div>
+              </div>
+            </Card>
+          </div>
+
+          {/* 平台 / 方向交叉视图 */}
+          <div className="stats-block">
+            <Card
+              size="small"
+              title="交叉视图"
+              extra={
+                <Segmented
+                  size="small"
+                  value={crossBy}
+                  onChange={(v) => setCrossBy(v as 'platform' | 'direction')}
+                  options={[
+                    { label: '按平台', value: 'platform' },
+                    { label: '按方向', value: 'direction' },
+                  ]}
+                />
+              }
+            >
+              <CrossTable rows={crossBy === 'platform' ? snapshot.platformCross : snapshot.directionCross} />
+              <p className="stats-note">
+                成功率 = 已投递 /（已投递 + 失败）；「待处理」含待确认、待投递、投递中与已打开沟通窗。
+                方向按岗位所属任务归类，未关联任务的记为「未归属方向」。
+              </p>
+            </Card>
+          </div>
+
+          {/* Top 榜 + 任务概览 */}
+          <div className="stats-row stats-row--3">
+            <Card size="small" title="公司 Top">
+              <TopList items={snapshot.companyTop} icon={<RocketOutlined />} />
+            </Card>
+            <Card size="small" title="城市 Top">
+              <TopList items={snapshot.cityTop} icon={<EnvironmentOutlined />} />
+            </Card>
+            <Card size="small" title="任务概览"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {snapshot.taskTotal} 个</Text>}>
+              {snapshot.taskTotal === 0 ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>尚未创建任务，到「工作台」新建任务</Text>
               ) : (
-                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                  {Object.entries(agg.runStatus).map(([k, n]) => (
-                    <div className="mini-stat" key={k}>
-                      <div className="mini-value">{n}</div>
-                      <div className="mini-label">{k}</div>
+                <div className="mini-stat-row">
+                  {snapshot.runStatus.map((r) => (
+                    <div className="mini-stat" key={r.key}>
+                      <div className="mini-value">{r.value}</div>
+                      <div className="mini-label">{r.label}</div>
                     </div>
                   ))}
                 </div>
               )}
-              <div className="block-label mt-12">方向 × 关键词 Top</div>
-              <TopList items={agg.directionTop} icon={<FlagOutlined />} />
+              <div className="block-label stats-mt">方向 × 关键词 Top</div>
+              <TopList items={snapshot.directionTop} icon={<FlagOutlined />} />
             </Card>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)', gap: 20 }}>
-            <Card size="small" title="公司 Top">
-              <TopList items={agg.companyTop} icon={<RocketOutlined />} />
-            </Card>
-            <Card size="small" title="城市 Top">
-              <TopList items={agg.cityTop} icon={<EnvironmentOutlined />} />
-            </Card>
-            <Card size="small" title="状态汇总">
+          {/* 状态汇总 */}
+          <div className="stats-block">
+            <Card size="small" title="状态汇总"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>口径与上方指标卡一致</Text>}>
               <div className="summary-grid">
-                <div className="summary-row"><span>已投递</span><b style={{ color: '#52c41a' }}>{agg.sent}</b></div>
-                <div className="summary-row"><span>失败</span><b style={{ color: '#ff4d4f' }}>{agg.failed}</b></div>
-                <div className="summary-row"><span>跳过 / 忽略</span><b>{agg.skippedIgnored}</b></div>
-                <div className="summary-row"><span>待处理</span><b style={{ color: '#1677ff' }}>{agg.waiting}</b></div>
-                <div className="summary-row"><span>不推荐</span><b style={{ color: '#fa8c16' }}>{pending.filter((p) => p.status === 'rejected').length}</b></div>
-                <div className="summary-row"><span>AI 分析</span><b style={{ color: 'var(--brand)' }}>{agg.analyzed}</b></div>
+                <div className="summary-row"><span>已投递</span><b className="c-success">{snapshot.sent}</b></div>
+                <div className="summary-row"><span>失败</span><b className="c-danger">{snapshot.failed}</b></div>
+                <div className="summary-row"><span>跳过 / 忽略</span><b>{snapshot.skippedIgnored}</b></div>
+                <div className="summary-row"><span>待处理</span><b className="c-info">{snapshot.waiting}</b></div>
+                <div className="summary-row"><span>已打开沟通窗</span><b>{snapshot.opened}</b></div>
+                <div className="summary-row"><span>不推荐</span><b className="c-warning">{snapshot.rejected}</b></div>
+                <div className="summary-row"><span>AI 分析覆盖</span><b className="c-brand">{Math.round(snapshot.analysisCoverage * 100)}%</b></div>
+                <div className="summary-row"><span>导出时间范围</span><b className="summary-text">{rangeText(snapshot)}</b></div>
               </div>
             </Card>
           </div>

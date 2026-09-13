@@ -7,6 +7,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  notification,
   Segmented,
   Select,
   Slider,
@@ -113,6 +114,31 @@ const SKILL_SCOPE_OPTIONS = [
 
 // 新建技能的默认表单
 const DEFAULT_CREATE_SKILL: CustomSkillFields = { name: '', description: '', scope: 'assistant', instructions: '' };
+
+// ===== 无关键字采集（随机岗位推荐）说明 =====
+// 仅在开关「开启」时于应用顶部弹出一次，**不在页面上常驻**；
+// 时长放宽到 9s（附倒计时进度条），让用户读完前置提醒后自动消失。
+const NO_KEYWORD_NOTICE_KEY = 'no-keyword-collect-notice';
+const NO_KEYWORD_NOTICE_DURATION = 9;
+function notifyNoKeywordCollectEnabled() {
+  notification.warning({
+    key: NO_KEYWORD_NOTICE_KEY,
+    placement: 'top',
+    duration: NO_KEYWORD_NOTICE_DURATION,
+    showProgress: true,
+    message: '无关键字采集已开启：请先在 BOSS 直聘内完善在线简历与求职意向',
+    description: (
+      <div style={{ fontSize: 13, lineHeight: '20px' }}>
+        <div>
+          采集链接只去掉关键词（query），城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模仍按当前设置保留，岗位由平台按你账号内的求职意向推荐。
+        </div>
+        <div style={{ marginTop: 6 }}>
+          适用于「同一关键词反复重试、结果大量重复」的场景。若账号资料未完善，可能返回不相关岗位或空结果。
+        </div>
+      </div>
+    ),
+  });
+}
 
 export default function Settings() {
   const { config, setConfig, setModel, applyProviderDefaults, isLLMConfigured } = useSettingsStore();
@@ -478,7 +504,7 @@ export default function Settings() {
       // 队列内按去重键再兜底去重（同一岗位可能在队列中出现多次）
       .filter((e, i, arr) => arr.findIndex((x) => x.key === e.key) === i);
     if (!newly.length) {
-      message.info(existed.length ? `今天（${dateKey}）已保存 ${existed.length} 条达标岗位，无新增` : `当前队列中没有新的达标岗位（评分 ≥ 最低分 ${minScore}）`);
+      message.info(existed.length ? `今天（${dateKey}）已保存 ${existed.length} 条达标岗位，无新增` : `当前队列中没有新的达标岗位（评分 ≥ 推荐岗位分 ${minScore}）`);
       return;
     }
     const merged = [...existed, ...newly];
@@ -1009,12 +1035,32 @@ export default function Settings() {
             </div>
             <div className="settings-grid">
               <div className="sg-item">
-                <span className="field-label">最低匹配要求分</span>
+                <span className="field-label">
+                  推荐岗位分
+                  <Tooltip title="岗位综合评分 ≥ 该值即判为「推荐」档（可放心投递）；低于该值但达到「最低入队分」的记入「谨慎」档，交人工把关。默认 75。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
                 <InputNumber
                   min={0}
                   max={100}
                   value={config.minScore}
                   onChange={(v) => setConfig({ minScore: v ?? 75 })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">
+                  最低入队分
+                  <Tooltip title="评分低于该值的岗位不会进入工作台队列（0 = 不限，仅拦「不推荐」硬伤岗位）。默认 60，取代原先固定的 60 分入队门槛。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                <InputNumber
+                  min={0}
+                  max={100}
+                  value={config.minQueueScore}
+                  onChange={(v) => setConfig({ minQueueScore: v ?? 60 })}
                   style={{ width: '100%' }}
                 />
               </div>
@@ -1034,6 +1080,19 @@ export default function Settings() {
                   value={config.interviewModeFilter || 'any'}
                   onChange={(v) => setConfig({ interviewModeFilter: v })}
                   options={INTERVIEW_MODE_FILTER_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">最低日薪（元/天，0=不限）</span>
+                <InputNumber
+                  min={0}
+                  max={2000}
+                  step={10}
+                  value={config.minSalaryPerDay ?? 0}
+                  onChange={(v) => setConfig({ minSalaryPerDay: v ?? 0 })}
+                  style={{ width: '100%' }}
+                  addonAfter="元/天"
+                  placeholder="如 100"
                 />
               </div>
             </div>
@@ -1162,6 +1221,20 @@ export default function Settings() {
               </div>
             </div>
             <div className="settings-grid">
+              <div className="sg-item">
+                <span className="field-label">无关键字采集（随机岗位推荐）</span>
+                <div>
+                  <Switch
+                    checked={config.collectWithoutKeyword === true}
+                    onChange={(v) => {
+                      setConfig({ collectWithoutKeyword: v });
+                      // 说明只在「开启」时顶部弹出（不常驻页面）；关闭时只给一条短提示说明口径已切回关键词
+                      if (v) notifyNoKeywordCollectEnabled();
+                      else message.info('已关闭无关键字采集：恢复为按投递方向的关键词采集');
+                    }}
+                  />
+                </div>
+              </div>
               <div className="sg-item">
                 <span className="field-label">采集时自动下拉加载更多</span>
                 <div>
@@ -1871,7 +1944,7 @@ export default function Settings() {
               当前导出目录：{qualifiedJobsDir || '（未设置，保存时弹出系统对话框选择）'}
             </Paragraph>
             <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0, fontSize: 13 }}>
-              从工作台岗位队列中，把分析评分<strong>≥ 最低分（minScore）</strong>的达标岗位写入本地磁盘。
+              从工作台岗位队列中，把分析评分<strong>≥ 推荐岗位分（minScore）</strong>的达标岗位写入本地磁盘。
               每个自然日一个文件（bossclaw-qualified-jobs-YYYY-MM-DD.json）；同一天重复点击只追新增并去重，当日数据累积完整，不跨天重算、不删除。
             </Paragraph>
           </div>

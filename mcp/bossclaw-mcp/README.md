@@ -114,7 +114,8 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 | 自动沟通引擎 | `autochatStart{platforms?,maxCount?}`（冷却/每日上限保护）、`autochatStop`、`autochatStep{id?}`（单步，含冷却/上限/招呼语守卫）、`autochatStatus` |
 | 完整数据读取 | `appDataFull{sections?,maxPending?,maxLogs?}`（简历/画像/方向/招呼语/pending/taskRuns/schedule/沟通日志全文；不含 base64 图片） |
 | 队列与任务接管 | `pendingApprove{id\|ids}`、`pendingReject{id\|ids}`、`pendingRerank`、`pendingPromote{ids?}`（只升 `approved→approved_queue`）、`pendingRemove{id}`、`taskStage{id,direct:next\|prev\|阶段}`（不改 `status` 为 success） |
-| 模块级控制 | `profileRebuild`（重建职业画像）、`resumeTailor{job,saveTo?:none\|greetings\|resume}`（定制简历；缺省 none 不落盘）、`greetingsAppend{items}`、`directionPlanRebuild`、`directionItem{id,patch}`、`tasksGenerate`（按方向建任务卡片，不自动投递） |
+| 模块级控制 | `profileRebuild`（重建职业画像）、`resumeTailor{job,saveTo?:none\|greetings\|resume}`（定制简历；缺省 none 不落盘）、`greetingsAppend{items}`、`directionPlanRebuild`、`directionItem{id,patch}`、`tasksGenerate`（按方向建任务卡片，不自动投递；**保留 `cr_` 采集任务** —— 与首页「新建任务」同口径，`taskRuns` 是投递/采集共用的单一数组） |
+| 数据统计导出（**只读**） | `statsExport{range?:"7d"\|"30d"\|"all", kind?:"summary"\|"detail"\|"report"}`（与统计页同源口径，返回 `filename` + `content` 文本；**不落盘、不弹保存对话框** —— 落盘必须由人工在应用内完成，因为导出硬契约要求每次由用户自选位置；`detail` 已剔除 `chatUrl`/`encryptUserId`/招呼语正文） |
 | 主进程 | `focusWindow`、`minimize`、`maximize`、`windowState`、`reloadRenderer`、`openDevTools`、`screenshot` |
 
 ### 2.5 工作区路径（workspace）

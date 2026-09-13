@@ -4,9 +4,10 @@
 // 策略：
 //   ① 文本层：AI 输出（reason / 匹配点 / 缺口 / 风险）里出现的薪资数字，若与「本地解析的岗位薪资」
 //      和「画像期望薪资」都对不上 → 判定为编造，剔除该句并附【本地薪资校准】说明（不静默改分）。
-//   ② 评分层：AI 综合分与本地薪资维度的档位方向相反且差距过大 → 以本地薪资维度为准修正分数与决策档位。
+//   ② （已移除）评分层校准：原按「本地薪资维度分」抬分/压分。薪资原始文本是确定性解析、可信，
+//      但由它派生的维度分依赖期望薪资格式与工作制度折算，拿派生量去否决 AI 的综合判断属于越权。
+//      需要「薪资不达标就不投递」时，请走硬性过滤 → 最低日薪（minSalaryPerDay）这条确定性硬约束。
 // 注意：所有 AI 薪资提及统一折算到「千元/月」再比对（日薪按岗位工作制度的月工作日折算）。
-import type { Decision } from './types';
 
 export interface SalaryLocalView {
   /** 本地薪资区间是否解析成功 */
@@ -33,10 +34,6 @@ export interface SalaryMention {
   monthlyK: number;
 }
 
-/** 本地薪资维度 ≤ 此值视为「本地判定薪资明显不达标」 */
-export const SALARY_CONFLICT_LOW = 45;
-/** 本地薪资维度 ≥ 此值视为「本地判定薪资显著高于期望」 */
-export const SALARY_CONFLICT_HIGH = 88;
 /** AI 薪资数字与本地/期望基准的相对偏差阈值（超过即判为对不上） */
 export const SALARY_TEXT_REL_DIFF = 0.5;
 
@@ -128,50 +125,9 @@ export function stripMismatchedSalarySentences(text: string, bad: SalaryMention[
     .trim();
 }
 
-export interface SalaryScoreCalibration {
-  score: number;
-  decision: Decision;
-  changed: boolean;
-  note?: string;
-}
-
-/**
- * 评分层校准：AI 综合分与本地薪资维度「方向相反且差距过大」时，以本地确定性数据为准。
- * - AI 报推荐档（≥ minScore）但本地薪资明显不达标 → 压回谨慎档（≤ 55 分）。
- * - AI 给低分（< 55）但本地薪资显著高于期望 → 托底到 60 分（不越级升为推荐，保留人工把关）。
- * 存在硬约束拦截或已判 reject 时不动分（硬拦截语义优先）。
- */
-export function calibrateSalaryScore(input: {
-  score: number;
-  decision: Decision;
-  localSalaryScore: number | null;
-  minScore: number;
-  hasHardBlocks: boolean;
-  salaryText?: string;
-  monthlyLow?: number;
-  monthlyHigh?: number;
-}): SalaryScoreCalibration {
-  const { score, decision, localSalaryScore, minScore, hasHardBlocks } = input;
-  if (hasHardBlocks || decision === 'reject' || localSalaryScore == null) return { score, decision, changed: false };
-  const range = input.monthlyLow != null && input.monthlyHigh != null && (input.monthlyLow > 0 || input.monthlyHigh > 0)
-    ? `岗位「${input.salaryText || ''}」≈ ${Number(input.monthlyLow).toFixed(1)}-${Number(input.monthlyHigh).toFixed(1)}K/月`
-    : `岗位薪资「${input.salaryText || ''}」`;
-  if (score >= minScore && localSalaryScore <= SALARY_CONFLICT_LOW) {
-    const capped = Math.min(score, SALARY_CONFLICT_LOW + 10);
-    return {
-      score: capped,
-      decision: 'cautious',
-      changed: true,
-      note: `【本地薪资校准】${range}，本地薪资匹配仅 ${localSalaryScore} 分（明显低于期望），AI 的 ${score} 分存疑，已按本地确定性数据修正为 ${capped} 分（谨慎）。`,
-    };
-  }
-  if (score < 55 && localSalaryScore >= SALARY_CONFLICT_HIGH) {
-    return {
-      score: 60,
-      decision,
-      changed: true,
-      note: `【本地薪资校准】${range}，本地薪资匹配 ${localSalaryScore} 分（显著高于期望），AI 的 ${score} 分偏低，已按本地确定性数据托底为 60 分。`,
-    };
-  }
-  return { score, decision, changed: false };
-}
+// ===== 已移除：评分层校准 calibrateSalaryScore =====
+// 原实现：AI 报推荐档但本地薪资维度 ≤45 分 → 压回谨慎档（≤55）；AI 给低分但本地薪资维度 ≥88 分 → 托底 60。
+// 移除原因：抬分/压分依据的是**本地薪资维度分**（由期望薪资格式 + 工作制度折算派生），不是薪资原始数据本身。
+// 用派生量否决 AI 的综合判断属于越权，且与「本地规则不参与改分、只做确定性闸门 + 可解释维度」的定位冲突；
+// 薪资文本层面的防幻觉（上方 collectMismatchedSalaryMentions / stripMismatchedSalarySentences）保持不变。
+// 若需要「薪资不达标即不投递」，走硬性过滤 → 最低日薪（config.minSalaryPerDay，见 jobMatch 硬约束第 10 条）。

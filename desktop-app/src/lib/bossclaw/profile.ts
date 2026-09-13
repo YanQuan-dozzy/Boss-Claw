@@ -134,7 +134,15 @@ export function buildLocalProfile(resumeText: string, reason = '', failureKind =
   const skills = extractSkills(text);
   const primaryDirections = inferDirections(text, skills);
   const searchKeywords = buildSearchKeywords(primaryDirections, skills);
-  const degree = extractDegree(text);
+  // 剔除纯小标题行（如「教育经历」「荣誉证书」本身），避免被当作简历事实引用
+  const notHeading = (items: string[]) => items.filter((item) => !isHeadingLine(item));
+  const education = notHeading(lineMatches(text, /大学|学院|本科|硕士|博士|教育经历|专业/i, 8));
+  // 学历优先只看教育经历行：extractDegree 的口径是「全文学历词取最高档」，简历正文里出现
+  // 「协助博士生调研」「本科及以上优先」这类**非本人学历**表述时会把学历判高，而 hardConstraints.degree
+  // 正是下游「学历不足」硬约束的判定依据（判高 → 该硬设置永久失效，判低 → 符合条件的岗位被误拦）。
+  // 教育行未给出学历词时才回退全文，避免漏判。
+  const eduDegree = extractDegree(education.join(' '));
+  const degree = eduDegree !== '不限' ? eduDegree : extractDegree(text);
   const locations = extractLocations(text);
   const internship = isStudentResume(text);
   const employmentTypes = internship ? ['实习', '校招'] : ['全职'];
@@ -145,9 +153,6 @@ export function buildLocalProfile(resumeText: string, reason = '', failureKind =
   if (topSkills.length) summaryParts.push(`具备 ${topSkills.join('、')} 等技能或项目经验`);
   summaryParts.push(`主要关注 ${primaryDirections.join('、')} 方向`);
 
-  // 剔除纯小标题行（如「教育经历」「荣誉证书」本身），避免被当作简历事实引用
-  const notHeading = (items: string[]) => items.filter((item) => !isHeadingLine(item));
-  const education = notHeading(lineMatches(text, /大学|学院|本科|硕士|博士|教育经历|专业/i, 8));
   const experiences = notHeading(lineMatches(text, /实习|工作经历|公司|负责|任职|助理|工程师/i, 8));
   const projects = notHeading(lineMatches(text, /项目|系统|平台|工作台|GitHub|开发|实现|搭建|设计/i, 10));
   const certificates = notHeading(
@@ -359,6 +364,16 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
         { scope: 'profile' }
       )
     );
+    if ((profile as any)?._repaired) {
+      // AI 首次返回 JSON 不完整、已二次补齐修复：仍为 AI 融合结果，仅提示非降级
+      return mergeProfileWithFallback(profile, fallback, {
+        mode: 'ai-assisted',
+        label: 'AI 完整画像',
+        aiStatus: 'success',
+        warning: 'AI 首次返回 JSON 不完整，已自动补齐修复；结果仍为 AI 与本地规则融合。',
+        generatedAt: Date.now(),
+      });
+    }
     return mergeProfileWithFallback(profile, fallback);
   } catch (error) {
     firstError = error as Error;

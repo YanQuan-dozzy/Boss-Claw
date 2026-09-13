@@ -98,6 +98,7 @@ exit /b 0
 echo [INFO] Sources changed (or first run) - rebuilding, about 15s ...
 node "node_modules\vite\bin\vite.js" build
 if errorlevel 1 (set "ERRMSG=vite build failed" & goto :fail)
+node "scripts\check-fresh.mjs" --write >nul 2>&1
 echo [INFO] Build OK. Launching BossClaw ...
 set "SC_PATH=%SC_DIR%\BossClaw.lnk"
 powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut('%SC_PATH%'); $sc.TargetPath='%ELECTRON_EXE%'; $sc.Arguments='. %NO_SANDBOX% %AGENT_FLAG%'; $sc.WorkingDirectory='%APP_DIR%'; $sc.IconLocation='%ICON_PATH%,0'; $sc.Description='BossClaw'; $sc.Save()" >nul 2>&1

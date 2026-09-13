@@ -21,6 +21,9 @@ import { tailorForJob } from '@/lib/bossclaw/jobAssistant';
 import { buildProfile } from '@/lib/bossclaw/profile';
 import { buildDirectionPlan } from '@/lib/bossclaw/directions';
 import { createTasks } from '@/lib/bossclaw/tasks';
+import { buildStatsSnapshot, DEFAULT_STATS_RANGE, rangeText, type StatsRangeKey } from '@/lib/bossclaw/statsAggregate';
+import { buildDetailRows, buildSummaryRows, exportFilename, toCsv } from '@/lib/bossclaw/statsExport';
+import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { TASK_STAGE_META, TERMINAL_RUN_STATUSES, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { isDeliveryClaimed } from '@/lib/bossclaw/deliveryLock';
@@ -808,8 +811,77 @@ const handlers: Record<string, Handler> = {
     const cfg = useSettingsStore.getState().config;
     const data = useDataStore.getState();
     const tasks = createTasks(data.profile, cfg, data.directionPlan);
-    data.setTaskRuns(tasks);
-    return { applied: true, message: `已生成 ${tasks.length} 个任务进度卡片（不自动投递）`, next: { count: tasks.length } };
+    // 与首页「新建任务」（Home.handleCreateTasks）保持同一口径：本动作只重建**投递任务**，
+    // 采集任务（cr_ 前缀，由工作台「搜索采集」经 markCollectRun → upsertTaskRun 逐条写入）
+    // 必须原样保留 —— taskRuns 是「投递任务 / 采集任务」共用的单一数组，整表 setTaskRuns(tasks)
+    // 会把任务进度页的采集卡片、工作台的采集统计条、定时定向采集的 runIds 目标一起抹掉。
+    const keptCollectRuns = data.taskRuns.filter((r) => String(r.id || '').startsWith('cr_'));
+    data.setTaskRuns([...tasks, ...keptCollectRuns]);
+    return {
+      applied: true,
+      message: `已生成 ${tasks.length} 个任务进度卡片（不自动投递；保留 ${keptCollectRuns.length} 个采集任务）`,
+      next: { count: tasks.length, keptCollectRuns: keptCollectRuns.length },
+    };
+  },
+
+  /**
+   * 统计数据导出（**只读**）：返回与统计页完全同源的汇总 / 明细 / 报表文本。
+   * 安全边界：不落盘、不弹对话框、不改任何状态 —— 落盘必须由人工在应用内完成
+   * （导出硬契约：每次导出都要用户自己选保存位置），因此这里只回传文本。
+   */
+  statsExport: ({ range, kind }) => {
+    const cfg = useSettingsStore.getState().config;
+    const data = useDataStore.getState();
+    const raw = String(range ?? '');
+    const rk: StatsRangeKey = raw === '30d' || raw === 'all' ? raw : DEFAULT_STATS_RANGE;
+    const snapshot = buildStatsSnapshot({
+      pending: data.pending,
+      taskRuns: data.taskRuns,
+      directionPlan: data.directionPlan,
+      config: cfg,
+      range: rk,
+    });
+    const base = {
+      range: rk,
+      rangeText: rangeText(snapshot),
+      generatedAt: snapshot.generatedAt,
+      total: snapshot.total,
+      sent: snapshot.sent,
+      failed: snapshot.failed,
+      waiting: snapshot.waiting,
+      successRate: snapshot.successRate,
+      avgScore: snapshot.avgScore,
+    };
+    const k = String(kind ?? 'summary');
+    if (k === 'detail') {
+      return {
+        applied: true,
+        message: `岗位明细 ${snapshot.total} 条（范围内，已剔除会话 token 与招呼语正文）`,
+        next: {
+          ...base,
+          kind: 'detail',
+          filename: exportFilename('detail', snapshot, 'csv'),
+          content: toCsv(buildDetailRows(data.pending, snapshot)),
+        },
+      };
+    }
+    if (k === 'report') {
+      return {
+        applied: true,
+        message: '统计报表 HTML（A4 横版，落盘需在应用内导出）',
+        next: { ...base, kind: 'report', filename: exportFilename('report', snapshot, 'pdf'), content: buildStatsReportHtml(snapshot) },
+      };
+    }
+    return {
+      applied: true,
+      message: `统计汇总（长表）${snapshot.total} 条岗位范围内`,
+      next: {
+        ...base,
+        kind: 'summary',
+        filename: exportFilename('summary', snapshot, 'csv'),
+        content: toCsv(buildSummaryRows(snapshot, { pending: data.pending, taskRuns: data.taskRuns, config: cfg })),
+      },
+    };
   },
 };
 

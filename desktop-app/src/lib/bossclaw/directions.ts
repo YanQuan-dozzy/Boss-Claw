@@ -2,6 +2,7 @@
 import type { DirectionItem, DirectionPlan, Profile } from './types';
 import { uniq } from './defaults';
 import { normalizeStringList, clampNumber, normalizeDirectionKey, findDirectionRule } from './helpers';
+import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInText } from './skillTaxonomy';
 
 // 证据占位符（仅作标记，不应作为「职业画像中已提取到」的真实证据展示）
 const MANUAL_EDIT_EVIDENCE = '用户手动编辑';
@@ -124,7 +125,16 @@ function coverageSourcesFor(profile: Profile | null) {
     .replace(/[^\x00-\x7F]/g, ' ')
     .replace(/[^A-Za-z0-9#+.\-]+/g, ' ')
     .toLowerCase();
-  return { text, english, tokens };
+  // 统一技能归一键集（见 skillTaxonomy）：覆盖 git↔github、fastapi↔flask、
+  // TypeScript/React→JavaScript 等 SKILL_ALIAS_CANON 未收录的等价与上位覆盖关系。
+  const taxonomyKeys = skillKeysInText(
+    [
+      ...namePool,
+      ...normalizeStringList(profile?.facts?.experiences, 10),
+      ...normalizeStringList(profile?.facts?.projects, 10),
+    ].join('\n')
+  );
+  return { text, english, tokens, taxonomyKeys };
 }
 
 // 常见技能别名归一表：缺口与画像技能都先经规范映射，再判“相等即覆盖”。
@@ -176,10 +186,21 @@ function gapAliasCovered(g: string, tokens: Set<string>): boolean {
   return hit;
 }
 
-// 缺口项是否已被画像覆盖（能力/技能/别名/英文证据任一命中 → 已具备，不应再显示为缺口）
-function gapCovered(gap: string, coverage: { text: string; english: string; tokens: Set<string> }): boolean {
+// 缺口项是否不应展示（非技能噪音词 / 画像已具备：能力、技能别名、英文证据、等价组与上位覆盖）
+function gapCovered(
+  gap: string,
+  coverage: { text: string; english: string; tokens: Set<string>; taxonomyKeys?: Set<string> }
+): boolean {
+  // 非技能噪音词（HR / bug / Demo / JD 等招聘流程与交付物词汇）不构成能力缺口
+  if (isNonSkillJdToken(gap)) return true;
   if (gapCoveredByProfile(gap, coverage.text)) return true;
   if (gapAliasCovered(normalizeDirectionKey(gap), coverage.tokens)) return true;
+  // 统一归一本体：等价组（git↔github、fastapi↔flask）与上位覆盖（TypeScript/React→JavaScript）
+  const keys = coverage.taxonomyKeys;
+  if (keys?.size) {
+    if (equivalentSkillKeys(gap).some((key) => keys.has(key))) return true;
+    if (coveringSkillKeys(gap).some((key) => keys.has(key))) return true;
+  }
   return isEnglishTermCovered(gap, coverage.english);
 }
 

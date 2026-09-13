@@ -1085,7 +1085,8 @@ def _upload_resume_images(page, resume_images: list) -> dict:
 def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
                   send_resume_image: bool = False, send_online_resume: bool = False,
                   expected: dict | None = None, resume_images: list | None = None,
-                  mode: str = 'auto', reply_text: str | None = None) -> dict:
+                  mode: str = 'auto', reply_text: str | None = None,
+                  attachment_delay_seconds: float = 4.0) -> dict:
     # mode: 'auto' 首次打招呼投递（若 HR 已发来消息则转「AI 跟聊」返回 700）；
     #       'reply' 发送渲染层生成的 AI 回复文本（对齐 AI-BossJob aiReply 链路）。
     if mode == 'reply':
@@ -1261,6 +1262,11 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         log('✅', f'文字气泡确认（发送方式：{sent_via}）')
 
         # Step 10: 可选 —— 在线简历 / 图片简历
+        # 设置约束：附件延迟（attachmentDelaySeconds，秒）作为「文字沟通确认 → 发送简历附件」的
+        # 类人等待基准：只有配置值 > 0 才额外等待（base=配置值，保留 ±0.35 抖动、±30% min），
+        # 配置为 0 时保持旧行为（不额外等待）；内容上传内部的人类化停顿不受影响。
+        if (send_online_resume or (send_resume_image and resume_images)) and float(attachment_delay_seconds or 0) > 0:
+            human_sleep(float(attachment_delay_seconds), 0.35, float(attachment_delay_seconds) * 0.3)
         if send_online_resume:
             try:
                 for p in _all_pages(page):
@@ -1385,12 +1391,15 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 city = str(body.get('city') or '101010100').strip()
                 pages = max(1, min(5, int(body.get('pages') or 1)))
                 os_name = body.get('os') or None
+                # 设置页「基础求职条件」（全平台共用）：猎聘/智联/前程无忧 由 platforms.filters
+                # 翻译为各平台筛选参数（BOSS 走 searchUrl.ts + webview，此处忽略）。
+                criteria = body.get('criteria') if isinstance(body.get('criteria'), dict) else {}
                 if not query:
                     return self._send(400, {"ok": False, "error": "缺少 query"})
                 if platform == 'boss':
                     result = search_jobs(query, city, pages, os_name)
                 else:
-                    result = platform_mods.search_jobs(platform, query, city, pages, os_name)
+                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria)
                 return self._send(200, result)
 
             if parsed.path == '/send':
@@ -1428,13 +1437,18 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 resume_images = body.get('resumeImages') or []
                 mode = str(body.get('mode') or 'auto')
                 reply_text = str(body.get('replyText') or '')
+                # 附件延迟（秒，渲染层附件延迟设置透传；非法/缺失回落 4，0=不额外等待）
+                try:
+                    attachment_delay_seconds = float(body.get('attachmentDelaySeconds') or 4)
+                except (TypeError, ValueError):
+                    attachment_delay_seconds = 4.0
                 if not job_id:
                     return self._send(400, {"ok": False, "error": "缺少 jobId"})
                 if not greeting:
                     return self._send(400, {"ok": False, "error": "缺少 greeting", "code": 400})
                 if platform == 'boss':
                     result = chat_greeting(job_id, greeting, os_name, send_resume_image, send_online_resume,
-                                           expected, resume_images, mode, reply_text)
+                                           expected, resume_images, mode, reply_text, attachment_delay_seconds)
                 else:
                     job = {
                         "jobId": job_id,

@@ -5,8 +5,49 @@
 import type { AppConfig, Profile } from './types';
 import { callModel } from './llm';
 
+/** 打招呼语目标字数（字符数，含标点）：生成目标约 150 字。 */
+export const GREETING_TARGET_CHARS = 150;
+/** 打招呼语硬上限（字符数，含标点）：不得超过 200 字。 */
+export const GREETING_MAX_CHARS = 200;
+/** 打招呼语合格下限（字符数）：低于此值信息量不足，触发再生成。 */
+export const GREETING_MIN_CHARS = 120;
+/** 打招呼语「长度不符合 → 再生成」的最大重试次数（到达后仅做最终安全兜底）。 */
+export const GREETING_MAX_RETRY = 3;
+
+/** 长度判定：打招呼语是否落在合格区间（≥下限 且 ≤上限，含目标 150 字）。不在这里硬截断。 */
+export function isGreetingLengthOk(len: number): boolean {
+  return len >= GREETING_MIN_CHARS && len <= GREETING_MAX_CHARS;
+}
+
+/**
+ * 单行化 + 智能截断（打招呼语 / 求职信 / AI 跟聊回复共用）。
+ * 先压成单行（BOSS 聊天框按 Enter 发送，多行会导致只发前半句）；
+ * 超长时按「句末标点 → 逗号/顿号 → 硬切」三级回退截断，
+ * 避免出现「我对贵公司 A」这类截在半个词 / 半句话中间的残句
+ * （此前是裸 slice(0,220)，用户实测即被切在句子中间）。
+ */
+export function clampGreetingText(text: string, maxChars: number = GREETING_MAX_CHARS): string {
+  const oneLine = String(text || '').trim().replace(/\s+/g, ' ');
+  if (oneLine.length <= maxChars) return oneLine;
+  const head = oneLine.slice(0, maxChars);
+  const brk = (chars: string[]) => Math.max(...chars.map((c) => head.lastIndexOf(c)));
+  // 句末标点（。！？；）与句内分隔（，）
+  const sentenceIdx = brk(['。', '！', '？', '；', '!', '?', ';']);
+  const clauseIdx = brk(['，', ',']);
+  const cutAt = (idx: number) => `${head.slice(0, idx).trimEnd()}。`;
+  // ① 句末标点落在预算后段（≥60%）：直接保留到该句末尾，信息量足够
+  if (sentenceIdx >= 8 && sentenceIdx >= maxChars * 0.6) return head.slice(0, sentenceIdx + 1);
+  // ② 句末标点太靠前（如「开头锚点句。」+ 一个超长第二句会把其余内容全丢掉）：
+  //    退到最后一个逗号处补齐句号，尽量保住「身份 + 最相关亮点」这两个必要元素
+  if (clauseIdx >= 8 && clauseIdx > sentenceIdx) return cutAt(clauseIdx);
+  // ③ 只剩句末标点可用
+  if (sentenceIdx >= 8) return head.slice(0, sentenceIdx + 1);
+  // ④ 一个标点都没有（极端情况）：只能硬切
+  return head;
+}
+
 export function normalizeGreetingText(text: string): string {
-  return String(text || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+  return clampGreetingText(text, 160);
 }
 
 // =====「AI 跟聊」回复 =====

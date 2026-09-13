@@ -53,6 +53,16 @@ interface ElectronBridgeApi {
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 通用文本导出（CSV）：主进程弹系统保存对话框由用户选择保存位置后写盘
+  saveFile?: (
+    defaultName: string,
+    content: string,
+    extWhitelist?: string[]
+  ) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 统计数据报表 PDF：A4 横版 printToPDF + 系统保存对话框
+  saveReportPdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  // 在系统文件管理器中定位到指定文件
+  showItem?: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存「达标岗位」数据到本地（dir 为空走保存对话框；dir 为绝对路径则在导出目录自动按天写文件）
   saveQualifiedJobs?: (defaultName: string, jsonText: string, dir?: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）

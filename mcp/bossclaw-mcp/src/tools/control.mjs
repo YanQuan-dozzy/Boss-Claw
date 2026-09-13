@@ -78,6 +78,8 @@ const RENDERER_ACTIONS = [
   'directionPlanRebuild',
   'directionItem',
   'tasksGenerate',
+  // F. 数据统计导出（只读：回传汇总 / 明细 / 报表文本，不落盘、不弹对话框）
+  'statsExport',
 ];
 
 /** 主进程侧动作（electron/control-bridge.cjs） */
@@ -196,7 +198,9 @@ export const controlTools = [
       '  - 队列与任务：pendingApprove{id|ids} / pendingReject{id|ids} / pendingRerank / pendingPromote{ids?}（只升 approved→approved_queue）/ pendingRemove{id} / taskStage{id,direct:next|prev|阶段}（不改 status 为 success）\n' +
       '  - 模块级（简历中心/定制简历/方向/任务）：profileRebuild{ }（重建职业画像）｜' +
       'resumeTailor{job, saveTo?:none|greetings|resume}（定制简历；saveTo 缺省 none 仅返回不落盘，resume 会追加定制章节到简历）｜' +
-      'greetingsAppend{items}｜directionPlanRebuild{ }｜directionItem{id,patch{enabled?,priority?}}｜tasksGenerate{ }（按方向重建任务卡片，不投递）\n' +
+      'greetingsAppend{items}｜directionPlanRebuild{ }｜directionItem{id,patch{enabled?,priority?}}｜tasksGenerate{ }（按方向重建任务卡片，不投递；**保留 cr_ 采集任务**，与首页「新建任务」同口径）\n' +
+      '  - 数据统计导出（**只读**，与统计页同源口径）：statsExport{range?:"7d"|"30d"|"all", kind?:"summary"|"detail"|"report"}\n' +
+      '    （返回 filename 与 content 文本，不落盘、不弹保存对话框 —— 落盘必须由人工在应用内完成；detail 已剔除会话 token 与招呼语正文）\n' +
       '主进程动作：focusWindow / minimize / maximize / windowState / reloadRenderer / openDevTools / screenshot: {}',
     annotations: WRITE_LOCAL,
     inputSchema: obj(

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select } from 'antd';
+import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select, Alert } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   DownOutlined, RightOutlined, StopOutlined, UndoOutlined, ThunderboltOutlined,
@@ -13,19 +13,21 @@ import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
 import PlatformChip from '@/components/PlatformChip';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
-import { analyzeJob, CAUTIOUS_INGEST_MIN_SCORE } from '@/lib/bossclaw/matching';
+import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
+import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
-import { makePendingItem } from '@/store/useDataStore';
+import { makePendingItem, jobUrlKey } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
 import { stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/jobDisplay';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
+import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
-import { buildPlatformSearchQueue } from '@/lib/bossclaw/platformUrls';
+import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
 import { platformEnabled, platformLabel, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
   ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
@@ -36,6 +38,7 @@ import { camoufoxSearch, camoufoxSend, camoufoxStatus, isCamoufoxStopCode, isCam
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
 import type { JobMeta, PendingItem, TaskRun, TaskStage } from '@/lib/bossclaw/types';
 import { useAutoChatStore } from '@/store/useAutoChatStore';
+import { createAnalysisQueue, type AnalysisQueueStats } from '@/lib/bossclaw/analysisQueue';
 
 const { Text } = Typography;
 
@@ -68,6 +71,17 @@ const isJobListUrl = (url: string): boolean => {
   } catch {
     return false;
   }
+};
+
+// 详情页判定：URL 命中岗位详情格式（job_detail 等）一律视为单个岗位，放行「加入任务」，
+// 即便 webview 返回的 listCardCount>1（详情页「相关推荐」区块的卡片会被误统计）也不拦截。
+const isJobDetailUrl = (url: string): boolean => /job_detail|jobdetail|\/job\/\d+/i.test(String(url || ''));
+
+// 归一化岗位链接：详情页 URL 去掉 query（如 ?securityId=...）与 hash，统一为 …/job_detail/xxx.html 形式，
+// 供「加入任务」守卫与入库使用（避免带 securityId 的完整链接干扰判定与投递）。
+const normalizeJobUrl = (url: string): string => {
+  const s = String(url || '');
+  return isJobDetailUrl(s) ? s.split(/[?#]/)[0] : s;
 };
 
 // ===== 采集 → 任务进度 联动 =====
@@ -105,6 +119,18 @@ const platformsFromRunIds = (runIds: string[]): JobPlatform[] => {
   }
   return [...found];
 };
+
+// ===== 无关键字采集（随机岗位推荐）展示与提醒口径 =====
+// 该模式由「设置 → 搜索采集范围控制 → 无关键字采集」开启：采集 URL 只去掉 query（关键词），
+// 城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模仍按用户设置保留，岗位由平台按账号内的求职意向推荐。
+const RANDOM_KEYWORD_LABEL = '随机推荐';
+/** 日志 / 提示中统一的关键词口径：空关键词不显示为空引号，而显示「随机推荐」 */
+const keywordLabel = (keyword?: string): string => String(keyword || '').trim() || RANDOM_KEYWORD_LABEL;
+/** 无关键字采集前置提醒（该模式下每次启动采集都会记一条日志，并在岗位进度卡内常驻显示） */
+const NO_KEYWORD_SETUP_REMINDER =
+  '无关键字采集：岗位由平台按你账号内的求职意向推荐，请先在 BOSS 直聘（网页 / App）内完善在线简历与求职意向，否则可能采到不相关岗位或空结果';
+/** BOSS 在线简历 / 求职意向页（提醒条上的直达入口） */
+const BOSS_RESUME_URL = 'https://www.zhipin.com/web/geek/resume';
 
 const LogStream = memo(function LogStream() {
   const logs = useDataStore((s) => s.logs);
@@ -209,6 +235,26 @@ export default function Workbench() {
   const collectListReadyLoggedRef = useRef(false);
   // 本次会话已处理过的岗位 URL（无论入库还是被跳过），避免同一卡片被采集循环重复 analyze/打重复日志
   const ingestedSeenRef = useRef<Set<string>>(new Set());
+  // 采集岗位福利后台补全（对齐「加入任务」同源 card.json welfareList），异步执行不阻塞采集循环
+  const enrichWelfareRef = useRef<(id: string, job: JobMeta) => void>(() => {});
+  // 采集 AI 分析有界并发队列：可视化采集对每张卡片 fire-and-forget 调 ingestJob，而单次
+  // analyzeJob（LLM 评分）常需 10-45s，远慢于采集滚动节奏（默认 1.5s/卡），且 LLM 缓存只对
+  // 「完全相同 key」去重、不同岗位不可合并 → 不控并发会无界堆积 LLM 请求（易触发上游限流）。
+  // 这里把突发放进受控队列（默认并发 3，config.analysisConcurrency 可调，1-8），
+  // 并订阅计数供 UI 展示「分析中 / 排队中」；手动「加入任务」路径有 P02 单解析锁，不经过此队列。
+  const analysisQueueRef = useRef<ReturnType<typeof createAnalysisQueue> | null>(null);
+  const [analysisStats, setAnalysisStats] = useState<AnalysisQueueStats>({ running: 0, queued: 0 });
+  useEffect(() => {
+    const cfg = useSettingsStore.getState().config;
+    const q = createAnalysisQueue(Number(cfg.analysisConcurrency) || 3);
+    analysisQueueRef.current = q;
+    const off = q.onChange(setAnalysisStats);
+    return () => {
+      off();
+      q.dispose();
+      analysisQueueRef.current = null;
+    };
+  }, []);
   // 跳过日志合并：连续同因跳过只打一条，切换原因时再补「同类跳过 ×N」，避免刷屏
   const lastSkipLogRef = useRef<{ msg: string; count: number } | null>(null);
   const flushLastSkipLog = () => {
@@ -338,10 +384,14 @@ export default function Workbench() {
 
   const onJoinTask = async (info: { url: string; title: string }) => {
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
-    if (isJobListUrl(info.url)) {
+    const cleanUrl = normalizeJobUrl(info.url);
+    if (isJobListUrl(cleanUrl)) {
       message.warning('当前是岗位列表页（含多个岗位）。请点击具体岗位进入详情页后，再点「加入任务」加入单个岗位');
       return;
     }
+    // 同链接查重：记录已入队的同岗位（供解析后原地刷新或跳过重复，不直接早退，
+    // 以便「已入队但信息错误」的旧卡能用本次权威解析数据自愈）
+    const dupId = cleanUrl ? useDataStore.getState().pending.find((p) => jobUrlKey(p.job) === cleanUrl.toLowerCase())?.id : undefined;
     // P02：拒绝并发点击（一次只允许一个岗位解析在途），并清理上一次兜底定时器
     if (extractLock.current) {
       message.warning('正在解析上一个岗位，请稍候再点「加入任务」');
@@ -350,19 +400,24 @@ export default function Workbench() {
     if (extractTimer.current) { clearTimeout(extractTimer.current); extractTimer.current = null; }
     extractLock.current = true;
     const seq = ++extractSeq.current;
-    addLog('info', `请求解析岗位：${info.url}`);
+    addLog('info', `请求解析岗位：${cleanUrl}`);
     let job: JobMeta;
     try {
       job = await new Promise<JobMeta>((resolve) => {
         pendingExtract.current = { resolve, seq };
-        webviewApi.current?.send('extract-job');
+        // 必须发给「当前激活标签」（与 info.url 所在标签一致）：send() 默认只发主/采集标签，
+        // 若用户在多标签里于 detail 标签打开岗位，主标签会停留在其它页面，导致抓到错误岗位（如把本页抓成别的岗位）。
+        const api = webviewApi.current;
+        const tabId = api?.getActiveTabId?.() || api?.getMainTabId?.() || '';
+        if (api?.sendInTab && tabId) api.sendInTab(tabId, 'extract-job');
+        else api?.send('extract-job');
         extractTimer.current = setTimeout(() => {
           if (pendingExtract.current && pendingExtract.current.seq === seq) {
-            pendingExtract.current.resolve({ url: info.url, title: info.title || '手动添加岗位', description: '' });
+            pendingExtract.current.resolve({ url: cleanUrl, title: info.title || '手动添加岗位', description: '' });
             pendingExtract.current = null;
             extractTimer.current = null;
           }
-        }, 4000);
+        }, 10000);
       });
     } finally {
       // 兜底：解析已结束（无论成功/超时），清掉可能残留的占位与定时器，并释放并发锁
@@ -371,11 +426,15 @@ export default function Workbench() {
       extractLock.current = false;
     }
 
-    if ((job as any).isListPage || (job as any).listCardCount > 1) {
+    if (!isJobDetailUrl(cleanUrl) && ((job as any).isListPage || (job as any).listCardCount > 1)) {
       message.warning('当前是岗位列表页（含多个岗位）。请点击具体岗位进入详情页后，再点「加入任务」加入单个岗位');
       return;
     }
+    // 归一后再入库：job.url 也可能带 securityId 等 query，统一精简为 …/job_detail/xxx.html
+    job = { ...job, url: normalizeJobUrl(job.url || cleanUrl) };
     const runId = `task_${Date.now().toString(36)}`;
+    // 同链接查重：已入队的同岗位对象（供「快路径跳过 + 自愈/刷新」共用，避免重复查找）
+    const dup = dupId ? useDataStore.getState().pending.find((p) => p.id === dupId && jobUrlKey(p.job) === cleanUrl.toLowerCase()) : undefined;
 
     const cfg = useSettingsStore.getState().config;
     const hrFilter = cfg.hrActivityFilter || 'any';
@@ -417,16 +476,94 @@ export default function Workbench() {
       }
     }
 
+    // 快路径：该岗位已入队，且旧卡完整、本次解析也完整且字段一致 → 立即提示已存在，
+    // 跳过冗余的 AI 分析（避免重复消耗 LLM 调用与等待，也让「已存在」提醒即时可见）。
+    if (dup) {
+      const oldF = dup.job || {};
+      if (
+        oldF.title && oldF.company && oldF.location && oldF.salary
+        && job.title && job.company && job.location && job.salary
+        && oldF.title === job.title && oldF.company === job.company && oldF.salary === job.salary && oldF.location === job.location
+      ) {
+        message.info('该岗位已在队列中');
+        addLog('info', '该岗位已在队列中，信息一致，跳过重复加入');
+        recomputeStats();
+        return;
+      }
+    }
+
+    // 新岗位解析无任何有效元信息（公司/地点/薪资全缺，即「待补全」态）：不入队、明确提示。
+    // 避免直接生成无法投递的「信息补全」卡（解析失败多为页面未加载完成/未登录/被风控拦截，页面正常后重试即可）。
+    if (!dup && !job.company && !job.location && !job.salary) {
+      const diag = (job as any).parseDiag || (job as any).error || '';
+      message.warning('岗位信息解析不全（页面可能未加载完成或需先登录）。请确认已打开岗位详情页、页面加载完成后重新点「加入任务」');
+      addLog('warn', `解析信息不全，未加入队列：${job.title || job.url}${diag ? `（${String(diag).slice(0, 220)}）` : ''}`);
+      recomputeStats();
+      return;
+    }
+
     try {
       addLog('info', `AI 正在分析岗位：${job.title || job.url}`);
       const customGreetingPrompt = useDataStore.getState().greetingPrompt;
       const analysis = await analyzeJob(job, profile, useDataStore.getState().resumeText, config, config.model, customGreetingPrompt || undefined);
       const item = makePendingItem(job, analysis, analysis.greeting, runId);
+      // 同链接查重+自愈：若该岗位已入队，绝不叠卡，且一律提醒「已在队列」。
+      // 信息处置三原则：
+      //  1) 本次解析不全（提取失败/10s 超时兜底/风控码）且旧卡完整 → 保留旧卡完整信息，绝不降级成「补全」；
+      //  2) 旧卡「信息不全」（公司/地点/薪资任一缺失，即待补全态）且本次解析完整 → 用本次权威解析原地自愈补齐；
+      //  3) 新旧都完整但字段不一致 → 以本次详情页权威解析刷新（避免旧卡信息不对却永不自愈）。
+      if (dup) {
+        const old = dup.job || {};
+        const oldIncomplete = !old.title || !old.company || !old.location || !old.salary;
+        const newIncomplete = !job.title || !job.company || !job.location || !job.salary;
+        const fieldsSame = old.title === job.title && old.company === job.company && old.salary === job.salary && old.location === job.location;
+        if (newIncomplete && !oldIncomplete) {
+          // 新解析不全 + 旧卡完整：保留旧卡，仅提醒已存在（禁止把完整信息降级为补全）
+          message.info('该岗位已在队列中');
+          addLog('info', `该岗位已在队列中，保留原完整信息（本次解析信息不全，不覆盖）：${old.title || old.company || '岗位'}`);
+          recomputeStats();
+          return;
+        }
+        if (newIncomplete) {
+          // 新旧都信息不全：不覆盖，仅提醒已存在（补全仍需重新「加入任务」等解析成功）
+          message.info('该岗位已在队列中');
+          addLog('info', '该岗位已在队列中（新旧解析均信息不全），跳过重复加入');
+          recomputeStats();
+          return;
+        }
+        if (oldIncomplete) {
+          // 旧卡不全 + 本次解析完整：原地自愈补齐
+          setPending(useDataStore.getState().pending.map((p) => (p.id === dup.id ? { ...p, job, analysis, deliveryGreeting: String(analysis.greeting || p.deliveryGreeting || '').trim() } : p)));
+          message.success('该岗位已在队列中，已补齐公司/地点/薪资信息');
+          addLog('info', `已补齐同链接旧卡信息：${job.title || ''}（原：${old.title || old.company || '未知'}）`);
+          recomputeStats();
+          return;
+        }
+        if (!fieldsSame) {
+          // 新旧都完整但字段不一致：以本次详情页权威解析刷新
+          setPending(useDataStore.getState().pending.map((p) => (p.id === dup.id ? { ...p, job, analysis, deliveryGreeting: String(analysis.greeting || p.deliveryGreeting || '').trim() } : p)));
+          message.info('该岗位已在队列中，已刷新为最新信息');
+          addLog('info', `已刷新同链接旧卡为网页权威信息：${job.title || ''}（原：${old.title || old.company || '未知'}）`);
+          recomputeStats();
+          return;
+        }
+        message.info('该岗位已在队列中');
+        addLog('info', '该岗位已在队列中，信息一致，跳过重复加入');
+        recomputeStats();
+        return;
+      }
       addPendingItem(item);
-      addLog(analysis.decision === 'reject' ? 'warn' : 'success', `分析完成：${job.title || ''} 评分 ${analysis.score}（${analysis.decision === 'recommend' ? '推荐' : analysis.decision === 'cautious' ? '谨慎' : '不推荐'}）`);
+      const scoreSrc = analysis.scoreSource === 'local' ? '本地' : 'AI';
+      addLog(analysis.decision === 'reject' ? 'warn' : 'success', `分析完成：${job.title || ''} ${scoreSrc}评分 ${analysis.score}（${analysis.decision === 'recommend' ? '推荐' : analysis.decision === 'cautious' ? '谨慎' : '不推荐'}）`);
     } catch (err: any) {
-      addPendingItem({ id: runId, runId, job, status: 'pending', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '' });
-      addLog('error', `岗位分析失败，已加入待处理：${err?.message || err}`);
+      // 分析失败但解析仍无有效元信息 → 不入队（与上面的「解析信息不全」拦截口径一致）
+      if (!job.company && !job.location && !job.salary) {
+        message.warning('岗位信息解析不全（页面可能未加载完成或需先登录）。请确认已打开岗位详情页后重新点「加入任务」');
+        addLog('warn', `解析信息不全，未加入队列：${job.title || job.url}（${String((err as Error)?.message || err).slice(0, 160)}）`);
+      } else {
+        addPendingItem({ id: runId, runId, job, status: 'pending', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '' });
+        addLog('error', `岗位分析失败，已加入待处理：${err?.message || err}`);
+      }
     }
     recomputeStats();
   };
@@ -554,9 +691,19 @@ export default function Workbench() {
     const data = useDataStore.getState();
     const profile = data.profile;
     if (!profile) return false;
-    if (data.pending.some((p) => p.job?.url === url || (jobId && p.job?.jobId === jobId))) return false;
-    // 本次会话去重：同一 URL 无论入库还是被过滤跳过，都不重复 analyze/打日志（采集滚动常重复扫到同一卡片）
-    const seenKey = url || jobId || '';
+    // 同岗位判定键：归一化 URL（去 query/hash、小写）与 jobId（平台稳定标识）任一命中即视为同一岗位。
+    // 与 store addPendingItem 的去重口径统一，避免同一岗位因 url 带参数/大小写差异而重复入队或重复分析。
+    const normUrl = jobUrlKey({ url });
+    if (
+      data.pending.some(
+        (p) =>
+          (normUrl && jobUrlKey(p.job) === normUrl) ||
+          (jobId && String(p.job?.jobId || '').trim().toLowerCase() === jobId.toLowerCase())
+      )
+    )
+      return false;
+    // 本次会话去重：同一岗位无论入库还是被过滤跳过，都不重复 analyze/打日志（采集滚动常重复扫到同一卡片）
+    const seenKey = normUrl || jobId.toLowerCase();
     if (seenKey && ingestedSeenRef.current.has(seenKey)) return false;
     if (seenKey) ingestedSeenRef.current.add(seenKey);
     const hrFilter = cfg.hrActivityFilter || 'any';
@@ -591,18 +738,32 @@ export default function Workbench() {
     try {
       const customGreetingPrompt = useDataStore.getState().greetingPrompt;
       const analysis = await analyzeJob(meta, profile, data.resumeText, cfg, cfg.model, customGreetingPrompt || undefined);
-      // 入库门槛：reject（硬伤）一律跳过；谨慎档（cautious）是「有实质缺口但值得人工把关」，
-      // 按独立门槛 CAUTIOUS_INGEST_MIN_SCORE 放行（不再被 minScore 一刀切跳过）；其余档位按 minScore。
-      const minPass = analysis.decision === 'cautious' ? CAUTIOUS_INGEST_MIN_SCORE : (cfg.minScore || 0);
-      if (analysis.decision === 'reject' || analysis.score < minPass) {
-        addSkipLogOnce('info', `跳过「${meta.title}」（评分 ${analysis.score}，${analysis.decision === 'reject' ? '不推荐' : '未达入队门槛'}）`);
+      // 入库门槛：reject（硬伤 / 明确冲突）一律跳过；其余档位统一按「最低入队分」放行，
+      // 门槛由设置页「硬性智能过滤 → 最低入队分」配置（config.minQueueScore，默认 60，0 = 不限）；
+      // 不再写死 60 分底线——推荐岗位分（minScore）只决定「是否推荐」，入队资格由最低入队分决定。
+      const queueMin = resolveQueueMinScore(cfg);
+      if (analysis.decision === 'reject' || analysis.score < queueMin) {
+        // 诊断增强：跳过时带出评分来源与拦截明细（reason / hardBlocks），
+        // 让「很多正常岗位都是 35 分」这类误拒可立即定位到具体规则 / AI 判断，而非只有一个孤立数字。
+        const hb = Array.isArray(analysis.hardBlocks) ? analysis.hardBlocks.filter(Boolean) : [];
+        const why = hb.length
+          ? `硬拦截：${hb.slice(0, 2).join('；')}`
+          : String(analysis.reason || '').replace(/\s+/g, ' ').slice(0, 160);
+        const diag = why ? `·原因：${why}` : '';
+        addSkipLogOnce(
+          'info',
+          `跳过「${meta.title}」（${analysis.scoreSource === 'local' ? '本地' : 'AI'} ${analysis.score} 分，${analysis.decision === 'reject' ? '不推荐' : '未达入队门槛'}${diag}）`
+        );
         return false;
       }
       flushLastSkipLog();
       const runId = `task_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
       const newItem = makePendingItem(meta, analysis, analysis.greeting, runId);
       addPendingItem(newItem);
-      addLog('success', `已加入「${meta.title}」（AI ${analysis.score} 分）`);
+      // 采集福利对齐「加入任务」：DOM 标签/正文常拿不到五险一金（只在 meta/_jobInfo/API 中），
+      // 后台用 card.json（与「加入任务」同源）补全 welfare，工作台绿标即可显示，不阻塞采集循环。
+      enrichWelfareRef.current(newItem.id, meta);
+      addLog('success', `已加入「${meta.title}」（${analysis.scoreSource === 'local' ? '本地' : 'AI'} ${analysis.score} 分）`);
       return true;
     } catch (err: any) {
       flushLastSkipLog();
@@ -621,6 +782,33 @@ export default function Workbench() {
     const m = String(job.url || '').match(/job_detail\/([^/?#.]+)/i);
     return m ? m[1].replace(/\.html$/i, '') : '';
   }, []);
+
+  // 采集岗位福利后台补全：仅当福利缺社保信号（五险/六险/三险/公积金）时，异步调 card.json（与「加入任务」同源）
+  // 合并 welfareList（五险一金/年终奖等），让工作台绿标可显示；API 风控/网络失败静默降级为已提取内容。
+  const enrichCollectedWelfare = useCallback(async (id: string, job: JobMeta) => {
+    try {
+      // 已有社保信号（五险/六险/三险/公积金）则无需补全（webview 采集兜底可能已合并）
+      const cur0 = useDataStore.getState().pending.find((p) => p.id === id);
+      if (!cur0) return;
+      if ((cur0.job?.welfare || []).some((w) => /五险|六险|三险|公积金/.test(String(w)))) return;
+      const jid = extractEncryptJobId(job);
+      if (!jid) return;
+      // 优先「当前激活标签」：采集福利补全紧跟采集循环，此刻激活标签即为采集该岗位的标签，
+      // card.json 在该标签上下文中返回该岗位真实福利；兜底主标签（仅未激活任何标签时使用）。
+      const tabId = webviewApi.current?.getActiveTabId?.() || webviewApi.current?.getFirstTabId?.();
+      if (!tabId) return;
+      const res = await webviewApi.current?.bossApi('jobCard', { encryptJobId: jid }, tabId);
+      if (res && res.code === 0 && res.data?.zpData) {
+        const wl = Array.isArray(res.data.zpData.welfareList) ? res.data.zpData.welfareList.map(String) : [];
+        if (!wl.length) return;
+        const target = useDataStore.getState().pending.find((p) => p.id === id);
+        if (!target) return;
+        const merged = [...new Set([...(target.job?.welfare || []), ...wl])].slice(0, 16);
+        updatePending(id, { job: { ...target.job, welfare: merged } });
+      }
+    } catch { /* 风控/网络失败静默，保持采集已提取内容 */ }
+  }, [extractEncryptJobId, updatePending]);
+  enrichWelfareRef.current = enrichCollectedWelfare;
 
   // ===== 统一风控处理（API 投递码 / DOM 兜底 risk 事件共用）=====
   const handleRisk = useCallback((code: number | null | undefined, rawMessage: string) => {
@@ -682,7 +870,11 @@ export default function Workbench() {
       });
     }
     if (data?.phase === 'done' && data?.job) {
-      void ingestJob(data.job);
+      // 采集逐卡产出不等分析：投进有界并发队列，杜绝无界并发 LLM 调用。
+      // ingestJob 内部已 try/catch 兜底不会 reject，此处 catch 仅防队列自身异常产生 unhandledrejection。
+      const q = analysisQueueRef.current;
+      if (q) void q.enqueue(() => ingestJob(data.job)).catch(() => {});
+      else void ingestJob(data.job);
     }
     // 关键诊断落日志（低频，不刷屏）：列表就绪 / 页面已加载完但选择器没命中 / 全选择器 0 命中
     if (data?.phase === 'list-ready') {
@@ -798,7 +990,9 @@ export default function Workbench() {
       return;
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
-    if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
+    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
     await loadBossCityCodes();
     const queue = filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds);
     if (!queue.length) {
@@ -903,7 +1097,7 @@ export default function Workbench() {
       return false;
     };
 
-    addLog('info', `开始可视化采集：共 ${queue.length} 个搜索组合，逐岗位平滑滚动 + 高亮 + 点击展开详情`);
+    addLog('info', `开始可视化采集：共 ${queue.length} 个搜索组合，逐岗位平滑滚动 + 高亮 + 点击展开详情${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
     // 本批采集任务的 runId（用于结束时把未收尾的卡片统一收口）
     const batchRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
@@ -940,16 +1134,17 @@ export default function Workbench() {
 
       // 先跳转到搜索页链接，等 preload 就绪 + 加载遮罩消失（页面真正可注入）
       webviewApi.current?.loadURLInTab(tabId, item.url);
-      let ready = await waitTabReady(tabId, pageTimeoutMs, item.keyword);
+      const kwLabel = keywordLabel(item.keyword);
+      let ready = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
       if (!ready && visualActiveRef.current) {
         // 首次等待超时：重载一次再等一轮（BOSS 偶发首屏挂起 / 重定向吞掉导航事件导致标记不翻转）
-        addLog('warn', `「${item.keyword}」页面首次加载超时（${Math.round(pageTimeoutMs / 1000)}s），自动重载重试一次…`);
+        addLog('warn', `「${kwLabel}」页面首次加载超时（${Math.round(pageTimeoutMs / 1000)}s），自动重载重试一次…`);
         webviewApi.current?.loadURLInTab(tabId, item.url);
-        ready = await waitTabReady(tabId, pageTimeoutMs, item.keyword);
+        ready = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
       }
       if (!ready) {
         if (!visualActiveRef.current) break;
-        addLog('warn', `「${item.keyword}」搜索页加载超时（已重试；单次上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。可在「设置 → 搜索采集范围控制 → 搜索页加载等待上限」继续调大`);
+        addLog('warn', `「${kwLabel}」搜索页加载超时（已重试；单次上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。可在「设置 → 搜索采集范围控制 → 搜索页加载等待上限」继续调大`);
         markCollectRun(runId, baseRun, {
           status: 'failed',
           stage: 'failed',
@@ -970,7 +1165,16 @@ export default function Workbench() {
         progress: comboProgress,
       });
       // 列表首屏等待上限同步跟随「搜索页加载等待上限」，避免页面已就绪但列表仍在渲染时被提前判空
-      await visualCollectInTab(tabId, { settleMs: collectSpeedMs, listTimeoutMs: pageTimeoutMs });
+      // 接入设置约束：listAutoScroll（是否自动下拉加载更多，false=只采首屏可见卡）、
+      //   listScrollRounds（每批下拉轮数上限，0=滚到物理底部/连续空轮停止）、
+      //   maxJobsPerRun（单次采集兜底上限，0 或缺失沿用 webview 内置 1000 防失控）。
+      await visualCollectInTab(tabId, {
+        settleMs: collectSpeedMs,
+        listTimeoutMs: pageTimeoutMs,
+        autoScroll: config.listAutoScroll !== false,
+        scrollRounds: Number(config.listScrollRounds) > 0 ? Number(config.listScrollRounds) : 0,
+        maxJobs: Math.max(1, Number(config.maxJobsPerRun) || 1000),
+      });
       const got = Math.max(0, ingestedSeenRef.current.size - before);
       if (!visualActiveRef.current) break;
       markCollectRun(runId, baseRun, {
@@ -1009,7 +1213,9 @@ export default function Workbench() {
       return;
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
-    if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
+    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
     const st = await camoufoxStatus(platform);
     if (!st.ready) { message.warning('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测并安装 camoufox')); return; }
     if (!st.engine?.loggedIn) {
@@ -1044,13 +1250,18 @@ export default function Workbench() {
     setCfxCollecting(true);
     let collectedCount = 0;
     let lastCode: number | null = null;
-    addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）`);
+    addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带关键词，仅保留城市等筛选）' : ''}`);
     const cfxRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
       const item = queue[qi];
       if (!cfxActiveRef.current) break;
       const cityCode = platform === 'boss' ? (resolveCityCode(item.location) || '100010000') : String(item.location || '全国');
-      addLog('info', `隐身搜索（${pfLabel}）「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}（${qi + 1}/${queue.length}）`);
+      // 非 BOSS 平台：城市/薪资/关键词在 URL 里，其余「基础求职条件」（学历/经验/公司规模/求职类型）
+      // 随 criteria 下发，由 Python 侧 platform filters 翻译成本平台筛选参数。
+      // （BOSS 队列项来自 searchUrl.ts，不含 criteria —— 故按 platform 收窄类型）
+      const itemCriteria = platform === 'boss' ? undefined : (item as PlatformSearchQueueItem).criteria;
+      const criteriaNote = platform === 'boss' ? '' : describePlatformCriteria(itemCriteria);
+      addLog('info', `隐身搜索（${pfLabel}）「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}（${qi + 1}/${queue.length}）${criteriaNote ? ` · 基础求职条件：${criteriaNote}` : ''}`);
       // 采集任务卡片（与「任务进度」页共用 taskRuns）
       const runId = collectRunId(platform, item);
       cfxRunIds.push(runId);
@@ -1071,7 +1282,7 @@ export default function Workbench() {
         progress: comboProgress,
       });
       try {
-        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform);
+        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria);
         if (result.ok && result.jobs?.length) {
           let added = 0;
           for (const j of result.jobs) {
@@ -1081,7 +1292,7 @@ export default function Workbench() {
             await sleep(600 + Math.random() * 900);
           }
           collectedCount += added;
-          addLog('success', `「${item.keyword}」隐身搜索到 ${result.jobs.length} 个岗位，入库 ${added} 个`);
+          addLog('success', `「${keywordLabel(item.keyword)}」隐身搜索到 ${result.jobs.length} 个岗位，入库 ${added} 个`);
           markCollectRun(runId, baseRun, {
             status: 'success',
             stage: 'success',
@@ -1110,14 +1321,14 @@ export default function Workbench() {
             });
             break;
           }
-          addLog('warn', `隐身搜索「${item.keyword}」返回空：${errMsg}`);
+          addLog('warn', `隐身搜索「${keywordLabel(item.keyword)}」返回空：${errMsg}`);
           markCollectRun(runId, baseRun, {
             status: 'success', stage: 'success', stageLabel: `已完成（无岗位：${errMsg.slice(0, 20)}）`,
             progress: Math.round(((qi + 1) / queue.length) * 100),
           });
         }
       } catch (e: any) {
-        addLog('error', `隐身搜索「${item.keyword}」失败：${e?.message || e}`);
+        addLog('error', `隐身搜索「${keywordLabel(item.keyword)}」失败：${e?.message || e}`);
         markCollectRun(runId, baseRun, {
           status: 'failed', stage: 'failed', stageLabel: '隐身搜索失败', error: String(e?.message || e),
           progress: Math.round(((qi + 1) / queue.length) * 100),
@@ -1261,21 +1472,12 @@ export default function Workbench() {
   }
 
   const runNext = async () => {
-    // 多平台适配：工作台「一键投递」仅处理 BOSS 岗位（webview/官方接口链路）；
-    // 猎聘/智联/51Job 岗位保持 approved，由「自动沟通」后台引擎按平台（Camoufox）投递
-    const rankedAll = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
-    const ranked = rankedAll.filter((p) => !p.job?.platform || p.job.platform === 'boss');
-    if (rankedAll.some((p) => p.job?.platform && p.job.platform !== 'boss' && p.status === 'approved_queue')) {
-      // 非 BOSS 岗位不应处于 approved_queue（应保持在 approved 由后台引擎取走）；此处兜底交回 approved
-      for (const p of rankedAll) {
-        if (p.job?.platform && p.job.platform !== 'boss' && p.status === 'approved_queue') {
-          useDataStore.getState().updatePending(p.id, { status: 'approved' });
-        }
-      }
-    }
+    // 多平台适配：一键投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
+    // 分别新建对应平台标签页做 DOM 投递（见下方平台分派分支）。
+    const ranked = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
     const candidate =
-      (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue' && !isDeliveryClaimed(p.id))) ||
-      ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id));
+      (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform))) ||
+      ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform));
     if (candidate) preferIdRef.current = null;
     if (!candidate) {
       if (visualActiveRef.current || cfxActiveRef.current) return;
@@ -1302,7 +1504,68 @@ export default function Workbench() {
     const sendCfg = useSettingsStore.getState().config;
     const cfx0 = sendCfg.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
 
-    // ===== 通道 1：Camoufox 隐身投递（可选，设置「优先走隐身通道」时）=====
+    // ===== 非 BOSS 平台投递：不同平台新建标签页做 DOM 投递（猎聘/智联/51Job）=====
+    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
+    if (pf && pf !== 'boss') {
+      if (!claimDelivery(candidate.id, pf)) {
+        addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
+        updatePending(candidate.id, { status: 'approved' }); // 交回后台「自动沟通」
+        setApplyStage(null);
+        recomputeStats();
+        if (useAppStore.getState().autoAssist) requestRunNext();
+        return;
+      }
+      setApplyStage('open_job');
+      addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
+      let r: any;
+      try {
+        r = await webviewApi.current?.platformApply(url, pf, candidate.job);
+      } catch (e) {
+        r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
+      } finally {
+        releaseDelivery(candidate.id, pf); // 锁绝不泄漏
+      }
+      const res = r || {};
+      const nTitle = candidate.job?.title || '岗位';
+      if (res.ok && res.stage === 'success') {
+        handleDelivered(candidate.id, res.tabId);
+        return;
+      }
+      if (res.external) {
+        updatePending(candidate.id, { status: 'skipped', error: res.message || '外部网申岗位，跳过' });
+        addLog('warn', `已跳过外部网申岗位：${nTitle}`);
+        if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+        setApplyStage(null); recomputeStats();
+        if (useAppStore.getState().autoAssist) requestRunNext();
+        return;
+      }
+      if (res.stage === 'stop') {
+        updatePending(candidate.id, { status: 'skipped', error: res.message || '该平台今日投递已达上限' });
+        addLog('warn', `跳过：${nTitle}（${res.message || '该平台今日投递已达上限'}）`);
+        if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+        setApplyStage(null); recomputeStats();
+        if (useAppStore.getState().autoAssist) requestRunNext();
+        return;
+      }
+      if (res.stage === 'risk') {
+        handleRisk(res.code, res.message || ''); // 保留标签供人工核对
+        return;
+      }
+      const errMsg = res.error || res.message || '投递失败';
+      updatePending(candidate.id, { status: 'failed', error: errMsg });
+      addLog('error', `投递失败：${nTitle}（${errMsg}）`);
+      if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+      setApplyStage(null); recomputeStats();
+      if (useAppStore.getState().autoAssist) {
+        addLog('warn', '继续投递下一个岗位');
+        requestRunNext();
+      } else {
+        addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
+      }
+      return;
+    }
+
+    // ===== 通道 1：Camoufox 隐身投递（可选，设置「优先走隐身通道」时；仅 BOSS）=====
     if (cfx0.enabled && cfx0.prefer) {
       const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
       const greeting = String(liveCandidate?.deliveryGreeting || liveCandidate?.analysis?.greeting || candidate.deliveryGreeting || candidate.analysis?.greeting || '').trim();
@@ -1631,18 +1894,139 @@ export default function Workbench() {
     { key: 'failed', label: `失败 ${pending.filter((p) => p.status === 'failed').length}` },
   ];
 
-  const hrActiveTag = (p: PendingItem) => {
-    const hr = String(p.job?.hrActive || '').trim();
-    if (!hr) return null;
-    const online = /在线|刚刚活跃/.test(hr);
-    return <Tooltip title={`HR 活跃度（页面识别）：${hr}`}><Tag color={online ? 'green' : 'orange'} style={{ margin: 0 }}>{online ? 'HR 在线' : hr.slice(0, 12)}</Tag></Tooltip>;
+  const welfareTag = (p: PendingItem) => {
+    // 候选文本 = 已存的福利标签 + JD 描述 + 卡片文本 + 标题。
+    // 即使 welfare 因旧数据/采集缺失为空，也能据持久化的 description 现场推导蓝绿黄标签。
+    const corpus = [
+      ...(Array.isArray(p.job?.welfare) ? p.job.welfare : []),
+      p.job?.description,
+      p.job?.cardText,
+      p.job?.title,
+      p.job?.hrActive,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (!corpus.trim()) return null;
+    const hit = (pairs: Array<readonly [string, RegExp]>) =>
+      Array.from(new Set(pairs.filter(([, re]) => re.test(corpus)).map(([label]) => label)));
+    // 工作时间按性质分色：双休=绿（好）、大小周/轮休=蓝（中性）、单休=黄（警示）。
+    const workGood = hit([
+      ['双休', /双休|周末双休|做五休二|朝九晚五|周末休息|8小时工作制|五天制/],
+    ]);
+    const workMid = hit([
+      ['大小周', /大小周|双单休/],
+      ['轮休', /轮休/],
+    ]);
+    const workBad = hit([
+      ['单休', /单休|做六休一|六天制/],
+    ]);
+    // 双休等工作制度再叠加 detectWorkSchedule 权威识别（词表覆盖 做五休二/大小休/单双休/每周N天 等
+    // 更广措辞），保证只要有工作制度信号就展示、绝不因去重/截断被删掉（与「任务进度」页同口径）。
+    const wSchedule = detectWorkSchedule(p.job);
+    if (wSchedule.detected) {
+      if (/^双休$/.test(wSchedule.label)) { if (!workGood.includes('双休')) workGood.push('双休'); }
+      else if (/^大小周$/.test(wSchedule.label)) { if (!workMid.includes('大小周')) workMid.push('大小周'); }
+      else if (/^单休$/.test(wSchedule.label)) { if (!workBad.includes('单休')) workBad.push('单休'); }
+    }
+    // 社保保障与薪酬：细致区分「五险一金」与「五险」——五险一金 = 社保 + 公积金（绿标、强保障）；
+    // 仅有「五险」（无公积金）保障弱一档，单独用警示色展示并注明，绝不与五险一金混淆。
+    // 同时避免「五险一金」因 /[五5]险/ 被误标成两个标签（五险一金 已含五险，不并列展示）。
+    const insRaw = hit([
+      ['六险二金', /六险二金|九险二金/],
+      ['六险一金', /六险一金/],
+      ['五险一金', /五险一金/],
+      ['三险一金', /三险一金/],
+      ['住房公积金', /住房公积金/],
+      ['公积金', /公积金/],
+      ['补充医疗', /补充医疗|补充商业保险/],
+      ['补充养老', /补充养老|企业年金/],
+      ['五险', /[五5]险/],
+    ]);
+    const hasFullIns = insRaw.some((l) => /六险二金|六险一金|五险一金|三险一金/.test(l));
+    const hasFullFund = insRaw.includes('住房公积金');
+    const hasAnyFund = insRaw.some((l) => /住房公积金|公积金/.test(l));
+    const benefit = [
+      // 五险单独走 insuranceOnly 警示；「公积金」仅在出现完整「住房公积金」时不再并列
+      ...insRaw.filter((l) => l !== '五险').filter((l) => !(hasFullFund && l === '公积金')),
+      ...hit([
+        ['多薪', /(?:13|14|15|16)薪|年底双薪|十三薪/],
+        ['年终奖', /年终奖/],
+      ]),
+    ].slice(0, 3);
+    // 仅有「五险」（未含一金/公积金项）→ 独立警示：与五险一金作细致区分
+    const insuranceOnly = !hasFullIns && !hasAnyFund && insRaw.includes('五险') ? ['五险'] : [];
+    // 警示项（潜在陷阱关键字，黄标）：弹性工作/工时、高提成、有责无责底薪、期权画饼、收费、岗位包装、
+    // 以及加班文化 / 末位淘汰 / 试用期不缴社保 / 长期出差驻场 / 无薪实习 / 就业歧视等（发散覆盖常见用工风险）。
+    const trap = hit([
+      ['弹性工作', /弹性工作|弹性工时|弹性上下班|不定时工作制|不固定工时/],
+      ['高提成', /高提成|上不封顶/],
+      ['底薪加提成', /底薪\s*[加和]?\s*提成|底薪提成/],
+      ['有责底薪', /有责底薪/],
+      ['无责底薪', /无责底薪/],
+      ['期权', /期权|股权激励/],
+      ['分红', /项目分红|事业合伙人|分红/],
+      ['收费/押金', /押金|培训费|岗前培训|服装费|保证金|实训|先交|先付费/],
+      ['试岗', /无薪试岗|试岗/],
+      ['管培生', /管培生/],
+      ['储备干部', /储备干部/],
+      ['保录/直签', /保录|直签/],
+      ['抗压/吃苦', /抗压能力强|能吃苦耐劳/],
+      ['无偿加班', /无偿加班|加班文化|强制加班|经常加班|加班较多|加班严重|加班多/],
+      ['狼性/末位淘汰', /狼性文化|末位淘汰|末尾淘汰/],
+      ['试用期不缴社保', /试用期不缴|试用期无社保|不缴社保|转正才缴/],
+      ['长期试用期', /试用期\s*(?:[6-9]\d*|1[0-9]|一年|1年|半年)\s*个?月?/],
+      ['长期出差/驻场', /长期出差|频繁出差|出差频繁|驻场/],
+      ['无薪实习', /无薪实习|无工资实习|不给实习工资/],
+      ['就业歧视', /限男性|限女性|限35岁|已婚已育优先|未婚未育优先/],
+    ]);
+    if (!workGood.length && !workMid.length && !workBad.length && !benefit.length && !trap.length && !insuranceOnly.length) return null;
+    return (
+      <>
+        {workGood.length > 0 && (
+          <Tooltip title={`工作时间（双休/标准工时）`}>
+            <span className="job-info-chip job-info-chip--green">{workGood.join('、')}</span>
+          </Tooltip>
+        )}
+        {workMid.length > 0 && (
+          <Tooltip title={`工作时间（大小周/轮休，较累）`}>
+            <span className="job-info-chip job-info-chip--blue">{workMid.join('、')}</span>
+          </Tooltip>
+        )}
+        {workBad.length > 0 && (
+          <Tooltip title={`⚠ 单休/做六休一，需综合薪资评估`}>
+            <span className="job-info-chip job-info-chip--amber">{workBad.join('、')}</span>
+          </Tooltip>
+        )}
+        {benefit.length > 0 && (
+          <Tooltip title={`好信号：${benefit.join('、')}——正规社保/薪酬保障，可作为优先沟通的参考`}>
+            <span className="job-info-chip job-info-chip--green">{benefit.join('、')}</span>
+          </Tooltip>
+        )}
+        {insuranceOnly.length > 0 && (
+          <Tooltip title={`「五险」未含「一金」（缺住房公积金）：保障弱于「五险一金」，沟通时建议确认公积金缴纳情况`}>
+            <span className="job-info-chip job-info-chip--amber">{insuranceOnly.join('、')}（无公积金）</span>
+          </Tooltip>
+        )}
+        {trap.length > 0 && (
+          <Tooltip title={`⚠ 命中求职陷阱关键字：${trap.join('、')}。多为弹性打卡、低底薪高提成、画饼期权、收费培训、无偿加班或试用期不缴社保等，需仔细核实薪资结构、用工方式与合同条款`}>
+            <span className="job-info-chip job-info-chip--amber">{trap.join('、')}</span>
+          </Tooltip>
+        )}
+      </>
+    );
   };
 
   const interviewModeTag = (p: PendingItem) => {
     const mode = p.job?.interviewMode;
     if (mode !== 'online' && mode !== 'offline') return null;
     const isOnline = mode === 'online';
-    return <Tooltip title={`面试方式（页面识别）：${isOnline ? '线上' : '线下'}`}><Tag color={isOnline ? 'blue' : 'purple'} style={{ margin: 0 }}>{isOnline ? '线上面试' : '线下面试'}</Tag></Tooltip>;
+    return (
+      <Tooltip title={`面试方式（页面识别）：${isOnline ? '线上' : '线下'}`}>
+        <span className={`job-info-chip ${isOnline ? 'job-info-chip--blue' : 'job-info-chip--purple'}`}>
+          {isOnline ? '线上面试' : '线下面试'}
+        </span>
+      </Tooltip>
+    );
   };
 
   // 正在进行的采集任务文案（岗位信息行展示 + 超长时 tooltip 全文）
@@ -1705,6 +2089,29 @@ export default function Workbench() {
             </div>
           </div>
 
+          {/* 无关键字采集（随机岗位推荐）前置提醒：岗位完全由平台按账号内的求职意向推荐，
+              资料未完善会采到不相关岗位，故在卡片内常驻提醒并提供直达在线简历入口 */}
+          {config.collectWithoutKeyword && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: 10, padding: '6px 10px', background: '#fff' }}
+              message={
+                <span style={{ fontSize: 12 }}>
+                  无关键字采集：岗位按账号内求职意向推荐，请先完善在线简历与求职意向。
+                  <Button
+                    size="small"
+                    type="link"
+                    style={{ padding: 0, marginLeft: 4, fontSize: 12 }}
+                    onClick={() => webviewApi.current?.openInNewTab(BOSS_RESUME_URL, 'BOSS 在线简历')}
+                  >
+                    去完善
+                  </Button>
+                </span>
+              }
+            />
+          )}
+
           <div className="delivery-summary" style={{ marginTop: 8 }}>
             <Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
               {deliveryTasks.length > 0
@@ -1716,7 +2123,7 @@ export default function Workbench() {
                     statFailed && `失败 ${statFailed} 个`,
                   ].filter(Boolean).join(' · ') + '，可在下方列表查看详情。'
                 : collecting
-                  ? '正在逐个读取岗位信息，结果会自动加入下方列表…'
+                  ? `正在逐个读取岗位信息，结果会自动加入下方列表…${analysisStats.running || analysisStats.queued ? ` 当前 AI 分析 ${analysisStats.running} 个，排队 ${analysisStats.queued} 个。` : ''}`
                   : '还没有进行中的岗位。点「搜索采集」按投递方向采集岗位，或在右侧浏览器打开岗位后点「加入任务」，进度会实时显示在这里。'}
             </Text>
           </div>
@@ -1875,7 +2282,9 @@ export default function Workbench() {
                 const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
                 const isPending = p.status === 'pending';
                 const isExpanded = expandedIds.has(p.id);
-                const metaLine = formatMetaLine(p.job?.company, p.job?.location, p.job?.salary, p.job?.url);
+                // 元信息行只展示真实解析到的「公司 · 地点 · 薪资」；缺字段时整行不渲染，绝不显示占位/裸链接占位，
+                // 投递/招呼语依赖这些真实字段（见 overlay 权威解析），缺失即视为旧卡，需重新「加入任务」触发自愈补齐。
+                const metaLine = formatMetaLine(p.job?.company, p.job?.location, p.job?.salary);
                 return (
                   <div key={p.id} className={'job-card ' + jobCardStatus(p) + (p.id === activeId ? ' is-active' : '')}>
                     <div className="job-header" role="button" tabIndex={0} aria-expanded={isExpanded}
@@ -1895,14 +2304,34 @@ export default function Workbench() {
                             </button>
                           </div>
                         </div>
-                        <div className="job-company">{metaLine}</div>
-                        <div className="job-meta">
+                        {metaLine ? (
+                          <div className="job-company">{metaLine}</div>
+                        ) : (
+                          <div className="job-company" style={{ color: '#999', fontSize: 12 }}>
+                            ⚠ 信息待补全：重新「加入任务」可补齐公司/地点/薪资
+                            {(p.job as any)?.parseDiag && (
+                              <span style={{ display: 'block', fontSize: 11, opacity: 0.7 }}>诊断:{(p.job as any).parseDiag}</span>
+                            )}
+                          </div>
+                        )}
+                        <div className="job-meta job-meta--wb">
+                          {/* 首个标签 = AI 四种匹配度（档位：推荐/匹配/谨慎/不推荐，由 AI 四层整体裁决生成）；
+                              旧数据缺 fitLevel 时降级为决策徽标（推荐/谨慎/不推荐），避免两枚「推荐」重复展示 */}
                           {p.analysis && (
-                            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-                              {p.analysis.decision === 'recommend' ? '推荐' : p.analysis.decision === 'cautious' ? '谨慎' : '不推荐'}
-                            </span>
+                            <>
+                              {p.analysis.fitLevel ? (
+                                <span className="job-fit-tag">{fitLevelLabel(p.analysis.fitLevel)}</span>
+                              ) : (
+                                <span className={`job-decision job-decision--${
+                                  p.analysis.decision === 'recommend' ? 'recommend'
+                                    : p.analysis.decision === 'cautious' ? 'cautious' : 'reject'
+                                }`}>
+                                  {p.analysis.decision === 'recommend' ? '推荐' : p.analysis.decision === 'cautious' ? '谨慎' : '不推荐'}
+                                </span>
+                              )}
+                            </>
                           )}
-                          {hrActiveTag(p)}
+                          {welfareTag(p)}
                           {interviewModeTag(p)}
                         </div>
                       </div>
@@ -1911,6 +2340,7 @@ export default function Workbench() {
                     {isExpanded && (
                       <div className="job-body" onClick={(e) => e.stopPropagation()}>
                         {p.analysis?.reason && <div className="job-reason">{p.analysis.reason}</div>}
+                        {p.analysis?.aiNote && <div className="job-ainote">{p.analysis.aiNote}</div>}
                         {p.deliveryGreeting || p.analysis?.greeting ? (
                           <div className="job-greeting-editor">
                             <div className="job-greeting-label">{isPending ? '将以求职者身份发送，可直接修改' : '已生成的招呼语，可编辑后重新使用'}</div>

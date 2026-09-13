@@ -879,21 +879,34 @@ async function createMainWindow() {
       webviewDiag('PRELOAD-ERROR code=' + code + ' err=' + String(err || '').slice(0, 300));
       try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-error', errorCode: code, error: String(err || '').slice(0, 300) }); } catch {}
     });
-    wc.on('dom-ready', async () => {
-      webviewDiag('DOM-READY url=' + (wc.getURL?.() || ''));
-      // 检查 preload 注入标记：window.__bossclawPreload 由 webview.cjs 顶层写入（sandboxed preload 与页面共享 window）
-      let check = 'ERROR';
-      try {
-        const v = await wc.executeJavaScript('window.__bossclawPreload || null');
-        check = v ? 'INJECTED ts=' + v : 'NOT-INJECTED';
-        webviewDiag('PRELOAD-CHECK ' + check);
-      } catch (e) { webviewDiag('PRELOAD-CHECK ERROR ' + String((e && e.message) || e).slice(0, 200)); }
-      // 同步推送到渲染进程日志区（用户无需翻 diag 文件）
-      try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-check', result: check, url: wc.getURL?.() || '' }); } catch {}
-    });
+    // ===== preload 注入判定（以「preload 自身事实」为权威，与渲染层同一口径）=====
+    // 根因：<webview> 继承宿主 webPreferences（contextIsolation: true），preload 运行在**隔离世界**，
+    //   其 window.__bossclawPreload 对主世界不可见 —— 旧实现用主世界 executeJavaScript 探测，
+    //   恒为 null，于是 diag 日志把「注入成功」全部误报成 NOT-INJECTED
+    //   （真机实测 584/584 全为误报，同期 preload-error 为 0，preload 自报标记正常）。
+    // 权威信号 = preload 顶层输出的 `BOSS-CLAW-PRELOAD-INJECTED` console 标记（本 guest 捕获）。
+    let preloadSeen = false;
     wc.on('console-message', (_ev, level, msg) => {
       const m = String(msg || '');
+      if (m.includes('BOSS-CLAW-PRELOAD-INJECTED')) preloadSeen = true;
       if (/preload|uncaught|referenceerror|typeerror|is not|BOSS-CLAW/i.test(m)) webviewDiag('CONSOLE[' + level + '] ' + m.slice(0, 300));
+    });
+    wc.on('dom-ready', async () => {
+      webviewDiag('DOM-READY url=' + (wc.getURL?.() || ''));
+      let check = preloadSeen
+        ? 'INJECTED(preload 顶层标记已捕获)'
+        : 'NOT-SEEN(preload 顶层标记未捕获，需查 preload 路径 / preload-error)';
+      if (!preloadSeen) {
+        // 兜底：到隔离世界（preload 所在世界）再探测一次，避免 console 事件偶发丢失造成误判
+        try {
+          const v = await wc.executeJavaScriptInIsolatedWorld(999, [{ code: 'String((window.__bossclawPreload) || "")' }]);
+          const got = Array.isArray(v) ? String(v[0] || '') : String(v || '');
+          if (got) check = 'INJECTED(隔离世界探测 ts=' + got + ')';
+        } catch (e) { check += ' / probe-error=' + String((e && e.message) || e).slice(0, 120); }
+      }
+      webviewDiag('PRELOAD-CHECK ' + check);
+      // 同步推送到渲染进程日志区（用户无需翻 diag 文件）
+      try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-check', result: check, url: wc.getURL?.() || '' }); } catch {}
     });
   });
 
@@ -1056,8 +1069,104 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
   }
 });
 
+// ===== 通用文本导出（CSV）：渲染层拼好文本 → 系统保存对话框 → 写盘 =====
+// 口径：**每次导出都必须由用户选择保存位置**（不做静默落盘、不记忆目录）。
+// 扩展名走白名单（默认只允许 .csv），避免误导出可执行文件；
+// 文本已由渲染层带上 UTF-8 BOM，Excel / WPS 双击不会中文乱码。
+safeHandle('jc:save-file', async (_event, defaultName, content, extWhitelist) => {
+  const name = String(defaultName || '').trim();
+  const text = String(content ?? '');
+  const allowed = (Array.isArray(extWhitelist) && extWhitelist.length ? extWhitelist : ['csv']).map((e) =>
+    String(e).replace(/^\./, '').toLowerCase()
+  );
+  const m = /^([\w\u4e00-\u9fa5()（）\-· ]{1,120})\.([A-Za-z0-9]{1,8})$/.exec(name);
+  if (!m) return { ok: false, error: '文件名不合法（须为「名称.扩展名」）' };
+  const ext = m[2].toLowerCase();
+  if (!allowed.includes(ext)) {
+    return { ok: false, error: `不支持的文件类型 .${ext}（仅支持 ${allowed.map((e) => `.${e}`).join(' / ')}）` };
+  }
+  if (!text) return { ok: false, error: '导出内容为空' };
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: '导出数据',
+    defaultPath: path.join(app.getPath('documents'), name),
+    filters: [
+      { name: ext === 'csv' ? 'CSV 数据表' : `${ext.toUpperCase()} 文件`, extensions: [ext] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    await fs.promises.writeFile(filePath, text, 'utf8');
+    return { ok: true, filePath };
+  } catch (e) {
+    dlog('error', 'save-file failed', { message: (e && e.message) || String(e) });
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 统计数据报表 PDF：渲染层传横向 A4 打印 HTML → 隐藏窗口 printToPDF → 保存对话框 =====
+// 与 jc:save-pdf 的区别：本通道固定 **A4 横版**（统计页是宽幅布局），且对话框标题独立，
+// 避免复用简历通道时出现「保存定制简历」这类错位标题。同样必须由用户选择保存位置。
+safeHandle('jc:save-report-pdf', async (_event, defaultName, html) => {
+  const name = String(defaultName || '').trim();
+  if (!/^[\w\u4e00-\u9fa5()（）\-· ]{1,120}\.pdf$/i.test(name)) {
+    return { ok: false, error: '文件名不合法（须以 .pdf 结尾）' };
+  }
+  const htmlText = String(html || '');
+  if (htmlText.length < 200 || !/<!DOCTYPE html>/i.test(htmlText)) {
+    return { ok: false, error: 'HTML 内容不完整，无法生成 PDF' };
+  }
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: '导出统计报表',
+    defaultPath: path.join(app.getPath('documents'), name),
+    filters: [
+      { name: 'PDF 文档', extensions: ['pdf'] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+
+  // 隐藏打印窗口：不启用 Node 能力，纯渲染 HTML（无脚本），保证安全；横版按 842×1191 倒置预置
+  const printWin = new BrowserWindow({
+    show: false,
+    width: 1191,
+    height: 842,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  try {
+    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
+    await new Promise((r) => setTimeout(r, 400));
+    const pdf = await printWin.webContents.printToPDF({
+      pageSize: 'A4',
+      landscape: true,
+      printBackground: true,
+      margins: { marginType: 'none' },
+    });
+    if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
+    await fs.promises.writeFile(filePath, pdf);
+    return { ok: true, filePath };
+  } catch (e) {
+    dlog('error', 'report printToPDF failed', { message: (e && e.message) || String(e) });
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    try { printWin.destroy(); } catch {}
+  }
+});
+
+// 在系统文件管理器中定位到指定文件（导出成功后的「打开所在文件夹」）
+safeHandle('jc:show-item', (_event, filePath) => {
+  const p = String(filePath || '').trim();
+  if (!p || !path.isAbsolute(p)) return { ok: false, error: '路径不合法' };
+  try {
+    shell.showItemInFolder(p);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 // 保存「达标岗位」数据到本地：渲染进程整理好 JSON → 系统保存对话框 → 写盘。
-// 达标 = 岗位分析评分 >= 投递时设置的最低分（minScore）；达标岗位从工作台队列收集，由渲染层拼好传入。
+// 达标 = 岗位分析评分 >= 推荐岗位分（minScore）；达标岗位从工作台队列收集，由渲染层拼好传入。
 // dirOpt 非空且为绝对路径时，直接写入该目录（不弹框，文件名按天自动生成）；否则弹出保存对话框。
 safeHandle('jc:save-qualified-jobs', async (_event, defaultName, jsonText, dirOpt) => {
   const name = String(defaultName || '').trim();

@@ -333,6 +333,59 @@ export const electronApi = {
     }
   },
 
+  // 通用文本导出（CSV）：主进程弹系统保存对话框，由用户选择保存位置后写盘
+  saveFile: async (
+    defaultName: string,
+    content: string,
+    extWhitelist?: string[]
+  ): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }> => {
+    try {
+      const fn = api().saveFile;
+      if (!fn) return { ok: false, error: 'saveFile API 不可用（仅 Electron 可用）' };
+      const r = (await fn(defaultName, content, extWhitelist)) as {
+        ok?: boolean;
+        canceled?: boolean;
+        filePath?: string;
+        error?: string;
+      };
+      return { ok: Boolean(r?.ok), canceled: r?.canceled, filePath: r?.filePath, error: r?.error };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  },
+
+  // 统计数据报表 PDF（A4 横版）：与简历导出通道独立，避免对话框标题错位
+  saveReportPdf: async (
+    defaultName: string,
+    html: string
+  ): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }> => {
+    try {
+      const fn = api().saveReportPdf;
+      if (!fn) return { ok: false, error: 'PDF 报表仅桌面端可用' };
+      const r = (await fn(defaultName, html)) as {
+        ok?: boolean;
+        canceled?: boolean;
+        filePath?: string;
+        error?: string;
+      };
+      return { ok: Boolean(r?.ok), canceled: r?.canceled, filePath: r?.filePath, error: r?.error };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  },
+
+  // 在系统文件管理器中定位到刚导出的文件
+  showItem: async (filePath: string): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const fn = api().showItem;
+      if (!fn) return { ok: false, error: 'showItem API 不可用（仅 Electron 可用）' };
+      const r = (await fn(filePath)) as { ok?: boolean; error?: string };
+      return { ok: Boolean(r?.ok), error: r?.error };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  },
+
   // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）
   qualifiedJobsDir: {
     get: async (): Promise<string> => {

@@ -14,6 +14,7 @@ import type {
   QualifiedJobExport,
 } from '@/lib/bossclaw/types';
 import { DEFAULT_STATS, DEFAULT_PROFILE, DEFAULT_PROFILE_DRAFT, DEFAULT_DIRECTION_PLAN, today } from '@/lib/bossclaw/defaults';
+import { cleanCompanyName } from '@/lib/bossclaw/jobDisplay';
 
 /** 达标岗位本地缓存上限：最多保留最近 N 天（按日期分组）的达标岗位数据，超出自动清理更早几天的数据，防止 localStorage 撑爆。
  *  实测按每天约 460 个达标岗位、叠加图片简历+导入文件后，保留 7 天（≈3200 条）仍能把整 store 稳定在 5MB 配额约 60% 以内；90 天会随累计溢出。 */
@@ -156,7 +157,21 @@ export const useDataStore = create<DataState>()(
       setProfileDraft: (d) => set({ profileDraft: d }),
       setDirectionPlan: (p) => set({ directionPlan: p }),
 
-      addPendingItem: (item) => set((s) => ({ pending: [item, ...s.pending] })),
+      addPendingItem: (item) =>
+        set((s) => {
+          // 同岗位查重：同一岗位（归一化去 query/hash 后 URL **或** jobId 任一相同）已入队则不再叠卡。
+          // 归一化 URL 在某些采集场景仍会漏（同一岗位 anchor href 与 dataJobId 构造 url 可能不同），
+          // 故叠加 jobId（BOSS encryptJobId / 平台岗位 id 的稳定标识）判重，避免同一岗位重复出现在队列。
+          const key = jobUrlKey(item.job);
+          const jid = String(item.job?.jobId || '')
+            .trim()
+            .toLowerCase();
+          const hit = s.pending.some((p) =>
+            (key && jobUrlKey(p.job) === key) || (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid)
+          );
+          if (hit) return s;
+          return { pending: [item, ...s.pending] };
+        }),
       updatePending: (id, patch) =>
         set((s) => ({ pending: s.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
       setPending: (items) => set({ pending: items }),
@@ -244,6 +259,22 @@ export const useDataStore = create<DataState>()(
       // 大对象 stringify + localStorage 写盘会把渲染进程主线程卡死（点击无反应/应用退出）。
       // 改用防抖合批（短窗口内多次 set 只写一次）+ 配额超限降级（丢运行时日志不丢业务状态）。
       storage: createSafePersistStorage(),
+      // 版本迁移：v1 起对存量 pending 清洗公司名（剔除采集误把地名当公司名写入的脏数据，
+      // 如「深圳·南山区·科技园」），修复「数据统计 · 公司 Top」把地名当公司名展示的 bug。
+      version: 1,
+      migrate: (state) => {
+        if (state && typeof state === 'object' && Array.isArray((state as { pending?: unknown[] }).pending)) {
+          (state as { pending: Array<{ job?: { company?: string } }> }).pending =
+            (state as { pending: Array<{ job?: { company?: string } }> }).pending.map((p) => {
+              if (p?.job && typeof p.job.company === 'string') {
+                const cleaned = cleanCompanyName(p.job.company);
+                if (cleaned === undefined) return { ...p, job: { ...p.job, company: '' } };
+              }
+              return p;
+            });
+        }
+        return state as DataState;
+      },
       partialize: (s) => {
         const { resumeImage, ...rest } = s;
         return rest as DataState;
@@ -252,6 +283,12 @@ export const useDataStore = create<DataState>()(
   )
 );
 
+// 岗位链接查重键：归一化去 query/hash 并小写，作为同一岗位的唯一标识（同链接不再重复入队）
+export function jobUrlKey(job?: { url?: string }): string {
+  if (!job?.url) return '';
+  return String(job.url).split(/[?#]/)[0].trim().toLowerCase();
+}
+
 // 将"加入任务"封装为一步：分析 -> 生成 PendingItem -> 入队
 export function makePendingItem(
   job: JobMeta,
@@ -259,10 +296,14 @@ export function makePendingItem(
   deliveryGreeting: string,
   runId: string
 ): PendingItem {
+  // 清洗公司名：剔除采集把地名误当公司名的脏数据（如「深圳·南山区·科技园」）
+  const cleanedJob: JobMeta = job.company
+    ? { ...job, company: cleanCompanyName(job.company) ?? job.company }
+    : job;
   return {
     id: runId,
     runId,
-    job,
+    job: cleanedJob,
     analysis,
     deliveryGreeting: String(deliveryGreeting || analysis.greeting || '').trim(),
     status: 'pending',

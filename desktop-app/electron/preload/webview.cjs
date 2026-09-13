@@ -162,7 +162,8 @@ function platformExtractJob() {
     if (m) jobId = m[1];
   }
   const title = pickText(['h1', '[class*="job-title"]', '[class*="job-name"]', '[class*="position"] h3', 'title']) || document.title;
-  const company = pickText(['[class*="company"] .name', '[class*="company-name"]', '[class*="comp-name"]', '.cname', '[class*="company"]']);
+  // 公司名：窄选择器优先，避免 [class*="company"] 命中地点容器；cleanCompanyName 兜底
+  const company = cleanCompanyName(pickText(['[class*="company-name"] .name', '[class*="company-name"]', '[class*="companyName"]', '[class*="comp-name"]', '.cname', 'a[href*="gongsi"]', 'a[href*="company"]']));
   const salary = decodeSalaryDigits(pickText(['[class*="salary"]', '[class*="sal"]', '[class*="price"]', '[class*="money"]']));
   const location = pickText(['[class*="job-area"]', '[class*="area"]', '[class*="address"]', '[class*="location"]']);
   const description = textOf(document.body).slice(0, 6000);
@@ -349,15 +350,18 @@ function riskCodeMessage(code) {
 // ===== BOSS 官方 API =====
 // 在 zhipin.com 页面上下文执行 fetch：登录 cookie 由 Electron persist:bossclaw 会话自动携带，
 // 反爬 token（zp_stoken）由页面 JS 在导航时生成并随请求自动带上，无需手动提取。
+// options.timeoutMs 可覆盖单次请求超时（默认 15s；「加入任务」提取链用 8s，确保 API 超时后
+// DOM 兜底仍在渲染层 10s 解析预算内完成，避免超时兜底空卡）。
 async function zpFetch(path, options = {}) {
+  const { timeoutMs = 15000, ...fetchOpts } = options;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(path, {
       credentials: 'include',
       signal: ctrl.signal,
-      headers: { 'X-Requested-With': 'XMLHttpRequest', ...(options.headers || {}) },
-      ...options,
+      headers: { 'X-Requested-With': 'XMLHttpRequest', ...(fetchOpts.headers || {}) },
+      ...fetchOpts,
     });
     if (!res.ok) return { error: `HTTP ${res.status}` };
     return await res.json();
@@ -414,80 +418,346 @@ function extractEncryptJobIdFromUrl(url) {
   return '';
 }
 
+// 从详情页内嵌脚本中的 var _jobInfo = { job_id, user_id, job_name, job_salary, company, ... } 提取权威岗位数据。
+// 该对象是页面自身渲染出来的，必然与网页展示一致；card.json API（缺 securityId 可能返回错岗）或
+// DOM banner 选择器（新版页面不匹配）拿到与页面不符的数据时，用它覆盖，保证「加入任务」入队信息与网页一致。
+// 用正则按 key 精确取值（不 eval 页面脚本，避免注入风险）。
+function extractEmbeddedJobInfo() {
+  const texts = [];
+  document.querySelectorAll('script').forEach((s) => {
+    const t = s.textContent || '';
+    if (/_jobInfo\s*[:=]/.test(t)) texts.push(t);
+  });
+  const g = (key) => {
+    for (const t of texts) {
+      const m = t.match(new RegExp(key + '\\s*[:=]\\s*[\'“]([^\'”]*?)[\'“]'));
+      if (m) {
+        const v = m[1].trim();
+        if (v) return v;
+      }
+    }
+    return '';
+  };
+  return {
+    title: g('job_name'),
+    salary: g('job_salary'),
+    company: g('company'),
+    encryptUserId: g('user_id'),
+    securityId: g('securityId'),
+  };
+}
+
+// meta[name=description] 规格化职场信息（薪资/地点/要求），meta 必然反映当前岗位，作为权威兜底之一。
+function metaJobBasics() {
+  const c = metaDescriptionText();
+  if (!c) return {};
+  const out = {};
+  const salary = c.match(/薪资\s*[:：]\s*([^，,。；]+)/);
+  if (salary) out.salary = salary[1].trim();
+  const loc = c.match(/地点\s*[:：]\s*([^，,。；]+)/);
+  if (loc) out.location = loc[1].trim();
+  const req = c.match(/(?:要求|经验)\s*[:：]\s*([^，,。；]+)/);
+  if (req) out.requirement = req[1].trim();
+  return out;
+}
+
+// meta[name=keywords] 第一个 token 即岗位名（如「中级JAVA工程师,…」）。
+function titleFromMetaKeywords() {
+  const k = document.querySelector('meta[name="keywords"]');
+  const raw = k && k.content ? String(k.content) : '';
+  const first = String(raw).split(',')[0].trim();
+  if (first && first.length <= 80) return first;
+  return '';
+}
+
+// 用页面权威数据覆盖 title/company/salary/location：优先 _jobInfo，回退 meta description/keywords 与 <title>。
+// meta 与内嵌 _jobInfo 必然反映「当前详情页岗位」，可纠正 card.json API 缺 securityId 时返回的错岗（如把
+//「中级JAVA工程师 7-12K」误报成「Java开发工程师 5-10K」），保证「加入任务」入队卡片信息与网页一致。
+// 仅当当前页确为岗位详情页时才覆盖，避免列表页的通用 meta 误写。
+function applyEmbeddedOverlay(job) {
+  if (!/job_detail|jobdetail/i.test(String(location.href || ''))) return job;
+  const embedded = extractEmbeddedJobInfo();
+  const basics = metaJobBasics();
+  const kwTitle = titleFromMetaKeywords();
+  const out = { ...job };
+  if (embedded.company) out.company = embedded.company;
+  else { const ct = companyFromTitle(); if (ct) out.company = ct; }
+  if (embedded.title || kwTitle) out.title = embedded.title || kwTitle;
+  if (embedded.salary || basics.salary) out.salary = embedded.salary || basics.salary;
+  if (basics.location) out.location = basics.location;
+  if (!out.description && basics.requirement) out.description = basics.requirement;
+  if (embedded.encryptUserId) out.encryptUserId = embedded.encryptUserId;
+  if (embedded.securityId) out.securityId = embedded.securityId;
+  return out;
+}
+
 // DOM 兜底：从详情页 banner 提取岗位基本信息（API 失败时用）
 // 工作制度 / 福利标签提取（如「周末双休」「大小周」「单休」「做六休一」）。
 // 用途：日薪（元/天）折算月薪时的月工作日基数（双休 22 / 大小周 24 / 单休 26），
 // 见渲染层 src/lib/bossclaw/workSchedule.ts。只保留短标签，避免把整段 JD 文本混进来。
+//
+// 除工作制度外，还提取「有用福利」（五险一金 / 年终奖 / 带薪年假 等展示用福利），
+// 供工作台中间「岗位进度」列表直接展示，替代干燥的 HR 活跃度。来源分两个：
+//   1) BOSS meta[name=description] 规格化文案里的「福利：年终奖、员工旅游、五险，…」；
+//   2) 详情页标签区（.job-tags span 等）。
+const WELFARE_BENEFIT_RE =
+  /(五险一金|六险一金|三险一金|五险|住房公积金|公积金|年终奖|年终分红|绩效奖金|带薪年假|带薪休假|定期体检|补充医疗|股票期权|股权激励|生日福利|节日福利|节假日福利|团建聚餐|团建|免费午餐|免费三餐|员工食堂|零食下午茶|全勤奖|加班补助|加班补贴|夜班补助|夜班补贴|交通补助|交通补贴|住房补贴|房补|餐补|饭补|有无线网|节假日加班费|企业年金|底薪加提成|保底工资|员工旅游|年度旅游|免费班车|弹性工作|人才公寓|提供宿舍|宿舍|包住|包吃|双休|大小周|单休|轮休)/;
+// 工作制度信号（供日薪折算月工作日基数的 workSchedule 识别，见 workSchedule.ts）
+const WELFARE_WORK_RE = /休|班|工作制|弹性/;
+// 排除非福利噪声（活跃 / 开聊 / 招聘方措辞等）
+const WELFARE_NOISE_RE = /在线|刚刚|开聊|随时随地|直接|招聘|hr|擅长|沟通/;
+
+function metaDescriptionText() {
+  const m = document.querySelector('meta[name="description"]');
+  return m && m.content ? String(m.content) : '';
+}
+
+// 从 BOSS 规格化 meta description 提取「有用福利」（如「福利：年终奖、员工旅游、五险」）。
+function extractBenefitsFromMeta() {
+  const content = metaDescriptionText();
+  if (!content) return [];
+  const seg = content.match(/福利\s*[:：]\s*([^。；]+)/);
+  if (!seg) return [];
+  return seg[1]
+    .split(/[、,，,;；]/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && t.length <= 12 && !WELFARE_NOISE_RE.test(t) && WELFARE_BENEFIT_RE.test(t));
+}
+
+// 采集路径源码兜底（与「加入任务」同口径）：列表页当前文档的 meta description 是列表通用文案，
+// 拿不到该岗位详情福利。直接抓岗位详情页 HTML（同源 fetch + 登录态），从源码 meta description
+// 提取「福利：…」段与正/负信号关键字并入 welfare，保证工作台五险一金等标签可显示。
+// 抓取失败（风控/网络/非详情链接）静默返回空，不阻塞采集主循环。
+async function fetchDetailSourceWelfare(jobUrl) {
+  try {
+    const u = String(jobUrl || '');
+    if (!/job_detail|jobdetail/i.test(u)) return [];
+    const res = await fetch(u, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    if (!res.ok) return [];
+    const html = await res.text();
+    if (!html || html.length < 200) return [];
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const content = (doc.querySelector('meta[name="description"]')?.content || '').trim();
+    if (!content) return [];
+    const seg = content.match(/福利\s*[:：]\s*([^。；]+)/);
+    const out = [];
+    if (seg) {
+      for (const t of seg[1].split(/[、,，,;；]/)) {
+        const tt = String(t).trim();
+        if (tt.length >= 2 && tt.length <= 12 && !WELFARE_NOISE_RE.test(tt) && WELFARE_BENEFIT_RE.test(tt)) out.push(tt);
+      }
+    }
+    return [...new Set([...out, ...scanPositiveKeywords(content), ...scanRiskKeywords(content)])];
+  } catch { return []; }
+}
+
+// 潜在「陷阱」关键字（工作台标黄提示）。不限于福利段——整段 meta description + JD 描述均参与命中，
+// 命中即追加进 welfare 供黄标展示（如 高提成/底薪加提成/期权/押金/培训费/管培生/保录/直签 …）。
+const RISK_KEYWORDS = [
+  ['弹性工作/弹性工时', /弹性工作|弹性工时|弹性上下班|不定时工时|不固定工时/],
+  ['不定时工作制', /不定时工作制|不定时工时制/],
+  ['高提成', /高提成|提成上不封顶|上不封顶|提成不封顶/],
+  ['底薪加提成', /底薪\s*[加和]?\s*提成|底薪提成/],
+  ['有责底薪', /有责底薪/],
+  ['无责底薪', /无责底薪/],
+  ['期权/股权', /期权|股权激励|虚拟股权/],
+  ['分红', /项目分红|事业合伙人|分红/],
+  ['押金/培训费', /押金|培训费|岗前培训|服装费|保证金|实训|先交|先付费/],
+  ['试岗', /无薪试岗|试岗/],
+  ['管培生', /管培生/],
+  ['储备干部', /储备干部/],
+  ['保录/直签', /保录|直签/],
+  ['抗压/吃苦', /抗压能力强|能吃苦耐劳|抗压/],
+  // 发散补充的常见用工风险（与渲染层 welfareTag 同口径，确保 meta/JD 中命中即入库）
+  ['无偿加班', /无偿加班|加班文化|强制加班|经常加班|加班较多|加班严重|加班多/],
+  ['狼性/末位淘汰', /狼性文化|末位淘汰|末尾淘汰/],
+  ['试用期不缴社保', /试用期不缴|试用期无社保|不缴社保|转正才缴/],
+  ['长期试用期', /试用期\s*(?:[6-9]\d*|1[0-9]|一年|1年|半年)\s*个?月?/],
+  ['长期出差/驻场', /长期出差|频繁出差|出差频繁|驻场/],
+  ['无薪实习', /无薪实习|无工资实习|不给实习工资/],
+  ['就业歧视', /限男性|限女性|限35岁|已婚已育优先|未婚未育优先/],
+];
+function scanRiskKeywords(...texts) {
+  const t = texts.filter(Boolean).join(' ');
+  if (!t) return [];
+  return RISK_KEYWORDS.filter(([, re]) => re.test(t)).map(([label]) => label);
+}
+
+// 好工作「正面信号」关键字（工作台绿标）。不限于福利段——整段 meta description + JD 描述均参与命中，
+// 命中即追加进 welfare 供绿标展示（如 六险二金/13薪/带薪病假/加班费/调休/免费班车/上市公司/不内卷 …）。
+const POSITIVE_KEYWORDS = [
+  ['六险二金', /六险二金|6险2金/],
+  ['九险二金', /九险二金|9险2金/],
+  ['六险一金', /六险一金/],
+  ['五险一金', /五险一金/],
+  ['三险一金', /三险一金/],
+  ['五险', /[五5]险/],
+  ['住房公积金', /住房公积金/],
+  ['公积金', /公积金|住房公积金/],
+  ['补充医疗', /补充医疗|补充商业保险|补充商业医疗/],
+  ['补充养老', /补充养老|企业年金/],
+  ['13薪', /13薪/],
+  ['14薪', /14薪/],
+  ['15薪', /15薪/],
+  ['16薪', /16薪/],
+  ['年底双薪', /年底双薪|年末双薪|十三薪/],
+  ['年终奖', /年终奖/],
+  ['绩效奖金', /绩效奖金|绩效奖/],
+  ['带薪年假', /带薪年假|带薪休假/],
+  ['带薪病假', /带薪病假|全薪病假/],
+  ['加班补助', /加班补助|加班补贴|加班费|加班工资/],
+  ['调休', /调休/],
+  ['加班餐', /加班餐/],
+  ['打车报销', /打车报销|车费报销/],
+  ['免费三餐', /免费三餐|免费早午餐|免费工作餐|包三餐/],
+  ['员工食堂', /员工食堂|食堂/],
+  ['餐补', /餐补|饭补/],
+  ['交通补助', /交通补助|交通补贴|通勤补助/],
+  ['免费班车', /免费班车|班车/],
+  ['住房补贴', /住房补贴|房补/],
+  ['通讯补贴', /通讯补贴|话费补贴/],
+  ['定期体检', /(免费|年度)?体检|年度体检/],
+  ['健身房', /健身房/],
+  ['节日福利', /节日福利|节假福利|节日礼物|过节费/],
+  ['生日福利', /生日福利|生日礼/],
+  ['员工旅游', /员工旅游|年度旅游|团建/],
+  ['上市公司', /上市(公司)?/],
+  ['500强', /500强|五百强/],
+  ['不内卷', /不内卷|没有内卷|拒绝内卷/],
+  ['无销售性质', /无销售性质|不含销售|纯文职|不推销/],
+];
+function scanPositiveKeywords(...texts) {
+  const t = texts.filter(Boolean).join(' ');
+  if (!t) return [];
+  return POSITIVE_KEYWORDS.filter(([, re]) => re.test(t)).map(([label]) => label);
+}
+
 function extractWelfareTags(root) {
   const scope = root || document;
+  // 详情页标签区：保留「有用福利」与工作制度短标签
   const nodes = all(
     '.job-tags span, .tag-all span, [class*="job-tag"] span, [class*="tag-list"] span, [class*="job-labels"] span, [class*="welfare"] span',
     scope
   );
-  const out = nodes
+  const domTags = nodes
     .map((el) => textOf(el))
-    .filter((t) => t && t.length <= 12 && /休|班|工作制|弹性|双休|大小周|单休|轮休/.test(t));
-  return [...new Set(out)].slice(0, 8);
+    .filter((t) => t && t.length <= 12 && (WELFARE_BENEFIT_RE.test(t) || WELFARE_WORK_RE.test(t)) && !WELFARE_NOISE_RE.test(t));
+  // meta description 兜底（BOSS 规格化文案里带「福利：…」）
+  const metaTags = extractBenefitsFromMeta();
+  // 「正面信号」与「陷阱」关键字：不限于福利段，整段 meta description + 页面正文均参与命中
+  const bodyText = ((scope && scope.innerText) || document.body.innerText || '').slice(0, 3000);
+  const positiveTags = scanPositiveKeywords(metaDescriptionText(), bodyText);
+  const riskTags = scanRiskKeywords(metaDescriptionText(), bodyText);
+  return [...new Set([...domTags, ...metaTags, ...positiveTags, ...riskTags])].slice(0, 16);
 }
 
 function extractJobFromDom() {
   const banner = $('.job-banner, .job-detail-header, .job-header');
-  const scopeText = ((banner && banner.textContent) || document.body.innerText || '').slice(0, 2000);
+  const scopeEl = banner || document.body;
+  // 用「还原混淆后」的整段文本做兜底（PUA 数字先还原，否则薪资正则永远匹配不到）。
+  // scopeText 覆盖更大范围（6000 字），避免薪资/城市出现在前 3000 字之外被漏掉。
+  const scopeText = decodeSalaryDigits((scopeEl && scopeEl.innerText) || '').slice(0, 6000);
   const pick = (sels) => { for (const s of sels) { const t = textOf($(s)); if (t) return t; } return ''; };
-  const title = pick(['.job-banner .name', 'h1.job-name', '.job-title', '.name']) || document.title;
-  const company = pick(['.job-banner .company', '.company-name', '.business-name']);
-  const salary = decodeSalaryDigits(pick(['.job-banner .salary', '.salary', '[class*="salary"]']));
-  const location = pick(['.job-banner .location', '.job-area', '[class*="location"]']);
-  const description = cleanJobDescription((banner && banner.innerText) || '').slice(0, 1500);
-  return { url: location.href, title, company, salary, location, description, welfare: extractWelfareTags(banner || document) };
+  const title = pick(['.job-banner .name', 'h1.job-name', '[class*="job-title"] .name', '.job-title', '[class*="job-name"]', '.name', 'h1']) || document.title;
+  // 公司名：精确窄选择器优先；末了用标题兜底（BOSS 标题固定含「_公司名招聘-BOSS直聘」），再用 cleanCompanyName 兜掉地点串
+  const company = cleanCompanyName(pick(['.job-banner .company', '.company-name', '.company-info .name', '.company-brand', '.business-name', '[class*="company-name"]', '[class*="company"] .name', 'a[href*="gongsi"] .name', 'a[href*="gongsi"]']) || companyFromTitle());
+  // 薪资：选择器优先；兜底正则在还原后的整段文本上跑（与采集 cardFields 同口径，
+  // 新版页面/选择器不命中时也能从正文拿到薪资）
+  const salary = decodeSalaryDigits(pick(['.job-banner .salary', '.salary', '.job-salary', '[class*="job-salary"]', '[class*="salary"]']))
+    || scopeText.match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
+    || '';
+  // 地点：选择器优先（含新版 a.text-city 城市链接）；兜底城市关键字正则（与采集 cardFields 同口径），
+  // 之后 applyEmbeddedOverlay 还会用 meta「地点：」权威覆盖。
+  const location = pick(['.job-banner .location', '.job-area', '.job-location .location-address', '.location-address', '[class*="job-address"]', '[class*="location"]', 'a.text-city'])
+    || scopeText.match(/北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|全国/)?.[0]
+    || '';
+  const description = cleanJobDescription(scopeText).slice(0, 1500);
+  // 内嵌 _jobInfo 为权威：覆盖 title/company/salary，meta「地点：」覆盖 location，保证与网页一致
+  const job = applyEmbeddedOverlay({ url: location.href, title, company, salary, location, description, welfare: extractWelfareTags(banner || document) });
+  // 诊断证据：关键字段全缺时带回「页面里到底有没有数据」，用于区分空壳页（未登录/被拦截）还是选择器不匹配
+  if (!job.company && !job.salary && !job.location) {
+    job.parseDiag = 'dom|' +
+      `metaLen=${metaDescriptionText().length}|` +
+      `embedded=${JSON.stringify(extractEmbeddedJobInfo())}|` +
+      `titleLen=${String(document.title || '').length}|body=${String(scopeText || '').replace(/\s+/g, ' ').slice(0, 160)}`;
+  }
+  return job;
 }
 
-// 列表页判定：URL 是推荐/搜索列表页，或页面上存在 >1 张岗位卡片（供上层「加入任务」守卫用）
+// 列表页判定：URL 是推荐/搜索列表页，或页面上存在 >1 张岗位卡片（供上层「加入任务」守卫用）。
+// 详情页 URL（job_detail 等）必须短路为非列表：详情页常带「相关推荐/猜你喜欢」区块，
+// 其 a[href*="/job_detail/"] 会被 collectCards 计入，导致 listCardCount>1 被上层误判为列表页。
 function listPageInfo() {
+  const href = String(location.href || '');
+  if (/job_detail|jobdetail|\/job\/\d+/i.test(href)) {
+    return { isListPage: false, listCardCount: 0 };
+  }
   const cardCount = (() => { try { return collectCards().length; } catch { return 0; } })();
   const isListUrl = /\/web\/geek\/(job|jobs|recommend)\/?/i.test(String(location.pathname || ''));
-  return { isListPage: isListUrl && !/job_detail/i.test(location.href), listCardCount: cardCount };
+  return { isListPage: isListUrl && !/job_detail/i.test(href), listCardCount: cardCount };
 }
 
 async function extractJob() {
   const jid = extractEncryptJobIdFromUrl();
-  // 优先走 API：岗位详情完整且稳定（含 encryptUserId 供投递用）
+  // API 风控/异常码仅作元数据回传（供上层感知），不再因 API 被拦而早退——页面 DOM 仍可能渲染完整岗位信息。
+  // 若 API 出错就直接以 error/riskCode 早退，会让「加入任务」卡片公司/地点/薪资全缺、长期停留在「信息补全」。
+  let apiRiskCode = null;
+  let apiError = '';
   if (jid) {
-    const card = await zpFetch(`/wapi/zpgeek/job/card.json?encryptJobId=${encodeURIComponent(jid)}`);
+    const card = await zpFetch(`/wapi/zpgeek/job/card.json?encryptJobId=${encodeURIComponent(jid)}`, { timeoutMs: 8000 });
     if (card && card.code === 0 && card.zpData) {
       const d = card.zpData;
-      notify('job-extracted', {
+      const method = (s) => { try { return String(s || ''); } catch { return ''; } };
+      const apiJob = applyEmbeddedOverlay({
         url: location.href,
         title: d.jobName || d.jobTitle || document.title,
-        company: d.brandName || d.companyName || '',
-        salary: decodeSalaryDigits(d.salaryDesc || ''),
-        location: d.cityName || d.areaDistrict || '',
-        description: d.jobDesc || d.postDescription || '',
+        company: cleanCompanyName(d.brandName || d.companyName || companyFromTitle() || ''),
+        salary: decodeSalaryDigits(method(d.salaryDesc)),
+        location: method(d.cityName || d.areaDistrict),
+        description: method(d.jobDesc || d.postDescription),
         jobId: jid,
-        encryptUserId: d.encryptUserId || '',
-        bossName: d.bossName || d.recruiterName || '',
-        bossTitle: d.bossTitle || '',
+        encryptUserId: method(d.encryptUserId),
+        bossName: method(d.bossName || d.recruiterName),
+        bossTitle: method(d.bossTitle),
         skills: Array.isArray(d.skills) ? d.skills : [],
         labels: Array.isArray(d.jobLabels) ? d.jobLabels : [],
         // 福利/工作制度标签（如「周末双休」）：日薪折算月薪的工作日基数识别来源之一
-        welfare: Array.isArray(d.welfareList) ? d.welfareList.map(String) : [],
-        scaleName: d.scaleName || '',
-        typeName: d.typeName || '',
-        ...listPageInfo(),
+        welfare: [
+          ...(Array.isArray(d.welfareList) ? d.welfareList.map(String) : []),
+          // 「正面信号」与「陷阱」关键字：对整段 JD 描述 + meta description 扫描（供工作台绿/黄标提示）
+          ...scanPositiveKeywords(method(d.jobDesc || d.postDescription), metaDescriptionText()),
+          ...scanRiskKeywords(method(d.jobDesc || d.postDescription), metaDescriptionText()),
+        ],
+        scaleName: method(d.scaleName),
+        typeName: method(d.typeName),
       });
-      return;
-    }
-    // code 37（环境异常）等风控码回传，让上层感知
-    if (card && card.code && card.code !== 0) {
-      notify('job-extracted', { url: location.href, title: document.title, error: `job/card 接口 code=${card.code}`, riskCode: card.code, ...listPageInfo() });
-      return;
+      // API 数据残缺（连公司/薪资/地点都没有，常见于缺 securityId 或接口返回空壳）时不直接用，
+      // 回退到 DOM 兜底：全文正则可补；仍缺则带回 parseDiag 供定位「空壳页 vs 选择器不匹配」。
+      if (apiJob.company || apiJob.salary || apiJob.location) {
+        try {
+          console.log('BOSS-CLAW-WELFARE api descLen=' + method(d.jobDesc || '').length + ' metaLen=' + metaDescriptionText().length
+            + ' welfare=' + JSON.stringify(apiJob.welfare));
+        } catch (e) {}
+        notify('job-extracted', { ...apiJob, ...listPageInfo() });
+        return;
+      }
+    } else if (card && card.code && card.code !== 0) {
+      // code 37（环境异常）/17（登录失效）等风控码：记录后仍继续 DOM 兜底（页面本身可能正常渲染）
+      apiRiskCode = card.code;
+      apiError = `job/card 接口 code=${card.code}`;
     }
   }
-  // DOM 兜底
+  // DOM 兜底：API 失败/空壳/风控码一律执行（避免早退导致「信息补全」）；风控码作为元数据带回，不丢失信号
   try {
-    notify('job-extracted', { ...extractJobFromDom(), ...listPageInfo() });
+    const _r = extractJobFromDom();
+    try { console.log('BOSS-CLAW-WELFARE dom descLen=' + String(_r.description || '').length + ' metaLen=' + metaDescriptionText().length + ' welfare=' + JSON.stringify(_r.welfare)); } catch (e) {}
+    const full = { ..._r, ...listPageInfo() };
+    if (apiRiskCode != null) { full.riskCode = apiRiskCode; full.error = apiError; }
+    notify('job-extracted', full);
   } catch (e) {
-    notify('job-extracted', { url: location.href, title: document.title, error: String(e?.message || e), ...listPageInfo() });
+    const fullErr = { url: location.href, title: document.title, error: String(e?.message || e), ...listPageInfo() };
+    if (apiRiskCode != null) fullErr.riskCode = apiRiskCode;
+    notify('job-extracted', fullErr);
   }
 }
 
@@ -922,6 +1192,52 @@ function collectCards(quiet = false) {
 // 把卡片 innerText 按行拆开，用噪声词排除法找公司名
 const CARD_LINE_NOISE = /立即沟通|继续沟通|打招呼|在线|刚刚活跃|今日活跃|昨日活跃|日内活跃|周内活跃|月内活跃|\d+\s*(?:分钟|小时|天|周|月)前?(?:活跃)?|[Kk]薪|薪[Kk]|元\/月|.BO.|应届|经验|学历|大专|本科|硕士|博士|全职|兼职|实习|招聘|急聘|猎头/i;
 
+// 地名识别（修复「公司 Top」把地点误当公司名）：
+// BOSS 卡片地点字段形如「城市·区·街道」（如「深圳·南山区·科技园」），与部分公司名容器
+// 共用 company 类前缀，导致宽泛选择器 / 行兜底把地点串当公司名写库。
+const LOCATION_SEP = /[·・•]/;
+const CITY_KEYWORDS = /北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|常州|宁波|无锡|佛山|东莞|合肥|济南|沈阳|大连|哈尔滨|石家庄|太原|昆明|贵阳|南宁|南昌|福州|海口|兰州|银川|西宁|乌鲁木齐|拉萨|呼和浩特|香港|澳门|台湾/;
+const ORG_WORDS = /公司|集团|科技|技术|有限|工作室|研究所|研究院|厂|局|社|院|银行|大学|学院|医院|超市|酒店|传媒|网络|信息|软件|电子商务|股份|企业|中心|协会|事务所|律所|品牌/;
+// 整串「城市·区·街道」（首段必须是城市名，避免「华为·杭州研究所」这类「组织·地点」被误删）
+const LOCATION_ONLY_RE = new RegExp(`^(?:${CITY_KEYWORDS.source})(?:${LOCATION_SEP.source}[\\u4e00-\\u9fa5A-Za-z0-9]+){1,3}$`);
+function looksLikeLocation(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  // 整串即地点（城市·区·街道，首段为城市名）
+  if (LOCATION_ONLY_RE.test(t)) return true;
+  // 含地点分隔符且全文不含任何组织词（公司/科技/集团…）→ 疑似纯地名，丢弃
+  if (LOCATION_SEP.test(t) && !ORG_WORDS.test(t)) return true;
+  return false;
+}
+// 清洗公司名：剔除地名型/保留字型脏值；有效时返回 trim 后的串（最长 80），否则返回 ''
+function cleanCompanyName(raw) {
+  const s = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!s || s.length < 2 || s.length > 80) return '';
+  if (/^(公司|企业|雇主|单位|招聘方|公司名)$/.test(s)) return '';
+  // 含地点分隔符：BOSS 公司容器常写成「公司名·城市」「公司名·城市·规模」（如「马上消费金融·深圳」）。
+  // 先按首段提取公司名，再判断整串是否纯地点——避免把「公司名·城市」整串当地名丢弃。
+  let candidate = s;
+  if (LOCATION_SEP.test(s)) {
+    const firstSeg = s.split(LOCATION_SEP).shift().trim();
+    if (CITY_KEYWORDS.test(firstSeg)) return ''; // 首段即城市（深圳·南山区·科技园）→ 纯地点
+    // 含组织词（华为·杭州研究所）保留整串；否则取公司名首段（马上消费金融·深圳 → 马上消费金融）
+    candidate = ORG_WORDS.test(s) ? s : (firstSeg || '');
+  }
+  if (looksLikeLocation(candidate)) return '';
+  return candidate;
+}
+// 从页面标题兜底取公司名：BOSS 详情页标题固定为「职位名」_公司名招聘-BOSS直聘 / 职位名_公司名-BOSS直聘。
+// 这是比 DOM 选择器更稳的来源，避免选择器漏抓时 company 落空（如皓翊星辰这类不含组织词的短名）。
+function companyFromTitle() {
+  const t = String(document && document.title ? document.title : '').trim();
+  const m = t.match(/_(.+?)(?:招聘)?\s*-?\s*BOSS直聘\s*$/i) || t.match(/_(.+?)-BOSS直聘\s*$/i);
+  if (m) {
+    const c = m[1].replace(/招聘$/, '').trim();
+    if (c && !looksLikeLocation(c)) return c;
+  }
+  return '';
+}
+
 function pickFromCard(card, selectorCandidates) {
   for (const sel of selectorCandidates) {
     const el = card.querySelector(sel);
@@ -939,13 +1255,14 @@ function cardIdentity(card) {
     || textOf(anchor)
     || cardLines[0]
     || '';
-  let company = pickFromCard(card, ['.company-name', '.job-card-right .company-info h3', 'h3.company-name', 'a.company-name', '[class*="company-name"]', '[class*="companyName"]', '[class*="company"]']);
+  let company = pickFromCard(card, ['.company-name', '.job-card-right .company-info h3', 'h3.company-name', 'a.company-name', '[class*="company-name"]', '[class*="companyName"]', '[class*="company-brand"]', 'a[href*="gongsi"]']);
   if (!company) {
     for (const line of cardLines.slice(1)) {
-      if (!CARD_LINE_NOISE.test(line) && line.length >= 3 && line.length <= 24) { company = line; break; }
+      // 跳过地点串（如「深圳·南山区·科技园」）与噪声行，避免把地名误判为公司名
+      if (!CARD_LINE_NOISE.test(line) && !looksLikeLocation(line) && line.length >= 3 && line.length <= 24) { company = line; break; }
     }
   }
-  return { title: title.slice(0, 80), company: company.slice(0, 80), href: anchor?.href || '', raw: textOf(card).slice(0, 500) };
+  return { title: title.slice(0, 80), company: cleanCompanyName(company), href: anchor?.href || '', raw: textOf(card).slice(0, 500) };
 }
 
 // 卡片结构化字段（对齐 AI-BossJob-plus recordApplication 的多选择器候选）：
@@ -1104,10 +1421,15 @@ function extractJobDetail(card) {
   // [class*="company"] 容器（如 .company-info，先于精确的 .company-name 出现），
   // 把「地点 · 公司规模」一并带出，导致「数据统计 · 公司 Top」把地点误当公司名。
   // 改为有序 pickText：优先精确的窄选择器（详情根 → 卡片 → 卡片身份）。
-  const company = pickText(['[class*="company-name"]', '[class*="companyName"]', '[class*="company-brand"]', 'a[href*="gongsi"]'], root)
-    || pickText(['[class*="company-name"]', '[class*="companyName"]', '[class*="company"]'], card)
-    || identity.company
-    || '';
+  // 卡片兜底也只用窄选择器，避免 [class*="company"] 命中 .company-info / .company-location；
+  // 末了用 cleanCompanyName 兜掉仍漏网的地点串（如「深圳·南山区·科技园」）。
+  const company = cleanCompanyName(
+    pickText(['[class*="company-name"]', '[class*="companyName"]', '[class*="company-brand"]', 'a[href*="gongsi"]'], root)
+      || pickText(['[class*="company-name"]', '[class*="companyName"]', 'a[href*="gongsi"]'], card)
+      || identity.company
+      || companyFromTitle()
+      || ''
+  );
   // HR 活跃度：卡片优先，详情面板兜底（对齐 AI-BossJob-plus boss-online-tag / boss-active-time）
   const hrActive = fields.hrActive
     || textOf($('.boss-online-tag') || $('.boss-active-time') || $('[class*="boss-active"]'))
@@ -1124,6 +1446,8 @@ function extractJobDetail(card) {
     || (dataJobId ? `https://www.zhipin.com/job_detail/${dataJobId}.html` : location.href);
   const chatBtn = communicateButton();
   const chatUrl = String(chatBtn?.href || chatBtn?.closest?.('a')?.href || '');
+  const _welfare = extractWelfareTags(root || document);
+  try { console.log('BOSS-CLAW-WELFARE list title=' + String(title || '').slice(0, 30) + ' descLen=' + String(detailText || '').length + ' metaLen=' + metaDescriptionText().length + ' welfare=' + JSON.stringify(_welfare)); } catch (e) {}
   return {
     title: decodeSalaryDigits(title),
     company,
@@ -1139,7 +1463,7 @@ function extractJobDetail(card) {
     recruiterName,
     recruiterTitle: fields.recruiterTitle,
     // 工作制度/福利标签（「周末双休」等）：日薪折算月薪的工作日基数识别来源
-    welfare: extractWelfareTags(root || document),
+    welfare: _welfare,
   };
 }
 
@@ -1234,6 +1558,13 @@ async function visualCollect(opts = {}) {
   const settleMs = collectCtl.settleMs;
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 软上限；本机 1000 兜底防止失控）
   const maxJobs = Math.max(1, Number(opts.maxJobs) || 1000);
+  // 设置约束（由宿主 Workbench 传入，见 Settings → 搜索采集范围控制）：
+  //   autoScroll=false  → 只采首屏可见卡，不自动下拉加载更多；
+  //   scrollRounds>0    → 每批「下拉加载更多」的轮数上限（每轮一次 scrollJobListLoadMore），
+  //                       轮数计满即便未到物理底部也停止（与物理底部 / 连续空轮判定取先到者）。
+  const autoScroll = opts.autoScroll !== false;
+  const scrollRounds = Math.max(0, Number(opts.scrollRounds) || 0);
+  let scrollRoundsUsed = 0;
   const processed = new Set();
   let index = 0;
   let processedCount = 0;
@@ -1310,8 +1641,8 @@ async function visualCollect(opts = {}) {
       continue;
     }
     if (cards.length === 0 && processedCount === 0 && emptyRounds === 0) {
-      // 首轮 cards 仍为空（列表还没出来）— 主动滚一次促加载
-      await scrollJobListLoadMore(processed, { settleMs });
+      // 首轮 cards 仍为空（列表还没出来）— 主动滚一次促加载（关闭自动下拉时仅等待列表渲染，不滚动）
+      if (autoScroll) await scrollJobListLoadMore(processed, { settleMs });
       await sleep(settleMs * 1.5);
       emptyRounds += 1;
       continue;
@@ -1329,8 +1660,19 @@ async function visualCollect(opts = {}) {
       }
       // 本批卡片已处理完：从当前滚动位置（= 最后处理的岗位滑块位置）渐进下拉加载更多。
       // 对齐 AI-BossJob-plus autoScrollJobList：滚到物理底部即停止；连续 3 轮无新卡也停止。
+      // 设置约束：autoScroll=false → 只采首屏可见卡，到此结束；scrollRounds=N → 下拉轮数上限，
+      // 轮数计满即便未到物理底部也停止（与物理底部 / 连续空轮判定取先到者）。
       // 增长判定基于「是否出现未收集的新 key」，不能用卡片总数——虚拟列表回收上方卡片
       // 后 cards.length 可能不变甚至变小，会误判「无增长」导致列表中间被截断。
+      if (!autoScroll) {
+        notify('collect-progress', { phase: 'list-bottom', index, total: cards.length, processed: processedCount, maxJobs, status: '已按「不自动下拉」设置采完首屏可见卡，停止加载' });
+        break;
+      }
+      if (scrollRounds > 0 && scrollRoundsUsed >= scrollRounds) {
+        notify('collect-progress', { phase: 'list-bottom', index, total: cards.length, processed: processedCount, maxJobs, status: `已达到下拉轮数上限（${scrollRounds} 轮），停止加载` });
+        break;
+      }
+      scrollRoundsUsed += 1;
       const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs });
       if (atBottom) {
         // 已滚到列表物理底部且无新卡 → 本搜索组合加载完毕，直接停止
@@ -1374,6 +1716,37 @@ async function visualCollect(opts = {}) {
     if (collectCtl.stopped) break;
     // 3) 提取岗位信息并回传
     const job = extractJobDetail(card);
+    // 采集路径福利兜底：列表页右侧面板/meta 是通用文案，往往拿不到该岗位详情福利；
+    // 当福利缺「社保信号」（五险/六险/三险/公积金）时，走 card.json API（与「加入任务」同源）补全
+    // welfareList（含 五险一金/年终奖 等），保证工作台绿标可显示；DOM 只命中双休/弹性这类非社保标签
+    // 不算达标（五险一金只在 meta/_jobInfo/API 中）。
+    try {
+      let _jid = String(job.jobId || '').trim();
+      // 归一化 jobId：jobUrlToken 对「路径无 job_detail、仅 query 携带 jobId/securityId/lid」的链接
+      // 会返回 `jobid=xxx` 这类带前缀 token，直接拼进 ?encryptJobId= 会得到错误参数导致 card.json
+      // 返回空壳/失败 → 五险一金补全静默失效（与「加入任务」extractEncryptJobId 同口径剥离前缀）。
+      const _kv = _jid.match(/(?:encryptJobId|jobId|securityId|lid)=([^&?#]+)/i);
+      if (_kv) _jid = _kv[1];
+      _jid = _jid.replace(/\.html$/i, '').trim();
+      const _hasIns = (job.welfare || []).some((w) => /五险|六险|三险|公积金/.test(String(w)));
+      if (_jid && !_hasIns) {
+        const c = await zpFetch(`/wapi/zpgeek/job/card.json?encryptJobId=${encodeURIComponent(_jid)}`, { timeoutMs: 8000 });
+        if (c && c.code === 0 && c.zpData) {
+          const wl = Array.isArray(c.zpData.welfareList) ? c.zpData.welfareList.map(String) : [];
+          const pos = scanPositiveKeywords(c.zpData.jobDesc || c.zpData.postDescription || '');
+          const risk = scanRiskKeywords(c.zpData.jobDesc || c.zpData.postDescription || '');
+          job.welfare = [...new Set([...(job.welfare || []), ...wl, ...pos, ...risk])].slice(0, 16);
+        }
+      }
+      // card.json 仍缺社保信号（API 风控/空壳/jobId 缺失）→ 直接从岗位详情页源码（meta description）补全，
+      // 与「加入任务」解析详情页源码同口径，保证采集卡片也能显示五险一金等福利标签。
+      if (!(job.welfare || []).some((w) => /五险|六险|三险|公积金/.test(String(w)))) {
+        const src = await fetchDetailSourceWelfare(job.url);
+        if (src.length) {
+          job.welfare = [...new Set([...(job.welfare || []), ...src])].slice(0, 16);
+        }
+      }
+    } catch (e) {}
     processedCount += 1;
     notify('collect-progress', { phase: 'done', index, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
     await sleep(settleMs);
@@ -1618,6 +1991,128 @@ ipcRenderer.on('webview-command', (_e, arg) => {
   }
 });
 
+// ===== 非 BOSS 平台投递（platform-apply）：猎聘/智联/51job 新标签页 DOM 投递 =====
+// 口径对齐 get_jobs / Auto-JobHunter / AgentMesh-JobAgent（多项目交叉验证）：
+//  - liepin greetAuto：点「聊一聊」即触发 App 预设招呼语（无需打字）；IM 会话打开=成功。
+//  - zhaopin resume：点「投递」，投递弹层文本含「申请成功」=成功；「达到上限」→停。
+//  - job51 resume：点「投递」，成功弹层=成功；「需要到企业招聘平台单独申请」=站外网申→跳过。
+// 安全不变量：外部网申跳过、未确认不计成功、找不到目标→failed 交人工、绝不猜成功。
+const PLATFORM_NORM = (t) => String(t || '').replace(/\s+/g, '').trim();
+function findPlatformAction(selectors, labels) {
+  for (const sel of selectors) {
+    for (const el of all(sel)) {
+      if (!visible(el) || el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
+      const t = PLATFORM_NORM(textOf(el));
+      if (t && labels.some((l) => t.includes(PLATFORM_NORM(l)))) return el;
+    }
+  }
+  return null;
+}
+// 外部网申检测：扫描可见按钮/链接文本 + 页面正文（hints 由渲染层按平台传入，校准 platforms.ts）
+function externalApplyDetected(hints) {
+  const normHints = (hints || []).map((h) => PLATFORM_NORM(h));
+  if (!normHints.length) return false;
+  for (const el of all('button,a,[role="button"],span,div')) {
+    if (!visible(el)) continue;
+    const t = PLATFORM_NORM(textOf(el));
+    if (t && t.length <= 16 && normHints.some((h) => t.includes(h))) return true;
+  }
+  const body = PLATFORM_NORM(document.body ? document.body.innerText : '');
+  return normHints.some((h) => body.includes(h));
+}
+
+async function platformApply(args = {}) {
+  const { seq, job = {}, externalApplyHints = [] } = args;
+  const platform = String(args.platform || PLATFORM || 'boss');
+  const fail = (stage, extra = {}) => notify('platform-apply-result', Object.assign({ seq, ok: false, stage }, extra));
+  const ok = (extra = {}) => notify('platform-apply-result', Object.assign({ seq, ok: true, stage: 'success', method: 'dom' }, extra));
+  try {
+    // 非终态进度（沿用 platforms.ts stageLabels），终态只经 platform-apply-result 回传
+    if (platform === 'liepin') {
+      notify('apply-stage', { stage: 'open_chat', label: '打开沟通窗口', platform });
+    } else {
+      notify('apply-stage', { stage: 'open_job', label: '打开岗位', platform });
+    }
+    // 外部网申：安全不变量，命中直接跳过
+    if (externalApplyHints && externalApplyDetected(externalApplyHints)) {
+      return fail('external', { external: true, message: '该岗位为外部网申，按安全规则自动跳过' });
+    }
+
+    if (platform === 'liepin') {
+      // 已沟通/已投递过 → 直接跳过（不再点，避免重复打扰同一 HR）
+      if (findPlatformAction(['.ant-btn-round', '[class*="btn"]', '[class*="chat"]', 'button', 'a'], ['已沟通', '已投递', '聊过', '已招满'])) {
+        return fail('skip', { message: '该岗位已沟通/已投递过，跳过' });
+      }
+      const btn = findPlatformAction(['.ant-btn-round', '[class*="btn"]', '[class*="chat"]', 'button', 'a'], ['聊一聊']);
+      if (!btn) return fail('failed', { error: '未找到「聊一聊」按钮（岗位可能已下架/非招聘中）' });
+      notify('apply-stage', { stage: 'send_message', label: '平台自动打招呼', platform });
+      await clickElement(btn);
+      // 成功 = IM 会话窗口打开（猎聘 App 预设招呼语自动发送，无需本机输入）
+      const okIm = await waitFor(() => $('.__im_basic__header-wrap, [class*="__im_basic__"]'), 15000, '猎聘 IM 会话窗口');
+      if (!okIm) {
+        if (/安全验证|验证码|请完成验证/.test(String(document.body?.innerText || ''))) return fail('risk', { code: 35, message: '检测到安全验证，已暂停，请人工完成' });
+        return fail('failed', { error: '点击「聊一聊」后 IM 会话未打开，请人工核对' });
+      }
+      return ok({ method: 'dom' });
+    }
+
+    if (platform === 'zhaopin') {
+      const btn = findPlatformAction(['.a-job-apply-button', '[class*="job-apply"]', '[class*="apply"]', 'button', 'a'], ['投递']);
+      if (!btn) return fail('failed', { error: '未找到「投递」按钮（岗位可能已下架/非招聘中）' });
+      notify('apply-stage', { stage: 'send_message', label: '投递简历', platform });
+      await clickElement(btn);
+      // 投递弹层/正文判定：申请成功 / 达到上限 / 安全验证
+      const judge = await waitFor(() => {
+        const body = PLATFORM_NORM(document.body ? document.body.innerText : '');
+        const d = $('.deliver-dialog, [class*="deliver-dialog"], [class*="apply-dialog"]');
+        if (d && textOf(d).includes('申请成功')) return 'success';
+        if (d && textOf(d).includes('达到上限')) return 'stop';
+        if (body.includes('申请成功') || body.includes('投递成功')) return 'success';
+        if (body.includes('达到上限') || body.includes('已达上限')) return 'stop';
+        if (/安全验证|请完成验证|验证码/.test(body) || /pwaf_challenge/.test(location.href) || /security-check/.test(location.href)) return 'risk';
+        return null;
+      }, 15000, '智联投递结果');
+      if (judge === 'success') return ok({ method: 'dom' });
+      if (judge === 'stop') return fail('stop', { message: '智联今日投递已达到上限，已停止该岗位' });
+      if (judge === 'risk') return fail('risk', { code: 35, message: '检测到安全验证，已暂停，请人工完成' });
+      return fail('failed', { error: '未确认「申请成功」，请人工核对' });
+    }
+
+    if (platform === 'job51') {
+      const btn = findPlatformAction(['[class*="apply"]', '[class*="job-apply"]', 'button', 'a'], ['投递']);
+      if (!btn) return fail('failed', { error: '未找到「投递」按钮（岗位可能已下架/非招聘中）' });
+      notify('apply-stage', { stage: 'send_message', label: '投递简历', platform });
+      await clickElement(btn);
+      const judge = await waitFor(() => {
+        const body = PLATFORM_NORM(document.body ? document.body.innerText : '');
+        const sc = $('.successContent, [class*="successContent"], [class*="success-content"]');
+        // 站外网申：独立申请信号（安全不变量：外部网申跳过）
+        if (body.includes('需要到企业招聘平台单独申请') || body.includes('需要单独申请')) return 'external';
+        if ((sc && textOf(sc).length > 0) || body.includes('投递成功') || body.includes('投递申请已提交') || body.includes('申请已投递')) return 'success';
+        if (body.includes('安全验证') || body.includes('请完成验证') || body.includes('请输入验证码') || document.querySelector('.waf-nc-title, [class*="waf-nc"]')) return 'risk';
+        return null;
+      }, 15000, '51job 投递结果');
+      if (judge === 'external') return fail('external', { external: true, message: '需要到企业招聘平台单独申请（外部网申），按安全规则跳过' });
+      if (judge === 'success') return ok({ method: 'dom' });
+      if (judge === 'risk') return fail('risk', { code: 35, message: '检测到安全验证，已暂停，请人工完成' });
+      // 关闭常见的「扫码下载 App」弹层，避免残留影响下一岗位
+      const closeBtn = $('[class*="van-popup__close"], [class*="van-icon-cross"], [class*="popup__close"]');
+      if (closeBtn) { try { await clickElement(closeBtn); } catch {} }
+      return fail('failed', { error: '未确认投递成功，请人工核对' });
+    }
+
+    return fail('failed', { error: `暂不支持的平台：${platform}` });
+  } catch (e) {
+    return fail('failed', { error: String((e && e.message) || e) });
+  }
+}
+
+// platform-apply：非 BOSS 平台在自身标签页内 DOM 投递（终态经 platform-apply-result 回传）
+ipcRenderer.on('platform-apply', (_e, arg) => {
+  const a = (arg && typeof arg === 'object') ? arg : {};
+  platformApply(a).catch((e) => notify('platform-apply-result', { seq: a.seq, ok: false, stage: 'failed', error: String((e && e.message) || e) }));
+});
+
 // ===== 通用 UI 接管（ui-eval）：仅 query/click/type/scroll 白名单，禁止任意脚本执行 / 跳转 =====
 const UV_TEXT_MAX = 120;
 function uvVisibleCheck(el) { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch { return false; } }
@@ -1729,7 +2224,7 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
 const ipcChannels = PLATFORM === 'boss'
   ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval']
-  : ['extract-job', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
+  : ['extract-job', 'platform-apply', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
 ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);

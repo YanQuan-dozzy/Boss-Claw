@@ -324,9 +324,10 @@ export default function Resume() {
       const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
       // 复用工作台同一分析链路（同提示词、同校验），保证预览与工作台真实生成一致
       const analysis = await analyzeJob(job, p, text, config, config.model, trimmed || undefined);
+      const isLocal = analysis.scoreSource === 'local';
       setPreviewGreeting(analysis.greeting);
-      setPreviewMeta({ method: 'ai', warning: undefined });
-      message.success('已按工作台提示词生成 1 条针对该岗位 JD 的打招呼语');
+      setPreviewMeta(isLocal ? { method: 'local', warning: 'AI 未配置或生成失败，已使用本地规则打招呼语。' } : { method: 'ai', warning: undefined });
+      message.success(isLocal ? 'AI 不可用，已按本地规则生成打招呼语' : '已按工作台提示词生成 1 条针对该岗位 JD 的打招呼语');
     } catch (err: any) {
       const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
       const local = fallbackApplicantGreeting(job, useDataStore.getState().profile);

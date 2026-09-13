@@ -6,6 +6,7 @@
 // 安全不变量：本模块只做「比对与提示」，绝不生成任何简历事实。
 import type { Profile } from './types';
 import { normalizeStringList } from './helpers';
+import { isNonSkillJdToken, chineseSkillHitsInText } from './skillTaxonomy';
 
 // ===== JD 英文停用词：高频功能词 / 无信息量的通用词 =====
 // 过滤后剩余的英文 token 多为技术栈、工具、领域术语（React / Python / Docker / 数据清洗等）
@@ -65,9 +66,11 @@ export function extractJdKeywords(jd: string, profile: Profile | null): { keywor
   const source = String(jd || '');
   const pool = new Map<string, number>(); // key=小写，value=权重
   // 1. 英文 token：从 JD 抽取，权重 1
+  //    非技能噪音词（HR / bug / Demo / JD 等招聘流程与交付物词汇）在此拦下，
+  //    避免其进入缺口候选污染「岗位要求画像未具备」与简历定制的关键词覆盖分析。
   for (const m of source.matchAll(/[A-Za-z][A-Za-z0-9+#.\-]{1,29}/g)) {
     const token = m[0];
-    if (JD_STOPWORDS.has(token.toLowerCase()) || JD_NOISE_TOKENS.test(token)) continue;
+    if (JD_STOPWORDS.has(token.toLowerCase()) || JD_NOISE_TOKENS.test(token) || isNonSkillJdToken(token)) continue;
     const key = token.toLowerCase();
     pool.set(key, Math.max(pool.get(key) || 0, 1));
   }
@@ -79,6 +82,13 @@ export function extractJdKeywords(jd: string, profile: Profile | null): { keywor
       const key = t.toLowerCase();
       pool.set(key, Math.max(pool.get(key) || 0, 3));
     }
+  }
+  // 3. 中文技能别名：JD 命中的中文技能写法（如 消息队列 / 容器化 / 深度学习）也进关键词候选，
+  //    权重 2（介于普通英文词 1 与画像词表 3 之间），让中文 JD 的真实技能缺口能被检出；
+  //    与画像词表命中同概念时自然取高权（max 3）去重。
+  for (const alias of chineseSkillHitsInText(source)) {
+    const key = alias.toLowerCase();
+    pool.set(key, Math.max(pool.get(key) || 0, 2));
   }
   const entries = [...pool.entries()];
   // 稳定排序：权重降序 → 原长度降序（长词更有信息量），再按字典序保证确定性

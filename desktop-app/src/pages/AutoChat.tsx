@@ -518,19 +518,11 @@ export default function AutoChat() {
               </>
             )}
           </Card>
-
-          {/* 实时沟通专属终端日志 */}
-          <ChatLogPanel
-            logs={chatLogs}
-            onClear={clearChatLogs}
-            isRunning={chatRunning}
-            maxHeight={340}
-          />
         </div>
 
-        {/* ===== 右侧配置侧栏 (Sidebar Panel Stage) ===== */}
+        {/* ===== 右侧配置与专属终端日志侧栏 (Sidebar Panel Stage) ===== */}
         <div className="autochat-side">
-          {/* 沟通与附件设置 */}
+          {/* 1. 沟通与附件设置 */}
           <Card size="small" className="setting-card" title={<><SafetyCertificateOutlined style={{ color: 'var(--brand)', marginRight: 6 }} /> 沟通与附件设置</>}>
             <div className="setting-row">
               <div className="setting-row__main">
@@ -695,6 +687,14 @@ export default function AutoChat() {
               </div>
             </div>
           </Card>
+
+          {/* 4. 实时沟通专属终端日志 */}
+          <ChatLogPanel
+            logs={chatLogs}
+            onClear={clearChatLogs}
+            isRunning={chatRunning}
+            maxHeight="100%"
+          />
         </div>
       </div>
     </main>

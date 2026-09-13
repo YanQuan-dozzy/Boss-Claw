@@ -18,6 +18,7 @@ from .common import (
     log, human_sleep, human_delay, open_browser, load_cookies, save_cookies,
     goto_stable, risk_text_hit,
 )
+from .filters import build_filter_params, normalize_criteria, summarize_applied
 
 PLATFORM = 'job51'
 
@@ -68,9 +69,17 @@ def _resolve_salary(salary: str) -> str:
     return SALARY_CODES.get(s, '')
 
 
-def build_search_url(query: str, city: str, salary: str, page: int = 1) -> str:
+def build_search_url(query: str, city: str, salary: str, page: int = 1,
+                     criteria: dict | None = None) -> str:
+    """51Job 搜索 URL：jobArea 城市 + salary 薪资 + keyword 关键词 + 「基础求职条件」筛选参数。
+
+    criteria 经 filters.build_filter_params 翻译为 51Job 自身参数：
+      workYear 经验 · degree 学历 · companySize 公司规模 · jobType 工作类型。
+    注意：51Job 的码值为「顺位 2 位编码」推得（inferred，见 filters.py 能力表），
+    真机登录实测后可逐项校准 filters.py 中的 JOB51_* 表。
+    """
     area = _resolve_area(city)
-    sal = _resolve_salary(salary)
+    sal = _resolve_salary(salary or ((criteria or {}).get('salary') or ''))
     parts = []
     if area:
         parts.append(f"jobArea={area}")
@@ -79,6 +88,8 @@ def build_search_url(query: str, city: str, salary: str, page: int = 1) -> str:
     q = str(query or '').strip()
     if q:
         parts.append(f"keyword={q}")
+    for k, v in build_filter_params(PLATFORM, criteria).items():
+        parts.append(f"{k}={v}")
     return 'https://we.51job.com/pc/search' + ('?' + '&'.join(parts) if parts else '')
 
 
@@ -110,9 +121,16 @@ def format_jobs(raw: list) -> list:
     return out
 
 
-def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None) -> dict:
-    """51Job 隐身搜索：访问搜索页 + 拦截 /api/job/search-pc 响应 + DOM 兜底。"""
-    log('🔍', f'[job51] 搜索：{query} / city={city} / pages={pages}')
+def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None,
+                criteria: dict | None = None) -> dict:
+    """51Job 隐身搜索：访问搜索页 + 拦截 /api/job/search-pc 响应 + DOM 兜底。
+
+    criteria = 设置页「基础求职条件」（全平台共用），映射见 filters.py。
+    """
+    c = normalize_criteria(criteria)
+    applied = summarize_applied(PLATFORM, build_filter_params(PLATFORM, criteria))
+    log('🔍', f'[job51] 搜索：{query} / city={city} / pages={pages}'
+             + (f' / 已应用：{applied}' if applied else ''))
     all_jobs = []
     last_code = 0
     last_msg = ''
@@ -150,7 +168,7 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
         page.on("response", on_response)
 
         for page_num in range(1, pages + 1):
-            url = build_search_url(query, city, '', page_num)
+            url = build_search_url(query, city, c['salary'], page_num, criteria)
             log('📄', f'[job51] Page {page_num}: {url}')
             if not goto_stable(page, url, wait=2.5):
                 last_code, last_msg = 37, 'job51 页面加载失败'

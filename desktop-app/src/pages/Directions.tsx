@@ -8,7 +8,6 @@ import {
   Popconfirm,
   Space,
   Switch,
-  Tag,
   Typography,
   message,
 } from 'antd';
@@ -422,7 +421,12 @@ export default function Directions() {
             <Button size="middle" type="primary" className="btn-uniform" icon={<CheckCircleOutlined />} onClick={onConfirm}>
               确认方向（{selectedCount}）
             </Button>
-            {directionPlan?.confirmed && <Tag color="green" style={{ margin: 0, padding: '4px 10px', fontSize: 13 }}>已确认</Tag>}
+            {directionPlan?.confirmed && (
+              <span className="direction-confirmed-badge">
+                <span className="direction-confirmed-dot" />
+                已确认
+              </span>
+            )}
           </Space>
         </div>
       </div>
@@ -437,7 +441,7 @@ export default function Directions() {
             <Card
               key={it.id}
               size="small"
-              className={`direction-card ${!it.enabled ? 'is-disabled' : ''} ${
+              className={`direction-card ${it.enabled ? 'is-enabled' : 'is-disabled'} ${
                 openSuggest === it.id ? 'is-suggesting' : ''
               }`}
               title={
@@ -452,11 +456,11 @@ export default function Directions() {
                       {it.name}
                     </span>
                     {it.custom ? (
-                      <Tag color="blue" className="direction-card__source">
+                      <span className="direction-card__source is-custom">
                         自定义
-                      </Tag>
+                      </span>
                     ) : (
-                      <Tag className="direction-card__source">画像</Tag>
+                      <span className="direction-card__source">画像</span>
                     )}
                   </div>
                   <div className="direction-card__meta">
@@ -472,7 +476,6 @@ export default function Directions() {
                       <Button
                         size="small"
                         type="text"
-                        danger
                         icon={<DeleteOutlined />}
                         aria-label="删除方向"
                         className="direction-card__delete"
@@ -487,9 +490,12 @@ export default function Directions() {
               </Paragraph>
 
               <div className="direction-card__field">
-                <Text type="secondary" className="direction-card__label">
-                  搜索词
-                </Text>
+                <div className="direction-card__label-wrap">
+                  <span className="direction-card__label">
+                    搜索词
+                  </span>
+                  <span className="direction-card__count">{it.keywords.length}</span>
+                </div>
 
                 {/* 第一行：已有关键词，恒定单行不换行；超出用「+N / 收起」展开 */}
                 <div className={`direction-keys ${expandedKeys[it.id] ? 'is-expanded' : ''}`}>
@@ -556,14 +562,17 @@ export default function Directions() {
 
               {it.matchedSkills.length > 0 && (
                 <div className="direction-card__tags">
-                  <Text type="secondary" className="direction-card__label">
-                    匹配技能
-                  </Text>
+                  <div className="direction-card__label-wrap">
+                    <span className="direction-card__label">
+                      匹配技能
+                    </span>
+                    <span className="direction-card__count">{it.matchedSkills.length}</span>
+                  </div>
                   <div className="direction-card__tag-list">
                     {it.matchedSkills.map((s) => (
-                      <Tag key={s} className="direction-card__tag skill-chip-matched">
+                      <span key={s} className="direction-card__tag skill-chip-matched">
                         {s}
-                      </Tag>
+                      </span>
                     ))}
                   </div>
                 </div>
@@ -571,21 +580,24 @@ export default function Directions() {
 
               {it.gaps.length > 0 && (
                 <div className="direction-card__tags">
-                  <Text type="secondary" className="direction-card__label">
-                    能力缺口
-                  </Text>
+                  <div className="direction-card__label-wrap">
+                    <span className="direction-card__label">
+                      能力缺口
+                    </span>
+                    <span className="direction-card__count is-gap">{it.gaps.length}</span>
+                  </div>
                   <div className="direction-card__tag-list">
                     {it.gaps.map((s) => (
-                      <Tag key={s} className="direction-card__tag skill-chip-gap">
+                      <span key={s} className="direction-card__tag skill-chip-gap">
                         {s}
-                      </Tag>
+                      </span>
                     ))}
                   </div>
                 </div>
               )}
 
               <div className="direction-card__foot">
-                <Space size={2}>
+                <Space size={4}>
                   <Button
                     size="small"
                     type="text"
@@ -594,6 +606,7 @@ export default function Directions() {
                     disabled={it.priority <= 1}
                     aria-label="提升优先级"
                     title="提升优先级"
+                    className="direction-card__prio-btn"
                   />
                   <Button
                     size="small"
@@ -603,6 +616,7 @@ export default function Directions() {
                     disabled={it.priority >= sortedItems.length}
                     aria-label="降低优先级"
                     title="降低优先级"
+                    className="direction-card__prio-btn"
                   />
                 </Space>
               </div>

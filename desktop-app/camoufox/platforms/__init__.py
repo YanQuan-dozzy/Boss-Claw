@@ -26,11 +26,14 @@ def is_platform(p: str) -> bool:
     return str(p or '').strip().lower() in PLATFORMS
 
 
-def search_jobs(platform: str, query: str, city: str, pages: int = 1, os_name: str | None = None) -> dict:
+def search_jobs(platform: str, query: str, city: str, pages: int = 1, os_name: str | None = None,
+                criteria: dict | None = None) -> dict:
+    """criteria = 设置页「基础求职条件」（全平台共用：城市/薪资/求职类型/学历/经验/公司规模），
+    由 filters.build_filter_params 翻译成各平台自身筛选参数（见 filters.py 能力表）。"""
     mod = MODULES.get(str(platform or '').strip().lower())
     if mod is None:
         return {"ok": False, "code": 400, "message": f"不支持的平台：{platform}", "jobs": []}
-    return mod.search_jobs(query, city, pages, os_name)
+    return mod.search_jobs(query, city, pages, os_name, criteria)
 
 
 def deliver(platform: str, job: dict, greeting: str, os_name: str | None = None,
