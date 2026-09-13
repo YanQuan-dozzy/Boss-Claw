@@ -294,9 +294,14 @@ export interface SearchQueueItem {
   directionScore: number;
 }
 
+/**
+ * 无关键字采集（随机岗位推荐）时任务卡片的归属名。
+ * 该类采集不来自任何投递方向，URL 只保留用户设置的筛选条件，故用统一名称标识。
+ */
+export const RANDOM_COLLECT_LABEL = '随机岗位推荐';
+
 // 由「已确认投递方向 × 城市 × 求职类型」生成去重后的搜索 URL 队列，供工作台搜索采集使用
 export function buildSearchQueue(directionPlan: DirectionPlan | null, config: AppConfig): SearchQueueItem[] {
-  const directions = selectedDirectionItems(directionPlan);
   const locations = config.targetLocations?.filter(Boolean).length ? config.targetLocations : ['全国'];
   const employmentTypes = config.employmentTypes?.filter(Boolean).length ? config.employmentTypes : ['不限'];
   const experience = config.experiences?.filter(Boolean) ?? [];
@@ -305,6 +310,36 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
 
   const queue: SearchQueueItem[] = [];
   const seen = new Set<string>();
+
+  // 无关键字采集（设置 → 搜索采集范围控制）：URL 只删除 query（关键词）字段，
+  // 其余用户设置的筛选（城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模）保持不变，
+  // 由平台按账号内已完善的求职意向返回推荐岗位 —— 避免同关键词反复重试拿到大量重复岗位。
+  // 此时「投递方向」只提供关键词，故不再参与遍历（各方向会生成同一 URL，被 seen 天然去重）。
+  if (config.collectWithoutKeyword) {
+    for (const location of locations) {
+      for (const employmentType of employmentTypes) {
+        const url = buildJobSearchUrl({ city: location, jobType: employmentType, experience, degree, scale });
+        if (seen.has(url)) continue;
+        seen.add(url);
+        queue.push({
+          url,
+          keyword: '',
+          location,
+          employmentType,
+          experience: experience.join(','),
+          degree: degree.join(','),
+          scale,
+          directionId: '',
+          directionName: RANDOM_COLLECT_LABEL,
+          directionPriority: 0,
+          directionScore: 0,
+        });
+      }
+    }
+    return queue;
+  }
+
+  const directions = selectedDirectionItems(directionPlan);
   // 城市优先遍历：完成当前城市全部关键词后再切下一城（对齐 AI-BossJob 的「多城市轮询」语义）
   for (const direction of directions) {
     for (const location of locations) {

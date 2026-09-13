@@ -18,6 +18,7 @@ from .common import (
     log, human_sleep, human_delay, open_browser, load_cookies, save_cookies,
     goto_stable, risk_text_hit,
 )
+from .filters import build_filter_params, normalize_criteria, summarize_applied
 
 PLATFORM = 'liepin'
 
@@ -65,9 +66,15 @@ def _resolve_salary(salary: str) -> str:
     return SALARY_CODES.get(s, '')
 
 
-def build_search_url(query: str, city: str, salary: str, page: int = 1) -> str:
+def build_search_url(query: str, city: str, salary: str, page: int = 1,
+                     criteria: dict | None = None) -> str:
+    """猎聘搜索 URL：城市 / 薪资 / 关键词 + 「基础求职条件」映射的经验·学历参数。
+
+    criteria 为设置页「基础求职条件」（全平台共用），经 filters.build_filter_params
+    翻译成本平台参数（workYearCode / eduLevel；compScale·jobKind 码值未验证不附加）。
+    """
     code = _resolve_city(city)
-    sal = _resolve_salary(salary)
+    sal = _resolve_salary(salary or ((criteria or {}).get('salary') or ''))
     url = (f"https://www.liepin.com/zhaopin/?city={code}&dq={code}"
            f"&currentPage={max(0, page - 1)}")
     if sal:
@@ -75,6 +82,8 @@ def build_search_url(query: str, city: str, salary: str, page: int = 1) -> str:
     q = str(query or '').strip()
     if q:
         url += f"&key={q}"
+    for k, v in build_filter_params(PLATFORM, criteria).items():
+        url += f"&{k}={v}"
     return url
 
 
@@ -112,9 +121,16 @@ def format_jobs(raw: list) -> list:
     return out
 
 
-def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None) -> dict:
-    """猎聘隐身搜索：访问搜索页 + 拦截 pc-search-job 接口 JSON + DOM 卡片兜底。"""
-    log('🔍', f'[liepin] 搜索：{query} / city={city} / pages={pages}')
+def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None,
+                criteria: dict | None = None) -> dict:
+    """猎聘隐身搜索：访问搜索页 + 拦截 pc-search-job 接口 JSON + DOM 卡片兜底。
+
+    criteria = 设置页「基础求职条件」（全平台共用），映射见 filters.py。
+    """
+    c = normalize_criteria(criteria)
+    applied = summarize_applied(PLATFORM, build_filter_params(PLATFORM, criteria))
+    log('🔍', f'[liepin] 搜索：{query} / city={city} / pages={pages}'
+             + (f' / 已应用：{applied}' if applied else ''))
     all_jobs = []
     last_code = 0
     last_msg = ''
@@ -154,7 +170,7 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
         page.on("response", on_response)
 
         for page_num in range(1, pages + 1):
-            url = build_search_url(query, city, '', page_num)
+            url = build_search_url(query, city, c['salary'], page_num, criteria)
             log('📄', f'[liepin] Page {page_num}: {url}')
             if not goto_stable(page, url, wait=2.5):
                 log('❌', '[liepin] 页面未稳定（可能被反爬拦截）')

@@ -64,6 +64,12 @@ export const PROVINCE_CITIES: Record<string, string[]> = {
  * 例：
  *   location="浙江·杭州"，排除省份含"浙江" → 排除；排除城市含"杭州" → 排除；
  *   location="杭州·余杭区"，仅显城市时，选中"浙江"省份（映射到杭州）仍会排除。
+ *
+ * 跨省同名防歧义（修复真实误杀）：
+ *   BOSS 的 location 形如「省·市·区」，故取「·」前段作为归属省判据。
+ *   青海下辖「海南藏族自治州」，与「海南省」同名——旧实现里排除青海会把「海南·海口」
+ *   一并发掉（反之排除海南省也会把「青海·海南州」发掉）。因此当归属省段本身是另一个
+ *   省级名时，不再套用被排除省份的下辖市列表，同名城市一律归省级名更明确的那个。
  * @returns true 表示该岗位应被排除（跳过，不进入投递队列）
  */
 export function isLocationExcluded(location: string | undefined | null, config: AppConfig): boolean {
@@ -71,16 +77,30 @@ export function isLocationExcluded(location: string | undefined | null, config: 
   if (!loc) return false;
   const provinces = config.excludedProvinces || [];
   const cities = config.excludedCities || [];
+  // 归属省段：取「·」/「•」/「/」分隔的第一段（无分隔符时即整串）
+  const segment = loc.split(/[·•/]/)[0].trim();
+  const isProvince = (name: string) => CHINA_PROVINCES.includes(name);
+  // 岗位归属被明确标注为「别的省」→ 该省的下辖市名单不参与本次判定
+  const belongsToOtherProvince = (excluded: string) => isProvince(segment) && segment !== excluded;
 
   for (const p of provinces) {
     if (!p) continue;
-    if (loc.includes(p)) return true;
+    if (loc.includes(p)) {
+      if (belongsToOtherProvince(p)) continue;
+      return true;
+    }
     const mapped = PROVINCE_CITIES[p];
-    if (mapped && mapped.some((c) => c && loc.includes(c))) return true;
+    if (mapped && mapped.some((c) => c && loc.includes(c))) {
+      if (belongsToOtherProvince(p)) continue;
+      return true;
+    }
   }
 
   for (const c of cities) {
-    if (c && loc.includes(c)) return true;
+    if (!c || !loc.includes(c)) continue;
+    // 排除项与被排除城市同为省级名且互不相同时，以岗位明确标注的归属省为准
+    if (isProvince(segment) && isProvince(c) && segment !== c) continue;
+    return true;
   }
 
   return false;

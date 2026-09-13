@@ -13,7 +13,13 @@ export const DEFAULT_CONFIG: AppConfig = {
   maxDailySent: 120,
   discoveryLimit: 0,
   aiLimit: 0,
+  // 推荐岗位分：≥ 该分判为「推荐」档（可放心投递）
   minScore: 75,
+  // 最低入队分：低于该分的岗位不入队（0 = 不限，仅拦「不推荐」硬伤岗位）。
+  // 取代旧实现中写死的 60 分入队底线（旧值即 60，升级后行为不变）。
+  minQueueScore: 60,
+  // 采集 AI 分析并发上限（1-8）：有界并发控制，避免采集突发堆积无界 LLM 调用
+  analysisConcurrency: 3,
   targetLocations: [],
   // 城市反选（默认不排除任何省份/城市）
   excludedProvinces: [],
@@ -40,6 +46,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   hrActivityFilter: 'any',
   // 面试方式筛选（对齐用户需求：仅线上/仅线下时排除冲突岗位，默认不限）
   interviewModeFilter: 'any',
+  // 最低日薪（元/天，确定性硬约束）：0 = 不限；>0 时岗位折算日薪低于该值即硬性排除（如 50 元/天的不合理岗位）
+  minSalaryPerDay: 0,
   // 猎头过滤（对齐 AI-BossJob 的 excludeHeadhunters，默认关闭）
   excludeHeadhunters: false,
   // 搜索采集自动下拉加载更多岗位（默认开启，解决「收集太少」问题）
@@ -50,6 +58,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 搜索页加载等待上限：BOSS 搜索页含骨架屏/重定向/无限列表首屏，给足 30s 再判定超时（旧值 8s 常整组跳过）
   collectPageTimeoutMs: 30000,
   collectResumeIndex: 0,
+  // 无关键字采集（随机岗位推荐）：默认关闭。开启后采集 URL 只去掉 query（关键词），
+  // 保留城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模等用户设置，由平台按账号内的求职意向返回推荐岗位。
+  collectWithoutKeyword: false,
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）
   maxJobsPerRun: 1000,
   // 防封号默认值（对齐 SAFETY_LIMITS，用户可调低；maxDailySent 顶层字段见上方说明，实际按平台适配）

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
 import { useTheme } from './context/ThemeContext';
@@ -32,6 +32,29 @@ const OpenClaw = lazy(() => import('./pages/OpenClaw'));
 const AutoChat = lazy(() => import('./pages/AutoChat'));
 const JobAssistant = lazy(() => import('./pages/JobAssistant'));
 const Settings = lazy(() => import('./pages/Settings'));
+
+// 非工作台功能页的路由 key（顺序即侧栏展示顺序；工作台单独常驻处理）。
+// 用于「首进常驻」：切到已访问页面不重挂载，仅切换显隐，消除来回切换的挂载卡顿。
+const NAV_PAGES: Array<'home' | 'resume' | 'directions' | 'tasks' | 'schedule' | 'stats' | 'openclaw' | 'autochat' | 'assistant' | 'settings'> = [
+  'home', 'resume', 'directions', 'tasks',
+  'schedule', 'stats', 'openclaw', 'autochat', 'assistant', 'settings',
+];
+
+// 页面分块预加载：空闲期预取全部功能页 chunk，使首次切换无需等待懒加载请求/编译，
+// 进一步压减切换延迟。模块已在顶部 lazy 具名引用，此处 import() 命中同一分块，无损复用。
+const PRELOAD_PAGES: Array<() => Promise<unknown>> = [
+  () => import('./pages/Home'),
+  () => import('./pages/Workbench'),
+  () => import('./pages/Resume'),
+  () => import('./pages/Directions'),
+  () => import('./pages/Tasks'),
+  () => import('./pages/ScheduleTasks'),
+  () => import('./pages/Stats'),
+  () => import('./pages/OpenClaw'),
+  () => import('./pages/AutoChat'),
+  () => import('./pages/JobAssistant'),
+  () => import('./pages/Settings'),
+];
 
 export default function App() {
   const activeRoute = useAppStore((s) => s.activeRoute);
@@ -178,6 +201,24 @@ export default function App() {
 
   const isWorkbench = activeRoute === 'workbench';
 
+  // 「首进常驻」：记录已访问过的非工作台页面（初始为 home），
+  // 已访问页面保持挂载、用 CSS 显隐切换，避免每次切回都整体重挂载导致卡顿。
+  const [visited, setVisited] = useState<Record<string, boolean>>({ home: true });
+  useEffect(() => {
+    setVisited((v) => (v[activeRoute] ? v : { ...v, [activeRoute]: true }));
+  }, [activeRoute]);
+  // 当前路由恒渲染（即使首次进入也只是显示 Suspense 骨架，不产生白屏闪烁）；
+  // 渲染集合 = 已访问 ∪ 当前路由，保证切换瞬间新页立即可见。
+  const visibleSet = visited[activeRoute] ? visited : { ...visited, [activeRoute]: true };
+
+  // 空闲期预取全部功能页 chunk（延迟数百毫秒，避免与首屏关键资源竞争）
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      PRELOAD_PAGES.forEach((load) => load().catch(() => {}));
+    }, 900);
+    return () => window.clearTimeout(t);
+  }, []);
+
   return (
     <div className="app-shell">
       <TitleBar />
@@ -195,22 +236,31 @@ export default function App() {
             </ErrorBoundary>
           </div>
           {!isWorkbench && (
-            /* Suspense + ErrorBoundary：路由懒加载与页面级崩溃隔离。
-               单页崩溃不影响侧栏 / 标题栏 / 状态栏，其它页可正常切换。 */
-            <ErrorBoundary label={activeRoute} key={activeRoute}>
-              <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
-                {activeRoute === 'home' && <Home />}
-                {activeRoute === 'resume' && <Resume />}
-                {activeRoute === 'directions' && <Directions />}
-                {activeRoute === 'tasks' && <Tasks />}
-                {activeRoute === 'schedule' && <ScheduleTasks />}
-                {activeRoute === 'stats' && <Stats />}
-                {activeRoute === 'openclaw' && <OpenClaw />}
-                {activeRoute === 'autochat' && <AutoChat />}
-                {activeRoute === 'assistant' && <JobAssistant />}
-                {activeRoute === 'settings' && <Settings />}
-              </Suspense>
-            </ErrorBoundary>
+            /* 非工作台页「首进常驻」：已访问页保持挂载，仅切换 .is-show 显隐（display 控制），
+               避免来回切换时整页卸载/重挂载的卡顿；未访问页展示 Suspense 骨架（lazy 分块已预取）。
+               每个页面使用稳定 key（路由名），ErrorBoundary/key 不再随 activeRoute 变化，
+               保证已挂载的页面 DOM 不被重建。页面内自行管理的数据（投递/采集/沟通后台）照常存活。 */
+            NAV_PAGES.map((key) => {
+              if (!visibleSet[key]) return null;
+              return (
+                <div key={key} className={'page page-route' + (activeRoute === key ? ' is-show' : '')}>
+                  <ErrorBoundary label={key}>
+                    <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
+                      {key === 'home' && <Home />}
+                      {key === 'resume' && <Resume />}
+                      {key === 'directions' && <Directions />}
+                      {key === 'tasks' && <Tasks />}
+                      {key === 'schedule' && <ScheduleTasks />}
+                      {key === 'stats' && <Stats />}
+                      {key === 'openclaw' && <OpenClaw />}
+                      {key === 'autochat' && <AutoChat />}
+                      {key === 'assistant' && <JobAssistant />}
+                      {key === 'settings' && <Settings />}
+                    </Suspense>
+                  </ErrorBoundary>
+                </div>
+              );
+            })
           )}
         </main>
       </div>

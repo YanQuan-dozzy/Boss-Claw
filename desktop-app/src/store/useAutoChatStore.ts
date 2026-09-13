@@ -170,6 +170,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       url: item.job?.url || '',
       sendResumeImage: Boolean(cfg.sendResumeImage),
       sendOnlineResume: Boolean(cfg.sendOnlineResume),
+      attachmentDelaySeconds: Math.max(0, Number(cfg.attachmentDelaySeconds) || 4),
       recruiterName: item.job?.recruiterName || '',
       company: item.job?.company || '',
       jobTitle: item.job?.title || '',

@@ -3,10 +3,15 @@
 //   - 猎聘：https://www.liepin.com/zhaopin/?city=&dq=&salary=&currentPage=0&key=
 //   - 智联：https://www.zhaopin.com/sou/jl{city}/p{page}?sl={salary}（新版路径式）
 //   - 51Job：https://we.51job.com/pc/search?jobArea=&salary=&keyword=
-// 城市码为硬编码主表 + 已知码直接透传；未知城市回退「全国/不限」（不臆造码）。
+// 城市/薪资码为硬编码主表 + 已知码直接透传；未知城市回退「全国/不限」（不臆造码）。
+//
+// ⚠️「基础求职条件」的扩展筛选（求职类型 / 学历 / 经验 / 公司规模）不在本文件改 URL，
+//   而是随队列项 criteria 下发给 Camoufox 隐身采集（非 BOSS 平台的唯一采集通道），
+//   由 `camoufox/platforms/filters.py` 统一翻译为各平台筛选参数（唯一权威，含码值来源
+//   与 FILTER_CAPABILITIES 能力表）。本文件的 URL 仅用于展示 / 记录 / 组合去重。
 import type { AppConfig, DirectionPlan, JobPlatform } from './types';
 import { selectedDirectionItems } from './directions';
-import { buildJobSearchUrl } from './searchUrl';
+import { buildJobSearchUrl, RANDOM_COLLECT_LABEL } from './searchUrl';
 
 // ==================== 猎聘 liepin ====================
 export const LIEPIN_BASE_URL = 'https://www.liepin.com/zhaopin/';
@@ -194,10 +199,18 @@ export function buildPlatformSearchUrl(platform: JobPlatform, query: PlatformSea
 
 export interface PlatformSearchQueueItem {
   platform: JobPlatform;
+  /** 展示/记录用搜索 URL（城市 + 薪资 + 关键词）；平台侧筛选由 criteria 经 filters.py 附加 */
   url: string;
   keyword: string;
   location: string;
   employmentType: string;
+  /**
+   * 「基础求职条件」原始条件（全平台共用一份设置）：传给 Camoufox 隐身采集，
+   * 由 `camoufox/platforms/filters.py` 按平台翻译成各自筛选参数
+   * （猎聘 workYearCode/eduLevel、智联 we/el/cs、前程无忧 workYear/degree/companySize/jobType）。
+   * 城市 / 薪资 / 关键词仍由本文件的 URL 构建器处理。
+   */
+  criteria: PlatformSearchCriteria;
   /** 来源投递方向（用于「任务进度」卡片归属，采集时同步生成 TaskRun） */
   directionId: string;
   directionName: string;
@@ -206,20 +219,82 @@ export interface PlatformSearchQueueItem {
 }
 
 /**
+ * 设置页「基础求职条件」快照（字段名与 AppConfig 对齐，Python 侧兼容 camelCase）。
+ * 说明：刻意用 **type 别名**而非 interface —— TS 只对类型别名/对象字面量推导隐式索引签名，
+ * 这样它可直接作为 JSON payload（`Record<string, unknown>`）传给 Camoufox 通道，无需强转。
+ */
+export type PlatformSearchCriteria = {
+  salary?: string;
+  experiences?: string[];
+  degrees?: string[];
+  companyScale?: string;
+  employmentTypes?: string[];
+};
+
+/** 从全局配置提取「基础求职条件」（非 BOSS 平台隐身采集共用） */
+export function platformSearchCriteria(config: AppConfig): PlatformSearchCriteria {
+  return {
+    salary: config.salary,
+    experiences: config.experiences ?? [],
+    degrees: config.degrees ?? [],
+    companyScale: config.companyScale,
+    employmentTypes: config.employmentTypes ?? [],
+  };
+}
+
+/** 「基础求职条件」日志摘要：只列出用户**实际设置**的项（空 / 不限不显示） */
+export function describePlatformCriteria(c?: PlatformSearchCriteria | null): string {
+  if (!c) return '';
+  const parts: string[] = [];
+  if (c.salary && c.salary !== '不限') parts.push(`薪资=${c.salary}`);
+  if (c.employmentTypes?.length) parts.push(`求职类型=${c.employmentTypes.join('/')}`);
+  if (c.degrees?.length) parts.push(`学历=${c.degrees.join('/')}`);
+  if (c.experiences?.length) parts.push(`经验=${c.experiences.join('/')}`);
+  if (c.companyScale && c.companyScale !== '不限') parts.push(`公司规模=${c.companyScale}`);
+  return parts.join(' · ');
+}
+
+/**
  * 按平台 × 已确认投递方向 × 城市 × 求职类型 生成搜索 URL 队列（对齐 buildSearchQueue 语义）。
- * 非 BOSS 平台暂不附加 experience/degree/scale/jobType 参数（平台参数口径不同，保持最小面）。
+ *
+ * 「基础求职条件」现在**对所有平台通用**：队列项携带 criteria（学历 / 经验 / 公司规模 /
+ * 求职类型 / 薪资），非 BOSS 平台由 Camoufox 平台模块（`camoufox/platforms/filters.py`）
+ * 翻译为各平台筛选参数后拼进搜索 URL —— 各维度是否已接通见该文件 FILTER_CAPABILITIES
+ * 能力表（码值未验证的维度按「不臆造码、宁可多召回不误杀」原则不附加）。
+ * 开启「无关键字采集」时同上：URL 只去掉关键词字段，其余用户设置不变。
  */
 export function buildPlatformSearchQueue(
   platform: JobPlatform,
   directionPlan: DirectionPlan | null,
   config: AppConfig,
 ): PlatformSearchQueueItem[] {
-  const directions = selectedDirectionItems(directionPlan);
   const locations = config.targetLocations?.filter(Boolean).length ? config.targetLocations : ['全国'];
   const employmentTypes = config.employmentTypes?.filter(Boolean).length ? config.employmentTypes : ['不限'];
+  const criteria = platformSearchCriteria(config);
 
   const queue: PlatformSearchQueueItem[] = [];
   const seen = new Set<string>();
+
+  // 无关键字采集：同 buildSearchQueue —— 只删除关键词字段，其余筛选按用户设置保留。
+  if (config.collectWithoutKeyword) {
+    for (const location of locations) {
+      for (const employmentType of employmentTypes) {
+        const url = buildPlatformSearchUrl(platform, { city: location, salary: config.salary, page: 1 });
+        if (seen.has(url)) continue;
+        seen.add(url);
+        queue.push({
+          platform, url, keyword: '', location, employmentType, criteria,
+          directionId: '',
+          directionName: RANDOM_COLLECT_LABEL,
+          directionPriority: 0,
+          directionScore: 0,
+        });
+      }
+    }
+    return queue;
+  }
+
+  const directions = selectedDirectionItems(directionPlan);
   for (const direction of directions) {
     for (const location of locations) {
       for (const keyword of direction.keywords) {
@@ -230,7 +305,7 @@ export function buildPlatformSearchQueue(
           if (seen.has(url)) continue;
           seen.add(url);
           queue.push({
-            platform, url, keyword, location, employmentType,
+            platform, url, keyword, location, employmentType, criteria,
             directionId: direction.id,
             directionName: direction.name,
             directionPriority: direction.priority,

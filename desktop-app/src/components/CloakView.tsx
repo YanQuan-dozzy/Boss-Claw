@@ -10,7 +10,7 @@
 //   3. 自动启动引擎：刷新/前进/后退/新建标签/地址栏前往统一经 ensureCloakEngine()，
 //      引擎关闭后再点任何操作都会自动拉起，不再因为 ready=false 报「未启动」。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Tag, Tooltip, Select, Empty, Space, message } from 'antd';
+import { Button, Input, Tag, Tooltip, Select, Empty, Space, message, Modal } from 'antd';
 import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
@@ -25,6 +25,7 @@ import {
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { PLATFORM_META, PLATFORM_IDS, platformEnabled, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { isWhitelistedUrl } from '@/lib/bossclaw/browserWhitelist';
 
 const BOSS_HOME = 'https://www.zhipin.com';
 const MAX_TABS = 15;
@@ -283,11 +284,24 @@ export default function CloakView(props: Props) {
 
   const activeTab = tabs.find((t) => t.id === activeId) || tabs[0];
 
+  // 白名单拦截：非招聘平台网址不允许在内置隐身浏览器访问，可转系统浏览器
+  const confirmOpenExternal = useCallback((url: string) => {
+    const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    Modal.confirm({
+      title: '该网址不在招聘平台白名单内',
+      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台，可在系统浏览器中打开。`,
+      okText: '在系统浏览器打开',
+      cancelText: '取消',
+      onOk: () => { e.openExternal?.(url); },
+    });
+  }, []);
+
   // ===== 用户级入口：地址栏前往 =====
   const navigate = useCallback(async (raw: string) => {
     let target = raw.trim();
     if (!target) return;
     if (!/^https?:\/\//.test(target)) target = 'https://' + target;
+    if (!isWhitelistedUrl(target)) { confirmOpenExternal(target); return; }
     const ready = await ensureCloakEngine();
     if (!ready) {
       message.warning('CloakBrowser 引擎启动失败，请稍后重试或前往设置页排查');
@@ -296,7 +310,7 @@ export default function CloakView(props: Props) {
     const id = activeIdRef.current;
     await e.cloakPageNew?.(id, target);
     setState((s) => ({ ...s, tabs: s.tabs.map((t) => (t.id === id ? { ...t, url: target, lastUsed: Date.now() } : t)) }));
-  }, [ensureCloakEngine]);
+  }, [ensureCloakEngine, confirmOpenExternal]);
 
   const updateActiveUrl = useCallback((url: string) => {
     setState((s) => ({ ...s, tabs: s.tabs.map((t) => (t.id === s.activeId ? { ...t, url } : t)) }));
@@ -361,11 +375,12 @@ export default function CloakView(props: Props) {
     createTab(meta.homeUrl, meta.label, true);
   }, [createTab, newTabPlatform, ensureCloakEngine]);
 
-  // openInNewTab 也跟随平台（被 Workbench 等调用开新 tab 用）
+  // openInNewTab 也跟随平台（被 Workbench 等调用开新 tab 用）；非白名单网址拦截
   const openInNewTab = useCallback((url?: string, title?: string): string => {
+    if (url && !isWhitelistedUrl(url)) { confirmOpenExternal(url); return ''; }
     const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;
     return createTab(url || meta.homeUrl, title || meta.label, true);
-  }, [createTab, newTabPlatform]);
+  }, [createTab, newTabPlatform, confirmOpenExternal]);
 
   const openEngineTab = useCallback((): string => {
     const meta = PLATFORM_META[newTabPlatform] || PLATFORM_META.boss;

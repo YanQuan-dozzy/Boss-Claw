@@ -72,6 +72,13 @@ const api = {
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),
+  // 通用文本导出（CSV）：主进程弹系统保存对话框由用户选位置后写盘（extWhitelist 默认 ['csv']）
+  saveFile: (defaultName, content, extWhitelist) =>
+    ipcRenderer.invoke('jc:save-file', defaultName, content, extWhitelist),
+  // 统计数据报表 PDF：A4 横版 printToPDF + 系统保存对话框（与简历通道独立，标题不复用）
+  saveReportPdf: (defaultName, html) => ipcRenderer.invoke('jc:save-report-pdf', defaultName, html),
+  // 在系统文件管理器中定位到指定文件（导出后的「打开所在文件夹」）
+  showItem: (filePath) => ipcRenderer.invoke('jc:show-item', filePath),
   // 保存「达标岗位」数据到本地：系统保存对话框（dir 为空）或导出目录（dir 为绝对路径，自动按天写文件）→ JSON 写盘
   saveQualifiedJobs: (defaultName, jsonText, dir) => ipcRenderer.invoke('jc:save-qualified-jobs', defaultName, jsonText, dir),
   // 达标岗位导出目录：读取 / 设置 / 系统目录选择对话框（选择即应用并持久化）

@@ -6,8 +6,9 @@
 //   - SkillFit-AI / JobMatch-AI：0-100 量化维度分 + 缺失技能如实标注
 // 职责：analyzeJob 的本地兜底 / AI 分数校准 / UI 可解释维度；绝不生成任何简历事实（诚实规则）。
 import type { AppConfig, JobMeta, Profile } from './types';
-import { normalizeStringList, findDirectionRule, extractDegree } from './helpers';
+import { normalizeStringList, findDirectionRule } from './helpers';
 import { keywordHit, extractJdKeywords } from './resumeMatch';
+import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInText, extractEnglishTokens, zhAliasCoversTerm } from './skillTaxonomy';
 import { isCompanyExcluded } from './companyFilter';
 import { isLocationExcluded } from './locationFilter';
 import { detectInterviewMode } from './interviewMode';
@@ -76,6 +77,23 @@ export function parseExpectedSalary(profile: Profile | null): SalaryRange {
   return parseSalaryRange(raw);
 }
 
+/**
+ * 计算岗位的「日薪等效值」（元/天）。
+ * 把任意薪资口径（月 K、元/月、万/月、日薪、时薪）按岗位工作制度折算到统一的「元/天」，
+ * 用于「最低日薪」确定性硬约束（与用户设定的 minSalaryPerDay 比较）。
+ * 无法解析（面议 / 无薪资 / 纯占位）返回 null —— 此时不拦截（与 salaryPriority 口径一致：无薪资信号既不抬升也不压低）。
+ */
+export function jobDailySalaryFloor(job?: Partial<JobMeta> | null): number | null {
+  if (!job) return null;
+  const schedule = detectWorkSchedule(job);
+  const range = parseSalaryRange(job.salary, schedule.monthlyWorkDays);
+  if (!range.valid) return null;
+  // 千元/月 → 元/天：low_K * 1000 / 月工作日。
+  // 该公式对月/日/时三种口径统一成立（日薪原样返回、时薪按 ×8 还原、月薪按 ÷月工作日 还原）。
+  const daily = (range.low * 1000) / schedule.monthlyWorkDays;
+  return Number.isFinite(daily) ? Math.round(daily * 10) / 10 : null;
+}
+
 // ===== 学历等级（用于「JD 要求学历 vs 画像学历」比较）=====
 const DEGREE_LEVEL: Record<string, number> = { 不限: 0, 大专: 1, 本科: 2, 硕士: 3, 博士: 4 };
 
@@ -89,23 +107,81 @@ function degreeLevel(text: string): number {
 }
 
 // ===== 经验年限提取 =====
-/** 从「X-Y年」/「X年」/「在校/应届」解析经验年限下限；无法解析返回 null */
+/**
+ * 从「X-Y年」/「X年」/「在校/应届」解析经验年限下限；无法解析返回 null。
+ *
+ * 关键预处理（修复真实漏拦）：经历行普遍形如「XX公司 前端开发实习生（2025.06-2025.09）：…」，
+ * 若不做处理，`2025.06` 会被当成「2025 年经验」。旧实现逐行取「全部数字的最小值」→ 返回 2025.06，
+ * 多段经历再求和 → 画像经验虚高到上千 → 「岗位要求年限 > 画像年限」的硬约束永远不成立。
+ * 因此先把「年份 / 年月」形态的数字整体剔除，剩下的才可能是经验年限。
+ */
 export function parseExperienceYears(text: string | undefined | null): number | null {
   const t = String(text || '').trim();
   if (!t) return null;
   if (/在校|应届|无经验|不限/.test(t)) return 0;
-  const nums = [...t.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
+  const cleaned = t
+    .replace(/\d{4}\s*[年./\-]\s*\d{1,2}\s*月?/g, ' ') // 2025.06 / 2022年9月 / 2023/07
+    .replace(/(?:19|20)\d{2}\s*年?/g, ' '); // 2025年 / 2025（裸年份）
+  const nums = [...cleaned.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
   if (!nums.length) return null;
   return Math.min(...nums); // 取下限，保守判断
 }
 
-/** 从画像经历中提取总年限（多条经历年限之和的近似，按「X年」「X-Y年」解析） */
-function profileExperienceYears(profile: Profile | null): number | null {
+/**
+ * 解析经历行里的年月区间 → 绝对月序（year × 12 + month）。
+ * 支持「2025.06-2025.09」「2022年9月-2023年6月」「2023/07 - 至今」等写法；识别失败返回 null。
+ */
+export function parseMonthSpan(text: string | undefined | null): { start: number; end: number } | null {
+  const t = String(text || '');
+  const m = t.match(
+    /(\d{4})\s*[年./\-]\s*(\d{1,2})\s*月?\s*[-–—~至到]{1,2}\s*(?:(\d{4})\s*[年./\-]\s*(\d{1,2})\s*月?|(至今|现在|今|present|now))/i
+  );
+  if (!m) return null;
+  const norm = (month: string) => Math.min(12, Math.max(1, Number(month)));
+  const start = Number(m[1]) * 12 + norm(m[2]);
+  let end: number;
+  if (m[5]) {
+    // 「至今」：按当前月结算（该情形本身依赖当前时间，无法做成纯常量）
+    const now = new Date();
+    end = now.getFullYear() * 12 + (now.getMonth() + 1);
+  } else {
+    end = Number(m[3]) * 12 + norm(m[4]);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return { start, end };
+}
+
+/** 合并重叠/相邻的月份区间（用于多段经历取并集，重叠期不重复计数） */
+function mergeMonthSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  const out: { start: number; end: number }[] = [];
+  for (const span of sorted) {
+    const last = out[out.length - 1];
+    if (last && span.start <= last.end + 1) last.end = Math.max(last.end, span.end);
+    else out.push({ ...span });
+  }
+  return out;
+}
+
+/**
+ * 从画像经历提取总年限。两级口径（从严到宽）：
+ *   ① 经历行带年月区间 → 取**区间并集**的真实跨度（实习与在校项目并行时不会被重复累加，
+ *      避免画像经验虚高导致经验硬约束漏拦）；
+ *   ② 无任何可解析区间 → 退化为旧的「按行内 X年 / X-Y年 表述求和」口径。
+ * 均为 null 时回退画像硬约束里的经验表述。
+ */
+export function profileExperienceYears(profile: Profile | null): number | null {
   if (!profile) return null;
+  const lines = (profile.facts?.experiences || []).map((e) => String(e || '').trim()).filter(Boolean);
+  const spans = lines.map(parseMonthSpan).filter((s): s is { start: number; end: number } => s != null);
+  if (spans.length) {
+    const months = mergeMonthSpans(spans).reduce((sum, s) => sum + (s.end - s.start + 1), 0);
+    return Math.round((months / 12) * 10) / 10;
+  }
   let total = 0;
   let found = false;
-  for (const exp of profile.facts?.experiences || []) {
-    const years = parseExperienceYears(String(exp));
+  for (const line of lines) {
+    const years = parseExperienceYears(line);
     if (years != null) {
       total += years;
       found = true;
@@ -117,7 +193,10 @@ function profileExperienceYears(profile: Profile | null): number | null {
 
 /** 从 JD 文本提取要求的学历等级；未明确要求返回 null */
 function jdRequiredDegreeLevel(job: JobMeta): number | null {
-  const text = `${String(job.title || '')} ${String(job.description || '')} ${String(job.cardText || '')}`;
+  // 岗位要求只从明确岗位字段（title/description）解析，不拼接 cardText——
+  // cardText 是列表卡片文本（含「急聘/高薪/相似岗位/导航」等噪声），极易把
+  // 相似岗位或周边内容的学历要求误当成当前岗位要求，造成「正常岗位被判学历不足→35 分」。
+  const text = `${String(job.title || '')} ${String(job.description || '')}`;
   const level = degreeLevel(text);
   if (level <= 0) return null; // 未明确要求
   // 「不限学历/学历不限」不构成要求
@@ -127,7 +206,9 @@ function jdRequiredDegreeLevel(job: JobMeta): number | null {
 
 /** 从 JD 文本提取要求的经验年限；未明确要求返回 null */
 function jdRequiredExperienceYears(job: JobMeta): number | null {
-  const text = `${String(job.title || '')} ${String(job.description || '')} ${String(job.cardText || '')}`;
+  // 同学历口径：岗位要求经验只认明确字段（title/description），不拼接 cardText，
+  // 避免列表卡片文本里的相似岗位 / 周边内容「X年经验」误伤（正常实习岗被判经验不足→35 分）。
+  const text = `${String(job.title || '')} ${String(job.description || '')}`;
   if (/经验不限|无经验要求|无要求/.test(text)) return 0;
   const years = parseExperienceYears(text);
   if (years == null) return null;
@@ -139,7 +220,7 @@ function jdRequiredExperienceYears(job: JobMeta): number | null {
 // ===== 岗位求职类型判定（实习/全职）=====
 type JobEmploymentType = 'intern' | 'fulltime' | 'unknown';
 function jobEmploymentType(job: JobMeta): JobEmploymentType {
-  const text = `${String(job.title || '')} ${String(job.description || '')} ${String(job.cardText || '')}`;
+  const text = `${String(job.title || '')} ${String(job.description || '')}`;
   const intern = /实习/.test(text) && !/不招实习|无需实习/.test(text);
   const fulltime = /全职|社招/.test(text) || /正式员工|正式岗位/.test(text);
   if (intern && !fulltime) return 'intern';
@@ -172,7 +253,7 @@ export interface LocalMatchDimensions {
   experience: number | null;
   /** 本地加权综合分 0-100（各维度加权，null 维度剔除后重归一化）；信息不足为 null */
   overall: number | null;
-  /** 维度计算的确定程度（0-1）：有实际命中的数据越多越可信，用于 AI 分校准的置信度 */
+  /** 维度计算的确定程度（0-1）：「有可比对依据（而非中性兜底）」的维度数 ÷ 6，用于 AI 分校准的置信度 */
   confidence: number;
 }
 
@@ -187,20 +268,65 @@ export interface LocalMatchResult {
 }
 
 // ===== 核心：本地多维匹配 =====
+
 /**
- * AI 编程/办公工具同义归类：岗位要求任一款（Codex/Cursor/Copilot…）、
- * 画像或简历具备任一同类工具（ChatGPT/Claude/Cursor…）即视为「该能力类别已覆盖」，
- * 避免 JD 写 Codex/Copilot、简历用 ChatGPT/Claude 被逐词误报为缺口。
- * 仅用于缺口判定，不影响技能命中/证据。
+ * 缺口判定口径的画像文本：结构化画像 + 简历原文。
+ * 简历里的技能表述可能只写在经历行、未落入结构化 facts（如「熟练 Git 分支协作」），
+ * 只查画像会误报缺失，故一并纳入。
  */
-const AI_TOOL_ALIASES = [
-  'codex', 'cursor', 'copilot', 'chatgpt', 'gpt', 'claude', 'gemini', 'openai',
-  'llama', 'qwen', 'tongyi', 'wenxin', 'ernie', 'doubao', 'deepseek', 'kimi',
-];
-function aiToolCategoryCovered(token: string, blob: string): boolean {
-  const t = String(token).toLowerCase();
-  if (!AI_TOOL_ALIASES.includes(t)) return false;
-  return AI_TOOL_ALIASES.some((a) => a !== t && keywordHit(a, blob));
+function buildProfileBlob(profile: Profile | null, resumeText = ''): string {
+  return JSON.stringify({
+    facts: profile?.facts || {},
+    searchKeywords: profile?.searchKeywords || [],
+    primaryDirections: profile?.primaryDirections || [],
+    hardConstraints: profile?.hardConstraints || {},
+    resume: String(resumeText || '').slice(0, 15000),
+  });
+}
+
+/** 画像/简历文本已具备的能力键集合（英文 token 规范键，用于等价组与上位覆盖比对） */
+function coveredSkillKeys(blob: string): Set<string> {
+  return skillKeysInText(blob);
+}
+
+/**
+ * JD 关键词是否已被画像/简历覆盖（三层判定，任一命中即视为已具备，不算缺口）：
+ *   ① 原文命中：保持原有口径（英文词边界 / 中文子串）；
+ *   ② 等价组：简历写 Git，JD 写 GitHub/GitLab；简历写 FastAPI，JD 写 Flask/Django（见 skillTaxonomy）；
+ *   ③ 上位覆盖：会 TypeScript / React / Vue / Node 即已掌握 JavaScript。
+ * 仅用于缺口判定与技能分惩罚口径，不影响技能命中/证据。
+ */
+function isJdTermCovered(term: string, blob: string, keys: Set<string>): boolean {
+  if (keywordHit(term, blob)) return true;
+  // 中文技能别名方向：JD 写「容器化」、简历有 Docker（中文别名 → 英文等价键展开，见 equivalentSkillKeys）；
+  // JD 写 Docker、简历写「容器化」（文本中的中文别名族与 term 等价键相交，见 zhAliasCoversTerm）。
+  if (zhAliasCoversTerm(term, blob)) return true;
+  if (equivalentSkillKeys(term).some((key) => keys.has(key))) return true;
+  return coveringSkillKeys(term).some((key) => keys.has(key));
+}
+
+/**
+ * 清洗缺口条目（AI 复核结果与本地候选共用），命中以下任一即丢弃：
+ *   ① 条目里的英文 token 全为非技能噪音词（「Demo」「HR」「bug 修复」）；
+ *   ② 条目里的英文 token 全部已被画像/简历覆盖（「Flask」「GitHub 作品 Demo」）。
+ * 纯中文条目（如「缺少大厂实习经历」）不在此判废，保留给上层展示。
+ */
+export function cleanGapList(gaps: unknown[], profile: Profile | null, resumeText = ''): string[] {
+  const blob = buildProfileBlob(profile, resumeText);
+  const keys = coveredSkillKeys(blob);
+  const cleaned: string[] = [];
+  for (const raw of Array.isArray(gaps) ? gaps : []) {
+    const gap = String(raw ?? '').trim();
+    if (!gap) continue;
+    const tokens = extractEnglishTokens(gap);
+    if (tokens.length) {
+      const meaningful = tokens.filter((t) => !isNonSkillJdToken(t));
+      if (!meaningful.length) continue; // 全是噪音词
+      if (meaningful.every((t) => isJdTermCovered(t, blob, keys))) continue; // 全部已具备
+    }
+    if (!cleaned.includes(gap)) cleaned.push(gap);
+  }
+  return cleaned;
 }
 
 export function computeLocalMatch(
@@ -219,19 +345,14 @@ export function computeLocalMatch(
   // JD 关键缺口词（提取一次，技能分惩罚与 gaps 展示共用）：
   // extractJdKeywords 产出「JD 里出现的英文技术词 + 画像词命中」，画像词表未具备的即真实缺口。
   // 缺口判定口径 = 结构化画像词表 + 简历原文：简历里的技能表述可能未落入结构化 facts
-  // （如「熟练使用 ChatGPT/Claude/Cursor」只写在经历行），只查画像会误报缺失。
-  const profileBlob = JSON.stringify({
-    facts: profile?.facts || {},
-    searchKeywords: profile?.searchKeywords || [],
-    primaryDirections: profile?.primaryDirections || [],
-    hardConstraints: profile?.hardConstraints || {},
-    resume: String(resumeText || '').slice(0, 15000),
-  });
+  // （如「熟练 Git 分支协作」「熟练使用 ChatGPT/Claude/Cursor」只写在经历行），只查画像会误报缺失。
+  const profileBlob = buildProfileBlob(profile, resumeText);
+  const profileKeys = coveredSkillKeys(profileBlob);
   const { keywords: jdKeywords } = extractJdKeywords(jdReqText, profile);
+  // 三层闸门：非技能噪音词（HR / bug / Demo）→ 原文命中 → 等价组/上位覆盖（Git↔GitHub、FastAPI↔Flask、TS/React→JS）
   const missingJdTerms = jdKeywords.filter((k) => {
-    if (keywordHit(k, profileBlob)) return false;
-    // AI 工具同义归类：岗位要求某款 AI 工具、简历/画像用了同类的另一款 → 不算缺口
-    if (aiToolCategoryCovered(k, profileBlob)) return false;
+    if (isNonSkillJdToken(k)) return false;
+    if (isJdTermCovered(k, profileBlob, profileKeys)) return false;
     return true;
   });
 
@@ -268,8 +389,16 @@ export function computeLocalMatch(
     hardBlocks.push('岗位为实习，与画像「全职」的求职类型冲突');
   }
   // 6. 学历不足（JD 明确要求更高学历）
+  //    画像学历口径：只认「画像硬约束里显式填写的学历」与「教育经历行的学历词」。
+  //    旧实现把整个 facts JSON 交给 extractDegree 并取最高学历，两条错都由此而来：
+  //      ① 漏拦——项目/经历行出现「协助博士生调研」→ 画像被判为博士 → 岗位要求硕士也不拦；
+  //      ② 误拦——技能/项目行出现「本科及以上优先」→ 大专求职者被判为本科。
+  //    学历是用户硬设置，判错任一方向都会让设置失效，故收窄到真正承载学历的字段。
   const requiredDegree = jdRequiredDegreeLevel(job);
-  const profileDegreeLevel = degreeLevel(profile?.hardConstraints?.degree || extractDegree(JSON.stringify(profile?.facts || {})));
+  const profileDegreeText =
+    String(profile?.hardConstraints?.degree || '').trim() ||
+    normalizeStringList(profile?.facts?.education, 8).join(' ');
+  const profileDegreeLevel = degreeLevel(profileDegreeText);
   if (requiredDegree != null && profileDegreeLevel > 0 && requiredDegree > profileDegreeLevel) {
     hardBlocks.push(`岗位要求学历不低于「${levelName(requiredDegree)}」，画像学历为「${profile?.hardConstraints?.degree || levelName(profileDegreeLevel)}」`);
   }
@@ -292,6 +421,16 @@ export function computeLocalMatch(
       const required = mode === 'offline' ? '线下' : '线上';
       const wanted = imFilter === 'online' ? '线上' : '线下';
       hardBlocks.push(`岗位要求${required}面试，与设定的「仅${wanted}」冲突`);
+    }
+  }
+  // 10. 最低日薪（设置 → 元/天；0 表示不限）
+  //     将岗位任意薪资口径折算为「元/天」后低于阈值即硬拦截，确保 50 元/天之类的不合理岗位不进入投递队列。
+  //     面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
+  const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
+  if (minSalaryPerDay > 0) {
+    const dailyFloor = jobDailySalaryFloor(job);
+    if (dailyFloor != null && dailyFloor < minSalaryPerDay) {
+      hardBlocks.push(`岗位日薪约 ${dailyFloor} 元/天，低于设定的最低日薪 ${minSalaryPerDay} 元/天`);
     }
   }
 
@@ -361,17 +500,24 @@ export function computeLocalMatch(
     let titleHits = 0;
     let weakHits = 0;
     let kwHits = 0;
+    // 标题标准化键（C2：剥噪后用于方向比对；如「数据开发实习生（杭州）」→「数据开发实习生」）
+    const titleKey = normalizeJobTitleKey(title);
     for (const dir of directions) {
       const dirKey = normalizeDirectionKeyForMatch(dir);
       if (!dirKey) continue;
-      if (dirKey.length >= 2 && (title.includes(dirKey) || dirKey.includes(normalizeDirectionKeyForMatch(title)))) {
+      // ① 强信号：标题命中（双向子串 / 方向目录规则 test 命中标题 / 目录 keywords 命中标题）
+      const rule = findDirectionRule(dir);
+      const dirKeywordKeys = (rule?.keywords || []).map((kw) => normalizeDirectionKeyForMatch(String(kw))).filter((k) => k && k.length >= 2);
+      const titleHitByDir = dirKey.length >= 2 && titleKey && (titleKey.includes(dirKey) || dirKey.includes(titleKey));
+      const titleHitByRule = Boolean(rule && rule.test.test(titleKey));
+      const titleHitByKw = dirKeywordKeys.some((k) => titleKey.includes(k) || k.includes(titleKey));
+      if (titleHitByDir || titleHitByRule || titleHitByKw) {
         titleHits += 1;
         evidence.push(`方向命中：岗位「${title.trim() || '未知'}」匹配方向「${dir}」`);
       } else if (dirKey.length >= 2 && desc.includes(dirKey)) {
         weakHits += 1;
       } else {
         // 方向目录规则兜底：规则 test 正则命中岗位文本（如「AI 应用开发」方向命中「大模型应用工程师」）
-        const rule = findDirectionRule(dir);
         if (rule && rule.test.test(jdText)) {
           weakHits += 1;
           evidence.push(`方向近似：岗位内容符合「${dir}」方向`);
@@ -471,7 +617,6 @@ export function computeLocalMatch(
   ];
   let weightedSum = 0;
   let weightTotal = 0;
-  let scoredCount = 0;
   for (const [key, w] of WEIGHTS) {
     const v = (() => {
       const dim = key as keyof LocalMatchDimensions;
@@ -480,16 +625,31 @@ export function computeLocalMatch(
     if (v != null) {
       weightedSum += v * w;
       weightTotal += w;
-      scoredCount += 1;
     }
   }
   const overall = weightTotal > 0 ? Math.round(weightedSum / weightTotal) : null;
-  const confidence = scoredCount >= 4 ? 0.9 : scoredCount >= 3 ? 0.7 : scoredCount >= 2 ? 0.5 : 0.3;
+  // 置信度 = 「有真实依据的维度数 ÷ 6」，而非「非空维度数 ÷ 6」。
+  // 修复死开关：salary / education / experience 三维在信息缺失时都返回中性兜底值（55/60/65），
+  // 恒为非 null → 旧的 scoredCount 恒 ≥3 → confidence 只可能是 0.7 / 0.9，
+  // 于是 matching.ts 里的 `confidence >= 0.4`「置信度不足就不参与校准」门槛无条件成立（等于没有）。
+  // 现在只有「画像与 JD 都提供了可比对信息」的维度才计信，信息不足时置信度会如实下降。
+  const informed = [
+    corePool.length > 0 || directionPool.length > 0, // 技能：画像有技能词可比对
+    directions.length > 0 || keywords.length > 0, // 方向：画像有方向/搜索词可比对
+    targetLocations.length > 0 && isLocationDecidable(job.location), // 地点：JD 地点可判定且画像有目标城市
+    jdRange.valid && expected.valid, // 薪资：JD 薪资与期望薪资都能解析
+    requiredDegree != null, // 学历：JD 明确要求了学历
+    requiredYears != null && profileYears != null, // 经验：JD 要求与画像年限都可解析
+  ].filter(Boolean).length;
+  const confidence = Math.max(0.15, Math.round((informed / WEIGHTS.length) * 100) / 100);
 
   // ---- 缺口（复用上方 missingJdTerms：JD 明确要求、画像词表未具备的关键词，如实标注不灌水）----
+  // 逐条独立成项（每条 = 单个技能/技术栈，含「岗位要求」上下文），供任务卡片逐个展示、
+  // AI 兜底与优先级扣分（priority.ts gaps × 45）共用；不再合并成一条长句，便于 UI 精细展示。
   const gaps: string[] = [];
-  if (missingJdTerms.length) {
-    gaps.push(`岗位要求画像未具备：${missingJdTerms.slice(0, 8).join('、')}`);
+  for (const term of missingJdTerms.slice(0, 8)) {
+    const item = `岗位要求「${term}」画像未体现`;
+    if (!gaps.includes(item)) gaps.push(item);
   }
 
   return {
@@ -511,6 +671,35 @@ function normalizeDirectionKeyForMatch(value: string): string {
     .replace(/实习生|实习|工程师|开发|岗位|职位|校招|社招|应届/g, '')
     .replace(/[\s,，/\\|·•()（）【】\[\]_-]+/g, '')
     .trim();
+}
+
+/**
+ * 岗位标题标准化键（C2：标题 → 方向目录匹配的强信号通道）：
+ * 先剥掉标题里的噪音段（招人噪声括号、地点括号、公司名前缀、招聘字样），
+ * 再走 normalizeDirectionKeyForMatch。例：
+ *   「数据开发实习生（杭州）」→「数据开发实习生」→ 命中方向「数据开发实习生」；
+ *   「XX信息科技有限公司招聘：前端开发工程师（双休）」→「前端开发工程师」。
+ */
+function normalizeJobTitleKey(title: string): string {
+  let t = String(title || '').trim();
+  if (!t) return '';
+  t = t
+    .replace(/【[^】]*】/g, ' ')
+    .replace(/《[^》]*》/g, ' ')
+    // 括号里的招人噪声（急聘/高薪/双休/社保/地域交通）→ 剥离
+    .replace(
+      /[（(][^)）]*(?:急聘|诚聘|高薪|包吃住|五险一金|五险|六险|公积金|双休|大小周|单休|朝九晚六|弹性工作|地铁|通勤|附近|坐标)[^)）]*[)）]/g,
+      ' '
+    )
+    // 括号里的城市名 → 剥离（方向判定不含地点）
+    .replace(
+      /[（(][^)）]*(?:北京|上海|广州|深圳|成都|杭州|武汉|西安|南京|苏州|长沙|郑州|天津|重庆|青岛|大连|宁波|厦门|合肥|福州|济南|沈阳|哈尔滨|长春|昆明|南昌|贵阳|南宁|太原|石家庄|乌鲁木齐|兰州|海口|银川|西宁|呼和浩特)[^)）]*[)）]/g,
+      ' '
+    )
+    // 前缀公司名（常见公司后缀）与「招聘」字样
+    .replace(/^(?:[\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:有限公司|股份公司|信息科技|网络科技|信息技术|集团|工作室|合伙企业))/, ' ')
+    .replace(/招聘[:：]?/g, ' ');
+  return normalizeDirectionKeyForMatch(t);
 }
 
 // ===== 旧本地兜底兼容：在 localMatchScore 之上的增强版（供 AI 分缺失时使用）=====

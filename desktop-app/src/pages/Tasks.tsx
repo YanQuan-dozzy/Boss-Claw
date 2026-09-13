@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Button, Card, Checkbox, Popconfirm, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Modal, Popconfirm, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
   ReloadOutlined,
   EyeOutlined,
@@ -10,21 +10,26 @@ import {
   FilterOutlined,
   CaretRightOutlined,
   DeleteOutlined,
+  CheckOutlined,
+  WarningOutlined,
+  CheckCircleFilled,
+  UndoOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
-import { taskStageMetaFor } from '@/lib/bossclaw/taskState';
+import { pendingStatusMeta } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
 import PlatformChip from '@/components/PlatformChip';
-import { formatMetaLine, cleanTitle, cleanSalary } from '@/lib/bossclaw/jobDisplay';
-import { parseSalaryRange } from '@/lib/bossclaw/jobMatch';
-import { detectWorkSchedule, scheduleBasisText } from '@/lib/bossclaw/workSchedule';
+import { cleanTitle, cleanSalary } from '@/lib/bossclaw/jobDisplay';
+import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
+import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
+import type { FitLevel } from '@/lib/bossclaw/fitLevel';
 import { EmptyState } from '@/components/feedback';
 import { electronApi } from '@/lib/electronApi';
-import type { JobPlatform, PendingItem, PendingStatus, TaskRun } from '@/lib/bossclaw/types';
+import type { JobPlatform, MatchDimensionEvidence, PendingItem, PendingStatus, TaskRun } from '@/lib/bossclaw/types';
 
 const { Text } = Typography;
 
@@ -53,6 +58,60 @@ const FILTERS: { label: string; value: 'all' | PendingStatus }[] = [
   { label: '已忽略', value: 'ignored' },
 ];
 
+/**
+ * 缺口拆分：技能名 + 匹配说明（弹窗展示用）。
+ * 兼容四种写法：
+ *  - AI 新格式「技能名：匹配说明」（说明由 AI 按岗位场景/简历现状/补强建议生成）；
+ *  - 「表达缺口：技能名」（简历做过相关工作但未写清，说明由展示端补充）；
+ *  - 本地兜底格式「岗位要求「X」画像未体现」；
+ *  - 历史纯技能名（说明统一兜底，不编造具体内容，但给可执行建议）。
+ */
+function splitGapWithNote(gap: string): { name: string; note: string } {
+  const expr = gap.match(/^表达缺口[：:]\s*(.+)$/);
+  if (expr) return { name: expr[1].trim(), note: '简历做过相关工作但未写清：建议在简历「技能/项目」中补充该能力的真实落地场景，属可快速补强。' };
+  const local = gap.match(/^岗位要求「(.+?)」画像未体现$/);
+  if (local) return { name: local[1].trim(), note: '岗位明确要求该技能，简历与职业画像均未体现相关经历。建议通过课程或实操项目补齐，并在简历中如实补充。' };
+  const colon = gap.match(/^(.{1,24}?)[：:]\s*(.+)$/);
+  if (colon && colon[1].trim()) return { name: colon[1].trim(), note: colon[2].trim() };
+  return { name: gap, note: '岗位明确要求该技能，简历/画像未体现相关经历。建议通过实操项目补齐，或在求职信中如实说明学习意愿与进度。' };
+}
+
+/** 匹配决策枚举本地化与徽标视觉渲染 */
+function renderDecisionBadge(decision?: string) {
+  if (!decision) return null;
+  const d = String(decision).trim().toLowerCase();
+  if (d === 'recommend' || d === '推荐') {
+    return (
+      <span className="task-decision-badge task-decision-badge--recommend">
+        <span className="task-decision-dot" /> 建议投递
+      </span>
+    );
+  }
+  if (d === 'cautious' || d === '谨慎') {
+    return (
+      <span className="task-decision-badge task-decision-badge--cautious">
+        <span className="task-decision-dot" /> 谨慎考虑
+      </span>
+    );
+  }
+  if (d === 'reject' || d === '不推荐') {
+    return (
+      <span className="task-decision-badge task-decision-badge--reject">
+        <span className="task-decision-dot" /> 不推荐
+      </span>
+    );
+  }
+  return <span className="task-decision-badge">{decision}</span>;
+}
+
+/** 岗位适配档位标签（四层整体裁决的产物）；存量数据缺 fitLevel 时优雅降级为不渲染 */
+function renderFitLevelTag(level?: FitLevel) {
+  if (!level) return null;
+  const cls =
+    level === 'strong' ? 'task-fit-strong' : level === 'match' ? 'task-fit-match' : level === 'cautious' ? 'task-fit-cautious' : 'task-fit-unfit';
+  return <span className={`task-fit-tag ${cls}`}>{fitLevelLabel(level)}</span>;
+}
+
 export default function Tasks() {
   const pending = useDataStore((s) => s.pending);
   const taskRuns = useDataStore((s) => s.taskRuns);
@@ -69,6 +128,8 @@ export default function Tasks() {
   const config = useSettingsStore((s) => s.config);
   const [filter, setFilter] = useState<'all' | PendingStatus>('all');
   const [showIgnored, setShowIgnored] = useState(false);
+  // 匹配点 / 缺口「查看全部」弹窗（展示完整内容 + 缺口匹配说明）
+  const [detailModal, setDetailModal] = useState<{ kind: 'match' | 'gap'; item: PendingItem } | null>(null);
 
   const isHiddenStatus = (status: PendingStatus) => status === 'ignored' || status === 'skipped';
 
@@ -85,6 +146,7 @@ export default function Tasks() {
     return {
       all: pending.length,
       pending: pending.filter((p) => p.status === 'pending').length,
+      approved: pending.filter((p) => p.status === 'approved').length,
       approved_queue: pending.filter((p) => p.status === 'approved_queue').length,
       sent: pending.filter((p) => p.status === 'sent').length,
       failed: pending.filter((p) => p.status === 'failed').length,
@@ -102,6 +164,12 @@ export default function Tasks() {
   const onApprove = (id: string) => {
     const next = rerankPending(pending.map((p) => p.id === id ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p), useSettingsStore.getState().config);
     setPending(next); message.success('已确认岗位，等待「一键投递」'); recomputeStats();
+  };
+  const onRevert = (id: string) => {
+    const next = rerankPending(pending.map((p) => p.id === id ? { ...p, status: 'pending' as const } : p), useSettingsStore.getState().config);
+    setPending(next);
+    message.info('已撤回岗位，退回「待确认」');
+    recomputeStats();
   };
 
   // ===== 执行任务列表：开始/继续 + 删除 =====
@@ -132,7 +200,7 @@ export default function Tasks() {
         updatedAt: Date.now(),
       });
       useScheduleStore.getState().setCollectRequest({ platforms: [platform], runIds: [t.id] });
-      addLog('info', `已请求重新采集：${t.keyword} · ${t.location || '全国'} · ${t.employmentType || '不限'}`);
+      addLog('info', `已请求重新采集：${t.keyword || '随机推荐'} · ${t.location || '全国'} · ${t.employmentType || '不限'}`);
       message.success('已开始采集该搜索组合');
       setRoute('workbench');
       return;
@@ -163,10 +231,12 @@ export default function Tasks() {
     message.success('已删除任务');
   };
 
+  // 已停止 / 已跳过：进度区下方 stageLabel 已说明「已停止（未完成）」等原因，
+  // 右侧不再重复展示状态标签（原先会外露裸英文 "skipped"）。
   const taskStatusMeta = (t: TaskRun) => {
     if (t.status === 'success') return { label: '已完成', color: 'green' };
     if (t.status === 'failed') return { label: '失败', color: 'red' };
-    if (t.status === 'skipped' || t.status === 'ignored') return { label: t.status, color: 'default' };
+    if (t.status === 'skipped' || t.status === 'ignored') return null;
     return { label: t.stageLabel || '进行中', color: 'blue' };
   };
 
@@ -235,7 +305,9 @@ export default function Tasks() {
                     ) : null}
                   </div>
                   <div className="task-row-actions">
-                    <Tag color={meta.color} style={{ margin: 0, padding: '2px 10px', borderRadius: 999 }}>{meta.label}</Tag>
+                    {meta ? (
+                      <Tag color={meta.color} style={{ margin: 0, padding: '2px 10px', borderRadius: 999 }}>{meta.label}</Tag>
+                    ) : null}
                     <Button
                       size="small"
                       type="primary"
@@ -311,7 +383,7 @@ export default function Tasks() {
         </Card>
       ) : (
         list.map((p: PendingItem) => {
-          const meta = taskStageMetaFor(p.job?.platform, (p.status === 'approved_queue' ? 'queued' : 'waiting_review') as any);
+          const meta = pendingStatusMeta(p.status, p.job?.platform);
           const st = STATUS_COLOR[p.status] || { color: 'default', label: p.status };
           const chip = scoreChip(p.analysis?.score);
           // 评分来源口径（对齐 JobAssistant 的「AI 分 / 本地分」）：AI 计算优先，
@@ -322,43 +394,58 @@ export default function Tasks() {
             : `AI 计算优先 · 综合 ${p.analysis?.score ?? '-'} 分`;
           // 薪资具体数据：cleanSalary 已还原平台字体混淆（BOSS 直聘 PUA 数字），可直接展示
           const salaryText = cleanSalary(p.job?.salary);
-          // 工作制度（双休/大小周/单休/每周 N 天/月休 N 天）：决定日薪折算月薪的工作日基数
+          // 工作制度（双休/大小周/单休/每周 N 天/月休 N 天）
           const schedule = detectWorkSchedule(p.job);
-          const jdSalary = salaryText ? parseSalaryRange(salaryText, schedule.monthlyWorkDays) : null;
-          const monthlyHint = jdSalary?.valid && (jdSalary.daily || jdSalary.hourly)
-            ? ` · ≈${jdSalary.low.toFixed(1)}-${jdSalary.high.toFixed(1)}K/月（${scheduleBasisText(schedule)}）`
-            : '';
           const scheduleHint = schedule.detected ? ` · 工作制度：${schedule.label}（${schedule.weeklyDays} 天/周）` : '';
           const expectedSalary = String(profile?.hardConstraints?.salary || '').trim() || '不限';
+          const pf = String(p.job?.platform || 'boss').toLowerCase();
           return (
-            <div key={p.id} className={'job-card job-card--tasks ' + jobCardStatus(p)}>
-              <div className="job-top">
-                <div style={{ minWidth: 0 }}>
-                  <div className="job-title" style={{ fontSize: 15, fontWeight: 600 }}>
+            <div key={p.id} className={`job-card job-card--tasks job-card--pf-${pf} ${jobCardStatus(p)}`}>
+              {/* 卡片头部：职位、平台、薪资、状态与公司元信息 */}
+              <div className="task-job-header">
+                <div className="task-job-header-main">
+                  <div className="task-job-title-row">
                     <PlatformChip platform={p.job?.platform} />
-                    {cleanTitle(p.job?.title, p.job?.salary)}
-                    {salaryText && <span className="job-salary-tag">{salaryText}</span>}
+                    <span className="task-job-title" title={cleanTitle(p.job?.title, p.job?.salary)}>
+                      {cleanTitle(p.job?.title, p.job?.salary)}
+                    </span>
+                    {salaryText && (
+                      <span className="task-salary-pill" title={salaryText}>
+                        {salaryText}
+                      </span>
+                    )}
                   </div>
-                  <div className="job-company" style={{ fontSize: 13, marginTop: 2 }}>
-                    {formatMetaLine(p.job?.company, p.job?.location, null, p.job?.url)}
+                  <div className="task-company-meta">
+                    <span className="task-company-name">{p.job?.company || '未知企业'}</span>
+                    {p.job?.location && <span className="task-meta-dot">·</span>}
+                    {p.job?.location && <span className="task-location-text">{p.job.location}</span>}
+                    {schedule.detected && <span className="task-schedule-tag">{schedule.label}</span>}
                   </div>
                 </div>
-                <Tag color={st.color} style={{ margin: 0, flex: '0 0 auto', padding: '2px 10px', fontSize: 12, borderRadius: 4 }}>
-                  {st.label}
-                </Tag>
+                <div className="task-job-header-right">
+                  <Tag color={st.color} className="task-status-tag">
+                    {st.label}
+                  </Tag>
+                </div>
               </div>
 
-              <div className="job-meta">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {p.analysis && (
-                    <>
-                      {chip.cls && (
-                        <Tooltip title={sourceNote}>
-                          <span className={'score-chip ' + chip.cls}>{scoreIsLocal ? '本地' : 'AI'} {chip.text} 分</span>
-                        </Tooltip>
-                      )}
-                      <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-                        匹配决策：<Text strong>{p.analysis.decision}</Text>
+              {/* 核心分析面板 */}
+              <div className="task-analysis-panel">
+                {/* 评分行：主色调 AI 评分胶囊 / 决策胶囊 / 中性缺口标签 / 右侧紧凑阶段进度 */}
+                <div className="task-score-row">
+                  <div className="task-score-left">
+                    {p.analysis && (
+                      <>
+                        {chip.text && (
+                          <Tooltip title={sourceNote}>
+                            <div className="task-score-pill">
+                              <span className="task-score-dot" />
+                              <span>{scoreIsLocal ? '本地' : 'AI'} {chip.text} 分</span>
+                            </div>
+                          </Tooltip>
+                        )}
+                        {renderDecisionBadge(p.analysis.decision)}
+                        {renderFitLevelTag(p.analysis.fitLevel)}
                         {p.analysis.hardBlocks?.length ? (
                           <Tooltip
                             title={
@@ -369,91 +456,279 @@ export default function Tasks() {
                               </div>
                             }
                           >
-                            <span style={{ color: 'var(--danger, #f5222d)', cursor: 'help' }}> · 拦截硬条件 {p.analysis.hardBlocks.length} 项</span>
+                            <span className="task-flag-badge task-flag-badge--neutral">
+                              拦截硬条件 {p.analysis.hardBlocks.length} 项
+                            </span>
                           </Tooltip>
                         ) : null}
-                        {p.analysis.gaps?.length ? <span> · 存在缺口 {p.analysis.gaps.length} 项</span> : null}
-                      </span>
-                      {/* 本地确定性维度分解（可解释匹配：技能/方向/地点/薪资/学历/经验 六维） */}
-                      {p.analysis.dimensions && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                          {[
-                            ['技能', p.analysis.dimensions.skill],
-                            ['方向', p.analysis.dimensions.direction],
-                            ['地点', p.analysis.dimensions.location],
-                            ['薪资', p.analysis.dimensions.salary],
-                            ['学历', p.analysis.dimensions.education],
-                            ['经验', p.analysis.dimensions.experience],
-                          ]
-                            .filter(([, v]) => v != null)
-                            .map(([label, v]) => {
-                              const value = v as number;
-                              const tone = value >= 80 ? 'good' : value >= 55 ? 'mid' : 'low';
-                              return (
-                                <Tooltip
-                                  key={label}
-                                  title={
-                                    label === '薪资' && salaryText
-                                      ? `薪资匹配度 ${value}% · 岗位 ${salaryText}${monthlyHint}${scheduleHint} · 期望薪资 ${expectedSalary}（${sourceNote}）`
-                                      : `${label}匹配度 ${value}%（${sourceNote}）`
-                                  }
-                                >
-                                  <span className={'dim-chip dim-chip--' + tone}>
-                                    {label} {value}
-                                  </span>
-                                </Tooltip>
-                              );
-                            })}
-                        </span>
-                      )}
-                    </>
-                  )}
+                        {p.analysis.gaps?.length ? (
+                          <span className="task-flag-badge task-flag-badge--neutral">
+                            存在缺口 {p.analysis.gaps.length} 项
+                          </span>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                  <div className="task-progress-wrap">
+                    <span className="task-progress-label">{meta.label || '执行进度'}</span>
+                    <div className="task-progress-bar">
+                      <div className="task-progress-inner" style={{ width: `${meta.progress}%` }} />
+                    </div>
+                    <span className="task-progress-pct">{meta.progress}%</span>
+                  </div>
                 </div>
-                <Progress percent={meta.progress} size="small" style={{ width: 150, margin: 0 }} />
+
+                {/* 维度托盘：AI 语义评估优先、本地确定性兜底；悬浮可见每维依据 */}
+                {p.analysis?.dimensions && (
+                  <div className="task-dims-tray">
+                    {(
+                      [
+                        ['skill', '技能'],
+                        ['direction', '方向'],
+                        ['salary', '薪资'],
+                        ['education', '学历'],
+                        ['experience', '经验'],
+                      ] as [keyof MatchDimensionEvidence, string][]
+                    )
+                      .map(([key, label]) => {
+                        const value = p.analysis?.dimensions?.[key];
+                        return value == null ? null : { key, label, value };
+                      })
+                      .filter((x): x is { key: keyof MatchDimensionEvidence; label: string; value: number } => x != null)
+                      .map(({ key, label, value }) => {
+                        const isAi = p.analysis?.scoreSource === 'ai';
+                        const ev = p.analysis?.dimensionEvidence?.[key];
+                        const salaryCtx =
+                          key === 'salary' && salaryText
+                            ? `岗位 ${salaryText}${scheduleHint} · 期望 ${expectedSalary}`
+                            : '';
+                        return (
+                          <Tooltip
+                            key={key}
+                            title={
+                              <div style={{ maxWidth: 380, fontSize: 12 }}>
+                                <div>
+                                  {label} {value} 分（{isAi ? 'AI 语义评估' : '本地确定性维度'}）
+                                </div>
+                                {ev ? (
+                                  <div style={{ opacity: 0.95 }}>{ev}</div>
+                                ) : isAi ? (
+                                  <div style={{ opacity: 0.7 }}>该维度 AI 未给出依据，由本地规则兜底</div>
+                                ) : null}
+                                {salaryCtx ? <div>{salaryCtx}</div> : null}
+                                <div style={{ opacity: 0.8 }}>
+                                  {isAi
+                                    ? '维度分由 AI 按简历与岗位语义逐维评估；AI 缺失的维度由本地规则兜底。最终分数 = 60% AI 整体分 + 40% 维度加权分；档位以四层整体裁决为准，技能维 ≤25（根本性技术栈错位）时档位不高于谨慎。'
+                                    : 'AI 未参与评分，维度分由本地关键词确定性计算，仅供可解释性参考。'}
+                                </div>
+                              </div>
+                            }
+                          >
+                            <div className="dim-item">
+                              <div className="dim-item-header">
+                                <span className="dim-item-label">{label}</span>
+                                <span className="dim-item-value">{value}</span>
+                              </div>
+                              <div className="dim-item-track">
+                                <div className="dim-item-fill" style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
+                              </div>
+                            </div>
+                          </Tooltip>
+                        );
+                      })}
+                  </div>
+                )}
               </div>
 
-              {/* 可解释匹配详情：本地命中证据 + 缺口（仅存在时展示） */}
-              {p.analysis && (p.analysis.matchedEvidence?.length || p.analysis.gaps?.length) && (
-                <div className="job-detail" style={{ marginTop: 6 }}>
+              {/* 优劣势分析区（优势匹配为浅主色，能力缺口与风险提示并入同一区块，中性/警告灰阶）：
+                  原「分析结论 reason 大段」已按条归入优势/缺口/风险展示，不再单独渲染大段落。 */}
+              {p.analysis && (p.analysis.matchedEvidence?.length || p.analysis.gaps?.length || p.analysis.risks?.length) && (
+                <div className="task-prop-section">
                   {p.analysis.matchedEvidence?.length ? (
-                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
-                      <span style={{ color: 'var(--ok, #16a34a)' }}>✓ 匹配点：</span>
-                      {p.analysis.matchedEvidence.slice(0, 4).join('；')}
+                    <div className="task-prop-row">
+                      <span className="task-prop-label task-prop-label--match">
+                        <CheckOutlined /> 优势匹配
+                      </span>
+                      <div className="task-prop-chips">
+                        {p.analysis.matchedEvidence.slice(0, 3).map((e, i) => (
+                          <Tooltip key={i} title={e}>
+                            <span className="task-prop-chip">{e}</span>
+                          </Tooltip>
+                        ))}
+                      </div>
+                      <Button
+                        type="link"
+                        size="small"
+                        className="task-prop-more-btn"
+                        onClick={() => setDetailModal({ kind: 'match', item: p })}
+                      >
+                        全部 {p.analysis.matchedEvidence.length} 条 ›
+                      </Button>
                     </div>
                   ) : null}
-                  {p.analysis.gaps?.length ? (
-                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
-                      <span style={{ color: 'var(--warn, #d97706)' }}>△ 缺口：</span>
-                      {p.analysis.gaps.slice(0, 3).join('；')}
+
+                  {(p.analysis.gaps?.length || p.analysis.risks?.length) ? (
+                    <div className="task-prop-row">
+                      <span className="task-prop-label task-prop-label--gap">
+                        <WarningOutlined /> 缺口与提醒
+                      </span>
+                      <div className="task-prop-chips">
+                        {p.analysis.gaps?.slice(0, 4).map((g, i) => {
+                          const { name, note } = splitGapWithNote(g);
+                          return (
+                            <Tooltip
+                              key={i}
+                              title={
+                                <div style={{ maxWidth: 320 }}>
+                                  <div>{g}</div>
+                                  {note && note !== g ? <div style={{ opacity: 0.92, marginTop: 4 }}>{note}</div> : null}
+                                </div>
+                              }
+                            >
+                              <span className="task-prop-chip">{name}</span>
+                            </Tooltip>
+                          );
+                        })}
+                        {p.analysis.risks?.map((r, i) => (
+                          <Tooltip key={`risk-${i}`} title={r}>
+                            <span className="task-prop-chip task-prop-chip--risk">{r}</span>
+                          </Tooltip>
+                        ))}
+                      </div>
+                      {p.analysis.gaps?.length || p.analysis.risks?.length ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          className="task-prop-more-btn"
+                          onClick={() => setDetailModal({ kind: 'gap', item: p })}
+                        >
+                          全部 {(p.analysis.gaps?.length || 0) + (p.analysis.risks?.length || 0)} 项 ›
+                        </Button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
               )}
 
+              
+
               {p.error && <div className="job-error">⚠ {p.error}</div>}
 
+              {/* 操作按钮栏 */}
               <div className="job-actions job-actions--tasks">
-                <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
-                  查看详情
-                </Button>
-                <Button size="small" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>
-                  重试
-                </Button>
-                <Button size="small" type="text" icon={<StopOutlined />} onClick={() => onIgnore(p.id)}>
-                  忽略
-                </Button>
-                <Button size="small" type="text" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)}>
-                  跳过
-                </Button>
-                <span className="action-spacer" />
-                <Button size="small" type="primary" icon={<RocketOutlined />} onClick={() => onApprove(p.id)}>
-                  批准投递
-                </Button>
+                <div className="task-actions-left">
+                  <Button size="small" className="task-ghost-btn" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
+                    查看详情
+                  </Button>
+                  <Button size="small" className="task-ghost-btn" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>
+                    重试
+                  </Button>
+                  <Button size="small" className="task-ghost-btn" icon={<StopOutlined />} onClick={() => onIgnore(p.id)}>
+                    忽略
+                  </Button>
+                  <Button size="small" className="task-ghost-btn" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)}>
+                    跳过
+                  </Button>
+                </div>
+                <div className="task-actions-right">
+                  {p.status === 'pending' ? (
+                    <Button size="small" type="primary" className="task-approve-btn" icon={<CheckCircleFilled />} onClick={() => onApprove(p.id)}>
+                      批准投递
+                    </Button>
+                  ) : p.status === 'approved' ? (
+                    <Space size={8}>
+                      <span className="task-status-hint task-status-hint--approved">
+                        <span className="task-hint-dot" /> 待投递（工作台可一键发起）
+                      </span>
+                      <Button size="small" className="task-ghost-btn" icon={<UndoOutlined />} onClick={() => onRevert(p.id)}>
+                        撤回
+                      </Button>
+                    </Space>
+                  ) : p.status === 'approved_queue' ? (
+                    <span className="task-status-hint task-status-hint--queued">
+                      <span className="task-hint-dot" /> 正在投递队列中
+                    </span>
+                  ) : p.status === 'sent' ? (
+                    <span className="task-status-hint task-status-hint--sent">
+                      ✓ 已投递完成
+                    </span>
+                  ) : p.status === 'failed' ? (
+                    <Button size="small" danger icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>
+                      重试投递
+                    </Button>
+                  ) : (
+                    <Button size="small" type="primary" className="task-approve-btn" icon={<CheckCircleFilled />} onClick={() => onApprove(p.id)}>
+                      批准投递
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           );
         })
       )}
+
+      {/* 匹配点 / 缺口「查看全部」小窗：完整内容展示，缺口逐条附匹配说明 */}
+      <Modal
+        open={!!detailModal}
+        onCancel={() => setDetailModal(null)}
+        footer={null}
+        width={580}
+        title={
+          detailModal ? (
+            <div>
+              <span style={{ fontSize: 15 }}>{detailModal.kind === 'match' ? '匹配点（全部）' : '缺口与提醒（全部）'}</span>
+              <div style={{ fontSize: 12, fontWeight: 400, color: 'var(--fg-muted)', marginTop: 2 }}>
+                {cleanTitle(detailModal.item.job?.title, detailModal.item.job?.salary)}
+              </div>
+            </div>
+          ) : ''
+        }
+      >
+        {detailModal && detailModal.kind === 'match' && (
+          <ul className="detail-modal-list">
+            {(detailModal.item.analysis?.matchedEvidence || []).map((e, i) => (
+              <li key={i} className="detail-modal-item detail-modal-item--match">
+                <span className="detail-modal-idx">{i + 1}</span>
+                <span className="detail-modal-text">{e}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {detailModal && detailModal.kind === 'gap' && (
+          <>
+            <ul className="detail-modal-list">
+              {(detailModal.item.analysis?.gaps || []).map((g, i) => {
+                const { name, note } = splitGapWithNote(g);
+                return (
+                  <li key={i} className="detail-modal-item">
+                    <span className="detail-modal-idx">{i + 1}</span>
+                    <div className="detail-modal-gap">
+                      <span className={'detail-modal-gap-name' + (g.startsWith('表达缺口') ? ' detail-modal-gap-name--expr' : '')}>{name}</span>
+                      <span className="detail-modal-gap-note">{note}</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            {detailModal.item.analysis?.risks?.length ? (
+              <>
+                <div className="detail-modal-subtitle">
+                  <WarningOutlined /> 风险提醒
+                </div>
+                <ul className="detail-modal-list">
+                  {(detailModal.item.analysis.risks || []).map((r, i) => (
+                    <li key={i} className="detail-modal-item detail-modal-item--risk">
+                      <span className="detail-modal-idx">{i + 1}</span>
+                      <span className="detail-modal-text">{r}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

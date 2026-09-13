@@ -1,6 +1,10 @@
 // BossClaw 数据模型类型定义
 // 对齐 job-claw-main 的运行时数据结构
 
+// 岗位适配档位（类型定义在 fitLevel.ts，与档位→分数/决策的映射放在一起，便于离线回归测试）。
+// 这里只做 type-only 引用，编译期擦除，不构成运行时循环依赖。
+import type { FitLevel } from './fitLevel';
+
 export type ExecutionMode = 'review' | 'auto';
 
 // 招聘平台（多平台适配：BOSS 基础上新增 猎聘 / 智联招聘 / 前程无忧 51Job）
@@ -35,7 +39,12 @@ export interface AppConfig {
   dailyTarget: number;
   discoveryLimit: number;
   aiLimit: number;
+  /** 推荐岗位分：岗位综合评分 ≥ 该值判为「推荐」档（recommend），默认 75 */
   minScore: number;
+  /** 最低入队分：评分低于该值的岗位不进入工作台队列（0 = 不限，仅拦「不推荐」硬伤岗位），默认 60 */
+  minQueueScore: number;
+  /** 采集 AI 分析并发上限（1-8，默认 3）：搜索采集对 analyzeJob 做有界并发，防止视觉采集 fire-and-forget 造成无界 LLM 调用堆积 */
+  analysisConcurrency?: number;
   targetLocations: string[];
   /** 城市反选：排除的省份 / 直辖市 / 自治区（简名，如 浙江 / 广东 / 北京） */
   excludedProvinces: string[];
@@ -64,6 +73,12 @@ export interface AppConfig {
   hrActivityFilter: HrActivityFilter;
   /** 面试方式筛选：不限 / 仅线上 / 仅线下（确定性规则，非 AI 判断） */
   interviewModeFilter: InterviewModeFilter;
+  /**
+   * 最低日薪（元/天，确定性硬约束，非 AI 判断）：把岗位任意薪资口径（月/日/时）
+   * 折算到「元/天」后，低于该值即判定为硬拦截（reject，不进入投递队列）。
+   * 0（默认）= 不限，任何日薪都放行；设为 100 即「日薪 < 100 元/天」的岗位（如 50 元/天）被排除。
+   */
+  minSalaryPerDay: number;
   /** 是否排除猎头岗位（对齐 AI-BossJob 的 excludeHeadhunters） */
   excludeHeadhunters: boolean;
   /** 搜索采集时是否自动下拉加载更多岗位卡片（BOSS 列表为无限滚动，默认开启以收集更多岗位） */
@@ -79,6 +94,13 @@ export interface AppConfig {
   collectPageTimeoutMs: number;
   /** 断点续采起始序号：0 表示从头；>0 表示跳过前 N 个岗位（已入库岗位会自动去重跳过） */
   collectResumeIndex: number;
+  /**
+   * 无关键字采集（随机岗位推荐）：开启后采集队列**不再附加 query（关键词）**，
+   * 只保留用户已设置的城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模等筛选，
+   * 由平台按「账号内已完善的求职意向」返回推荐岗位，避免同一关键词反复重试时拿到大量重复岗位。
+   * 使用前提：需先在 BOSS 直聘（网页 / App）内完善在线简历与求职意向，否则返回岗位可能不相关。
+   */
+  collectWithoutKeyword: boolean;
   /** 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）。0 表示不限 */
   maxJobsPerRun: number;
   /**
@@ -243,28 +265,46 @@ export type Decision = 'recommend' | 'cautious' | 'reject';
 /**
  * 匹配维度分解（本地确定性计算，可解释；AI 分缺失时作为兜底、存在时用于校准展示）。
  * 对齐 ai-job-search 的多维评估 + Agentic-Career-Assistant 的可解释评分。
+ * AI 语义评估可用时，五个业务维度（skill/direction/salary/education/experience）
+ * 与 overall 会被 AI 维度分覆盖（见 matching.ts mergeAiDimensions），location 恒为本地值。
  */
 export interface MatchDimensions {
-  /** 技能匹配 0-100（画像技能在 JD 中的加权命中率）；信息不足为 null */
+  /** 技能匹配 0-100（AI 语义评估优先，本地加权命中率兜底）；信息不足为 null */
   skill: number | null;
-  /** 方向匹配 0-100（岗位标题/描述 vs 画像方向/搜索词） */
+  /** 方向匹配 0-100（AI 语义评估优先，本地标题/描述命中兜底） */
   direction: number | null;
-  /** 地点匹配 0-100（岗位地点 vs 目标城市） */
+  /** 地点匹配 0-100（岗位地点 vs 目标城市；仅本地确定性计算，不进 AI 维度） */
   location: number | null;
-  /** 薪资匹配 0-100（JD 薪资 vs 期望薪资） */
+  /** 薪资匹配 0-100（AI 以本地校准信息为口径评估，本地解析兜底） */
   salary: number | null;
-  /** 学历匹配 0-100（JD 要求 vs 画像学历） */
+  /** 学历匹配 0-100（AI 语义评估优先，本地学历对照兜底） */
   education: number | null;
-  /** 经验匹配 0-100（JD 要求 vs 画像经验） */
+  /** 经验匹配 0-100（AI 语义评估优先，本地年限比例兜底） */
   experience: number | null;
-  /** 本地加权综合分 0-100（null 维度剔除后重归一化） */
+  /** 加权综合分 0-100（AI 语义五维加权，null 维度剔除后重归一化；AI 缺失时本地加权） */
   overall: number | null;
   /** 维度计算确定程度（0-1），用于 AI 分校准的置信度 */
   confidence: number;
 }
 
+/** AI 语义评估的每维评分依据（dimensionEvidence，与 dimensions 中五维一一对应；仅 AI 给出依据时存在） */
+export interface MatchDimensionEvidence {
+  skill?: string;
+  direction?: string;
+  salary?: string;
+  education?: string;
+  experience?: string;
+}
+
 export interface JobAnalysis {
   score: number;
+  /**
+   * 岗位适配档位（AI 四层整体裁决 + 技能维错位闸门的产物，见 lib/bossclaw/fitLevel.ts）：
+   * strong=推荐（>80）/ match=匹配（65-80）/ cautious=谨慎（50-64）/ unfit=不推荐（<50）。
+   * score 由档位映射得到（同一档内才允许微调，不跨档）；存量数据可能缺该字段，
+   * 读取侧用 fitLevelFromScore(score) 兜底，UI 缺失时降级为不展示档位标签。
+   */
+  fitLevel?: FitLevel;
   decision: Decision;
   hardBlocks: string[];
   matchedEvidence: string[];
@@ -275,12 +315,24 @@ export interface JobAnalysis {
   /** 本地确定性维度分解（可解释匹配；analyzeJob 计算后附加） */
   dimensions?: MatchDimensions;
   /**
+   * AI 语义评估的每维评分依据（与 dimensions 中的五维一一对应；仅 AI 评分且给出依据时存在，
+   * 维度分本身在 dimensions 内，AI 缺失的维度已由本地同维兜底，此处只存 AI 原文依据）。
+   */
+  dimensionEvidence?: MatchDimensionEvidence;
+  /**
+   * 总分是否已由「AI 四层整体裁决分 + 维度加权分」融合（true 表示维度加权参与了总分档内微调；
+   * 仅在 AI 语义维度可用时出现，纯本地兜底不置位）。
+   */
+  fusedWithDimensions?: boolean;
+  /**
    * 评分来源（UI 提示口径：AI 计算优先，缺 AI 才回退本地）：
    * - 'ai'：AI 分析分有效（主导评分，本地六维作为校准依据）；
    * - 'local'：AI 未参与（返回缺 score 等），分数由本地确定性规则兜底。
    * 缺省（历史数据）按 'ai' 处理。
    */
   scoreSource?: 'ai' | 'local';
+  /** AI 首次返回的 JSON 不完整，已通过二次补齐自动修复（内容仍来自 AI）。非降级，仅提示。 */
+  aiNote?: string;
 }
 
 export interface JobMeta {

@@ -18,7 +18,14 @@ const SYSTEM_PROMPT = `你是招聘平台的岗位搜索词推荐助手。用户
 - 严禁跨方向：不要给出属于其他方向的词（例如给「AI 应用开发」方向时不要出现「全栈开发」「后端开发」「产品经理」等）。
 - 不要与用户给出的「已有关键词」重复或高度近似（不要只加/减「工程师」「实习生」这类后缀）。
 - 措辞符合招聘平台搜索习惯，简洁、可直接粘贴进搜索框。
-- 只输出 JSON，格式为 {"keywords":["关键词1","关键词2","关键词3"]}，不要任何解释文字。`;
+
+【输出 schema】只输出以下字段（字段名与类型不可变更；keywords 恰好 3 条）：
+{"keywords":["关键词1","关键词2","关键词3"]}
+
+【输出样例】（仅示意格式与措辞风格，必须换成该方向内真实常见的搜索词）：
+{"keywords":["Java 后端开发","Spring Boot 开发","分布式系统开发"]}
+
+只输出一个 json 对象，不要任何解释文字、不要代码块围栏。`;
 
 export interface GenerateDirectionKeywordsInput {
   item: DirectionItem;
@@ -50,6 +57,7 @@ function safeJson(text: string): unknown {
   try {
     return extractJson(text);
   } catch {
+    console.warn('[directionKeywordsAI] AI 返回 JSON 解析/修复失败，本次结果将回退为本地：', String(text || '').slice(0, 240));
     return null;
   }
 }

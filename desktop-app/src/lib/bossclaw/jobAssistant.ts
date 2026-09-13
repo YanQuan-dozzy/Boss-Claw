@@ -12,9 +12,10 @@
 //   - 求职信必须求职者第一人称口吻，禁止招聘方口吻（复用打招呼语校验口径）；
 //   - AI 输出不达标一律回退本地规则兜底，绝不把招聘方口吻的文本交给用户。
 import type { AppConfig, JobMeta, Profile } from './types';
-import { cachedCallModel } from './llm';
+import { cachedCallModel, aiFailureKind } from './llm';
 import { ensureSkillsLoaded, skillInstructionsFor } from './skills';
-import { stableProfileView, fallbackApplicantGreeting } from './matching';
+import { stableProfileView, fallbackApplicantGreeting, settleGreetingLength } from './matching';
+import { DEFAULT_ANALYZE_GREETING_INSTRUCTIONS } from './prompts';
 import { normalizeStringList } from './helpers';
 import { decodeSalaryDigits } from './jobDisplay';
 import {
@@ -38,6 +39,31 @@ export const TAILOR_SCHEMA = JSON.stringify({
   suggestions: [],
 });
 
+// 输出样例：官方 JSON Output 要求 prompt 给出「希望模型输出的 JSON 格式样例」。
+// 仅示意字段格式与取值风格，内容必须来自简历/画像真实事实（模型不得照抄样例内容）。
+const TAILOR_OUTPUT_EXAMPLE = `{
+  "highlightedSkills": ["React", "TypeScript", "前端性能优化", "Git 分支协作"],
+  "tailoredSummary": "计算机科学与技术专业在读本科生，具备 React + TypeScript 前端开发与 Node.js 接口联调经验，在商城项目中负责订单管理模块的页面开发与状态管理，熟悉组件化拆分与前后端联调流程。",
+  "tailoredExperiences": [
+    "在 XX 商城项目中负责订单管理模块，用 React + TypeScript 完成页面开发与状态管理，支撑下单到售后全流程交互",
+    "在 XX 科技实习期间参与商家后台页面开发，配合后端完成接口联调并优化首屏渲染表现"
+  ],
+  "coverLetter": "您好，我想应聘贵公司的前端开发实习生岗位。我是XX大学计算机科学与技术专业在读本科生，做过基于 React + TypeScript 的商城订单管理模块，负责页面开发与状态管理；对岗位的工程化与性能优化方向很感兴趣，希望有机会进一步沟通，谢谢。",
+  "skillGaps": ["Kubernetes：岗位要求容器编排与集群运维，简历与画像未体现相关经历，建议补充实操项目"],
+  "suggestions": ["把商城项目的首屏优化数据前置到经历第一条", "在技能区补充 Jest 单元测试能力", "摘要中明确写出期望的前端工程化方向"]
+}`;
+
+// 第二轮 Reviewer 输出样例：字段为 null 表示「该字段无需修订、保留草稿」。
+const TAILOR_REVIEW_OUTPUT_EXAMPLE = `{
+  "tailoredSummary": "计算机科学与技术专业在读本科生，具备 React + TypeScript 前端开发经验，在商城项目中负责订单管理模块的页面开发与状态管理，熟悉组件化拆分与接口联调流程。",
+  "tailoredExperiences": null,
+  "highlightedSkills": null,
+  "coverLetter": null,
+  "skillGaps": null,
+  "suggestions": null,
+  "reviewNote": "摘要原稿罗列了多项技术栈，已改写为「身份 + 1-2 个最相关亮点」；其余字段未发现诚实性/ATS 关键词问题，保持草稿。"
+}`;
+
 // ===== 系统提示词 =====
 // 求职信（coverLetter）的打招呼语提示词由调用方按「skill → 简历中心输入框内容」优先级解析后传入（都不满足则回退本地规则），
 // 与工作台岗位分析、简历中心预览共用同一口径。
@@ -56,7 +82,13 @@ export function buildTailorSystemPrompt(greetingInstructions: string): string {
 ${greetingInstructions}
 9. suggestions 为 3-5 条「求职者可执行」的优化建议：基于简历与 JD 的真实差距给出（如补充某技能在简历中的落地场景、把某量化成果前置、补写某项目细节、求职信突出某技能等），每条不超过 40 字，不得建议编造事实。
 
-输出严格 JSON：${TAILOR_SCHEMA}`;
+【输出 schema】只输出以下字段（字段名与类型不可变更）：
+${TAILOR_SCHEMA}
+
+【输出样例】（仅示意字段格式与写法，内容必须来自简历/画像真实事实，不得照抄样例内容）：
+${TAILOR_OUTPUT_EXAMPLE}
+
+只输出一个 json 对象，不要解释、不要代码块围栏。`;
 }
 
 // ===== 第二轮：招聘方 + ATS 视角自检修订（Reviewer） =====
@@ -83,10 +115,16 @@ export function buildReviewSystemPrompt(): string {
 1. 诚实性红线（最优先）：草稿任何能力/经历/技能/数字/承诺是否超出简历事实？是否虚构公司/职位/在职时长、学校/学历/专业、证书/奖项、具体数字/比例/金额/用户量/时长？是否把「与岗位能力域毫无交集、无法从真实背景合理外推」的能力当作本人具备？触犯任一条必须修订或删除，绝不保留。
 2. ATS 关键词覆盖：JD 高权重关键词（技能/工具/领域术语）是否被真实覆盖？候选人在相关领域确有真实背景时，允许把其真实掌握或相近的泛化能力按 JD 规范名编写为「适配技能」并前置入摘要/经历/技能；与候选人背景毫无交集的关键词不得硬塞，应归入 skillGaps。
 3. STAR 与一页适配：tailoredSummary 120-150 字、开头点明身份（学历/年级/专业）；tailoredExperiences 2-4 条按相关性从高到低、一条不超过 80 字；量化只提炼简历已有数字，严禁编造或推算任何百分比/金额/人数/用户量/时长。
-4. 求职信口吻：coverLetter 必须求职者第一人称（以「您好，我想应聘贵公司的{岗位名}」开头），80-160 字，严禁招聘方口吻（「看到你的简历」「你的经历很匹配我们」「欢迎进一步沟通」「我们团队」「候选人」等表述），不得承诺薪资、到岗时间、面试时间。
+4. 求职信口吻：coverLetter 必须求职者第一人称（以「您好，我想应聘贵公司的{岗位名}」开头），全文**不超过 250 字**（含标点，建议 120-200 字）；**项目亮点必须精炼**——只挑 1-2 个与岗位最相关的真实项目/技能、每个一句话概括「做了什么 + 关键成果/最贴岗位的技术要点」，**禁止罗列技术栈清单**（把「使用 A、B、C、D 与 E 实现…」这类多项枚举改写为概括表述）、不写无关经历（超长会被系统截断）；严禁招聘方口吻（「看到你的简历」「你的经历很匹配我们」「欢迎进一步沟通」「我们团队」「候选人」等表述），不得承诺薪资、到岗时间、面试时间。
 5. 建议可执行性：suggestions 3-5 条、基于简历与 JD 的真实差距、每条不超过 40 字，不得建议编造事实。
 
-输出严格 JSON（只输出需修订的字段，其余一律 null）：${TAILOR_REVIEW_SCHEMA}`;
+【输出 schema】只输出以下字段（字段名与类型不可变更；无需修订的字段一律输出 null）：
+${TAILOR_REVIEW_SCHEMA}
+
+【输出样例】（null 表示该字段无需修订、保留草稿；仅示意写法，实际判断须基于草稿内容）：
+${TAILOR_REVIEW_OUTPUT_EXAMPLE}
+
+只输出一个 json 对象，不要解释、不要代码块围栏。`;
 }
 
 // ===== 口吻校验（复用打招呼口径，保证与现有投递链路一致） =====
@@ -231,7 +269,7 @@ export async function tailorForJob(
       tailoredSummary: summary.slice(0, 300),
       tailoredExperiences: normalizeStringList(result?.tailoredExperiences, 4).map((e) => String(e).slice(0, 90)),
       highlightedSkills: normalizeStringList(result?.highlightedSkills, 8),
-      coverLetter: cover.replace(/\s+/g, ' ').slice(0, 220),
+      coverLetter: String(cover).trim().replace(/\s+/g, ' '),
       skillGaps: normalizeStringList(result?.skillGaps, 4),
       suggestions: normalizeStringList(result?.suggestions, 5).map((s) => String(s).slice(0, 60)),
     };
@@ -275,8 +313,8 @@ export async function tailorForJob(
             : draft.highlightedSkills,
         coverLetter: (() => {
           const c = reviewerText(review?.coverLetter);
-          // 求职信修订须再次通过口吻校验才采纳，避免 review 把第一人称改坏
-          return c && isApplicantVoice(c) ? c.replace(/\s+/g, ' ').slice(0, 220) : draft.coverLetter;
+          // 求职信修订须再次通过口吻校验才采纳，避免 review 把第一人称改坏；只做单行化，长度交由 settle 再生成处理
+          return c && isApplicantVoice(c) ? String(c).trim().replace(/\s+/g, ' ') : draft.coverLetter;
         })(),
         skillGaps: Array.isArray(review?.skillGaps) ? normalizeStringList(review.skillGaps, 4) : draft.skillGaps,
         suggestions:
@@ -306,10 +344,24 @@ export async function tailorForJob(
 
     return {
       ...revised,
+      coverLetter: await settleGreetingLength(revised.coverLetter, {
+        job,
+        profile,
+        resumeText,
+        model,
+        greetingInstruction: greetingInstructions || DEFAULT_ANALYZE_GREETING_INSTRUCTIONS,
+      }),
       match: buildMatch(tailoredTextForScore(revised)),
       method: 'ai',
+      // AI 首次返回的 JSON 不完整、已由二次补齐修复时，提示（内容仍来自 AI，非降级）
+      warning: (result as any)?._repaired ? 'AI 首次返回的 JSON 不完整，已通过自动补齐修复（结果仍来自 AI）。' : undefined,
     };
   } catch (error: any) {
-    return localFallback(`AI 生成失败（${error?.message || '未知原因'}），已回退本地规则。`);
+    const kind = aiFailureKind(error);
+    const reason =
+      kind === 'config-missing' || kind === 'service-error'
+        ? `AI 请求${kind === 'config-missing' ? '未配置' : '异常'}，已回退本地规则（${error?.message || '未知原因'}）。`
+        : `AI 返回内容解析异常，已回退本地规则（${error?.message || '未知原因'}）。`;
+    return localFallback(reason);
   }
 }

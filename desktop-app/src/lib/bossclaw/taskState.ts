@@ -4,7 +4,7 @@
 //   工作台「点击立即沟通」打开聊天窗口但尚未执行自动沟通时的状态。
 //   进度百分比：open_chat(78) → opened(80) → verify_chat_target(82)，逻辑顺序单调递增，
 //   与原进度链（open_chat → verify_chat_target 78→82）配合 auto 流程留出 "打开后人工核对" 的位置。
-import type { JobPlatform, TaskStage } from './types';
+import type { JobPlatform, PendingStatus, TaskStage } from './types';
 import { platformStageLabel } from './platforms';
 
 export const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'ignored', 'skipped']);
@@ -53,6 +53,44 @@ export function taskStageMetaFor(
 ): { label: string; progress: number } {
   const base = taskStageMeta(stage, label, progress);
   return { label: platformStageLabel(platform, stage, base.label), progress: base.progress };
+}
+
+/**
+ * 岗位记录（PendingItem）在任务进度 / 状态列表中对应的执行阶段文案与进度百分比：
+ * - pending: 等待人工确认（60%）
+ * - approved: 等待工作台投递（80%）—— 批准投递与进度条联动
+ * - approved_queue: 正在投递队列中（85%）
+ * - opened: 已打开沟通窗口（88%）
+ * - sent: 投递成功（100%）
+ * - failed: 投递失败（100%）
+ * - skipped / ignored: 终态（100%）
+ */
+export function pendingStatusMeta(
+  status: PendingStatus,
+  platform?: JobPlatform | null
+): { label: string; progress: number } {
+  switch (status) {
+    case 'approved':
+      return { label: '等待工作台投递', progress: 80 };
+    case 'pending':
+      return taskStageMetaFor(platform, 'waiting_review');
+    case 'approved_queue':
+      return { label: '正在投递队列中', progress: 85 };
+    case 'opened':
+      return taskStageMetaFor(platform, 'opened');
+    case 'sent':
+      return taskStageMetaFor(platform, 'success');
+    case 'failed':
+      return taskStageMetaFor(platform, 'failed');
+    case 'ignored':
+      return taskStageMetaFor(platform, 'ignored');
+    case 'skipped':
+      return taskStageMetaFor(platform, 'skipped');
+    case 'rejected':
+      return { label: '不推荐', progress: 100 };
+    default:
+      return taskStageMetaFor(platform, 'waiting_review');
+  }
 }
 
 // 需求文档 6.2：任务进度条阶段标签（搜索 / 匹配 / 确认 / 投递 / 完成）

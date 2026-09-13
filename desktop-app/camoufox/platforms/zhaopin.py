@@ -19,6 +19,7 @@ from .common import (
     log, human_sleep, human_delay, open_browser, load_cookies, save_cookies,
     goto_stable, risk_text_hit, DAILY_LIMIT_RE,
 )
+from .filters import build_filter_params, normalize_criteria, summarize_applied
 
 PLATFORM = 'zhaopin'
 
@@ -68,15 +69,27 @@ def _resolve_salary(salary: str) -> str:
     return SALARY_CODES.get(s, '')
 
 
-def build_search_url(query: str, city: str, salary: str, page: int = 1) -> str:
+def build_search_url(query: str, city: str, salary: str, page: int = 1,
+                     criteria: dict | None = None) -> str:
+    """智联搜索 URL：路径式 jl{城市}/p{页码} + 关键词 + 薪资 + 「基础求职条件」筛选参数。
+
+    criteria 经 filters.build_filter_params 翻译为智联自身参数：
+      we 经验（0000/0001/0103/0305/0510/1099）· el 学历（官方字典 codeForSearch）·
+      cs 公司规模（1-6）；jt 职位类型码值未验证不附加。
+    """
     code = _resolve_city(city)
-    sal = _resolve_salary(salary)
+    sal = _resolve_salary(salary or ((criteria or {}).get('salary') or ''))
     url = f"https://www.zhaopin.com/sou/{f'jl{code}' if code else ''}/p{max(1, page)}"
+    parts = []
     if sal:
-        url += f"?sl={sal}"
+        parts.append(f"sl={sal}")
     q = str(query or '').strip()
     if q:
-        url += f"{'&' if sal else '?'}kw={q}"
+        parts.append(f"kw={q}")
+    for k, v in build_filter_params(PLATFORM, criteria).items():
+        parts.append(f"{k}={v}")
+    if parts:
+        url += '?' + '&'.join(parts)
     return url
 
 
@@ -109,9 +122,16 @@ def format_jobs(raw: list) -> list:
     return out
 
 
-def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None) -> dict:
-    """智联隐身搜索：访问搜索页（页内输入关键词）+ 拦截 fe-api 响应 + DOM 兜底。"""
-    log('🔍', f'[zhaopin] 搜索：{query} / city={city} / pages={pages}')
+def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None,
+                criteria: dict | None = None) -> dict:
+    """智联隐身搜索：访问搜索页（页内输入关键词）+ 拦截 fe-api 响应 + DOM 兜底。
+
+    criteria = 设置页「基础求职条件」（全平台共用），映射见 filters.py。
+    """
+    c = normalize_criteria(criteria)
+    applied = summarize_applied(PLATFORM, build_filter_params(PLATFORM, criteria))
+    log('🔍', f'[zhaopin] 搜索：{query} / city={city} / pages={pages}'
+             + (f' / 已应用：{applied}' if applied else ''))
     all_jobs = []
     last_code = 0
     last_msg = ''
@@ -146,7 +166,7 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
         page.on("response", on_response)
 
         for page_num in range(1, pages + 1):
-            url = build_search_url(query, city, '', page_num)
+            url = build_search_url(query, city, c['salary'], page_num, criteria)
             log('📄', f'[zhaopin] Page {page_num}: {url}')
             if not goto_stable(page, url, wait=2.5):
                 last_code, last_msg = 37, 'zhaopin 页面加载失败'
