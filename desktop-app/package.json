@@ -3,6 +3,7 @@
   "version": "2.5.3",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
   "private": true,
+  "homepage": "https://github.com/YanQuan-dozzy/Boss-Claw",
   "author": "YanQuan",
   "license": "Apache-2.0",
   "main": "electron/main.cjs",
