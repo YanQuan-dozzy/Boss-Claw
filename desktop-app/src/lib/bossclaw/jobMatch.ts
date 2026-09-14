@@ -402,17 +402,11 @@ export function computeLocalMatch(
   if (requiredDegree != null && profileDegreeLevel > 0 && requiredDegree > profileDegreeLevel) {
     hardBlocks.push(`岗位要求学历不低于「${levelName(requiredDegree)}」，画像学历为「${profile?.hardConstraints?.degree || levelName(profileDegreeLevel)}」`);
   }
-  // 7. 经验不足（JD 明确要求年限高于画像）
-  const requiredYears = jdRequiredExperienceYears(job);
-  const profileYears = profileExperienceYears(profile);
-  if (requiredYears != null && profileYears != null && requiredYears > profileYears && requiredYears - profileYears >= 1) {
-    hardBlocks.push(`岗位要求约 ${requiredYears} 年经验，画像经历合计约 ${profileYears} 年`);
-  }
-  // 8. 外部网申（对齐 job-priority 的 -6000 口径，提升为硬拦截）
+  // 7. 外部网申（对齐 job-priority 的 -6000 口径，提升为硬拦截）
   if (/外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)) {
     hardBlocks.push('岗位为外部网申，需跳转第三方系统，不纳入投递队列');
   }
-  // 9. 面试方式冲突（设置 → 仅线上/仅线下）
+  // 8. 面试方式冲突（设置 → 仅线上/仅线下）
   //    以本地关键字实时判定为准（单一来源），未在说明中明确披露的岗位一律判为「合格」，不据以拦截。
   const imFilter = config?.interviewModeFilter || 'any';
   if (imFilter !== 'any') {
@@ -423,7 +417,7 @@ export function computeLocalMatch(
       hardBlocks.push(`岗位要求${required}面试，与设定的「仅${wanted}」冲突`);
     }
   }
-  // 10. 最低日薪（设置 → 元/天；0 表示不限）
+  // 9. 最低日薪（设置 → 元/天；0 表示不限）
   //     将岗位任意薪资口径折算为「元/天」后低于阈值即硬拦截，确保 50 元/天之类的不合理岗位不进入投递队列。
   //     面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
   const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
@@ -592,6 +586,10 @@ export function computeLocalMatch(
   }
 
   // ---- 经验匹配（按达标比例细化梯度；≥1.0 满分，0.6-0.8 达 64 分可谨慎尝试）----
+  // 经验不足只压低该维度分、不再作为硬拦截（画像经验与 JD 要求口径不一致时，
+  // 直接跳过会误杀本可尝试的岗位；分数惩罚 + matching.ts 综合分已能反映匹配度）。
+  const requiredYears = jdRequiredExperienceYears(job);
+  const profileYears = profileExperienceYears(profile);
   let experienceScore: number | null = null;
   if (requiredYears != null && profileYears != null) {
     const ratio = profileYears / Math.max(1, requiredYears);

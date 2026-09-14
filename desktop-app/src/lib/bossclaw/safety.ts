@@ -148,9 +148,9 @@ export class ActionPacer {
       this.record();
       return;
     }
-    // 无空位：等最旧一次动作滑出窗口
+    // 无空位：等最旧一次动作滑出窗口（+随机抖动 0.3~1.2s，避免限速等待节奏完全一致被识别）
     const oldest = this.timestamps[0];
-    const wait = 60_000 - (Date.now() - oldest) + 300;
+    const wait = 60_000 - (Date.now() - oldest) + Math.round(300 + Math.random() * 900);
     await new Promise((r) => setTimeout(r, Math.max(300, wait)));
     this.record();
   }

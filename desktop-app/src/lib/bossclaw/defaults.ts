@@ -39,8 +39,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   sendOnlineResume: false,
   betweenJobsSeconds: 20,
   attachmentDelaySeconds: 4,
-  // 沟通阶段卡住超时（秒）：默认 60s；投递卡在「沟通」阶段（打开岗位/沟通窗口/核对）超过该时长无进展则跳过转投下一个
-  commStuckTimeoutSec: 60,
+  // 沟通阶段卡住超时（秒）：默认 180s（3 分钟）。投递常「立即沟通/继续沟通」整页跳转聊天页，
+  // 聊天窗口渲染慢时留给它充分时间（含登录/重绘/自愈补发）；超过仍未进展再跳过转投下一个。
+  commStuckTimeoutSec: 180,
   requireSingleJobValidation: true,
   singleJobValidationCompletedAt: 0,
   hrActivityFilter: 'any',

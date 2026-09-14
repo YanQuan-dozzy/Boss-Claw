@@ -581,18 +581,17 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     });
 
     // ===== new-window：拦截 target=_blank / window.open，转为本标签导航 =====
+    // 手动点击「立即沟通 / 查看岗位更多信息」等触发的弹窗：preventDefault 抑制外部/独立弹窗，
+    // 并把 URL 真实加载到当前激活 webview——只 patchTab 改地址栏缓存会导致内容不渲染（弹窗不弹）。
     el.addEventListener('new-window', ((event: any) => {
       const evt = event?.detail ?? event;
       const url = String(evt?.url || '');
-      const disposition = String(evt?.disposition || '');
       try { event?.preventDefault?.(); } catch {}
       if (!url || !/^https?:\/\//i.test(url)) return;
-      // 非前景标签的弹窗，直接在当前激活标签加载
-      if (disposition === 'background-tab') {
-        patchTab(activeIdRef.current, { url });
-      }
-      patchTab(activeIdRef.current, { url });
-      patchTab(activeIdRef.current, { url, canGoBack: true, canGoForward: false });
+      const activeId = activeIdRef.current || tabsRef.current[0]?.id || '';
+      const target = (activeId && webviewEls.current[activeId]) || (activeId && webviewEls.current[tabsRef.current[0]?.id || '']) || el;
+      try { target?.loadURL?.(url)?.catch?.(() => {}); } catch {}
+      if (activeId) touchTab(activeId);
     }) as any);
   }, [patchTab, touchTab]); // 唯一依赖是最新的 patchTab / 稳定的 touchTab
 
