@@ -42,8 +42,6 @@ venv/
 # 本地工具数据（不可上传）
 .workbuddy/
 .trae/
-# 本机 MCP 客户端配置（含本机用户路径，不入库；配置方法见 mcp/bossclaw-mcp/README.md）
-.mcp.json
 
 
 # Secrets and local settings
