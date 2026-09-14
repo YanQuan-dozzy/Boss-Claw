@@ -1035,10 +1035,104 @@ def _enter_chat(page, timeout: int = 28):
     return None, {"code": 500, "message": "未找到聊天输入框（沟通窗口可能未打开、需继续沟通多次或被验证拦截）"}
 
 
+def _open_resume_entry(page) -> bool:
+    """点击聊天工具栏的「简历/附件」入口，打开 upload-select-dialog（对齐 chat-new v5543 聊天页源码）：
+    聊天输入区工具栏点击简历入口会弹出 upload-select-dialog（选择「上传简历 / 发送在线简历」）。
+    定位策略：ka/aria/class 语义命中（resume/jianli/附件）优先，其次输入区附近的附加类图标按钮兜底。"""
+    js = r"""
+    () => {
+      const vas = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
+      const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
+      // 仅在聊天页操作（避免误点击岗位详情页头部「简历」导航菜单）
+      if (!document.querySelector('[data-bossclaw-chat-input],[class*="chat-conversation"],[class*="chat-message"],#chat-input,[contenteditable="true"]')) return false;
+      const input = document.querySelector('[data-bossclaw-chat-input]');
+      let iRect = null;
+      if (input) { try { iRect = input.getBoundingClientRect(); } catch (e) {} }
+      const sems = ['resume', 'jianli', 'attachment', 'attach', 'send-resume', 'add-resume'];
+      const candidates = [];
+      for (const el of Array.from(document.querySelectorAll('button,[role="button"],a,span,div,i'))) {
+        if (!vas(el)) continue;
+        if (el.closest('[class*="dialog"],[class*="modal"],[class*="popover"]')) continue;
+        const hit = ((el.getAttribute('ka') || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.className || '')).toLowerCase();
+        if (!sems.some((s) => hit.includes(s))) continue;
+        if (iRect) {
+          const r = el.getBoundingClientRect();
+          // 排除页面头部「简历」导航（登录态菜单）等远离输入区的元素，只认聊天输入区附近的简历入口
+          if (r.top < iRect.top - 140 || r.top > iRect.bottom + 180) continue;
+          if (r.left < iRect.left - 220) continue;
+        }
+        candidates.push(el);
+      }
+      if (candidates.length) {
+        candidates.sort((a, b) => text(b).length - text(a).length);
+        candidates[0].click();
+        return true;
+      }
+      // 兜底：输入区附近带附加类外观（加号/更多/工具）的图标按钮（排除表情/发送）
+      if (iRect) {
+        const extra = Array.from(document.querySelectorAll('button,[role="button"],[class*="add"],[class*="more"],[class*="tool"],[class*="icon"]'))
+          .filter((el) => {
+            if (!vas(el)) return false;
+            if (el.closest('[class*="dialog"],[class*="modal"],[class*="popover"]')) return false;
+            const r = el.getBoundingClientRect();
+            if (r.top < iRect.top - 140 || r.top > iRect.bottom + 180) return false;
+            if (r.left < iRect.left - 220) return false;
+            if (text(el).trim().length > 0) return false;
+            const sem = (el.className || '').toLowerCase();
+            if (/send|emoji|face|expression/i.test(sem)) return false;
+            return true;
+          });
+        if (extra.length) {
+          // 图标按钮取最靠近输入框右缘的一个（工具栏右侧一般为附加类入口）
+          extra.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+          extra[0].click();
+          return true;
+        }
+      }
+      return false;
+    }
+    """
+    try:
+        return bool(page.evaluate(js))
+    except Exception:
+        return False
+
+
+def _click_select_dialog_option(page, keyword: str) -> bool:
+    """在 upload-select-dialog 的选项块中点击含 keyword 的一项（上传简历 / 发送在线简历）。"""
+    try:
+        return bool(page.evaluate("""(kw) => {
+            const dlg = document.querySelector('.upload-select-dialog, [class*="upload-select"]');
+            if (!dlg) return false;
+            const opt = Array.from(dlg.querySelectorAll('.select-one, [class*="select-one"], li, div,a,button'))
+                .find((el) => (el.offsetWidth || el.offsetHeight) &&
+                    (el.textContent || '').trim().replace(/\\s+/g, '').includes(kw));
+            if (!opt) return false;
+            opt.click();
+            return true;
+        }""", keyword))
+    except Exception:
+        return False
+
+
+def _fill_upload_resume_files(page, files: list) -> bool:
+    """在 upload-resume-dialog 中选择附件简历文件（input[ka=user-resume-upload-file]，接收 jpg/png/doc/pdf），
+    注入后由 BOSS 自动上传并发送（对齐聊天页源码：`您的附件简历 X 已发送给Boss点击查看附件`）。"""
+    try:
+        finput = page.locator(
+            '.upload-resume-dialog input[type="file"], input[type="file"][ka*="resume"], input[type="file"]'
+        ).first
+        finput.set_input_files(files=files)
+        human_sleep(3.2, 0.3, 1.8)
+        return True
+    except Exception as e:
+        log('⚠️', f'附件简历文件注入失败：{e}')
+        return False
+
+
 def _upload_resume_images(page, resume_images: list) -> dict:
-    """上传图片简历（对齐 AI-BossJob sendResume + job-claw uploadResumeImage）：
-    打开「图片/发送简历/附件」入口，用 Playwright set_input_files 注入内存图片，等待片刻。
-    图片为可选项：失败不阻断已确认的文字沟通。"""
+    """发送图片简历（对齐 chat-new v5543 流程：简历入口 → upload-select-dialog →「上传简历」→ 注入文件自动发送；
+    保留旧版「直接命中发送简历/附件按钮」路径为兜底链）。图片为可选项：失败不阻断已确认的文字沟通。"""
     if not resume_images:
         return {"ok": True, "skipped": True}
     import base64
@@ -1059,13 +1153,21 @@ def _upload_resume_images(page, resume_images: list) -> dict:
     if not files:
         return {"ok": False, "error": "图片简历数据为空"}
     try:
-        # 打开上传入口
+        # 新流程：聊天工具栏简历入口 → 上传简历 → 注入文件（BOSS 自动上传发送）
+        if _open_resume_entry(page):
+            human_sleep(0.9, 0.4, 0.4)
+            if _click_select_dialog_option(page, '上传简历'):
+                human_sleep(0.9, 0.4, 0.4)
+                if _fill_upload_resume_files(page, files):
+                    log('📄', f'已按新聊天页流程注入 {len(files)} 张图片简历，等待自动发送')
+                    return {"ok": True}
+        # 旧流程兜底：直接点「发送简历/附件/图片」入口 + 任意可见文件框注入
         try:
             page.evaluate("""() => {
                 const vas = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
                 const text = (el) => (el.textContent || '').trim().replace(/\\s+/g, ' ');
                 const btns = Array.from(document.querySelectorAll('button,[role="button"],a,span,div,[class*="attach"],[class*="img"]'))
-                    .filter(el => vas(el) && /发送简历|图片|附件/.test((el.className || '') + ' ' + text(el)));
+                    .filter(el => vas(el) && !el.closest('[class*="dialog"]') && /发送简历|图片|附件/.test((el.className || '') + ' ' + text(el)));
                 btns.sort((a, b) => text(b).length - text(a).length);
                 if (btns.length) btns[0].click();
             }""")
@@ -1261,7 +1363,8 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             return {"ok": False, "code": 501, "message": "未能确认文字气泡已发送，请人工核对", "sent": False}
         log('✅', f'文字气泡确认（发送方式：{sent_via}）')
 
-        # Step 10: 可选 —— 在线简历 / 图片简历
+        # Step 10: 可选 —— 在线简历 / 图片简历（对齐 chat-new v5543 流程：
+        # 聊天工具栏「简历」入口 → upload-select-dialog →「上传简历 / 发送在线简历」）。
         # 设置约束：附件延迟（attachmentDelaySeconds，秒）作为「文字沟通确认 → 发送简历附件」的
         # 类人等待基准：只有配置值 > 0 才额外等待（base=配置值，保留 ±0.35 抖动、±30% min），
         # 配置为 0 时保持旧行为（不额外等待）；内容上传内部的人类化停顿不受影响。
@@ -1269,16 +1372,29 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             human_sleep(float(attachment_delay_seconds), 0.35, float(attachment_delay_seconds) * 0.3)
         if send_online_resume:
             try:
+                online_sent = False
                 for p in _all_pages(page):
+                    # 新流程：简历入口 → upload-select-dialog →「发送在线简历」
+                    if _open_resume_entry(p):
+                        human_sleep(0.9, 0.4, 0.4)
+                        if _click_select_dialog_option(p, '发送在线简历'):
+                            human_sleep(2.2, 0.3, 1.2)
+                            log('📄', '已通过「发送在线简历」发送在线简历')
+                            online_sent = True
+                            break
+                    # 旧流程兜底：页面存在直达「发送在线简历」按钮（含已打开的弹窗选项）
                     try:
                         online_btn = p.locator("text=发送在线简历").first
                         if online_btn.is_visible(timeout=1500):
                             online_btn.click()
                             human_sleep(1.3, 0.3, 0.6)
                             log('📄', '已点击「发送在线简历」')
+                            online_sent = True
                             break
                     except Exception:
                         continue
+                if not online_sent:
+                    log('⚠️', '未找到「发送在线简历」入口（忽略）')
             except Exception:
                 log('⚠️', '发送在线简历失败（忽略）')
         if send_resume_image and resume_images:

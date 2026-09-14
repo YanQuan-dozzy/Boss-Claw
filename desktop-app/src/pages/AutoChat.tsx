@@ -492,6 +492,17 @@ export default function AutoChat() {
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)} style={{ borderRadius: 6 }}>
                               打开岗位
                             </Button>
+                            {canChat && (
+                              <Button
+                                size="small"
+                                danger
+                                icon={<StopOutlined />}
+                                onClick={() => updatePending(p.id, { status: 'skipped', error: p.error || '用户手动跳过' })}
+                                style={{ borderRadius: 6 }}
+                              >
+                                跳过
+                              </Button>
+                            )}
                             {p.status === 'failed' && !p.riskBlocked && (
                               <Button
                                 size="small"
