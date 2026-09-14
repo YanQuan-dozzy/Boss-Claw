@@ -21,7 +21,12 @@
     "package:portable": "npm run build && electron-builder --win portable",
     "package:dir": "npm run build && electron-builder --win --dir",
     "package:mac": "npm run build && electron-builder --mac",
+    "package:source": "node scripts/make-source-package.mjs",
     "package:linux": "npm run build && electron-builder --linux",
+    "package:linux:deb": "npm run build && electron-builder --linux deb",
+    "package:linux:rpm": "npm run build && electron-builder --linux rpm",
+    "package:linux:pacman": "npm run build && electron-builder --linux pacman",
+    "package:linux:tar": "npm run build && electron-builder --linux tar.gz",
     "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
     "verify": "npm run typecheck && npm run build"
@@ -97,7 +102,10 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "rpm",
+        "pacman",
+        "tar.gz"
       ],
       "icon": "resources/icon.png",
       "category": "Office",
