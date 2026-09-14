@@ -635,12 +635,16 @@ export default function JobAssistant() {
         )}
       </Card>
 
-      {/* 导出定制简历 PDF：联系信息人工确认 + 分节勾选 */}
+      {/* 导出定制简历 PDF：联系信息人工确认 + 分节勾选
+          滚动策略：整块内容区（body）一条主滑动条，标题与底部按钮固定不动；
+          内部不再做嵌套滚动（嵌套滚动会出现两条滚动条、滚轮归属混乱） */}
       <Modal
         title={<Space><DownloadOutlined style={{ color: 'var(--brand)' }} />导出定制简历 PDF</Space>}
         open={exportOpen}
         onCancel={() => { if (!exporting) setExportOpen(false); }}
         width={620}
+        style={{ top: 24 }}
+        className="resume-export-modal"
         okText="生成并保存"
         cancelText="取消"
         confirmLoading={exporting}
@@ -654,17 +658,16 @@ export default function JobAssistant() {
           description="请核对下方联系信息（已从简历自动提取，可修改）；选择模板后生成 A4 PDF，可直接投递。"
         />
 
-        {/* 模板选择（等高卡片网格 + 超出滚动条；选择持久化） */}
+        {/* 模板选择（两列等高卡片；选择持久化）——全部展开，由弹窗主滑动条统一滚动 */}
         <div style={{ margin: '4px 0 12px' }}>
           <Text strong style={{ display: 'block', marginBottom: 8 }}>
-            简历模板 <Text type="secondary" style={{ fontWeight: 400 }}>（{RESUME_TEMPLATES.length} 套 · 列表可滚动）</Text>
+            简历模板 <Text type="secondary" style={{ fontWeight: 400 }}>（{RESUME_TEMPLATES.length} 套 · 点击选用）</Text>
           </Text>
-          <div className="resume-tpl-scroll">
-            <Radio.Group
-              value={templateId}
-              onChange={(e) => setTemplate(e.target.value)}
-              className="resume-tpl-grid"
-            >
+          <Radio.Group
+            value={templateId}
+            onChange={(e) => setTemplate(e.target.value)}
+            className="resume-tpl-grid"
+          >
               {RESUME_TEMPLATES.map((t) => (
                 <Radio.Button key={t.id} value={t.id} className="resume-tpl-card">
                   <span className="resume-tpl-swatch" style={{ background: t.color }} />
@@ -674,8 +677,7 @@ export default function JobAssistant() {
                   </span>
                 </Radio.Button>
               ))}
-            </Radio.Group>
-          </div>
+          </Radio.Group>
         </div>
 
         {/* 个人照片（选填；不传则 PDF 中不出现照片框） */}
