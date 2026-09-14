@@ -19,7 +19,8 @@ export const runtimeTools = [
       '启动桌面应用（默认同时开启应用内控制桥 BOSSCLAW_CONTROL=1，供 bossclaw_app_state / bossclaw_app_action 使用）。' +
       '默认启动目标跟随当前 MCP 目标形态：检测到已安装打包版（如 <安装目录>\\BossClaw.exe）时启动安装版，否则启动开发目录 Electron。' +
       '也可用 installed:true / exe 参数显式指定安装版（自动带 --control-bridge），或 dev:true 强制开发目录。' +
-      '自动清理沙箱注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE / PYTHONPATH。返回 pid 与启动后存活状态。',
+      '自动清理沙箱注入的 NODE_OPTIONS / ELECTRON_RUN_AS_NODE / PYTHONPATH。返回 pid 与启动后存活状态。' +
+      '启动后还会经控制桥确认窗口可见：若窗口在 Win32 层处于隐藏状态（任务栏不出现应用图标），将自动 focusWindow 强制显示。',
     annotations: WRITE_LOCAL,
     inputSchema: obj({
       control: bool('开启应用内控制桥（默认 true）', { default: true }),
@@ -87,6 +88,45 @@ export const runtimeTools = [
       const alive = isPidAlive(pid);
       const after = await listBossclawProcesses();
       const bridge = args.control !== false ? await controlCall('GET', '/health', null, 3000) : null;
+
+      // ===== 启动后固定显示窗口 =====
+      // 背景：某些启动路径（如 MCP 拉起安装版）下进程与渲染层都正常，但窗口在 Win32 层保持隐藏
+      // （win.isVisible()=false），任务栏不出现 BossClaw 图标。这里经控制桥查一次 windowState，
+      // 不可见时调用 focusWindow（内部 restore+show+focus）强制显示并复查；桥尚未就绪时短重试。
+      let windowInfo = null;
+      let windowLine = '窗口：无法确认可见性（控制桥未就绪）';
+      if (args.control !== false) {
+        for (let attempt = 0; attempt < 4 && !windowInfo; attempt++) {
+          const st = await controlCall('POST', '/action', { action: 'windowState', params: {} }, 8000);
+          if (st.ok && st.data?.next) {
+            const win = st.data.next;
+            if (win.visible === true) {
+              windowInfo = { visible: true, forced: false, focused: !!win.focused, attempt: attempt + 1 };
+            } else {
+              const fw = await controlCall('POST', '/action', { action: 'focusWindow', params: {} }, 8000);
+              const verify = fw.ok ? await controlCall('POST', '/action', { action: 'windowState', params: {} }, 8000) : null;
+              windowInfo = {
+                visible: !!verify?.data?.next?.visible,
+                forced: fw.ok,
+                focused: !!verify?.data?.next?.focused,
+                error: fw.ok ? undefined : fw.error,
+                note: '窗口初始在 Win32 层隐藏（任务栏无图标），已自动 focusWindow 强制显示',
+                attempt: attempt + 1,
+              };
+            }
+          } else if (attempt < 3) {
+            await sleep(1500);
+          }
+        }
+      }
+      if (windowInfo) {
+        if (windowInfo.visible) {
+          windowLine = windowInfo.forced ? `窗口：⚠️ 初始隐藏 → ✅ 已强制显示（focusWindow）` : `窗口：✅ 已确认可见（focused=${windowInfo.focused}）`;
+        } else {
+          windowLine = `窗口：❌ 初始隐藏且强制显示失败${windowInfo.error ? `（${windowInfo.error}）` : ''}`;
+        }
+      }
+
       const log = await tailLog(PATHS.logs.app, 15);
 
       const lines = [
@@ -95,12 +135,13 @@ export const runtimeTools = [
         `进程数：${after.processes.length}（detect=${after.method}）`,
         after.warning ? `⚠️ ${after.warning}` : '',
         `控制桥：${bridge && bridge.ok ? `✅ 可用 :${bridge.data?.port || ''}（${JSON.stringify(bridge.data || {})}）` : args.control === false ? '未启用（本次未开启）' : `❌ 未就绪 ${bridge?.error || ''}`}`,
+        windowLine,
         mode === 'installed'
           ? `启动目标：${exePath}（安装版打包应用）`
           : `dist 产物：${(await statSafe(path.join(PATHS.distDir, 'index.html'))).exists ? '存在' : '缺失（生产模式会白屏）'}`,
         log ? `\n最近日志（${path.basename(log.file)}）：\n${log.lines.slice(-10).join('\n')}` : '',
       ];
-      const data = { pid, cmd, mode, exe: exePath, alive, processCount: after.processes.length, bridge: bridge?.data || null, logTail: log?.lines || [] };
+      const data = { pid, cmd, mode, exe: exePath, alive, processCount: after.processes.length, bridge: bridge?.data || null, window: windowInfo || null, logTail: log?.lines || [] };
       return alive ? ok(lines.filter(Boolean).join('\n'), data) : fail(lines.filter(Boolean).join('\n'), data);
     },
   },
