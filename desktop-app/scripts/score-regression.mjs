@@ -88,9 +88,6 @@ function baseJob(over = {}) {
 
 const { mod, cleanup } = await loadScoringModule();
 const {
-  parseExperienceYears,
-  parseMonthSpan,
-  profileExperienceYears,
   computeLocalMatch,
   enhancedLocalScore,
   isLocationExcluded,
@@ -102,66 +99,40 @@ const {
 } = mod;
 
 try {
-  // ===== 一、经验年限：经历行里的年月不能被当成「经验年数」 =====
-  // 旧实现逐行取「全部数字的最小值」→「（2025.06-2025.09）」返回 2025.06，
-  // 多段经历再求和 → 画像经验虚高到上千 → 「岗位要求年限 > 画像年限」硬约束永不成立（漏拦）。
-  check(
-    '经历行只含年月区间时，parseExperienceYears 不应产出年限',
-    parseExperienceYears('XX科技 前端开发实习生（2025.06-2025.09）：负责商家后台页面开发'),
-    null
-  );
-  check(
-    '中文年月区间同样不应被当成年限',
-    parseExperienceYears('2022年9月-2023年6月 XX公司 后端开发'),
-    null
-  );
-  check('正常「3-5年经验」仍取下限 3', parseExperienceYears('3-5年经验'), 3);
-  check('「在校/应届」仍为 0 年', parseExperienceYears('在校/应届'), 0);
-
+  // ===== 一、经验：本地不再计算（2026-09-14 口径变更）=====
+  // 经验维度已完全交给 AI 五维评估（job-analysis 的 dimensionScores.experience；提示词口径为
+  // 「年限不足 → 降到谨慎档，绝不判不推荐」）。本地原先的「解析 JD 要求年限 / 画像经历区间并集」
+  // 与相应断言随之删除，改用下面两条断言守住新口径，防止本地经验计算被悄悄加回来。
   checkNoThrow(
-    '单段 2025.06-2025.09 ≈ 0.3 年（4 个月）',
-    () => profileExperienceYears({ ...baseProfile(), facts: { ...baseProfile().facts, experiences: ['XX科技 前端开发实习生（2025.06-2025.09）：负责商家后台页面开发'] } }),
-    (v) => v === 0.3
+    '本地经验维度恒为 null（经验判定已交给 AI）',
+    () => computeLocalMatch(baseJob({ description: '负责后台服务开发，要求3年以上经验' }), baseProfile(), {}).dimensions.experience,
+    (v) => v === null
   );
   checkNoThrow(
-    '重叠经历取区间并集，不重复计数（2022.01-2023.01 与 2022.06-2023.06 → 18 个月 = 1.5 年）',
-    () =>
-      profileExperienceYears({
-        ...baseProfile(),
-        facts: { ...baseProfile().facts, experiences: ['A公司 开发（2022.01-2023.01）：负责后台', 'B公司 开发（2022.06-2023.06）：负责前台'] },
-      }),
-    (v) => v === 1.5
-  );
-  checkNoThrow(
-    '不重叠的两段经历正确累加（13 + 13 个月 = 2.2 年）',
-    () =>
-      profileExperienceYears({
-        ...baseProfile(),
-        facts: { ...baseProfile().facts, experiences: ['A公司 开发（2020.01-2021.01）：负责后台', 'B公司 开发（2022.01-2023.01）：负责前台'] },
-      }),
-    (v) => v === 2.2
-  );
-  checkNoThrow(
-    'parseMonthSpan 解析 2025.06-2025.09 为月序区间',
-    () => parseMonthSpan('XX（2025.06-2025.09）'),
-    (v) => v && v.start === 2025 * 12 + 6 && v.end === 2025 * 12 + 9
-  );
-
-  // ===== 二、硬约束：经验不足必须真的拦下来（硬性设置不可突破）=====
-  checkNoThrow(
-    'JD 要求 3 年经验 + 画像仅 4 个月实习 → 命中经验硬约束',
+    'JD 写「3年以上经验」+ 画像仅 4 个月实习 → 不再命中任何经验类硬约束',
     () => {
       const profile = { ...baseProfile(), facts: { ...baseProfile().facts, experiences: ['XX科技 前端开发实习生（2025.06-2025.09）：负责商家后台页面开发'] } };
       const job = baseJob({ description: '负责后台服务开发，要求3年以上经验' });
+      return computeLocalMatch(job, profile, {}).hardBlocks.filter((b) => /年经验|经验不足|经验/.test(b));
+    },
+    (blocks) => blocks.length === 0
+  );
+
+  // ===== 二、硬约束：学历不达标必须真的拦下来（硬性设置不可突破）=====
+  checkNoThrow(
+    'JD 要求硕士 + 画像本科 → 命中学历硬约束',
+    () => {
+      const profile = { ...baseProfile(), facts: { ...baseProfile().facts, education: ['XX大学 计算机科学与技术 本科'] } };
+      const job = baseJob({ description: '岗位要求硕士及以上学历，负责后端服务开发' });
       return computeLocalMatch(job, profile, {}).hardBlocks;
     },
-    (blocks) => blocks.length > 0 && blocks.some((b) => /年经验/.test(b))
+    (blocks) => blocks.length > 0 && blocks.some((b) => /学历/.test(b))
   );
   checkNoThrow(
     '存在硬约束时，兜底分被压到 35 以内',
     () => {
-      const profile = { ...baseProfile(), facts: { ...baseProfile().facts, experiences: ['XX科技 前端开发实习生（2025.06-2025.09）：负责商家后台页面开发'] } };
-      const job = baseJob({ description: '负责后台服务开发，要求3年以上经验' });
+      const profile = { ...baseProfile(), facts: { ...baseProfile().facts, education: ['XX大学 计算机科学与技术 本科'] } };
+      const job = baseJob({ description: '岗位要求硕士及以上学历，负责后端服务开发' });
       return enhancedLocalScore(job, profile, {});
     },
     (v) => typeof v === 'number' && v <= 35

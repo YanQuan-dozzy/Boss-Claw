@@ -69,6 +69,9 @@ interface ElectronBridgeApi {
   qualifiedJobsDirGet?: () => Promise<{ dir?: string }>;
   qualifiedJobsDirSet?: (dir: string) => Promise<{ ok?: boolean; dir?: string; error?: string }>;
   qualifiedJobsDirPick?: () => Promise<{ ok?: boolean; canceled?: boolean; dir?: string; error?: string }>;
+  // 经历补充材料（只记文件路径；正文每次调用 AI 前现读，不缓存不持久化内容）
+  materialPick?: () => Promise<{ ok?: boolean; canceled?: boolean; paths?: { path: string; name: string }[]; error?: string }>;
+  materialRead?: (filePath: string) => Promise<{ ok?: boolean; name?: string; path?: string; dataUrl?: string; bytes?: number; error?: string }>;
   // 开机自启动（Windows 登录项）
   autostartGet?: () => Promise<{ ok?: boolean; openAtLogin?: boolean; error?: string }>;
   autostartSet?: (enabled: boolean) => Promise<{ ok?: boolean; enabled?: boolean; error?: string }>;

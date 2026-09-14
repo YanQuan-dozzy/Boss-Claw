@@ -44,6 +44,16 @@ export interface LogEntry {
 
 export type ChatLogStage = 'open_chat' | 'greeting' | 'confirm' | 'resume' | 'ai_reply' | 'risk' | 'system' | 'verify_chat_target' | 'skip';
 
+/** 经历补充材料（用户导入的补充经历**文件引用**，会话内存态，不持久化） */
+export interface ExperienceMaterial {
+  id: string;
+  /** 来源文件名（展示用） */
+  name: string;
+  /** 文件绝对路径：正文不缓存，每次调用 AI 前经主进程现读 */
+  path: string;
+  addedAt: number;
+}
+
 export interface ChatLogEntry {
   id: string;
   time: number;
@@ -61,6 +71,13 @@ export interface ChatLogEntry {
 interface DataState {
   resumeText: string;
   resumeFileName: string;
+  /**
+   * 经历补充材料（**会话内存态，不持久化**）：用户导入的补充经历文件仅记绝对路径，
+   * 正文在每次调用 AI 前由主进程从磁盘现读并重新解析（外部改了文件即时生效，应用内不存内容副本）。
+   * 口径：**仅用于定制简历链路**（定制简历内容与 JD 要点判定），既不改动 resumeText，也不参与
+   * 职业画像生成与工作台评分口径。
+   */
+  experienceMaterials: ExperienceMaterial[];
   resumeImage: string | null; // dataURL，非持久化
   /** 图片简历（base64，持久化）：首次沟通后自动打包发送 */
   imageResumes: ImageResume[];
@@ -83,6 +100,10 @@ interface DataState {
   qualifiedExports: Record<string, QualifiedJobExport[]>;
 
   setResumeText: (text: string, fileName?: string) => void;
+  /** 追加一条经历补充材料（只记文件路径，正文每次调用现读） */
+  addExperienceMaterial: (item: { name: string; path: string; id?: string }) => void;
+  removeExperienceMaterial: (id: string) => void;
+  clearExperienceMaterials: () => void;
   setResumeImage: (dataUrl: string | null) => void;
   setImageResumes: (items: ImageResume[]) => void;
   addImageResume: (item: ImageResume) => void;
@@ -119,6 +140,7 @@ export const useDataStore = create<DataState>()(
     (set, get) => ({
       resumeText: '',
       resumeFileName: '',
+      experienceMaterials: [],
       resumeImage: null,
       imageResumes: [],
       greetings: [],
@@ -147,6 +169,23 @@ export const useDataStore = create<DataState>()(
           };
         }),
       setResumeImage: (dataUrl) => set({ resumeImage: dataUrl }),
+      addExperienceMaterial: (item) =>
+        set((s) => {
+          const path = String(item.path || '').trim();
+          if (!path) return s;
+          // 同一文件重复导入直接忽略（按路径判重）
+          if (s.experienceMaterials.some((m) => m.path === path)) return s;
+          const next: ExperienceMaterial = {
+            id: item.id || `mat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            name: String(item.name || '').trim() || path.split(/[\\/]/).pop() || '补充材料',
+            path,
+            addedAt: Date.now(),
+          };
+          return { experienceMaterials: [...s.experienceMaterials, next] };
+        }),
+      removeExperienceMaterial: (id) =>
+        set((s) => ({ experienceMaterials: s.experienceMaterials.filter((m) => m.id !== id) })),
+      clearExperienceMaterials: () => set({ experienceMaterials: [] }),
       setImageResumes: (items) => set({ imageResumes: items }),
       addImageResume: (item) => set((s) => ({ imageResumes: [...s.imageResumes, item] })),
       removeImageResume: (id) => set((s) => ({ imageResumes: s.imageResumes.filter((r) => r.id !== id) })),
@@ -276,7 +315,9 @@ export const useDataStore = create<DataState>()(
         return state as DataState;
       },
       partialize: (s) => {
-        const { resumeImage, ...rest } = s;
+        // experienceMaterials 是「经历补充文件」的会话态引用：不持久化（正文每次调用现读磁盘），
+        // 重启后需用户重新选择，避免应用内长期留存素材内容副本。
+        const { resumeImage, experienceMaterials: _materials, ...rest } = s;
         return rest as DataState;
       },
     }

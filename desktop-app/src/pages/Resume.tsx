@@ -36,6 +36,8 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import { isReadableResumeText } from '@/lib/bossclaw/pdfExtractor';
 import { parseResumeFile, resumeFileKind } from '@/lib/bossclaw/resumeParser';
 import { buildProfile, profileFromDraft, profileToDraft, profileHasCore } from '@/lib/bossclaw/profile';
+import { mergeTargetLocations, normalizeTargetLocations, sameTargetLocations } from '@/lib/bossclaw/targetLocations';
+import { getTargetLocations, writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { analyzeJob, fallbackApplicantGreeting } from '@/lib/bossclaw/matching';
 import { DEFAULT_ANALYZE_GREETING_INSTRUCTIONS } from '@/lib/bossclaw/prompts';
 import { normalizeStringList } from '@/lib/bossclaw/helpers';
@@ -240,6 +242,13 @@ export default function Resume() {
     setText(resumeText);
   }, [resumeText]);
 
+  // 目标城市与设置页同源：设置页改了「目标城市」后，把本页草稿的城市字段对齐（只动该字段，
+  // 不影响其它未保存编辑）。否则本页保存时会把草稿里的旧城市覆盖回设置页。
+  useEffect(() => {
+    const storeLocations = normalizeTargetLocations(config.targetLocations);
+    setDraft((d) => (d && !sameTargetLocations(d.locations, storeLocations) ? { ...d, locations: storeLocations } : d));
+  }, [config.targetLocations]);
+
   const handleFile = async (file: File) => {
     const kind = resumeFileKind(file.name);
     if (kind === 'unsupported') {
@@ -293,10 +302,15 @@ export default function Resume() {
       setBusy(true);
       setBusyMsg('AI 正在生成职业画像（失败将自动回退本地规则）…');
       const p = await buildProfile(text, config.model);
+      // 目标城市与设置页同源：简历/画像新推断出的城市**补进**设置页（只补不删，
+      // 用户在设置页或本页的「城市」里自行删除不要的城市）。
+      const mergedLocations = mergeTargetLocations(getTargetLocations(), p.hardConstraints?.locations);
+      p.hardConstraints = { ...p.hardConstraints, locations: mergedLocations };
       setProfile(p);
       const d = profileToDraft(p);
       setDraft(d);
       setProfileDraft(d);
+      writeTargetLocations(mergedLocations);
       const mode = p.generation?.label || (p.generation?.aiStatus === 'success' ? 'AI' : '本地规则');
       message.success(`职业画像已生成（${mode}）。请检查并编辑后保存。`);
     } catch (err: any) {
@@ -366,6 +380,8 @@ export default function Resume() {
     const p = profileFromDraft(draft, useDataStore.getState().profile);
     setProfile(p);
     setProfileDraft(draft);
+    // 目标城市同源：本页对城市的改动（含删除）直接覆盖设置页的「目标城市」
+    writeTargetLocations(draft.locations);
     message.success('职业画像已保存');
   };
 
@@ -538,7 +554,12 @@ export default function Resume() {
                     />
                   </Col>
                   <Col span={12}>
-                    <span className="field-label">城市</span>
+                    <span className="field-label">
+                      城市
+                      <Tooltip title="与设置页「求职偏好 → 基础求职条件」的目标城市同源：两处共享同一份内容、相互补充，任一处增删都会同步。可输入多个城市，用回车或逗号（, ，）／顿号（、）分隔。">
+                        <InfoCircleOutlined className="field-label__hint" />
+                      </Tooltip>
+                    </span>
                     <Select
                       mode="tags"
                       style={{ width: '100%' }}
@@ -547,7 +568,8 @@ export default function Resume() {
                       optionRender={kwOptionRender(draft.locations)}
                       notFoundContent={KW_NOT_FOUND}
                       value={draft.locations}
-                      onChange={(v) => patch('locations', normalizeStringList(v, 20))}
+                      onChange={(v) => patch('locations', normalizeTargetLocations(v))}
+                      tokenSeparators={[',', '，', '、']}
                     />
                   </Col>
                 </Row>

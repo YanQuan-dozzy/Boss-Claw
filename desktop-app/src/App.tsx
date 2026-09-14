@@ -11,6 +11,7 @@ import { startScheduler } from './lib/scheduler';
 import { useScheduleStore } from './store/useScheduleStore';
 import { consumeLegacyBatchDelivery } from './store/useSettingsStore';
 import { restoreFromLocalBackup, startLocalBackup } from './lib/localBackup';
+import { syncTargetLocationsOnStart } from './lib/bossclaw/targetLocationSync';
 import Sidebar from './components/Sidebar';
 import StatusBar from './components/StatusBar';
 import TitleBar from './components/TitleBar';
@@ -136,6 +137,13 @@ export default function App() {
   // 启动即预热 AI Skills 层：从 skills/*/SKILL.md 加载技能定义（调用 AI 时按作用域启用注入）
   useEffect(() => {
     ensureSkillsLoaded().catch(() => {});
+  }, []);
+
+  // 目标城市同源（设置页「基础求职条件」⇄ 职业画像）：启动时对存量数据做一次并集补齐。
+  // 两处一致（正常使用下的恒等状态）时不写任何东西；用户后续在任一处的删除都会同步写两处，
+  // 因此不会被这里的补齐「复活」。
+  useEffect(() => {
+    syncTargetLocationsOnStart();
   }, []);
 
   // 无 localStorage 数据时从本地备份回签（主存储缺失才恢复，避免覆盖现有数据）
