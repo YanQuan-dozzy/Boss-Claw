@@ -103,7 +103,6 @@ try {
 
   // 4) 只读工具实测
   const readOnlySamples = [
-    ['bossclaw_project_info', {}],
     ['bossclaw_app_status', {}],
     ['bossclaw_state_summary', {}],
     ['bossclaw_engine_status', {}],

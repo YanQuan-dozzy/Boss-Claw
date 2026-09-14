@@ -115,17 +115,17 @@ try {
 
   const list = await rpc('tools/list');
   const tools = list.result?.tools || [];
-  record('tools/list', tools.length === 23, `${tools.length} 个工具`);
+  record('tools/list', tools.length === 14, `${tools.length} 个工具`);
 
   // ---- 3) 只读认知类（对真实仓库）----
-  const info = await tool('bossclaw_project_info');
-  record('bossclaw_project_info', !info.isError && info.text.includes('BossClaw 项目总览'), (info.data?.app?.version ? `v${info.data.app.version}` : '') + ` / 路由 ${info.data?.routes?.count} 个`);
+  const status = await tool('bossclaw_app_status');
+  record('bossclaw_app_status', !status.isError, status.text.split('\n')[0].slice(0, 80));
   record(
     '  └ 识别到应用正在运行',
-    info.data?.appRuntime?.running === true,
-    `进程 ${info.data?.appRuntime?.processCount} 个（detect=${info.data?.appRuntime?.detectMethod}）`
+    status.data?.running === true,
+    `进程 ${(status.data?.processes || []).length} 个`
   );
-  record('  └ 识别到控制桥', !!info.data?.appRuntime?.controlBridge && !info.data.appRuntime.controlBridge.stale, `port=${info.data?.appRuntime?.controlBridge?.port}`);
+  record('  └ 识别到控制桥', !!status.data?.bridge && !status.data.bridge.stale, `port=${status.data?.bridge?.port}`);
 
   const fresh = await tool('bossclaw_state_summary');
   record('bossclaw_state_summary', !fresh.isError, fresh.text.split('\n')[0].slice(0, 80));
