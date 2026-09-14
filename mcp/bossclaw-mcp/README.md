@@ -1,13 +1,13 @@
 # bossclaw-mcp —— BossClaw 项目操作 MCP
 
-让外部 agent（Claude / WorkBuddy / Cursor / 任意 MCP 客户端）能够**自主操作已安装的 BossClaw 桌面应用**（如 `F:\BOSSClaw`）：
+让外部 agent（Claude / WorkBuddy / Cursor / 任意 MCP 客户端）能够**自主操作已安装的 BossClaw 桌面应用**（如 `<安装目录>`）：
 读取应用文件、建立安全约束认知、启停与状态诊断、并驱动运行中的应用（切页、暂停投递、截图…）。
 
 - **零依赖**：只用 Node 内置模块实现 JSON-RPC / stdio 协议，不需要 `npm install`，不会因依赖问题启动失败。
 - **传输**：stdio（标准 MCP 传输）。
 - **15 个工具**，分 5 组：应用认知 / 运行控制 / 状态诊断 / 应用控制 / 工作区路径。
 - **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时走**本地规则**兜底（见 §4）。
-- **面向已安装打包版**：默认只读取 `F:\BOSSClaw` 等**安装包**内的文件；不提供 git / 构建 / 冒烟等开发类内容。
+- **面向已安装打包版**：默认只读取 `<安装目录>` 等**安装包**内的文件；不提供 git / 构建 / 冒烟等开发类内容。
 
 ---
 
@@ -26,15 +26,15 @@
 {
   "mcpServers": {
     "bossclaw": {
-      "command": "C:\\Users\\DELL\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
-      "args": ["F:\\projects\\Boss-claw\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"],
+      "command": "<Node.js 可执行文件绝对路径>",
+      "args": ["<本仓库绝对路径>\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"],
       "env": {}
     }
   }
 }
 ```
 
-`command` 也可换成任意可用的 node（例如 `E:\Node.js\node.exe`）。
+`command` 也可换成任意可用的 node（例如 `C:\Program Files\nodejs\node.exe`）。
 
 启用步骤（WorkBuddy）：连接器管理页 → 右上角「自定义连接器」→ 找到 `bossclaw` → 点「信任」。
 其他客户端按各自 MCP 配置方式添加即可（stdio）。
@@ -42,7 +42,7 @@
 > ⚠️ 注册的是 **MCP 服务进程**；要让 MCP 真正能操作应用，**应用侧还要开着控制桥**。
 > 用仓库根目录的 `start-bossclaw.cmd` 启动即可（本地启动器默认已开启，见 §3.1）；
 > 用 `bossclaw_app_start` 启动的实例同样默认开启。裸 `electron .` / 打包版默认关闭。
-> **已安装的打包版**（如 `F:\BOSSClaw\BossClaw.exe`）可用 `bossclaw_app_start { installed: true }` 启动并自动开启控制桥，见 §3.3。
+> **已安装的打包版**（如 `<安装目录>\BossClaw.exe`）可用 `bossclaw_app_start { installed: true }` 启动并自动开启控制桥，见 §3.3。
 
 ### 1.3 自检
 
@@ -77,7 +77,7 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 
 | 工具 | 用途 |
 | --- | --- |
-| `bossclaw_app_start` | 启动应用（默认同时开启控制桥），自动清理沙箱注入的 `NODE_OPTIONS` / `ELECTRON_RUN_AS_NODE` / `PYTHONPATH`。默认启动已安装的打包版（如 `F:\BOSSClaw`）；`installed:true` / `exe` 可显式指定（自动带 `--control-bridge`，见 §3.3） |
+| `bossclaw_app_start` | 启动应用（默认同时开启控制桥），自动清理沙箱注入的 `NODE_OPTIONS` / `ELECTRON_RUN_AS_NODE` / `PYTHONPATH`。默认启动已安装的打包版（如 `<安装目录>`）；`installed:true` / `exe` 可显式指定（自动带 `--control-bridge`，见 §3.3） |
 | `bossclaw_app_stop` | 按进程树结束 BossClaw 进程（只匹配本项目实例，不误伤其它 Electron 应用） |
 | `bossclaw_app_status` | 是否运行 / 进程列表 / 控制桥 / Camoufox 端口 18767 / 日志新鲜度 |
 
@@ -122,7 +122,7 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 
 | 工具 | 用途 |
 | --- | --- |
-| `bossclaw_workspace` | 工作区根「自寻路径 / 询问修改」：`action=list` 列出安装版与开发仓库候选及完整度，高亮当前根是否健康（如旧副本 `F:\BOSSClaw` 缺 `resources/app/package.json` 会被标为不完整）；`action=prefer <path>` 持久化指定工作区根，使后续多次调用一致；`action=clear` 清除返回自寻路径 |
+| `bossclaw_workspace` | 工作区根「自寻路径 / 询问修改」：`action=list` 列出安装版与开发仓库候选及完整度，高亮当前根是否健康（如旧副本 `<安装目录>` 缺 `resources/app/package.json` 会被标为不完整）；`action=prefer <path>` 持久化指定工作区根，使后续多次调用一致；`action=clear` 清除返回自寻路径 |
 
 - **自寻路径**：启动解析链为 `BOSSCLAW_REPO`（立即生效）> 持久化覆盖（`.workspace-root`）> 优先「完整 bundle」的候选（安装版需含 `resources/app/package.json`；开发仓库需含 `desktop-app/package.json`），避免选到残缺旧副本。
 - **注意**：`REPO_ROOT` 是 MCP 进程启动时的常量，`prefer` 写入的覆盖在**下次启动 MCP 进程**生效；要立即生效可设 `BOSSCLAW_REPO` 环境变量。
@@ -175,12 +175,12 @@ type "%APPDATA%\BossClaw\control-bridge.json"
 
 ### 3.3 已安装的打包版（BossClaw.exe）
 
-安装版应用（例如 `F:\BOSSClaw\BossClaw.exe`）与开发版共用同一套控制桥机制（默认关闭、同样受安全边界约束）。
+安装版应用（例如 `<安装目录>\BossClaw.exe`）与开发版共用同一套控制桥机制（默认关闭、同样受安全边界约束）。
 MCP 直接启动它时会**自动带上 `--control-bridge`**，之后 `bossclaw_app_state` / `bossclaw_app_action` 即可照常操作：
 
 ```
 bossclaw_app_start { installed: true }        # 自动探测安装位置并启动（BOSSCLAW_EXE / 注册表卸载项 / 常见目录）
-bossclaw_app_start { exe: "F:\\BOSSClaw\\BossClaw.exe" }   # 显式指定安装路径（优先级最高）
+bossclaw_app_start { exe: "<安装目录>\\BossClaw.exe" }   # 显式指定安装路径（优先级最高）
 ```
 
 - 安装版的进程（`BossClaw.exe`）同样会被 `bossclaw_app_status` / `bossclaw_app_stop` 识别。
@@ -270,7 +270,7 @@ desktop-app/
 - `bridge-e2e` 会真实启动 Electron；无 GPU 环境请用默认的 `noGpu: true`。
 - 进程探测依赖 PowerShell CIM（Windows）。**CIM 不可用时不再退回「名称匹配」**（那会误杀用户的其它 Electron 应用），而是返回「未运行」+ 警告。
 - `bossclaw_state_*` 的数据新鲜度取决于应用的备份心跳（5 分钟）；要实时数据请走控制桥。
-- **工作区自动探测**：MCP 默认面向已安装的打包版应用（如 `F:\BOSSClaw`，含 `resources\app`）；找不到时回退到开发仓库。
-  用 `BOSSCLAW_REPO` 环境变量可显式指定工作区根（如开发仓库 `F:\projects\Boss-claw`）。
+- **工作区自动探测**：MCP 默认面向已安装的打包版应用（如 `<安装目录>`，含 `resources\app`）；找不到时回退到开发仓库。
+  用 `BOSSCLAW_REPO` 环境变量可显式指定工作区根（如开发仓库 `<仓库根目录>`）。
 - **不提供开发类能力**：git / tsc / vite 构建 / 冒烟 / 打包等一律删除；只读工具（`read_file` / `search` / `list_dir`）仅在安装包或显式指定的工作区根内生效。
 - 应用内 AI 未配置 API Key 时走本地规则兜底（不转交 agent），因此 `bossclaw_app_action` 的 AI 动作在无密钥时会返回本地生成结果。
