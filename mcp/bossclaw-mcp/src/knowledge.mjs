@@ -5,7 +5,7 @@
 // 维护约定：AGENTS.md 或关键约定变更时同步更新本文件。
 export const CONVENTIONS = {
   commands: {
-    start: '启动推广版本：F:\\BOSSClaw\\BossClaw.exe（或 start-bossclaw.cmd）',
+    start: '启动推广版本：<安装目录>\\BossClaw.exe（或 start-bossclaw.cmd）',
     startBridge: '本地启动器 start-bossclaw.cmd 默认开启控制桥（--no-agent 关闭）',
     env: 'BOSSCLAW_CONTROL=1 环境变量或 --control-bridge 开关开启控制桥',
   },
@@ -63,11 +63,11 @@ export const REQUIRED_READING = [
 ];
 
 export const REFERENCE_PROJECTS = [
-  { path: 'F:\\projects\\job-claw-main', why: '业务逻辑对齐源（task-state / job-priority / conversation-identity / content-v37.js 采集）——禁止重新发明' },
+  { path: 'job-claw-main', why: '业务逻辑对齐源（task-state / job-priority / conversation-identity / content-v37.js 采集）——禁止重新发明' },
 ];
 
 export const OPERATING_LOOP = [
-  '1) 先 bossclaw_guidelines 读约束与安全不变量，再 bossclaw_project_info 建立对已安装应用（如 F:\\BOSSClaw）的总览。',
+  '1) 先 bossclaw_guidelines 读约束与安全不变量，再 bossclaw_project_info 建立对已安装应用（如 <安装目录>）的总览。',
   '2) 定位/理解应用用 bossclaw_list_dir / bossclaw_read_file / bossclaw_search（仅在安装包或显式指定的工作区根内）。',
   '3) 要观察或驱动运行中的应用：bossclaw_app_start（默认开控制桥）→ bossclaw_app_state（实时状态）→ bossclaw_app_action（白名单动作）。',
   '4) 排查现场：bossclaw_logs（app/render/webview）+ bossclaw_state_summary（任务与安全状态）。',

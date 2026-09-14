@@ -41,7 +41,7 @@ export const workspaceTools = [
     name: 'bossclaw_workspace',
     title: '工作区路径选择 / 诊断 / 修改',
     description:
-      '展示并管理 MCP 所针对的「工作区根」：列出安装版(如 F:\\BOSSClaw)与开发仓库候选、各自完整度（是否缺 resources/app/package.json），' +
+      '展示并管理 MCP 所针对的「工作区根」：列出安装版(如 <安装目录>)与开发仓库候选、各自完整度（是否缺 resources/app/package.json），' +
       '并高亮当前生效根与其健康度，便于发现「旧安装副本残缺导致读取返回空值」的根因。' +
       'action=list 用于诊断（只读）；action=prefer 可持久化指定一个工作区根，使后续多次调用一致；' +
       'action=clear 清除持久化指定回到自寻路径。注意 prefer 写入的覆盖在下次启动 MCP 进程生效。',

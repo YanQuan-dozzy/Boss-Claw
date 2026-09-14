@@ -1,6 +1,6 @@
 // src/tools/repo.mjs —— 应用认知工具组（只读）
 // ---------------------------------------------------------------------------
-// 让 agent 动手前建立对已安装 BossClaw 应用（如 F:\BOSSClaw）的认知：约束手册、
+// 让 agent 动手前建立对已安装 BossClaw 应用（如 <安装目录>）的认知：约束手册、
 // 目录与文件、正则检索、以及应用级元信息汇总。
 import path from 'node:path';
 import fsp from 'node:fs/promises';

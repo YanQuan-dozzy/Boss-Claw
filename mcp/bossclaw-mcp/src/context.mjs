@@ -25,12 +25,10 @@ export const WORKSPACE_FILE = path.join(MCP_DIR, '.workspace-root');
 
 const isWin = process.platform === 'win32';
 
-/** 已安装打包版的候选安装根目录（含用户自定义的 F:\BOSSClaw 等）。 */
+/** 已安装打包版的候选安装根目录（自定义安装位置经 BOSSCLAW_INSTALL_DIR 环境变量指定）。 */
 function installedAppRootCandidates() {
   return [
     process.env.BOSSCLAW_INSTALL_DIR,
-    'F:\\BOSSClaw',
-    'D:\\BOSSClaw',
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'BossClaw') : '',
     process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, 'BossClaw') : '',
     process.env['PROGRAMFILES(X86)'] ? path.join(process.env['PROGRAMFILES(X86)'], 'BossClaw') : '',
@@ -284,12 +282,12 @@ export const PATHS = {
 };
 
 // ===========================================================================
-// 安装版应用探测（打包后的 BossClaw.exe，如 F:\BOSSClaw\BossClaw.exe）
+// 安装版应用探测（打包后的 BossClaw.exe，如 <安装目录>\BossClaw.exe）
 // ===========================================================================
 
 const INSTALLED_EXE_NAME = 'BossClaw.exe';
 
-/** electron-builder 常见安装位置（含自定义目录 F:\BOSSClaw；注册表卸载项兜底） */
+/** electron-builder 常见安装位置（自定义目录经 BOSSCLAW_INSTALL_DIR；注册表卸载项兜底） */
 function installedExeCandidates() {
   return installedAppRootCandidates().map((d) => path.join(d, INSTALLED_EXE_NAME));
 }
