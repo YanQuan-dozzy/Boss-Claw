@@ -1498,7 +1498,9 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
 // 由 webview preload（webview.cjs）直接 ipcRenderer.send 到本主进程，event.sender 即 guest webContents。
 ipcMain.on('jc:webview-input', (event, payload) => {
   const wc = event.sender;
-  const seq = Number((payload && payload.seq) || 0);
+  // ⚠️ 严禁 Number() 强转：preload 的 seq 是 "时间戳_随机数" 字符串，Number() 后变 NaN→0，
+  // 回执 seq 与请求不匹配，preload 的 trustedInput 会每 4s 超时一次（3 次=13s）且永远配对不上。
+  const seq = String((payload && payload.seq) || '');
   const action = String((payload && payload.action) || '');
   const text = String((payload && payload.text) || '');
   const reply = (result) => { try { wc.send('jc:webview-input-done', { seq, ...result }); } catch {} };

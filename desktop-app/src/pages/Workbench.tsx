@@ -61,9 +61,6 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
   ignored: { color: 'default', label: '已忽略' },
 };
 
-// BOSS 官方接口 friend/add 返回码 → 风控码（17 未登录按 31 归类）
-const FRIEND_ADD_RISK_CODES: Record<number, number> = { 17: 31, 31: 31, 32: 32, 35: 35, 36: 36, 37: 37, 38: 38, 1006: 1006 };
-
 const isJobListUrl = (url: string): boolean => {
   try {
     const p = new URL(url).pathname;
@@ -213,6 +210,11 @@ export default function Workbench() {
   const preferIdRef = useRef<string | null>(null);
   const activeTabRef = useRef<string | null>(null);
   const commStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // BOSS DOM 投递结果等待槽：runNext 打开岗位下发 start-apply 后挂起，等 handleApplyStage 回写终态
+  // （verify_result→success / risk / failed / external→skip），避免 fire-and-forget 造成 runNext 反复重入与日志重复。
+  const domWaitRef = useRef<((mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat', payload: any, tabId?: string) => void) | null>(null);
+  // 最近一次记录的投递阶段（用于进度日志去重：同一阶段反复回传时只记一条，避免刷屏）
+  const lastApplyStageRef = useRef<TaskStage | ''>('');
   // P01：runNext 互斥守卫。只允许一个投递循环在途；执行中再有触发则排队，结束后续跑。
   // 解决多入口（running effect / handleDelivered / 失败分支 / 采集）并发进入 runNext，
   // 造成 activeId/applyStage 相互覆盖、看门狗绑错、waitForSlot 并发等待者超发动作预算的问题。
@@ -1493,6 +1495,7 @@ export default function Workbench() {
       return;
     }
     setActiveId(candidate.id);
+    lastApplyStageRef.current = '';
     setApplyStage('queued');
     addLog('info', `按匹配优先级投递：${candidate.job?.title || '岗位'}（AI ${candidate.analysis?.score || 0} 分）`);
     const url = String(candidate.job?.url || '').trim();
@@ -1599,6 +1602,16 @@ export default function Workbench() {
         }
         const code = result.code ?? null;
         const msg = result.message || result.error || '投递失败';
+        // 「已建立会话」= 该岗位已与 HR 沟通过（继续沟通入口）：不再按新投递判失败，
+        // 移入「自动沟通」队列（status=opened，AutoChat 接管），不占用今日投递名额。
+        if (/已建立会话|已沟通|继续沟通/.test(msg)) {
+          updatePending(candidate.id, { status: 'opened', error: '已建立会话，移入自动沟通队列' });
+          addLog('warn', `检测到「继续沟通」（已建立会话），已移入自动沟通队列：${candidate.job?.title || '岗位'}`);
+          setApplyStage(null);
+          recomputeStats();
+          if (useAppStore.getState().autoAssist) requestRunNext();
+          return;
+        }
         if (isCamoufoxStopCode(code)) {
           updatePending(candidate.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
           addLog('error', `Camoufox 投递命中风控码 ${code}：${msg}。立即暂停并进入冷却，请人工处理，切勿重复重试。`);
@@ -1624,7 +1637,9 @@ export default function Workbench() {
       }
     }
 
-    // ===== 投递主通道：BOSS 官方 friend/add.json 接口（去掉沟通窗口 DOM 环节）=====
+    // ===== BOSS 投递：直接走内置浏览器真实 DOM 沟通投递（对齐 job-claw-main）=====
+    // 不先调 /friend/add.json 官方接口——该接口常因缺少必要参数返回 code 1；DOM 沟通投递自带
+    // 文字气泡确认 / 外部网申跳过 / 风控即停，安全性与人工操作口径都更贴合。
     const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
     let finalGreeting = String(liveCandidate?.deliveryGreeting || liveCandidate?.analysis?.greeting || candidate.deliveryGreeting || candidate.analysis?.greeting || '').trim();
     if (!finalGreeting) {
@@ -1634,37 +1649,6 @@ export default function Workbench() {
     }
     if (!finalGreeting) { pauseAssist('招呼语为空，无法投递，请补充后再试'); return; }
 
-    const encryptJobId = extractEncryptJobId(candidate.job);
-    if (!encryptJobId) {
-      updatePending(candidate.id, { status: 'failed', error: '岗位缺少 jobId，无法通过官方接口投递', retryable: false });
-      addLog('error', `投递失败：${candidate.job?.title || ''}（岗位缺少 jobId）`);
-      setApplyStage(null);
-      recomputeStats();
-      if (useAppStore.getState().autoAssist) requestRunNext();
-      return;
-    }
-
-    const apiTabId = webviewApi.current?.getFirstTabId?.() || webviewApi.current?.getActiveTabId?.();
-    if (!apiTabId) {
-      updatePending(candidate.id, { status: 'failed', error: '没有可用标签页执行官方接口投递', retryable: true });
-      addLog('error', `投递失败：${candidate.job?.title || ''}（没有可用标签页）`);
-      setApplyStage(null);
-      recomputeStats();
-      pauseAssist('投递已暂停：没有可用标签页执行官方接口投递');
-      return;
-    }
-
-    // 补全招聘方 ID（job/card.json）
-    let encryptBossId = String(candidate.job?.encryptUserId || '').trim();
-    if (!encryptBossId) {
-      const card = await webviewApi.current?.bossApi('jobCard', { encryptJobId }, apiTabId);
-      if (card && card.code === 0 && card.data?.zpData?.encryptUserId) {
-        encryptBossId = String(card.data.zpData.encryptUserId);
-      }
-    }
-
-    setApplyStage('open_job');
-    addLog('info', `通过 BOSS 官方接口投递：${candidate.job?.title || '岗位'}`);
     // 共享占位锁：与后台「自动沟通」互斥，避免对同一岗位重复投递
     if (!claimDelivery(candidate.id)) {
       addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
@@ -1674,28 +1658,130 @@ export default function Workbench() {
       if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
-    let friendAddResult: any;
+
+    const domTab = webviewApi.current?.openInNewTab(url, candidate.job?.title || '岗位', 'detail');
+    if (!domTab) {
+      releaseDelivery(candidate.id);
+      updatePending(candidate.id, { status: 'failed', error: '无法打开新标签页做 DOM 投递', retryable: true });
+      addLog('error', `投递失败：${candidate.job?.title || ''}（无法打开新标签页做 DOM 投递）`);
+      setApplyStage(null);
+      recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      else addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
+      return;
+    }
+    activeTabRef.current = domTab;
+    setApplyStage('open_job');
+    addLog('info', `已在新标签页打开岗位，开始真实沟通投递：${candidate.job?.title || '岗位'}`);
+
+    // 单线性等待 DOM 投递终态：runNext 在此挂起，终态由 handleApplyStage 回写 domWaitRef，
+    // 避免 fire-and-forget 造成 runNext 反复重入、打开多个标签页并重复刷日志。
+    const domTitle = candidate.job?.title || '岗位';
+    let domResult: { mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat'; payload: any; tabId?: string } = { mode: 'failed', payload: { error: 'DOM 沟通投递未返回终态' } };
     try {
-      friendAddResult = await webviewApi.current?.bossApi('friendAdd', { encryptJobId, encryptBossId, greeting: finalGreeting }, apiTabId);
+      domResult = await new Promise<typeof domResult>((resolve) => {
+        let timerRef: ReturnType<typeof setTimeout> | null = null;
+        let settled = false;
+        const settle = (mode: any, payload: any, tabId?: string) => {
+          if (settled) return;
+          settled = true;
+          if (timerRef) clearTimeout(timerRef);
+          resolve({ mode, payload, tabId });
+        };
+        // 兜底超时：先于看门狗（commStuckTimeoutSec，默认 180s）收敛，避免与超时看门狗双重处理
+        const stuckSec = Math.max(60, Number(useSettingsStore.getState().config.commStuckTimeoutSec) || 180);
+        timerRef = setTimeout(() => settle('timeout', { error: `DOM 沟通投递超时（${stuckSec - 5}s），已跳过该岗位` }), (stuckSec - 5) * 1000);
+        domWaitRef.current = settle;
+        // 等 preload 就绪且页面可用后，再下发 start-apply（domApply）。
+        // 「可用」以 IPC 探针（pageStatus 往返成功）为权威：BOSS 岗位页常因长轮询/慢子资源让
+        // isLoading 长期为 true（did-stop-loading 迟迟不到），若仅等 isPreloadReady && !isLoading
+        // 会把「点击立即沟通」拖死满 25s（日志表现为打开岗位 → 打开沟通窗口间隔一条看门狗）。
+        const payload = { job: candidate.job, greeting: finalGreeting };
+        const sendOnce = () => webviewApi.current?.sendInTab?.(domTab, 'start-apply', payload);
+        const isChatUrl = (u: string) => /app\.zhipin\.com/i.test(u) || /(\/web\/geek\/chat|\/chat(?:\/|\?|$))/i.test(u);
+        void (async () => {
+          const domDeadline = Date.now() + 25000;
+          let lastProbeAt = 0;
+          let probedOk = false;
+          while (Date.now() < domDeadline && !probedOk) {
+            // 快速路径（原逻辑）：preload 就绪且不再 loading 直接下发
+            if (webviewApi.current?.isPreloadReady?.(domTab) && !webviewApi.current?.isLoading?.(domTab)) break;
+            // 兜底路径：preload 就绪标记 / loading 标志被卡住时，用 pageStatus 探针实测页面可用性
+            if (Date.now() - lastProbeAt >= 1500) {
+              lastProbeAt = Date.now();
+              try {
+                const st = await webviewApi.current?.pageStatus?.(domTab);
+                if (st && !st.error) { probedOk = true; break; }
+              } catch {}
+            }
+            await sleep(350);
+          }
+          if (!webviewApi.current) return;
+          sendOnce();
+          // 「继续沟通/立即沟通」的沟通入口常整页跳转到聊天页（app.zhipin.com / /web/geek/chat），导航会使 preload 重注入、
+          // 原 domApply 被中断 → 只发了 BOSS 系统招呼而 AI 招呼没写进去。检测到已跳到聊天页且新 preload 就绪后，
+          // 重发一次 start-apply 补写 AI 招呼语（变通）。仅当 URL 命中聊天页才重发；job_detail 就地开窗不重发，避免重复发送。
+          // 检测窗口放宽到与投递看门狗一致（最长约 3 分钟），覆盖聊天窗口渲染慢的情形。
+          const detectDeadline = Date.now() + Math.max(60000, (stuckSec - 10) * 1000);
+          let reSent = false;
+          while (Date.now() < detectDeadline && !reSent) {
+            let u = '';
+            try { u = String((await webviewApi.current?.pageStatus?.(domTab))?.url || ''); } catch { u = ''; }
+            if (isChatUrl(u)) {
+              const d2 = Date.now() + 6000;
+              while (Date.now() < d2) {
+                if (webviewApi.current?.isPreloadReady?.(domTab) && !webviewApi.current?.isLoading?.(domTab)) break;
+                await sleep(300);
+              }
+              sendOnce();
+              reSent = true;
+              break;
+            }
+            await sleep(1200);
+          }
+        })();
+      });
     } finally {
+      domWaitRef.current = null;
       releaseDelivery(candidate.id);
     }
-    const result = friendAddResult;
-    if (result && !result.error && result.code === 0) {
-      addLog('success', `friend/add 接口返回成功：${candidate.job?.title || ''}`);
-      handleDelivered(candidate.id);
+
+    if (domResult.mode === 'success') {
+      handleDelivered(candidate.id, domResult.tabId);
       return;
     }
-    if (result && !result.error && FRIEND_ADD_RISK_CODES[result.code]) {
-      handleRisk(FRIEND_ADD_RISK_CODES[result.code], result.data?.riskCodeMessage || result.data?.message || '');
+    if (domResult.mode === 'risk') {
+      // 保留标签供人工完成安全验证
+      handleRisk(domResult.payload?.code, domResult.payload?.message || '');
       return;
     }
-    // 未知码 / 网络异常：直接标记失败（可重试），不再走 DOM 沟通窗口
-    const errMsg = result?.error
-      ? `官方接口请求异常：${result.error}`
-      : `官方接口返回未知码 ${result?.code ?? ''}（${result?.data?.message || ''}）`;
+    if (domResult.mode === 'skip') {
+      const msg = String(domResult.payload?.error || '外部网申岗位，跳过');
+      updatePending(candidate.id, { status: 'skipped', error: msg });
+      addLog('warn', `已跳过外部网申岗位：${domTitle}（${msg}）`);
+      if (activeTabRef.current) { webviewApi.current?.closeTab(activeTabRef.current); activeTabRef.current = null; }
+      setApplyStage(null);
+      recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    if (domResult.mode === 'continue_chat') {
+      // 「继续沟通」入口：该岗位已与 HR 建立过会话（此前已沟通过/已投递过），
+      // 不再按新投递发招呼语并计成功——移入「自动沟通」队列（status=opened，AutoChat 接管），
+      // 并从工作台投递队列移除（防重复投递同一 HR、不占用今日投递名额）。
+      updatePending(candidate.id, { status: 'opened', error: '' });
+      addLog('warn', `${domTitle}：检测到「继续沟通」（已建立会话），已移入自动沟通队列`);
+      if (activeTabRef.current) { webviewApi.current?.closeTab(activeTabRef.current); activeTabRef.current = null; }
+      setApplyStage(null);
+      recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    // failed / timeout
+    const errMsg = String(domResult.payload?.error || 'DOM 沟通投递失败');
     updatePending(candidate.id, { status: 'failed', error: errMsg, retryable: true });
-    addLog('error', `投递失败：${candidate.job?.title || ''}（${errMsg}）`);
+    addLog('error', `投递失败：${domTitle}（${errMsg}）`);
+    if (activeTabRef.current) { webviewApi.current?.closeTab(activeTabRef.current); activeTabRef.current = null; }
     setApplyStage(null);
     recomputeStats();
     if (useAppStore.getState().autoAssist) {
@@ -1762,12 +1848,35 @@ export default function Workbench() {
     if (!activeId || !active) return;
 
     if (stage === 'risk') {
+      if (domWaitRef.current) { domWaitRef.current('risk', { code: data?.code, message: data?.message || '' }, tabId); return; }
       handleRisk(data?.code, data?.message || '');
+      return;
+    }
+    if (stage === 'continue_chat') {
+      // 「继续沟通」入口：该岗位已与 HR 建立过会话（此前已沟通过/已投递过），
+      // 不再按新投递发招呼语并计成功——移入「自动沟通」队列（status=opened，AutoChat 接管），
+      // 并从工作台投递队列移除（防重复投递同一 HR、不占用今日投递名额）。
+      if (domWaitRef.current) { domWaitRef.current('continue_chat', {}, tabId); return; }
+      updatePending(activeId, { status: 'opened', error: '' });
+      addLog('warn', `${active?.job?.title || '岗位'}：检测到「继续沟通」（已建立会话），已移入自动沟通队列`);
+      setApplyStage(null);
+      recomputeStats();
+      if (activeTabRef.current) {
+        webviewApi.current?.closeTab(activeTabRef.current);
+        activeTabRef.current = null;
+      }
+      if (useAppStore.getState().autoAssist) {
+        addLog('warn', '继续投递下一个岗位');
+        requestRunNext();
+      } else {
+        addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
+      }
       return;
     }
     if (stage === 'failed') {
       const error = String(data.error || '投递失败');
       if (data.external === true) {
+        if (domWaitRef.current) { domWaitRef.current('skip', { error }, tabId); return; }
         updatePending(activeId, { status: 'skipped', error });
         addLog('warn', `已跳过：${active?.job?.title || ''}（${error}）`);
         setApplyStage(null);
@@ -1775,6 +1884,8 @@ export default function Workbench() {
         if (running) requestRunNext();
         return;
       }
+      // 有 DOM 等待槽在途（工作台 BOSS 直投）→ 只回写终态，状态/日志由 runNext 统一处理（去重）
+      if (domWaitRef.current) { domWaitRef.current('failed', { error }, tabId); return; }
       updatePending(activeId, { status: 'failed', error });
       addLog('error', `投递失败：${active?.job?.title || ''}（${error}）`);
       setApplyStage(null);
@@ -1792,13 +1903,18 @@ export default function Workbench() {
       return;
     }
     if (stage === 'verify_result') {
+      if (domWaitRef.current) { domWaitRef.current('success', {}, tabId); return; }
       handleDelivered(activeId, tabId);
       return;
     }
     if (TRACKED_STAGES.includes(stage as TaskStage)) {
       setApplyStage(stage as TaskStage);
-      const meta = taskStageMetaFor(active?.job?.platform, stage as TaskStage);
-      addLog('info', `${active?.job?.title || '岗位'}：${meta.label}`);
+      // 进度日志去重：同一阶段反复回传（如聊天窗口渲染慢/重绘导致的重复 open_chat/fill）只记一条
+      if (lastApplyStageRef.current !== stage) {
+        lastApplyStageRef.current = stage as TaskStage;
+        const meta = taskStageMetaFor(active?.job?.platform, stage as TaskStage);
+        addLog('info', `${active?.job?.title || '岗位'}：${meta.label}`);
+      }
       return;
     }
   };

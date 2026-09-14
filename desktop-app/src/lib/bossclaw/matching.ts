@@ -564,15 +564,16 @@ ${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
   //     拿派生量去否决 AI 的综合判断属于越权；且「薪资明显不达标」这一事实若需硬拦，
   //     已由用户设置的 `minSalaryPerDay` 硬约束覆盖，无需在评分层再叠加一次干预。
   // 7. 档位与决策档位的最终对齐（相对 minScore / minQueueScore）：
-  //    recommend 档恒 ≥ minScore（推荐必达标，可放心投递）；hardBlocks 硬伤在步骤 5 已封顶 ≤35（unfit 档 0-49 内）。
-  //    普通 unfit（无硬伤，如 AI 判技术栈错位为不推荐）保留其档内真实分（<50），不做一刀切；
-  //    cautious 保留档内真实分，由入库侧按「最低入队分」（resolveQueueMinScore → config.minQueueScore）
-  //    单独放行、交人工把关——不再把谨慎档封顶到门槛值，避免「可投递岗位全是低分」的观感。
-  if (level === 'match' || level === 'strong') score = Math.max(score, ms);
+  //    仅「推荐(strong)」恒 ≥ minScore（推荐必达标，可放心投递）；「匹配(match)」不再被抬到 ≥75，
+  //    允许按 JD×简历贴合度在档内 65-80 上下浮动，避免匹配档永远停在 75/80 两个分。
+  //    hardBlocks 硬伤在步骤 5 已封顶 ≤35（unfit 档 0-49 内）。
+  //    普通 unfit（无硬伤）保留档内真实分；cautious 保留档内真实分，由入库侧按「最低入队分」
+  //    （resolveQueueMinScore → config.minQueueScore）单独放行、交人工把关。
+  if (level === 'strong') score = Math.max(score, ms);
   result.score = Math.max(0, Math.min(100, score));
   result.fitLevel = level;
-  if (result.score < ms && (level === 'match' || level === 'strong')) {
-    // 理论上不会发生（score 已被抬到 ≥ ms），防御性兜底：分够不到门槛时档位降一档
+  if (result.score < ms && level === 'strong') {
+    // 防御性兜底：推荐档却够不到推荐分门槛时降一档为谨慎
     level = 'cautious';
     result.fitLevel = level;
     result.decision = 'cautious';
