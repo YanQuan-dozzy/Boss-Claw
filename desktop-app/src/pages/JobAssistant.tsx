@@ -5,7 +5,7 @@ import {
 import {
   RobotOutlined, FileTextOutlined, LoadingOutlined, ImportOutlined,
   DeleteOutlined, HistoryOutlined, ExclamationCircleOutlined,
-  DownloadOutlined, CameraOutlined,
+  DownloadOutlined, CameraOutlined, UploadOutlined, ArrowUpOutlined, ArrowDownOutlined,
 } from '@ant-design/icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
@@ -17,9 +17,24 @@ import { cleanJobDescription, jdLooksNoisy } from '@/lib/bossclaw/jdCleaner';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { buildResumeHtml, defaultPdfFileName, RESUME_TEMPLATES, isKnownTemplate } from '@/lib/bossclaw/resumePdf';
 import { buildResumeDocData, extractContactInfo, RESUME_SECTION_META } from '@/lib/bossclaw/resumeContact';
+import { parseResumeFile } from '@/lib/bossclaw/resumeParser';
+import { bridgeParseResume } from '@/lib/bridgeClient';
 import { TailorResultView } from '@/components/TailorResultView';
 
 const { Text } = Typography;
+
+// ===== 经历补充材料：解析兜底（DOCX/PDF 本地失败时走桥接 mammoth / pdftotext） =====
+const materialBridgeFallback = async (file: File, name: string) => {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+  const r = await bridgeParseResume(dataUrl, name);
+  if (!r.ok || !r.text) throw new Error(r.error || '桥接解析失败');
+  return { text: r.text, method: r.method || 'bridge' };
+};
 
 // ===== 历史定制记录（本地持久化，最近 20 条） =====
 const HISTORY_KEY = 'bossclaw-tailor-history-v1';
@@ -49,6 +64,37 @@ function loadHistory(): TailorHistoryItem[] {
 function saveHistory(list: TailorHistoryItem[]): void {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)));
+  } catch {
+    /* 存储不可用时静默降级 */
+  }
+}
+
+// ===== 内容模块顺序（用户可上下移动，持久化） =====
+const MODULE_ORDER_KEY = 'bossclaw-resume-module-order-v1';
+
+/** 读取模块顺序并做健壮化：补齐缺失 id、剔除未知 id（模板升级后不会错位） */
+function loadModuleOrder(): string[] {
+  const defaults = RESUME_SECTION_META.map((m) => m.id);
+  try {
+    const raw = localStorage.getItem(MODULE_ORDER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const known = parsed.map(String).filter((id) => defaults.includes(id));
+        const missing = defaults.filter((id) => !known.includes(id));
+        const merged = [...known, ...missing];
+        if (merged.length === defaults.length) return merged;
+      }
+    }
+  } catch {
+    /* 数据损坏则回落默认顺序 */
+  }
+  return defaults;
+}
+
+function saveModuleOrder(order: string[]): void {
+  try {
+    localStorage.setItem(MODULE_ORDER_KEY, JSON.stringify(order));
   } catch {
     /* 存储不可用时静默降级 */
   }
@@ -89,6 +135,82 @@ export default function JobAssistant() {
   const [exportTailor, setExportTailor] = useState<TailorResult | null>(null);
   const [exportSections, setExportSections] = useState<string[]>(RESUME_SECTION_META.filter((m) => m.default).map((m) => m.id));
   const [exportForm] = Form.useForm();
+
+  // 内容模块顺序（可上下移动，持久化到 localStorage）：导出时按此顺序输出模块
+  const [moduleOrder, setModuleOrder] = useState<string[]>(() => loadModuleOrder());
+  const moveModule = (idx: number, dir: -1 | 1) => {
+    setModuleOrder((prev) => {
+      const next = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= next.length) return prev;
+      [next[idx], next[target]] = [next[target], next[idx]];
+      saveModuleOrder(next);
+      return next;
+    });
+  };
+
+  // ===== 经历补充材料（简历里没写、但本人真实具备的经历文件）=====
+  // 口径：只记文件绝对路径（会话内存态，不持久化）；正文**每次调用 AI 前现读磁盘并重新解析**，
+  // 所以用户在外部改了素材文件即时生效，应用内不保存任何素材内容副本。
+  const materials = useDataStore(useShallow((s) => s.experienceMaterials));
+  const addExperienceMaterial = useDataStore((s) => s.addExperienceMaterial);
+  const removeExperienceMaterial = useDataStore((s) => s.removeExperienceMaterial);
+  const [materialBusy, setMaterialBusy] = useState(false);
+
+  /** 现读一份补充材料：从磁盘读 → 复用既有解析链路（PDF 文本层 / DOCX / 纯文本） */
+  const readMaterialText = async (m: { name: string; path: string }): Promise<string> => {
+    const api = (window as any).electron as any;
+    if (!api?.materialRead) throw new Error('当前环境不支持按路径读取文件');
+    const r = await api.materialRead(m.path);
+    if (!r?.ok || !r?.dataUrl) throw new Error(r?.error || '读取失败');
+    const blob = await (await fetch(r.dataUrl)).blob();
+    const file = new File([blob], r.name || m.name);
+    const parsed = await parseResumeFile(file, materialBridgeFallback);
+    return String(parsed.text || '').trim();
+  };
+
+  /** 现读全部补充材料并拼成注入文本（每次调用都重新读，不缓存） */
+  const resolveMaterialsText = async (): Promise<string> => {
+    if (!materials.length) return '';
+    const parts: string[] = [];
+    for (const m of materials) {
+      try {
+        const text = await readMaterialText(m);
+        if (text) parts.push(`【补充材料：${m.name}】\n${text}`);
+      } catch (e: any) {
+        message.warning(`补充材料「${m.name}」读取失败：${getErrorMessage(e)}`);
+      }
+    }
+    return parts.join('\n\n');
+  };
+
+  /** 选择补充经历文件（系统对话框，可多选；仅记路径，不读内容） */
+  const onPickMaterial = async () => {
+    const api = (window as any).electron as any;
+    if (!api?.materialPick) {
+      message.warning('当前环境不支持系统文件选择，请在桌面应用中使用');
+      return;
+    }
+    setMaterialBusy(true);
+    try {
+      const r = await api.materialPick();
+      if (!r?.ok) {
+        if (!r?.canceled) message.error(r?.error || '选择文件失败');
+        return;
+      }
+      const paths = r.paths || [];
+      const before = useDataStore.getState().experienceMaterials.length;
+      for (const p of paths) addExperienceMaterial({ name: p.name, path: p.path });
+      const added = useDataStore.getState().experienceMaterials.length - before;
+      message.success(
+        added > 0
+          ? `已添加 ${added} 份经历补充材料（调用 AI 时才读取内容，文件改动即时生效）`
+          : '所选文件已在列表中'
+      );
+    } finally {
+      setMaterialBusy(false);
+    }
+  };
 
   // 模板选择（持久化到 localStorage，下次打开沿用）
   const TEMPLATE_KEY = 'bossclaw-resume-template-v1';
@@ -171,9 +293,11 @@ export default function JobAssistant() {
     }
     setExporting(true);
     try {
-      const data = buildResumeDocData(resumeText, profile, exportTailor, values, exportSections);
-      if (!data.sections.length) {
-        message.warning('请至少勾选一个内容分节');
+      // 模块顺序 = 用户在弹窗里调整的顺序（先按顺序过滤，再按勾选过滤）
+      const orderedIds = moduleOrder.filter((id) => exportSections.includes(id));
+      const data = buildResumeDocData(resumeText, profile, exportTailor, values, orderedIds);
+      if (!data.modules.length) {
+        message.warning('没有可导出的模块内容，请至少勾选一个有内容的模块');
         return;
       }
       if (photo) data.photo = photo;
@@ -254,7 +378,16 @@ export default function JobAssistant() {
     setGenerating(true);
     try {
       const job = { title: jobTitle.trim(), company: '', description: jobDesc.trim() };
-      const r = await tailorForJob(job, resumeText, profile, config.model, useDataStore.getState().greetingPrompt || undefined);
+      // 经历补充材料每次调用前现读磁盘（不缓存内容），随定制与要点判定一并送入 AI
+      const extraText = await resolveMaterialsText();
+      const r = await tailorForJob(
+        job,
+        resumeText,
+        profile,
+        config.model,
+        useDataStore.getState().greetingPrompt || undefined,
+        extraText || undefined
+      );
       setTailor(r);
       // 保存历史记录（同岗位重复定制保留最新一条）
       const item: TailorHistoryItem = {
@@ -405,12 +538,64 @@ export default function JobAssistant() {
         )}
       </Card>
 
+      {/* 经历补充材料：简历里没写的真实经历，可导入后参与定制与要点判定 */}
+      <Card
+        size="small"
+        className="mb-16 tailor-materials-card"
+        title={
+          <Space>
+            <UploadOutlined style={{ color: 'var(--brand)' }} />
+            经历补充材料
+            {materials.length > 0 && <Tag color="blue">{materials.length} 份</Tag>}
+          </Space>
+        }
+        extra={
+          <Space size={8}>
+            <Button size="small" icon={<UploadOutlined />} loading={materialBusy} onClick={onPickMaterial}>
+              经历信息导入
+            </Button>
+          </Space>
+        }
+      >
+        <p className="tailor-materials-hint">
+          简历里漏写的实习 / 项目 / 论文 / 获奖等真实经历，可导入 PDF、DOCX、MD、TXT 作为补充材料：
+          <b>定制简历与「岗位要点对照」会参考它补齐缺失内容</b>。
+          应用内只记录文件路径、不保存内容，每次生成时从磁盘现读——你在外部改了素材文件即时生效；
+          它<b>只作用在本页的定制简历</b>，不会改动「简历中心」的简历原文与职业画像，也不影响工作台评分口径。
+        </p>
+        {materials.length === 0 ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            暂无补充材料。当「岗位要点对照」出现「可补充」的要点时，可把对应经历整理成文件后从这里导入。
+          </Text>
+        ) : (
+          <List
+            size="small"
+            dataSource={materials}
+            renderItem={(m) => (
+              <List.Item
+                actions={[
+                  <Button key="del" size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeExperienceMaterial(m.id)}>
+                    移除
+                  </Button>,
+                ]}
+              >
+                <List.Item.Meta
+                  title={<Space size={8}><FileTextOutlined />{m.name}</Space>}
+                  description={`${m.path} · 添加于 ${formatTime(m.addedAt)}`}
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </Card>
+
       {tailor && (
         <TailorResultView
           tailor={tailor}
           jobTitle={jobTitle.trim() || '定制简历'}
           onExportPdf={() => openExport(tailor, jobTitle.trim() || '定制简历')}
           onSaveCoverLetter={onSaveCoverLetter}
+          onImportMaterials={onPickMaterial}
         />
       )}
 
@@ -438,7 +623,11 @@ export default function JobAssistant() {
               >
                 <List.Item.Meta
                   title={<Space size={8}>{h.jobTitle}{h.result.method === 'ai' ? <Tag color="green" style={{ fontSize: 11 }}>AI</Tag> : <Tag style={{ fontSize: 11 }}>本地</Tag>}</Space>}
-                  description={`${formatTime(h.createdAt)} · 匹配 ${h.result.match?.after?.score ?? '-'} 分（定制前 ${h.result.match?.before?.score ?? '-'} 分）`}
+                  description={`${formatTime(h.createdAt)} · ${
+                    h.result.aiMatch
+                      ? `匹配 ${h.result.aiMatch.after} 分（定制前 ${h.result.aiMatch.before} 分）`
+                      : `本地估算 ${h.result.match?.before?.score ?? '-'} 分`
+                  }`}
                 />
               </List.Item>
             )}
@@ -451,7 +640,7 @@ export default function JobAssistant() {
         title={<Space><DownloadOutlined style={{ color: 'var(--brand)' }} />导出定制简历 PDF</Space>}
         open={exportOpen}
         onCancel={() => { if (!exporting) setExportOpen(false); }}
-        width={560}
+        width={620}
         okText="生成并保存"
         cancelText="取消"
         confirmLoading={exporting}
@@ -465,55 +654,33 @@ export default function JobAssistant() {
           description="请核对下方联系信息（已从简历自动提取，可修改）；选择模板后生成 A4 PDF，可直接投递。"
         />
 
-        {/* 模板选择（多套美观模板，选择持久化） */}
+        {/* 模板选择（等高卡片网格 + 超出滚动条；选择持久化） */}
         <div style={{ margin: '4px 0 12px' }}>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>简历模板</Text>
-          <Radio.Group
-            value={templateId}
-            onChange={(e) => setTemplate(e.target.value)}
-            style={{ width: '100%' }}
-          >
-            <Space wrap size={8} style={{ width: '100%' }}>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>
+            简历模板 <Text type="secondary" style={{ fontWeight: 400 }}>（{RESUME_TEMPLATES.length} 套 · 列表可滚动）</Text>
+          </Text>
+          <div className="resume-tpl-scroll">
+            <Radio.Group
+              value={templateId}
+              onChange={(e) => setTemplate(e.target.value)}
+              className="resume-tpl-grid"
+            >
               {RESUME_TEMPLATES.map((t) => (
-                <Radio.Button
-                  key={t.id}
-                  value={t.id}
-                  style={{
-                    width: 'calc(50% - 4px)',
-                    height: 'auto',
-                    padding: '8px 10px',
-                    whiteSpace: 'normal',
-                    textAlign: 'left',
-                    lineHeight: '1.5',
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 8,
-                  }}
-                >
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: 12,
-                      height: 12,
-                      borderRadius: 3,
-                      background: t.color,
-                      marginTop: 3,
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span>
-                    <span style={{ display: 'block', fontWeight: 600, fontSize: 13 }}>{t.name}</span>
-                    <Text type="secondary" style={{ fontSize: 12 }}>{t.desc}</Text>
+                <Radio.Button key={t.id} value={t.id} className="resume-tpl-card">
+                  <span className="resume-tpl-swatch" style={{ background: t.color }} />
+                  <span className="resume-tpl-text">
+                    <span className="resume-tpl-name">{t.name}</span>
+                    <span className="resume-tpl-desc">{t.desc}</span>
                   </span>
                 </Radio.Button>
               ))}
-            </Space>
-          </Radio.Group>
+            </Radio.Group>
+          </div>
         </div>
 
-        {/* 个人照片（选填，未上传则模板显示占位框） */}
+        {/* 个人照片（选填；不传则 PDF 中不出现照片框） */}
         <div style={{ margin: '4px 0 12px' }}>
-          <Text strong style={{ display: 'block', marginBottom: 8 }}>个人照片 <Text type="secondary" style={{ fontWeight: 400 }}>（选填 · 所有模板均保留照片框，上传后自动嵌入）</Text></Text>
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>个人照片 <Text type="secondary" style={{ fontWeight: 400 }}>（选填 · 不上传则 PDF 中不出现照片框）</Text></Text>
           <Upload
             accept="image/*"
             showUploadList={false}
@@ -586,23 +753,51 @@ export default function JobAssistant() {
           </Space>
         </Form>
 
-        <Divider orientation="left" plain style={{ margin: '4px 0 10px' }}>内容分节（按需勾选）</Divider>
-        <Checkbox.Group
-          value={exportSections}
-          onChange={(vals) => setExportSections(vals.map(String))}
-          style={{ width: '100%' }}
-        >
-          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-            {RESUME_SECTION_META.map((m) => (
-              <Checkbox key={m.id} value={m.id}>
-                <Space size={4}>
-                  <span>{m.title}</span>
-                  <Text type="secondary" style={{ fontSize: 12 }}>{m.hint}</Text>
+        <Divider orientation="left" plain style={{ margin: '4px 0 10px' }}>
+          内容模块（按需勾选 · 右侧按钮调整顺序 · 空模块不会输出）
+        </Divider>
+        <div className="resume-mod-list">
+          {moduleOrder.map((id, idx) => {
+            const m = RESUME_SECTION_META.find((x) => x.id === id);
+            if (!m) return null;
+            const checked = exportSections.includes(id);
+            return (
+              <div className={`resume-mod-row${checked ? '' : ' is-off'}`} key={id}>
+                <Checkbox
+                  checked={checked}
+                  onChange={(e) =>
+                    setExportSections((prev) =>
+                      e.target.checked ? [...prev, id] : prev.filter((x) => x !== id)
+                    )
+                  }
+                >
+                  <Space size={4}>
+                    <span className="resume-mod-name">{m.title}</span>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{m.hint}</Text>
+                  </Space>
+                </Checkbox>
+                <Space size={2} className="resume-mod-actions">
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ArrowUpOutlined />}
+                    disabled={idx === 0}
+                    title="上移一位"
+                    onClick={() => moveModule(idx, -1)}
+                  />
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ArrowDownOutlined />}
+                    disabled={idx === moduleOrder.length - 1}
+                    title="下移一位"
+                    onClick={() => moveModule(idx, 1)}
+                  />
                 </Space>
-              </Checkbox>
-            ))}
-          </Space>
-        </Checkbox.Group>
+              </div>
+            );
+          })}
+        </div>
         {exportTailor && exportTailor.skillGaps.length > 0 && (
           <div style={{ marginTop: 10 }}>
             <Text type="warning" style={{ fontSize: 12 }}>

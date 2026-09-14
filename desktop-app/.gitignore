@@ -45,3 +45,6 @@ cloakbrowser-profile/
 # ===== 测试覆盖（暂未启用）=====
 coverage/
 .nyc_output/
+
+# ===== 临时诊断 / 复现脚本（分析后清理，不入库）=====
+scripts/tmp-*

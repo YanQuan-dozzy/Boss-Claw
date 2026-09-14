@@ -1,9 +1,10 @@
 // 本地确定性多维匹配引擎（不依赖 AI，免费、可复现、可解释）
 // 对齐 GitHub 优秀项目的核心实践：
-//   - ai-job-search (MadsLorentzen, 34k★)：多维匹配评估（技能/方向/地点/薪资/学历/经验）
+//   - ai-job-search (MadsLorentzen, 34k★)：多维匹配评估（技能/方向/地点/薪资/学历）
 //     + deal-breaker 硬否决（确定性硬约束，配置化，不依赖模型判断）
 //   - Agentic-Career-Assistant：混合评分（精确技能重叠加权）+ 可解释匹配（评分分解展示）
 //   - SkillFit-AI / JobMatch-AI：0-100 量化维度分 + 缺失技能如实标注
+// 经验维度不在本地计算（交给 AI 五维评估），见下方「经验：本地不再计算」口径说明。
 // 职责：analyzeJob 的本地兜底 / AI 分数校准 / UI 可解释维度；绝不生成任何简历事实（诚实规则）。
 import type { AppConfig, JobMeta, Profile } from './types';
 import { normalizeStringList, findDirectionRule } from './helpers';
@@ -106,90 +107,13 @@ function degreeLevel(text: string): number {
   return 0;
 }
 
-// ===== 经验年限提取 =====
-/**
- * 从「X-Y年」/「X年」/「在校/应届」解析经验年限下限；无法解析返回 null。
- *
- * 关键预处理（修复真实漏拦）：经历行普遍形如「XX公司 前端开发实习生（2025.06-2025.09）：…」，
- * 若不做处理，`2025.06` 会被当成「2025 年经验」。旧实现逐行取「全部数字的最小值」→ 返回 2025.06，
- * 多段经历再求和 → 画像经验虚高到上千 → 「岗位要求年限 > 画像年限」的硬约束永远不成立。
- * 因此先把「年份 / 年月」形态的数字整体剔除，剩下的才可能是经验年限。
- */
-export function parseExperienceYears(text: string | undefined | null): number | null {
-  const t = String(text || '').trim();
-  if (!t) return null;
-  if (/在校|应届|无经验|不限/.test(t)) return 0;
-  const cleaned = t
-    .replace(/\d{4}\s*[年./\-]\s*\d{1,2}\s*月?/g, ' ') // 2025.06 / 2022年9月 / 2023/07
-    .replace(/(?:19|20)\d{2}\s*年?/g, ' '); // 2025年 / 2025（裸年份）
-  const nums = [...cleaned.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]));
-  if (!nums.length) return null;
-  return Math.min(...nums); // 取下限，保守判断
-}
-
-/**
- * 解析经历行里的年月区间 → 绝对月序（year × 12 + month）。
- * 支持「2025.06-2025.09」「2022年9月-2023年6月」「2023/07 - 至今」等写法；识别失败返回 null。
- */
-export function parseMonthSpan(text: string | undefined | null): { start: number; end: number } | null {
-  const t = String(text || '');
-  const m = t.match(
-    /(\d{4})\s*[年./\-]\s*(\d{1,2})\s*月?\s*[-–—~至到]{1,2}\s*(?:(\d{4})\s*[年./\-]\s*(\d{1,2})\s*月?|(至今|现在|今|present|now))/i
-  );
-  if (!m) return null;
-  const norm = (month: string) => Math.min(12, Math.max(1, Number(month)));
-  const start = Number(m[1]) * 12 + norm(m[2]);
-  let end: number;
-  if (m[5]) {
-    // 「至今」：按当前月结算（该情形本身依赖当前时间，无法做成纯常量）
-    const now = new Date();
-    end = now.getFullYear() * 12 + (now.getMonth() + 1);
-  } else {
-    end = Number(m[3]) * 12 + norm(m[4]);
-  }
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
-  return { start, end };
-}
-
-/** 合并重叠/相邻的月份区间（用于多段经历取并集，重叠期不重复计数） */
-function mergeMonthSpans(spans: { start: number; end: number }[]): { start: number; end: number }[] {
-  const sorted = [...spans].sort((a, b) => a.start - b.start);
-  const out: { start: number; end: number }[] = [];
-  for (const span of sorted) {
-    const last = out[out.length - 1];
-    if (last && span.start <= last.end + 1) last.end = Math.max(last.end, span.end);
-    else out.push({ ...span });
-  }
-  return out;
-}
-
-/**
- * 从画像经历提取总年限。两级口径（从严到宽）：
- *   ① 经历行带年月区间 → 取**区间并集**的真实跨度（实习与在校项目并行时不会被重复累加，
- *      避免画像经验虚高导致经验硬约束漏拦）；
- *   ② 无任何可解析区间 → 退化为旧的「按行内 X年 / X-Y年 表述求和」口径。
- * 均为 null 时回退画像硬约束里的经验表述。
- */
-export function profileExperienceYears(profile: Profile | null): number | null {
-  if (!profile) return null;
-  const lines = (profile.facts?.experiences || []).map((e) => String(e || '').trim()).filter(Boolean);
-  const spans = lines.map(parseMonthSpan).filter((s): s is { start: number; end: number } => s != null);
-  if (spans.length) {
-    const months = mergeMonthSpans(spans).reduce((sum, s) => sum + (s.end - s.start + 1), 0);
-    return Math.round((months / 12) * 10) / 10;
-  }
-  let total = 0;
-  let found = false;
-  for (const line of lines) {
-    const years = parseExperienceYears(line);
-    if (years != null) {
-      total += years;
-      found = true;
-    }
-  }
-  if (found) return total;
-  return parseExperienceYears(profile.hardConstraints?.experience);
-}
+// ===== 经验：本地不再计算 =====
+// 口径（2026-09-14 定）：经验维度**完全交给 AI 五维评估**（job-analysis 的 dimensionScores.experience，
+// 提示词已规定「年限不足 → 降到谨慎档（60），绝不判不推荐」）。本地解析 JD 要求年限 / 画像经历区间
+// 属于对同一事实的重复判断，且口径与 AI 不一致（本地会按比例压分甚至误判），因此整块删除：
+//   - 删 parseExperienceYears / parseMonthSpan / mergeMonthSpans / profileExperienceYears / jdRequiredExperienceYears；
+//   - 本地经验维度恒为 null（UI 自动过滤；AI 路径由 AI 分值填充）。
+// 注意：`profile.hardConstraints.experience` 仍是「求职条件」的展示字段（profile.ts 维护），此处不涉及。
 
 /** 从 JD 文本提取要求的学历等级；未明确要求返回 null */
 function jdRequiredDegreeLevel(job: JobMeta): number | null {
@@ -202,19 +126,6 @@ function jdRequiredDegreeLevel(job: JobMeta): number | null {
   // 「不限学历/学历不限」不构成要求
   if (/不限|以上|学历不限|无学历要求/.test(text) && !/本科及以上|硕士及以上|博士及以上/.test(text)) return null;
   return level;
-}
-
-/** 从 JD 文本提取要求的经验年限；未明确要求返回 null */
-function jdRequiredExperienceYears(job: JobMeta): number | null {
-  // 同学历口径：岗位要求经验只认明确字段（title/description），不拼接 cardText，
-  // 避免列表卡片文本里的相似岗位 / 周边内容「X年经验」误伤（正常实习岗被判经验不足→35 分）。
-  const text = `${String(job.title || '')} ${String(job.description || '')}`;
-  if (/经验不限|无经验要求|无要求/.test(text)) return 0;
-  const years = parseExperienceYears(text);
-  if (years == null) return null;
-  // 仅当上下文确实是「经验要求」（如「3-5年经验」「5年以上」）才使用，避免误把「3-5人」当经验
-  if (/(经验|工作年限|相关工作|从业)/.test(text)) return years;
-  return null;
 }
 
 // ===== 岗位求职类型判定（实习/全职）=====
@@ -249,11 +160,11 @@ export interface LocalMatchDimensions {
   salary: number | null;
   /** 学历匹配 0-100（JD 要求 vs 画像学历） */
   education: number | null;
-  /** 经验匹配 0-100（JD 要求 vs 画像经验） */
+  /** 经验匹配 0-100：**本地不再计算，恒为 null**（由 AI 五维评估 dimensionScores.experience 提供） */
   experience: number | null;
   /** 本地加权综合分 0-100（各维度加权，null 维度剔除后重归一化）；信息不足为 null */
   overall: number | null;
-  /** 维度计算的确定程度（0-1）：「有可比对依据（而非中性兜底）」的维度数 ÷ 6，用于 AI 分校准的置信度 */
+  /** 维度计算的确定程度（0-1）：「有可比对依据（而非中性兜底）」的维度数 ÷ 参与本地计算的维度数，用于 AI 分校准的置信度 */
   confidence: number;
 }
 
@@ -585,40 +496,26 @@ export function computeLocalMatch(
     educationScore = 60; // JD 未明确要求学历：中性
   }
 
-  // ---- 经验匹配（按达标比例细化梯度；≥1.0 满分，0.6-0.8 达 64 分可谨慎尝试）----
-  // 经验不足只压低该维度分、不再作为硬拦截（画像经验与 JD 要求口径不一致时，
-  // 直接跳过会误杀本可尝试的岗位；分数惩罚 + matching.ts 综合分已能反映匹配度）。
-  const requiredYears = jdRequiredExperienceYears(job);
-  const profileYears = profileExperienceYears(profile);
-  let experienceScore: number | null = null;
-  if (requiredYears != null && profileYears != null) {
-    const ratio = profileYears / Math.max(1, requiredYears);
-    if (ratio >= 1) experienceScore = 100;
-    else if (ratio >= 0.8) experienceScore = 82;
-    else if (ratio >= 0.6) experienceScore = 64;
-    else if (ratio >= 0.4) experienceScore = 46;
-    else experienceScore = 30;
-  } else {
-    experienceScore = 60; // 未明确要求：中性
-  }
+  // ---- 经验匹配：本地不计算（见文件上方「经验：本地不再计算」口径）----
+  // 经验由 AI 五维评估判定，本地恒为 null（不参与加权综合分，UI 自动过滤该维度）。
+  const experienceScore: number | null = null;
 
   // ---- 加权综合分（null 维度剔除后重归一化）----
   // 权重说明：技能/方向是匹配核心；薪资在不对称评分后区分度提升，权重上调；
-  // 地点命中恒为 100（区分度低）降权；经验多为中性 60，权重下调。
+  // 地点命中恒为 100（区分度低）降权；**经验已交给 AI，不参与本地加权**。
   const WEIGHTS: [keyof LocalMatchDimensions, number][] = [
     ['skill', 0.34],
     ['direction', 0.28],
     ['location', 0.1],
     ['salary', 0.14],
     ['education', 0.08],
-    ['experience', 0.06],
   ];
   let weightedSum = 0;
   let weightTotal = 0;
   for (const [key, w] of WEIGHTS) {
     const v = (() => {
       const dim = key as keyof LocalMatchDimensions;
-      return dim === 'skill' ? skillScore : dim === 'direction' ? directionScore : dim === 'location' ? locationScore : dim === 'salary' ? salaryScore : dim === 'education' ? educationScore : experienceScore;
+      return dim === 'skill' ? skillScore : dim === 'direction' ? directionScore : dim === 'location' ? locationScore : dim === 'salary' ? salaryScore : educationScore;
     })();
     if (v != null) {
       weightedSum += v * w;
@@ -626,18 +523,16 @@ export function computeLocalMatch(
     }
   }
   const overall = weightTotal > 0 ? Math.round(weightedSum / weightTotal) : null;
-  // 置信度 = 「有真实依据的维度数 ÷ 6」，而非「非空维度数 ÷ 6」。
-  // 修复死开关：salary / education / experience 三维在信息缺失时都返回中性兜底值（55/60/65），
-  // 恒为非 null → 旧的 scoredCount 恒 ≥3 → confidence 只可能是 0.7 / 0.9，
-  // 于是 matching.ts 里的 `confidence >= 0.4`「置信度不足就不参与校准」门槛无条件成立（等于没有）。
-  // 现在只有「画像与 JD 都提供了可比对信息」的维度才计信，信息不足时置信度会如实下降。
+  // 置信度 = 「有真实依据的维度数 ÷ 参与本地计算的维度数」，而非「非空维度数 ÷ 维度数」。
+  // 修复死开关：salary / education 在信息缺失时返回中性兜底值，恒为非 null → 旧的 scoredCount
+  // 恒偏大、confidence 只可能落在少数几档，等于没有区分度。现在只有「画像与 JD 都提供了可比对信息」
+  // 的维度才计信，信息不足时置信度会如实下降。（当前仅作为可解释性字段输出，无消费方依赖。）
   const informed = [
     corePool.length > 0 || directionPool.length > 0, // 技能：画像有技能词可比对
     directions.length > 0 || keywords.length > 0, // 方向：画像有方向/搜索词可比对
     targetLocations.length > 0 && isLocationDecidable(job.location), // 地点：JD 地点可判定且画像有目标城市
     jdRange.valid && expected.valid, // 薪资：JD 薪资与期望薪资都能解析
     requiredDegree != null, // 学历：JD 明确要求了学历
-    requiredYears != null && profileYears != null, // 经验：JD 要求与画像年限都可解析
   ].filter(Boolean).length;
   const confidence = Math.max(0.15, Math.round((informed / WEIGHTS.length) * 100) / 100);
 

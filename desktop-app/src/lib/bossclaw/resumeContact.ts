@@ -1,28 +1,40 @@
-// 定制简历结构化组织：从简历原文提取联系信息 + 把「简历/画像/定制结果」组装为分节内容
+// 定制简历结构化组织：从简历原文提取联系信息 + 把「AI 定制七模块文档」组装为可排版的模块列表
 //
 // 对齐 ai-job-search 的 /setup + /apply 方法论：
 //   - /setup：把简历整理为结构化 profile（联系信息 / 摘要 / 技能 / 经历 / 项目 / 教育 / 证书）；
 //   - /apply：针对岗位 JD 产出定制内容（定制摘要 / 相关经历亮点 / 匹配技能），只引用真实事实；
 // 本模块输出 ResumeDocData，供 resumePdf.buildResumeHtml 渲染为 A4 PDF（也可扩展其他输出格式）。
 //
+// 模块口径（2026-09-14 定）：
+//   - 固定顺序：教育经历 → 实习经历 → 工作经历 → 项目经历 → 专业技能 → 个人荣誉 → 自我评价；
+//   - **空模块整块不输出**（连标题一起省略），不渲染任何占位文字；
+//   - 专业技能为「类别：技能 A、技能 B」分组行，一组一行；
+//   - 实习/工作经历的标题按内容存在与否各自决定（只有一类时该模块自然只出现一次）。
+//
 // 安全不变量（对齐 AGENTS.md 2.1）：
 //   - 联系信息提取结果只是「初值」，导出前必须在 UI 中经用户人工确认（人工确认模式）；
-//   - 所有分节内容只来自简历原文 / 职业画像 / 已通过事实与口吻校验的定制结果，禁止编造。
-
+//   - 所有模块内容只来自简历原文 / 职业画像 / 经历补充材料 / 已通过事实与口吻校验的定制结果，禁止编造。
 import type { Profile } from './types';
-import { uniq } from './defaults';
-import type { TailorResult } from './jobAssistant';
+import type { TailorResult, TailorResumeDoc } from './jobAssistant';
+import { buildLocalTailorDoc } from './jobAssistant';
 
 // ===== 输出数据结构（与具体输出格式解耦：PDF / 其他格式共用） =====
-export interface ResumeDocSection {
-  /** 小节标识（summary / skills / highlights / experience / projects / education / certificates） */
+/** 内容块（教育/实习/工作/项目共用）：首行标题 + 元信息行 + 要点 */
+export interface ResumeDocBlock {
+  heading: string;
+  meta: string;
+  bullets: string[];
+}
+
+export interface ResumeDocModule {
+  /** 模块标识 */
   id: string;
-  /** 小节标题（如 个人摘要 / 核心技能 / 岗位相关经历亮点 …） */
+  /** 模块标题（如 教育经历 / 实习经历 / 专业技能 …） */
   title: string;
-  /** 小节内容 */
-  items: string[];
-  /** 渲染方式：summary 段落 / skills 标签化 / bullets 列表 */
-  kind: 'paragraph' | 'skills' | 'bullets';
+  /** 渲染方式：blocks 结构化块 / lines 一行一条（专业技能分组行、个人荣誉）/ paragraph 段落（自我评价） */
+  kind: 'blocks' | 'lines' | 'paragraph';
+  blocks?: ResumeDocBlock[];
+  lines?: string[];
 }
 
 export interface ResumeDocContact {
@@ -35,8 +47,8 @@ export interface ResumeDocContact {
 
 export interface ResumeDocData {
   contact: ResumeDocContact;
-  sections: ResumeDocSection[];
-  /** 个人照片 data URL（base64，JPEG/PNG）；可选，未上传时模板渲染占位框 */
+  modules: ResumeDocModule[];
+  /** 个人照片 data URL（base64，JPEG/PNG）；可选，未上传时**不渲染照片框** */
   photo?: string;
 }
 
@@ -92,11 +104,11 @@ export function targetTitleFromProfile(profile: Profile | null, fallback = ''): 
   return String(dir || '').replace(/^（|）$/g, '').trim();
 }
 
-// ===== 分节清单 =====
+// ===== 七模块定义（固定顺序；空模块不输出） =====
 export interface ResumeSectionMeta {
   id: string;
   title: string;
-  kind: ResumeDocSection['kind'];
+  kind: ResumeDocModule['kind'];
   /** 默认勾选 */
   default: boolean;
   /** 提示文案（UI 展示） */
@@ -104,17 +116,51 @@ export interface ResumeSectionMeta {
 }
 
 export const RESUME_SECTION_META: ResumeSectionMeta[] = [
-  { id: 'summary', title: '个人摘要', kind: 'paragraph', default: true, hint: '岗位定制摘要（AI 已校验，只引用简历事实）' },
-  { id: 'skills', title: '核心技能', kind: 'skills', default: true, hint: '岗位要求且简历具备的技能优先排列' },
-  { id: 'highlights', title: '岗位相关经历亮点', kind: 'bullets', default: true, hint: '按岗位相关性重排的量化改写要点（数字仅来自简历）' },
-  { id: 'experience', title: '工作/实习经历', kind: 'bullets', default: true, hint: '简历原文经历要点（未做改动）' },
-  { id: 'projects', title: '项目经历', kind: 'bullets', default: true, hint: '简历原文项目要点（未做改动）' },
-  { id: 'education', title: '教育背景', kind: 'bullets', default: true, hint: '简历原文教育信息' },
-  { id: 'certificates', title: '证书/荣誉', kind: 'bullets', default: false, hint: '简历原文证书信息（可选）' },
+  { id: 'education', title: '教育经历', kind: 'blocks', default: true, hint: '学校 + 专业 | 学历 + 时间（原文事实）' },
+  { id: 'internships', title: '实习经历', kind: 'blocks', default: true, hint: '实习经历要点，按岗位相关性重排' },
+  { id: 'works', title: '工作经历', kind: 'blocks', default: true, hint: '正式工作经历要点（无则不输出该模块）' },
+  { id: 'projects', title: '项目经历', kind: 'blocks', default: true, hint: '项目名称 / 技术栈 / 量化要点' },
+  { id: 'skills', title: '专业技能', kind: 'lines', default: true, hint: '按 AI 依 JD 归类的分组技能，一组一行' },
+  { id: 'honors', title: '个人荣誉', kind: 'lines', default: true, hint: '获奖与证书（原文事实）' },
+  { id: 'selfEval', title: '自我评价', kind: 'paragraph', default: true, hint: '自我评价段落' },
 ];
 
+/** 模块 id → 中文标题（顺序即最终渲染顺序） */
+const MODULE_TITLES: Record<string, string> = {
+  education: '教育经历',
+  internships: '实习经历',
+  works: '工作经历',
+  projects: '项目经历',
+  skills: '专业技能',
+  honors: '个人荣誉',
+  selfEval: '自我评价',
+};
+
+const clean = (s: unknown): string => String(s ?? '').trim();
+
+/** 把文档块转成渲染块，丢掉空块 */
+function toBlocks(blocks: TailorResumeDoc[keyof TailorResumeDoc]): ResumeDocBlock[] {
+  if (!Array.isArray(blocks)) return [];
+  const out: ResumeDocBlock[] = [];
+  for (const b of blocks as any[]) {
+    const heading = clean(b?.heading);
+    const meta = clean(b?.meta);
+    const bullets = (Array.isArray(b?.bullets) ? b.bullets : [])
+      .map((x: any) => clean(typeof x === 'string' ? x : x?.text))
+      .filter(Boolean);
+    if (!heading && !meta && !bullets.length) continue;
+    out.push({ heading, meta, bullets });
+  }
+  return out;
+}
+
 // ===== 组装 =====
-/** 从简历/画像/定制结果组装分节数据；contact 用用户确认后的值（未提供则用提取初值） */
+/**
+ * 从定制结果组装分节数据；contact 用用户确认后的值（未提供则用提取初值）。
+ * tailor 为空时用职业画像本地兜底文档（保证未定制时也能导出）。
+ * selectedIds 为「用户勾选 + 用户排序后」的模块 id 列表：**既决定输出哪些模块，也决定输出顺序**；
+ * 未传则按 RESUME_SECTION_META 的默认顺序输出全部（空模块仍会被省略）。
+ */
 export function buildResumeDocData(
   resumeText: string,
   profile: Profile | null,
@@ -124,56 +170,47 @@ export function buildResumeDocData(
 ): ResumeDocData {
   const extracted = extractContactInfo(resumeText, targetTitleFromProfile(profile));
   const contact: ResumeDocContact = {
-    name: String(contactOverride?.name ?? extracted.name ?? '').trim(),
-    phone: String(contactOverride?.phone ?? extracted.phone ?? '').trim(),
-    email: String(contactOverride?.email ?? extracted.email ?? '').trim(),
-    targetTitle: String(contactOverride?.targetTitle ?? extracted.targetTitle ?? '').trim(),
+    name: clean(contactOverride?.name ?? extracted.name),
+    phone: clean(contactOverride?.phone ?? extracted.phone),
+    email: clean(contactOverride?.email ?? extracted.email),
+    targetTitle: clean(contactOverride?.targetTitle ?? extracted.targetTitle),
   };
 
-  const enabled = (id: string): boolean => !selectedIds || selectedIds.includes(id);
-  const sections: ResumeDocSection[] = [];
+  const doc: TailorResumeDoc = tailor?.doc ?? buildLocalTailorDoc(profile);
 
-  if (enabled('summary')) {
-    const summary = String(tailor?.tailoredSummary ?? profile?.summary ?? '').trim();
-    if (summary) sections.push({ id: 'summary', title: '个人摘要', items: [summary], kind: 'paragraph' });
+  /** 按模块 id 生成模块；没有内容的模块返回 null（空模块整块不输出） */
+  const buildModule = (id: string): ResumeDocModule | null => {
+    if (id === 'education' || id === 'internships' || id === 'works' || id === 'projects') {
+      const blocks = toBlocks(doc[id]);
+      return blocks.length ? { id, title: MODULE_TITLES[id], kind: 'blocks', blocks } : null;
+    }
+    if (id === 'skills') {
+      const lines = (doc.skills || []).map((s) => clean(s?.text)).filter(Boolean);
+      return lines.length ? { id, title: MODULE_TITLES.skills, kind: 'lines', lines } : null;
+    }
+    if (id === 'honors') {
+      const lines = (doc.honors || []).map(clean).filter(Boolean);
+      return lines.length ? { id, title: MODULE_TITLES.honors, kind: 'lines', lines } : null;
+    }
+    if (id === 'selfEval') {
+      const text = clean(doc.selfEval?.text);
+      return text ? { id, title: MODULE_TITLES.selfEval, kind: 'paragraph', lines: [text] } : null;
+    }
+    return null;
+  };
+
+  // 输出顺序 = 用户给定顺序（勾选且排序后）；未给定则用默认顺序
+  const order = selectedIds && selectedIds.length ? selectedIds : RESUME_SECTION_META.map((m) => m.id);
+  const modules: ResumeDocModule[] = [];
+  for (const id of order) {
+    const mod = buildModule(id);
+    if (mod) modules.push(mod);
   }
 
-  if (enabled('skills')) {
-    // 定制高亮技能优先，再补画像技能，去重；确保岗位要求且简历具备的技能排在前面
-    const skills = uniq([...(tailor?.highlightedSkills ?? []), ...(profile?.facts?.skills ?? [])]).slice(0, 30);
-    if (skills.length) sections.push({ id: 'skills', title: '核心技能', items: skills, kind: 'skills' });
-  }
-
-  if (enabled('highlights')) {
-    const items = (tailor?.tailoredExperiences ?? []).filter(Boolean);
-    if (items.length) sections.push({ id: 'highlights', title: '岗位相关经历亮点', items, kind: 'bullets' });
-  }
-
-  if (enabled('experience')) {
-    const items = (profile?.facts?.experiences ?? []).filter(Boolean);
-    if (items.length) sections.push({ id: 'experience', title: '工作/实习经历', items, kind: 'bullets' });
-  }
-
-  if (enabled('projects')) {
-    const items = (profile?.facts?.projects ?? []).filter(Boolean);
-    if (items.length) sections.push({ id: 'projects', title: '项目经历', items, kind: 'bullets' });
-  }
-
-  if (enabled('education')) {
-    const items = (profile?.facts?.education ?? []).filter(Boolean);
-    if (items.length) sections.push({ id: 'education', title: '教育背景', items, kind: 'bullets' });
-  }
-
-  if (enabled('certificates')) {
-    const items = (profile?.facts?.certificates ?? []).filter(Boolean);
-    if (items.length) sections.push({ id: 'certificates', title: '证书/荣誉', items, kind: 'bullets' });
-  }
-
-  return { contact, sections };
+  return { contact, modules };
 }
 
-/** 是否有至少一个可导出的分节 */
+/** 是否有至少一个可导出的模块 */
 export function hasExportableSections(profile: Profile | null, tailor: TailorResult | null): boolean {
-  const data = buildResumeDocData('', profile, tailor);
-  return data.sections.length > 0;
+  return buildResumeDocData('', profile, tailor).modules.length > 0;
 }

@@ -19,6 +19,7 @@ import { SAFETY_LIMITS, isLockedOut, effectiveDailyCap, dailySentCount, cooldown
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { tailorForJob } from '@/lib/bossclaw/jobAssistant';
 import { buildProfile } from '@/lib/bossclaw/profile';
+import { mergeTargetLocationsWith, syncTargetLocationsOnStart } from '@/lib/bossclaw/targetLocationSync';
 import { buildDirectionPlan } from '@/lib/bossclaw/directions';
 import { createTasks } from '@/lib/bossclaw/tasks';
 import { buildStatsSnapshot, DEFAULT_STATS_RANGE, rangeText, type StatsRangeKey } from '@/lib/bossclaw/statsAggregate';
@@ -296,6 +297,8 @@ const handlers: Record<string, Handler> = {
   },
   dataSetProfile: ({ profile }) => {
     useDataStore.getState().setProfile((profile ?? null) as Profile | null);
+    // 目标城市同源：画像里带进来的城市并入设置页「目标城市」（两处恒等，删除仍由用户决定）
+    syncTargetLocationsOnStart();
     return { applied: true, message: profile ? '职业画像已更新' : '职业画像已清空', next: Boolean(profile) };
   },
   dataSetDirectionPlan: ({ plan }) => {
@@ -745,6 +748,9 @@ const handlers: Record<string, Handler> = {
     const text = (data.resumeText || '').trim();
     if (!text) return { applied: false, message: '尚未导入简历，无法生成职业画像' };
     const profile = await buildProfile(text, cfg.model);
+    // 目标城市同源：重建后新推断出的城市补进设置页（只补不删，与简历中心「生成画像」同口径）
+    const mergedLocations = mergeTargetLocationsWith(profile.hardConstraints?.locations);
+    profile.hardConstraints = { ...profile.hardConstraints, locations: mergedLocations };
     data.setProfile(profile);
     return { applied: true, message: '职业画像已重建（简历中心 → 生成画像）', next: { method: profile.generation?.mode || 'local' } };
   },

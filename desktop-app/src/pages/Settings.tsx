@@ -78,6 +78,7 @@ import {
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
+import { writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
 import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
 import {
@@ -954,18 +955,20 @@ export default function Settings() {
             </div>
             <div className="settings-grid">
               <div className="sg-item">
-                <span className="field-label">目标城市（逗号分隔）</span>
-                <Input
-                  value={config.targetLocations.join(',')}
-                  onChange={(e) =>
-                    setConfig({
-                      targetLocations: e.target.value
-                        .split(',')
-                        .map((s) => s.trim())
-                        .filter(Boolean),
-                    })
-                  }
-                  placeholder="北京,上海,杭州"
+                <span className="field-label">
+                  目标城市
+                  <Tooltip title="与「简历中心 → 职业画像」的城市同源：两处共享同一份内容、相互补充，任一处增删都会同步。可输入多个城市，用回车或逗号（, ，）／顿号（、）分隔；留空表示不限城市（按全国搜索）。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                <Select
+                  mode="tags"
+                  style={{ width: '100%' }}
+                  value={config.targetLocations}
+                  onChange={(v) => writeTargetLocations(v)}
+                  tokenSeparators={[',', '，', '、']}
+                  placeholder="输入城市后回车；留空 = 全国"
+                  notFoundContent={null}
                 />
               </div>
               <div className="sg-item">

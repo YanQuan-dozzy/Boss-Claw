@@ -1240,6 +1240,50 @@ safeHandle('jc:qualified-jobs-dir-pick', async () => {
   }
 });
 
+// ===== 经历补充材料：按路径选择 + 每次调用现读（不落缓存/不持久化内容） =====
+// 口径：渲染层只持有文件绝对路径；正文每次调用 AI 前经 jc:material-read 现读并重新解析，
+// 因此用户在外部改了素材文件即时生效，应用内不保存任何素材内容副本。
+safeHandle('jc:material-pick', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: '选择经历补充材料（PDF / DOCX / MD / TXT）',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '简历与文本', extensions: ['pdf', 'docx', 'md', 'markdown', 'txt', 'text'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, paths: filePaths.map((p) => ({ path: p, name: path.basename(p) })) };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 按路径现读文件（不缓存）→ 返回 data URL，供渲染层复用既有解析链路（pdf 文本层 / docx / 纯文本）
+safeHandle('jc:material-read', async (_event, filePath) => {
+  try {
+    const p = String(filePath || '');
+    if (!p || !path.isAbsolute(p)) return { ok: false, error: '文件路径无效（需绝对路径）' };
+    const stat = await fs.promises.stat(p);
+    if (!stat.isFile()) return { ok: false, error: '不是文件' };
+    // 单文件上限 20MB：避免超大素材拖垮解析与内存
+    if (stat.size > 20 * 1024 * 1024) return { ok: false, error: '文件超过 20MB' };
+    const buf = await fs.promises.readFile(p);
+    const ext = path.extname(p).replace(/^\./, '').toLowerCase();
+    const mime = ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
+    return {
+      ok: true,
+      name: path.basename(p),
+      path: p,
+      dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+      bytes: buf.length,
+    };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 // ===== 本地数据备份目录（开机自启动同理，见下方 autostart 段）=====
 // localStorage 为主存储；本地备份目录指针存 userData/.backup-dir.txt（独立于 localStorage，
 // 避免 localStorage 缺失时无法得知恢复来源）。渲染层每 5 分钟脏检查后经此写盘。

@@ -86,6 +86,12 @@ const api = {
   qualifiedJobsDirSet: (dir) => ipcRenderer.invoke('jc:qualified-jobs-dir-set', dir),
   qualifiedJobsDirPick: () => ipcRenderer.invoke('jc:qualified-jobs-dir-pick'),
 
+  // ===== 经历补充材料（只记文件路径；正文每次调用 AI 前现读，不缓存不持久化）=====
+  // 系统文件选择对话框（多选）→ 返回 [{ path, name }]
+  materialPick: () => ipcRenderer.invoke('jc:material-pick'),
+  // 按绝对路径现读文件 → { ok, name, dataUrl, bytes }
+  materialRead: (filePath) => ipcRenderer.invoke('jc:material-read', filePath),
+
   // ===== AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）=====
   // 技能元数据列表（id/name/description/scope/defaultEnabled/source/custom）
   skillsList: () => ipcRenderer.invoke('jc:skills-list'),
