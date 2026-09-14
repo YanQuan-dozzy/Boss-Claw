@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki 教程](docs/wiki/Home.md)
 
-![Version](https://img.shields.io/badge/version-v2.5.2-078A83)
+![Version](https://img.shields.io/badge/version-v2.5.3-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -26,12 +26,12 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.2-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.2-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.2-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.2-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.3-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
-> 当前最新发布 v2.5.2 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
+> 当前最新发布 v2.5.3 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -53,7 +53,8 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.2（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.3（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.2 | Windows x64 安装版 + 便携版 |
 | v2.5.0 | Windows x64 安装版 + 便携版 |
 | v2.3.0 | Windows x64 安装版 + 便携版 |
 | v2.1.0 | Windows / Linux（AppImage·deb·rpm·pacman·tar.gz）/ macOS（mac.tar.gz 自建档案） |
@@ -304,7 +305,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.2）
+├── desktop-app/               当前主应用（Electron + React，v2.5.3）
 │   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs / cloakPreload.cjs）
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
 │   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py）
@@ -347,7 +348,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 [`docs/wiki/FAQ.md`](docs/wiki/FAQ.md)，再提交 Issue。提交时请包含：
 
-- BossClaw 版本（桌面版 v2.5.2）
+- BossClaw 版本（桌面版 v2.5.3）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图

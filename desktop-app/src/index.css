@@ -5933,23 +5933,25 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   color: var(--fg-subtle);
 }
 
-/* ===== 定制简历 · 导出弹窗（模板等高网格 + 滚动条；内容模块可排序） ===== */
-/* 模板区：固定高度 + 竖向滚动条，模板再多也不会把弹窗撑长 */
-.resume-tpl-scroll {
-  max-height: 172px;
+/* ===== 定制简历 · 导出弹窗（主滑动条 + 模板等高网格 + 模块可排序） ===== */
+/* 滚动策略：整块内容区一条主滑动条，标题与底部按钮固定不动；
+   max-height 用视口高度扣除 top(24) + 标题 + 底部按钮区，保证「生成并保存 / 取消」永远可见 */
+.resume-export-modal .ant-modal-body {
+  max-height: calc(100vh - 176px);
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 4px;
+  /* 预留滚动条槽位：出现/消失时内容不左右跳动（Chromium 支持） */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
-.resume-tpl-scroll::-webkit-scrollbar {
-  width: 6px;
+.resume-export-modal .ant-modal-body::-webkit-scrollbar {
+  width: 8px;
 }
-.resume-tpl-scroll::-webkit-scrollbar-thumb {
+.resume-export-modal .ant-modal-body::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
 }
-.resume-tpl-scroll::-webkit-scrollbar-track {
+.resume-export-modal .ant-modal-body::-webkit-scrollbar-track {
   background: transparent;
 }
 /* 两列等高卡片网格（覆盖 antd Radio.Button 的默认内联排布与相邻分隔线） */
