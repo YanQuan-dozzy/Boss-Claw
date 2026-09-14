@@ -15,7 +15,7 @@ const FAKE_HOME = path.join(SANDBOX, 'home');
 const REAL_BOSSCLAW_HOME = path.join(os.homedir(), '.bossclaw');
 const HOME_BACKUP = path.join(SANDBOX, 'bossclaw-home-backup');
 // 必须在导入 context.mjs 之前设置，因为 CONTROL_BRIDGE_FILE 在模块加载时解析。
-// 同时固定面向**开发仓库**（而非自动探测到的已安装版 F:\BOSSClaw）：保证 src/electron/node_modules 等指向 dev 目录。
+// 同时固定面向**开发仓库**（而非自动探测到的已安装版 <安装目录>）：保证 src/electron/node_modules 等指向 dev 目录。
 process.env.BOSSCLAW_USERDATA = USER_DATA;
 process.env.BOSSCLAW_REPO = process.env.BOSSCLAW_REPO || path.resolve(import.meta.dirname, '..', '..', '..');
 

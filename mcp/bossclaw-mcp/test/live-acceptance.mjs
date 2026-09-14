@@ -41,7 +41,7 @@ console.log(`      参数：${args.join(' ')}\n`);
 const env = { ...process.env };
 for (const k of ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE', 'PYTHONPATH']) delete env[k];
 if (reg.env) Object.assign(env, reg.env);
-// 固定面向**开发仓库**（而非自动探测到的已安装版 F:\BOSSClaw），保证 repo 工具路径解析正确
+// 固定面向**开发仓库**（而非自动探测到的已安装版 <安装目录>），保证 repo 工具路径解析正确
 if (!env.BOSSCLAW_REPO) env.BOSSCLAW_REPO = REPO_ROOT;
 
 const child = spawn(reg.command, args, { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });

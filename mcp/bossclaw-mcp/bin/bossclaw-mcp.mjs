@@ -16,7 +16,7 @@ if (!ok) {
 }
 
 const instructions = [
-  'BossClaw 应用操作 MCP —— 让 agent 能够读取、启动、诊断并驱动已安装的 BossClaw 桌面应用（如 F:\\BOSSClaw）。',
+  'BossClaw 应用操作 MCP —— 让 agent 能够读取、启动、诊断并驱动已安装的 BossClaw 桌面应用（如 <安装目录>）。',
   '',
   `工作区根：${REPO_ROOT}`,
   `应用目录：${DESKTOP_DIR}`,
@@ -32,7 +32,7 @@ const instructions = [
   '单向链路：仅 agent → MCP → 应用（启动/状态/动作）。应用内按钮不再转交 agent 代答；',
   '未配置 API Key 时 AI 功能走应用内本地规则兜底。',
   '',
-  '工作区边界：仅读取已安装打包版（如 F:\\BOSSClaw，含 resources/app）内的文件；',
+  '工作区边界：仅读取已安装打包版（如 <安装目录>，含 resources/app）内的文件；',
   '开发/源码类内容不提供（git、构建、冒烟测试等一律不开放）。',
   '',
   '硬性约束（不可违反，详见 bossclaw_guidelines）：',
