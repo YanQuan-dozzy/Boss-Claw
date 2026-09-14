@@ -285,6 +285,19 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       }
 
     if (result.ok && result.sent) {
+      // 用户已在沟通过程中手动「跳过」该岗位 → 尊重跳过，不再覆写为已沟通
+      const curNow = useDataStore.getState().pending.find((x) => x.id === item.id);
+      if (curNow?.status === 'skipped') {
+        addChatLog({
+          level: 'warn',
+          stage: 'skip',
+          jobId,
+          jobTitle: title,
+          company,
+          msg: '⏭ 用户已手动跳过该岗位，本次沟通结果不再计入（浏览器中的发送结果以实际气泡为准）',
+        });
+        return 'continue';
+      }
       // 回复类发送不计入「今日投递」上限：仅置 status=sent 并记录 replySentAt，不改写投递用的 sentAt，
       // 从而不占用 dailySentCount（sentAt 为今天）统计出的投递岗位数；若此前已投递过（sentAt 已在），仍只算 1 条投递。
       updatePending(item.id, sentAsReply
