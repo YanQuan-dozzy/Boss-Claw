@@ -1,13 +1,12 @@
-# bossclaw-mcp —— BossClaw 项目操作 MCP
+# bossclaw-mcp —— BossClaw 应用控制 MCP
 
-让外部 agent（Claude / WorkBuddy / Cursor / 任意 MCP 客户端）能够**自主操作已安装的 BossClaw 桌面应用**（如 `<安装目录>`）：
-读取应用文件、建立安全约束认知、启停与状态诊断、并驱动运行中的应用（切页、暂停投递、截图…）。
+让外部 agent（Claude / WorkBuddy / Cursor / 任意 MCP 客户端）能够**控制已安装的 BossClaw 桌面应用**（如 `<安装目录>`）：
+启动/停止/运行状态、实时内存状态，并驱动运行中的应用（切页、暂停投递、AI 生成、截图…）。
 
 - **零依赖**：只用 Node 内置模块实现 JSON-RPC / stdio 协议，不需要 `npm install`，不会因依赖问题启动失败。
 - **传输**：stdio（标准 MCP 传输）。
-- **14 个工具**，分 5 组：应用认知 / 运行控制 / 状态诊断 / 应用控制 / 工作区路径。
+- **5 个工具**，分 2 组：运行控制 / 应用控制。只面向「控制已安装应用」，不提供任何测试/开发类能力。
 - **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时走**本地规则**兜底（见 §4）。
-- **只控制应用，不涉及测试/开发**：默认只读取 `<安装目录>` 等**安装包**内的文件；不提供 git / 构建 / 冒烟等开发类能力。
 
 ---
 
@@ -48,7 +47,7 @@
 
 ```bash
 cd mcp/bossclaw-mcp
-node test/selftest.mjs          # 协议 + 只读工具（不需要应用在运行）
+node test/selftest.mjs          # 协议 + 工具自检（不需要应用在运行）
 node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会跑一次 Electron）
 ```
 
@@ -56,23 +55,14 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 
 | 变量 | 作用 |
 | --- | --- |
-| `BOSSCLAW_REPO` | 覆盖仓库根路径（默认由入口文件位置推导） |
+| `BOSSCLAW_REPO` | 覆盖应用根路径（安装版或开发仓库；默认由入口文件位置推导 + 已安装应用自探测） |
 | `BOSSCLAW_USERDATA` | 覆盖 Electron userData 目录（默认 `%APPDATA%\BossClaw`） |
 
 ---
 
 ## 2. 工具清单
 
-### 2.1 应用认知（repo）
-
-| 工具 | 用途 |
-| --- | --- |
-| `bossclaw_guidelines` | **开工必读**：安全不变量 + 工程约定（命令 / 沙箱陷阱 / 主题 / 持久化键 / 关键文件地图） |
-| `bossclaw_list_dir` | 目录树（默认跳过 node_modules / dist / release） |
-| `bossclaw_read_file` | 读文件（支持行区间，返回带行号文本） |
-| `bossclaw_search` | 正则检索文本，返回「文件:行号: 内容」+ 每文件命中汇总 |
-
-### 2.2 运行控制（runtime）
+### 2.1 运行控制（runtime）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -80,16 +70,7 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 | `bossclaw_app_stop` | 按进程树结束 BossClaw 进程（只匹配本项目实例，不误伤其它 Electron 应用） |
 | `bossclaw_app_status` | 是否运行 / 进程列表 / 控制桥 / Camoufox 端口 18767 / 日志新鲜度 |
 
-### 2.3 状态诊断（state）
-
-| 工具 | 用途 |
-| --- | --- |
-| `bossclaw_state_read` | 读本地备份快照中的持久化状态（支持点路径 + summary/raw 粒度） |
-| `bossclaw_state_summary` | **排查「为什么不投递」首选**：队列分布、当日统计、暂停冷却、每日上限、平台开关、LLM 配置（key 打码）、素材就绪度、定时任务、引擎状态 |
-| `bossclaw_logs` | 读 app / render / webview 三类日志尾部，支持正则过滤 |
-| `bossclaw_engine_status` | 引擎探测：Camoufox 桥（端口 / Cookie / engine-state.json）、CloakBrowser profile、实时状态 |
-
-### 2.4 应用控制（control，需控制桥）
+### 2.2 应用控制（control，需控制桥）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -116,15 +97,6 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 | 模块级控制 | `profileRebuild`（重建职业画像）、`resumeTailor{job,saveTo?:none\|greetings\|resume}`（定制简历；缺省 none 不落盘）、`greetingsAppend{items}`、`directionPlanRebuild`、`directionItem{id,patch}`、`tasksGenerate`（按方向建任务卡片，不自动投递；**保留 `cr_` 采集任务** —— 与首页「新建任务」同口径，`taskRuns` 是投递/采集共用的单一数组） |
 | 数据统计导出（**只读**） | `statsExport{range?:"7d"\|"30d"\|"all", kind?:"summary"\|"detail"\|"report"}`（与统计页同源口径，返回 `filename` + `content` 文本；**不落盘、不弹保存对话框** —— 落盘必须由人工在应用内完成，因为导出硬契约要求每次由用户自选位置；`detail` 已剔除 `chatUrl`/`encryptUserId`/招呼语正文） |
 | 主进程 | `focusWindow`、`minimize`、`maximize`、`windowState`、`reloadRenderer`、`openDevTools`、`screenshot` |
-
-### 2.5 工作区路径（workspace）
-
-| 工具 | 用途 |
-| --- | --- |
-| `bossclaw_workspace` | 工作区根「自寻路径 / 询问修改」：`action=list` 列出安装版与开发仓库候选及完整度，高亮当前根是否健康（如旧副本 `<安装目录>` 缺 `resources/app/package.json` 会被标为不完整）；`action=prefer <path>` 持久化指定工作区根，使后续多次调用一致；`action=clear` 清除返回自寻路径 |
-
-- **自寻路径**：启动解析链为 `BOSSCLAW_REPO`（立即生效）> 持久化覆盖（`.workspace-root`）> 优先「完整 bundle」的候选（安装版需含 `resources/app/package.json`；开发仓库需含 `desktop-app/package.json`），避免选到残缺旧副本。
-- **注意**：`REPO_ROOT` 是 MCP 进程启动时的常量，`prefer` 写入的覆盖在**下次启动 MCP 进程**生效；要立即生效可设 `BOSSCLAW_REPO` 环境变量。
 
 ---
 
@@ -201,13 +173,10 @@ bossclaw_app_start { exe: "<安装目录>\\BossClaw.exe" }   # 显式指定安�
 
 `patchConfig` 采用「字段必须已存在 + 拒绝列表」双重校验（而非白名单枚举），因此对配置字段增删是健壮的；任何越界字段会被跳过并在返回里逐条说明原因。
 
-### 为什么状态读的是快照，而写走控制桥？
+### 实时状态从哪里来？
 
-`bossclaw_state_*` 读的是应用每 5 分钟脏检查写盘的本地备份快照（`bossclaw-local-backup.json`）——
-它**只读**，不需要应用在运行，也不需要开启控制桥。
-
-反过来说：**MCP 从不直接改写快照文件**。因为 localStorage 才是主存储，应用启动时仅在「主数据键缺失」时才从备份恢复，
-直接改快照只会造成「改了但没生效」的假象。所有写操作统一走控制桥直达运行中的应用。
+MCP 的全部能力都指向**运行中的应用**：`bossclaw_app_status`（进程 / 控制桥探测）与 `bossclaw_app_state`（内存 store 实时状态）都经控制桥直达应用。
+MCP 不提供「应用未运行时」的离线文件 / 快照诊断——安装包控制只需要实时数据，不需要 5 分钟前的备份快照。
 
 ---
 
@@ -227,11 +196,11 @@ BossClaw 的 MCP 通道是**单向**的：仅外部 agent **→** MCP **→** �
 ## 5. 推荐工作流
 
 ```
-1) bossclaw_guidelines（读约束） → bossclaw_app_status（运行态与控制桥）
-2) bossclaw_search / read_file / list_dir                理解应用文件
-3) bossclaw_app_start → bossclaw_app_state               观察真实运行态
-4) bossclaw_app_action { screenshot }                    让 agent 看见界面
-5) bossclaw_logs / bossclaw_state_summary                排查现场
+1) bossclaw_app_status          应用是否在跑 / 控制桥是否就绪
+2) bossclaw_app_start           启动（默认开启应用内控制桥）
+3) bossclaw_app_state           实时状态：路由 / 队列 / 统计 / 投递安全参数 / 日志尾部
+4) bossclaw_app_action { screenshot }   让 agent 看见界面
+5) bossclaw_app_action { navigate / pauseDelivery / … }   驱动应用
 ```
 
 ---
@@ -243,13 +212,12 @@ mcp/bossclaw-mcp/
 ├── bin/bossclaw-mcp.mjs        入口（stdio）
 ├── src/
 │   ├── server.mjs              MCP JSON-RPC 骨架（initialize / tools/list / tools/call / ping）
-│   ├── context.mjs             路径解析（含已安装版应用自动探测）、进程执行器（env 清理 + 超时 + 输出截断）、快照解析、控制桥客户端
+│   ├── context.mjs             路径解析（含已安装版应用自动探测）、进程执行器（env 清理 + 超时）、控制桥客户端
 │   ├── procs.mjs               进程探测（CIM 命令行匹配，避免误伤其它 Electron 应用）
 │   ├── schema.mjs              JSON Schema 片段助手 + 工具注解
-│   ├── knowledge.mjs           操作手册（约束摘要 / 命令 / 沙箱陷阱 / 关键文件地图）
-│   └── tools/                  repo / runtime / state / control + index.mjs
+│   └── tools/                  runtime / control + index.mjs
 └── test/
-    ├── selftest.mjs            协议 + 只读工具自检
+    ├── selftest.mjs            协议 + 工具自检
     └── bridge-e2e.mjs          全链路端到端（隔离实例，含 HOME 隔离与备份兜底）
 ```
 
@@ -268,8 +236,6 @@ desktop-app/
 
 - `bridge-e2e` 会真实启动 Electron；无 GPU 环境请用默认的 `noGpu: true`。
 - 进程探测依赖 PowerShell CIM（Windows）。**CIM 不可用时不再退回「名称匹配」**（那会误杀用户的其它 Electron 应用），而是返回「未运行」+ 警告。
-- `bossclaw_state_*` 的数据新鲜度取决于应用的备份心跳（5 分钟）；要实时数据请走控制桥。
-- **工作区自动探测**：MCP 默认面向已安装的打包版应用（如 `<安装目录>`，含 `resources\app`）；找不到时回退到开发仓库。
-  用 `BOSSCLAW_REPO` 环境变量可显式指定工作区根（如开发仓库 `<仓库根目录>`）。
-- **不提供开发类能力**：git / tsc / vite 构建 / 冒烟 / 打包等一律删除；只读工具（`read_file` / `search` / `list_dir`）仅在安装包或显式指定的工作区根内生效。
+- MCP 只服务「控制已安装的应用」：实时状态 / 动作一律经应用内控制桥；**不提供** git / tsc / vite 构建 / 冒烟 / 打包等任何测试与开发类能力。
+- 应用根解析链：`BOSSCLAW_REPO`（显式）> 已安装应用自探测（检测到 `BossClaw.exe` 的安装根）> 开发仓库兜底。
 - 应用内 AI 未配置 API Key 时走本地规则兜底（不转交 agent），因此 `bossclaw_app_action` 的 AI 动作在无密钥时会返回本地生成结果。

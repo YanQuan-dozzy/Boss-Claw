@@ -1,17 +1,11 @@
 // src/tools/index.mjs —— 工具汇总注册
-// 分组：repo（应用认知）/ runtime（运行控制）/ state（状态诊断）/ control（应用控制）
-import { repoTools } from './repo.mjs';
+// 分组：runtime（运行控制）/ control（应用控制）。只面向「控制已安装应用」，不提供任何测试/开发类能力。
 import { runtimeTools } from './runtime.mjs';
-import { stateTools } from './state.mjs';
 import { controlTools } from './control.mjs';
-import { workspaceTools } from './workspace.mjs';
 
 export const TOOL_GROUPS = [
-  { group: 'repo', title: '应用认知', tools: repoTools },
   { group: 'runtime', title: '运行控制', tools: runtimeTools },
-  { group: 'state', title: '状态诊断', tools: stateTools },
   { group: 'control', title: '应用控制', tools: controlTools },
-  { group: 'workspace', title: '工作区路径', tools: workspaceTools },
 ];
 
 export const allTools = TOOL_GROUPS.flatMap((g) => g.tools);

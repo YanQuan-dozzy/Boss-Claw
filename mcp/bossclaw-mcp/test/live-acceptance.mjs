@@ -115,9 +115,9 @@ try {
 
   const list = await rpc('tools/list');
   const tools = list.result?.tools || [];
-  record('tools/list', tools.length === 14, `${tools.length} 个工具`);
+  record('tools/list', tools.length === 5, `${tools.length} 个工具`);
 
-  // ---- 3) 只读认知类（对真实仓库）----
+  // ---- 3) 应用控制类（实时；需要应用以控制桥运行）----
   const status = await tool('bossclaw_app_status');
   record('bossclaw_app_status', !status.isError, status.text.split('\n')[0].slice(0, 80));
   record(
@@ -127,26 +127,6 @@ try {
   );
   record('  └ 识别到控制桥', !!status.data?.bridge && !status.data.bridge.stale, `port=${status.data?.bridge?.port}`);
 
-  const fresh = await tool('bossclaw_state_summary');
-  record('bossclaw_state_summary', !fresh.isError, fresh.text.split('\n')[0].slice(0, 80));
-
-  const search = await tool('bossclaw_search', { pattern: 'resolveEnablement', glob: 'cjs', subdir: 'desktop-app/electron', maxResults: 5 });
-  record('bossclaw_search', !search.isError && (search.data?.hits?.length || 0) > 0, `命中 ${search.data?.hits?.length} 行`);
-
-  const read = await tool('bossclaw_read_file', { path: 'desktop-app/electron/main.cjs', offset: 1, limit: 4 });
-  record('bossclaw_read_file', !read.isError, read.text.split('\n')[0].slice(0, 90));
-
-  // ---- 4) 运行态（真实应用）----
-  const st = await tool('bossclaw_app_status');
-  record('bossclaw_app_status', !st.isError && st.data?.running === true, `控制桥 ${st.data?.bridge ? '健康' : '未就绪'}`);
-
-  const summary = await tool('bossclaw_state_summary');
-  record('bossclaw_state_summary', !summary.isError, `${summary.data?.pending?.total ?? '-'} 个岗位｜${summary.data?.readiness?.resume ? '简历已导入' : '简历未导入'}`);
-
-  const logs = await tool('bossclaw_logs', { target: 'app', lines: 5 });
-  record('bossclaw_logs', !logs.isError && logs.text.includes('control bridge'), '日志含 control bridge 记录');
-
-  // ---- 5) 实时应用控制（控制桥）----
   const live = await tool('bossclaw_app_state');
   record(
     'bossclaw_app_state（实时内存状态）',
@@ -154,8 +134,8 @@ try {
     live.isError ? live.text.split('\n')[0].slice(0, 100) : `route=${live.data.app.activeRoute} theme=${live.data.app.theme}`
   );
 
-  const engine = await tool('bossclaw_engine_status');
-  record('bossclaw_engine_status', !engine.isError, engine.text.split('\n').find((l) => l.includes('Camoufox 桥'))?.trim().slice(0, 70) || '');
+  const engine = await tool('bossclaw_app_action', { action: 'engineStatus', params: {} });
+  record('bossclaw_app_action engineStatus（只读探测两套引擎）', !engine.isError && engine.data?.next?.camoufox !== undefined, engine.text.split('\n')[0].slice(0, 80));
 
   // 截图：证明「agent 能看见界面」以及 image 内容块可用
   const shot = await tool('bossclaw_app_action', { action: 'screenshot', params: {} });
