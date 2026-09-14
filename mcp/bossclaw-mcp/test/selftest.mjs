@@ -81,7 +81,7 @@ try {
   });
   const info = init.result;
   record('initialize 握手', !!info?.protocolVersion && info?.serverInfo?.name === 'bossclaw-mcp', `protocol=${info?.protocolVersion} server=${info?.serverInfo?.name}@${info?.serverInfo?.version}`);
-  record('instructions 已下发', typeof info?.instructions === 'string' && info.instructions.includes('bossclaw_guidelines'));
+  record('instructions 已下发', typeof info?.instructions === 'string' && info.instructions.includes('bossclaw_app_status'));
   notify('notifications/initialized');
 
   // 2) ping
@@ -101,21 +101,13 @@ try {
   }, {});
   console.log(`   工具分组：${Object.entries(groups).map(([k, v]) => `${k}=${v}`).join(' ')}`);
 
-  // 4) 只读工具实测
+  // 4) 只读工具实测（仅应用控制类；控制桥未开启时按「预期失败」处理）
   const readOnlySamples = [
     ['bossclaw_app_status', {}],
-    ['bossclaw_state_summary', {}],
-    ['bossclaw_engine_status', {}],
-    ['bossclaw_search', { pattern: 'SAFETY_LIMITS', glob: 'ts', subdir: 'desktop-app/src', maxResults: 5 }],
-    ['bossclaw_list_dir', { path: 'desktop-app/src/store', depth: 1 }],
-    ['bossclaw_read_file', { path: 'desktop-app/package.json', limit: 5 }],
-    ['bossclaw_state_read', { key: 'bossclaw-app', mode: 'summary' }],
-    ['bossclaw_logs', { target: 'app', lines: 3 }],
-    ['bossclaw_workspace', { action: 'list' }],
     ['bossclaw_app_state', {}],
     ['bossclaw_app_action', { action: 'navigate', params: { route: 'home' } }],
   ];
-  const CONTROl_DEPENDENT = ['bossclaw_app_state', 'bossclaw_app_action', 'bossclaw_app_status'];
+  const CONTROl_DEPENDENT = ['bossclaw_app_state', 'bossclaw_app_action'];
   for (const [name, args] of readOnlySamples) {
     const res = await rpc('tools/call', { name, arguments: args });
     const text = res.result?.content?.[0]?.text || '';
@@ -128,7 +120,7 @@ try {
   // 5) 错误处理
   const bad = await rpc('tools/call', { name: 'bossclaw_不存在', arguments: {} });
   record('未知工具返回错误', !!bad.error);
-  const missingParam = await rpc('tools/call', { name: 'bossclaw_read_file', arguments: {} });
+  const missingParam = await rpc('tools/call', { name: 'bossclaw_app_action', arguments: {} });
   record('缺参返回 isError', missingParam.result?.isError === true);
   const unknownMethod = await rpc('nonexistent/method');
   record('未知方法返回 -32601', unknownMethod.error?.code === -32601);

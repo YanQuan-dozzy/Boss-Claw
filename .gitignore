@@ -64,7 +64,7 @@ venv/
 *.diagnostic.json
 *.local.json
 
-# MCP 本地持久化（bossclaw_workspace 工具写入的工作区根覆盖）
+# MCP 本地持久化残留（bossclaw_workspace 已删除，仅保留忽略规则防历史文件入库）
 mcp/bossclaw-mcp/.workspace-root
 
 # Internal dev docs (kept local, not committed)

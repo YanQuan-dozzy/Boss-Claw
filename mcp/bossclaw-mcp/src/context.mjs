@@ -1,7 +1,7 @@
 // src/context.mjs —— BossClaw MCP 的运行上下文
 // ---------------------------------------------------------------------------
-// 职责：路径解析（仓库 / userData / 备份 / 日志 / 引擎）、进程执行器（含沙箱 env 清理与
-// 超时）、文件遍历与文本搜索、备份快照解析、应用内控制桥客户端。
+// 职责：路径解析（应用 / userData / 日志 / 引擎）、进程执行器（含沙箱 env 清理与
+// 超时）、应用内控制桥客户端。只服务「控制已安装应用」，不含文件浏览 / 快照诊断等逻辑。
 // 设计约束：**不依赖任何 npm 包**（仓库历史上有 npm install 被 EBUSY 阻断的情况），
 // 只用 Node 内置模块，保证服务随时可用。
 import fs from 'node:fs';
@@ -18,10 +18,6 @@ const __dirname = path.dirname(__filename);
 
 /** mcp/bossclaw-mcp/src → mcp/bossclaw-mcp → mcp → <开发仓库根> */
 const DEV_REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-export const MCP_DIR = path.resolve(__dirname, '..');
-
-/** 持久化「用户指定工作区根」的覆盖文件（纯文本一行绝对路径）；由 bossclaw_workspace 工具读写 */
-export const WORKSPACE_FILE = path.join(MCP_DIR, '.workspace-root');
 
 const isWin = process.platform === 'win32';
 
@@ -48,119 +44,17 @@ function detectInstalledRootSync() {
 }
 
 /**
- * 判断一个根目录是否为「BossClaw 工作区」及其完整度。用于自寻路径与工具展示。
- * @returns {{root:string,type:'installed'|'dev',hasExe:boolean,packageJson:boolean,hasDesktopApp:boolean,bossclawRoot:boolean,complete:boolean}}
- */
-export function workspaceHealth(root) {
-  if (!root) root = '';
-  const hasExe = existsFileSync(path.join(root, 'BossClaw.exe'));
-  const hasDesktopApp = existsDirSync(path.join(root, 'desktop-app'));
-  const installedPkg = existsFileSync(path.join(root, 'resources', 'app', 'package.json'));
-  const devPkg = hasDesktopApp && existsFileSync(path.join(root, 'desktop-app', 'package.json'));
-  const bossclawRoot = existsFileSync(path.join(root, 'AGENTS.md')) || hasDesktopApp || existsDirSync(path.join(root, 'mcp'));
-  const type = hasExe ? 'installed' : 'dev';
-  const complete = hasExe ? installedPkg : devPkg;
-  return { root, type, hasExe, packageJson: hasExe ? installedPkg : devPkg, hasDesktopApp, bossclawRoot, complete };
-}
-
-/** 列出所有可被解析为工作区的候选根（安装根 + 开发仓库根），附健康度与原因。 */
-export function listWorkspaceCandidates() {
-  const roots = [...installedAppRootCandidates(), DEV_REPO_ROOT];
-  const seen = new Set();
-  const out = [];
-  for (const root of roots) {
-    if (!root || seen.has(root)) continue;
-    seen.add(root);
-    const h = workspaceHealth(root);
-    let reason;
-    if (h.type === 'installed' && !h.complete) reason = '存在 BossClaw.exe 但缺 resources/app/package.json（可能为旧副本）';
-    else if (h.complete) reason = '完整可用的工作区';
-    else if (!h.hasExe && !h.hasDesktopApp) reason = '未发现 BossClaw 标志，跳过';
-    else reason = '不完整';
-    out.push({ ...h, reason });
-  }
-  return out;
-}
-
-/**
- * 自寻路径：在候选里优先选择「完整 bundle」的工作区。
- *   - 优先返回「完整」的安装版（有 BossClaw.exe 且 resources/app/package.json 存在）；
- *   - 若无完整安装版，但有完整开发仓库（desktop-app/package.json 存在）则返回开发仓库；
- *   - 否则回退到首个安装根（保持现状兜底），最后才是开发仓库根。
- */
-function bestWorkspaceRoot() {
-  const candidates = listWorkspaceCandidates();
-  const completeInstalled = candidates.find((c) => c.type === 'installed' && c.complete);
-  if (completeInstalled) return completeInstalled.root;
-  const completeDev = candidates.find((c) => c.type === 'dev' && c.complete);
-  if (completeDev) return completeDev.root;
-  const notBrokenInstalled = candidates.find((c) => c.type === 'installed' && !c.complete);
-  if (notBrokenInstalled) return notBrokenInstalled.root;
-  return DEV_REPO_ROOT;
-}
-
-/** 读取持久化覆盖的工作区根（无有效值返回 ''）。 */
-function readWorkspaceOverride() {
-  try {
-    const p = fs.readFileSync(WORKSPACE_FILE, 'utf8').trim();
-    return p && existsDirSync(p) ? p : '';
-  } catch {
-    return '';
-  }
-}
-
-/** 原子写入持久化覆盖（UTF-8 一行）。 */
-export function setWorkspaceOverride(root) {
-  const target = path.normalize(String(root || '').trim());
-  if (!target) return false;
-  fs.mkdirSync(MCP_DIR, { recursive: true });
-  const tmp = `${WORKSPACE_FILE}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, target, 'utf8');
-  fs.renameSync(tmp, WORKSPACE_FILE);
-  return true;
-}
-
-/** 清除持久化覆盖，返回是否成功。 */
-export function clearWorkspaceOverride() {
-  try {
-    fs.unlinkSync(WORKSPACE_FILE);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function existsFileSync(p) {
-  try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-function existsDirSync(p) {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 推导「工作区 / 项目根」：
+ * 推导「应用根」：
  *   BOSSCLAW_REPO 环境变量（显式指定，优先级最高）
- *   > WORKSPACE_FILE 持久化覆盖（bossclaw_workspace 工具写入）
- *   > bestWorkspaceRoot()（自寻路径：优先完整 bundle，避免旧安装副本）
- *   > DEV_REPO_ROOT（最后兜底）
+ *   > 自寻已安装应用（检测到 BossClaw.exe 的安装根）
+ *   > DEV_REPO_ROOT（开发仓库兜底）
  */
 function resolveRepoRoot() {
   if (process.env.BOSSCLAW_REPO) return path.resolve(process.env.BOSSCLAW_REPO);
-  const override = readWorkspaceOverride();
-  if (override) return override;
-  return bestWorkspaceRoot();
+  return detectInstalledRootSync() || DEV_REPO_ROOT;
 }
 
 export const REPO_ROOT = resolveRepoRoot();
-export const WORKSPACE_OVERRIDE_ACTIVE = Boolean(readWorkspaceOverride());
 
 /** 目标形态：installed（已安装打包版）/ dev（开发仓库）/ custom（BOSSCLAW_REPO 显式指定） */
 export const MODE = process.env.BOSSCLAW_REPO
@@ -236,24 +130,6 @@ export const HOME_DIR = os.homedir();
 /** 引擎/登录态数据目录（camoufox cookies、engine-state.json） */
 export const BOSSCLAW_HOME = path.join(HOME_DIR, '.bossclaw');
 
-function readTextSync(p) {
-  try {
-    return fs.readFileSync(p, 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-
-/** 备份目录：userData/.backup-dir.txt 指针优先，否则 userData/backup */
-function resolveBackupDir() {
-  const pointer = readTextSync(path.join(USERDATA_DIR, '.backup-dir.txt'));
-  if (pointer) return pointer;
-  return path.join(USERDATA_DIR, 'backup');
-}
-
-export const BACKUP_DIR = resolveBackupDir();
-export const BACKUP_FILE = path.join(BACKUP_DIR, 'bossclaw-local-backup.json');
-export const QUALIFIED_JOBS_DIR_FILE = path.join(USERDATA_DIR, '.qualified-jobs-dir.txt');
 export const CONTROL_BRIDGE_FILE = path.join(USERDATA_DIR, 'control-bridge.json');
 
 export const PATHS = {
@@ -262,8 +138,6 @@ export const PATHS = {
   userData: USERDATA_DIR,
   home: HOME_DIR,
   bossclawHome: BOSSCLAW_HOME,
-  backupDir: BACKUP_DIR,
-  backupFile: BACKUP_FILE,
   controlBridgeFile: CONTROL_BRIDGE_FILE,
   electronBin: MODE === 'installed'
     ? path.join(REPO_ROOT, 'BossClaw.exe')
@@ -376,81 +250,6 @@ export function sanitizedEnv(extra = {}) {
 // 进程执行
 // ===========================================================================
 
-const MAX_STREAM_BYTES = 512 * 1024;
-
-function clipStream(buf) {
-  const s = buf.toString('utf8');
-  if (s.length <= MAX_STREAM_BYTES) return { text: s, truncated: false };
-  // 构建/打包的报错通常在尾部，头部含启动信息，故保头 + 保尾
-  const head = s.slice(0, 32 * 1024);
-  const tail = s.slice(-(64 * 1024));
-  return { text: `${head}\n\n... [已截断 ${s.length - head.length - tail.length} 字符] ...\n\n${tail}`, truncated: true };
-}
-
-/**
- * 执行一个子进程并等待结束。
- * @returns {Promise<{ok:boolean,code:number|null,signal:string|null,stdout:string,stderr:string,durationMs:number,timedOut:boolean,cmd:string}>}
- */
-export function run(cmd, args = [], opts = {}) {
-  const { cwd = DESKTOP_DIR, timeoutMs = 120_000, env = {}, maxBytes = MAX_STREAM_BYTES } = opts;
-  const started = Date.now();
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(cmd, args, {
-        cwd,
-        env: sanitizedEnv(env),
-        windowsHide: true,
-        shell: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (e) {
-      resolve({ ok: false, code: null, signal: null, stdout: '', stderr: String(e?.message || e), durationMs: 0, timedOut: false, cmd: [cmd, ...args].join(' ') });
-      return;
-    }
-    const out = [];
-    const err = [];
-    let outLen = 0;
-    let errLen = 0;
-    let timedOut = false;
-    let settled = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child.pid).catch(() => {});
-    }, Math.max(1_000, timeoutMs));
-
-    child.stdout?.on('data', (d) => {
-      outLen += d.length;
-      if (outLen <= maxBytes * 2) out.push(d);
-    });
-    child.stderr?.on('data', (d) => {
-      errLen += d.length;
-      if (errLen <= maxBytes * 2) err.push(d);
-    });
-
-    const finish = (code, signal, spawnErr) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const o = clipStream(Buffer.concat(out));
-      const e = clipStream(Buffer.concat(err));
-      resolve({
-        ok: code === 0 && !timedOut,
-        code,
-        signal,
-        stdout: o.text,
-        stderr: spawnErr ? `${e.text}${e.text ? '\n' : ''}${spawnErr}` : e.text,
-        durationMs: Date.now() - started,
-        timedOut,
-        cmd: [cmd, ...args].join(' '),
-      });
-    };
-
-    child.on('error', (e) => finish(null, null, String(e?.message || e)));
-    child.on('close', (code, signal) => finish(code, signal, null));
-  });
-}
-
 /** 分离式启动（用于 Electron 主进程这种需要长驻的进程），返回 pid */
 export function spawnDetached(cmd, args = [], opts = {}) {
   const { cwd = DESKTOP_DIR, env = {}, stdio = 'ignore' } = opts;
@@ -529,99 +328,6 @@ export function listProcesses() {
   });
 }
 
-export async function findProcesses(namePattern) {
-  const all = await listProcesses();
-  const re = namePattern instanceof RegExp ? namePattern : new RegExp(namePattern, 'i');
-  return all.filter((p) => re.test(p.name));
-}
-
-// ===========================================================================
-// 文件工具
-// ===========================================================================
-
-export const DEFAULT_IGNORES = new Set([
-  'node_modules',
-  '.git',
-  '.venv',
-  'dist',
-  'release',
-  '__pycache__',
-  '.pytest_cache',
-  'tmp',
-  'scripts-tmp',
-  '.trae',
-  '.wiki-pub',
-]);
-
-export function humanBytes(n) {
-  if (!Number.isFinite(n)) return '-';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return `${v.toFixed(i === 0 ? 0 : 1)}${units[i]}`;
-}
-
-export function relToRepo(p) {
-  const r = path.relative(REPO_ROOT, p);
-  return r.startsWith('..') ? p : r.split(path.sep).join('/');
-}
-
-/** 把用户传入的相对路径解析为仓库内绝对路径；越界直接抛错（防目录穿越） */
-export function resolveInRepo(input, { allowOutside = false } = {}) {
-  if (!input || typeof input !== 'string') throw new Error('path 不能为空');
-  const abs = path.isAbsolute(input) ? path.normalize(input) : path.resolve(REPO_ROOT, input);
-  if (!allowOutside) {
-    const rel = path.relative(REPO_ROOT, abs);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new Error(`路径越界（仅允许仓库内）：${input}`);
-    }
-  }
-  return abs;
-}
-
-/** 递归遍历文件（默认跳过 node_modules 等大目录），yield 绝对路径 */
-export async function* walkFiles(root, opts = {}) {
-  const { ignores = DEFAULT_IGNORES, maxFiles = 20000, maxDepth = 24, followSymlinks = false } = opts;
-  let count = 0;
-  const stack = [{ dir: root, depth: 0 }];
-  while (stack.length) {
-    const { dir, depth } = stack.pop();
-    if (depth > maxDepth) continue;
-    let entries;
-    try {
-      entries = await fsp.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const ent of entries) {
-      if (ignores.has(ent.name)) continue;
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        stack.push({ dir: full, depth: depth + 1 });
-      } else if (ent.isFile()) {
-        count += 1;
-        if (count > maxFiles) return;
-        yield full;
-      } else if (ent.isSymbolicLink() && followSymlinks) {
-        try {
-          const st = await fsp.stat(full);
-          if (st.isDirectory()) stack.push({ dir: full, depth: depth + 1 });
-          else {
-            count += 1;
-            yield full;
-          }
-        } catch {
-          /* 断链忽略 */
-        }
-      }
-    }
-  }
-}
-
 export async function readTextSafe(file, maxBytes = 2 * 1024 * 1024) {
   const st = await fsp.stat(file);
   if (st.size > maxBytes) {
@@ -653,19 +359,6 @@ export async function statSafe(p) {
   } catch {
     return { exists: false, size: 0, mtime: null, mtimeMs: 0, isDir: false };
   }
-}
-
-export async function atomicWriteJson(file, value) {
-  await fsp.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fsp.writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
-  await fsp.rename(tmp, file);
-}
-
-export function isProbablyBinary(buf) {
-  const n = Math.min(buf.length, 8192);
-  for (let i = 0; i < n; i += 1) if (buf[i] === 0) return true;
-  return false;
 }
 
 export function truncate(text, max = 12000) {
@@ -700,53 +393,6 @@ export async function tailTextFile(file, { lines = 80, filterRe = null } = {}) {
   let all = text.split(/\r?\n/).filter(Boolean);
   if (filterRe) all = all.filter((l) => filterRe.test(l));
   return { exists: true, file, mtime: st.mtime, size: st.size, total: all.length, lines: all.slice(-lines) };
-}
-
-// ===========================================================================
-// 持久化状态（备份快照 / zustand persist 键）
-// ===========================================================================
-
-export const PERSIST_KEYS = ['bossclaw-app', 'bossclaw-settings-v2', 'bossclaw-data', 'bossclaw-schedule'];
-
-/** 单键解析：persist 存储格式为 {"state":{...},"version":n}，兼容直存对象 */
-function parsePersistValue(raw) {
-  if (raw == null) return null;
-  if (typeof raw === 'object') return raw;
-  try {
-    const obj = JSON.parse(String(raw));
-    if (obj && typeof obj === 'object' && 'state' in obj) return obj;
-    return { state: obj, version: null };
-  } catch (e) {
-    return { __parseError: String(e?.message || e) };
-  }
-}
-
-/** 读取本地备份快照（应用每 5 分钟脏检查写盘一次；未运行时会偏旧） */
-export async function readSnapshot() {
-  const info = await statSafe(BACKUP_FILE);
-  if (!info.exists) {
-    return { ok: false, error: `未找到备份快照：${BACKUP_FILE}`, file: BACKUP_FILE };
-  }
-  const parsed = await readJsonSafe(BACKUP_FILE);
-  if (!parsed.ok) return { ok: false, error: parsed.error, file: BACKUP_FILE };
-  const bundle = parsed.data || {};
-  const keys = {};
-  for (const [k, v] of Object.entries(bundle.keys || {})) keys[k] = parsePersistValue(v);
-  return {
-    ok: true,
-    file: BACKUP_FILE,
-    fileInfo: info,
-    updatedAt: bundle.updatedAt || null,
-    updatedAtIso: bundle.updatedAt ? new Date(bundle.updatedAt).toISOString() : null,
-    ageMinutes: bundle.updatedAt ? Math.round((Date.now() - bundle.updatedAt) / 60000) : null,
-    keys,
-  };
-}
-
-/** 从持久化键对象中取 state（自动剥掉 zustand 的 {state,version} 外壳） */
-export function stateOf(parsedKey) {
-  if (!parsedKey || typeof parsedKey !== 'object') return null;
-  return 'state' in parsedKey ? parsedKey.state : parsedKey;
 }
 
 /** 点路径读取：getPath(obj, 'config.minScore') */
@@ -847,13 +493,4 @@ export function ok(text, data) {
 
 export function fail(text, data) {
   return { text: String(text ?? ''), data, isError: true };
-}
-
-/** 由 {ok:false, error} 形式的执行结果生成失败返回 */
-export function fromExecError(tool, res, extra) {
-  const detail = [res.stderr, res.stdout].filter(Boolean).join('\n');
-  return fail(
-    `${tool} 执行失败：${res.timedOut ? `超时（${res.durationMs}ms）` : `退出码 ${res.code}`}\n命令：${res.cmd}\n\n${truncate(detail, 8000)}`,
-    { ...res, ...extra, isError: true }
-  );
 }

@@ -175,7 +175,6 @@ try {
 
   // ===== 全链路：直接调用 MCP 工具 handler，走 MCP → HTTP 桥 → Electron → 渲染层 =====
   const { controlTools } = await import('../src/tools/control.mjs');
-  const { stateTools } = await import('../src/tools/state.mjs');
   const tool = (arr, name) => arr.find((t) => t.name === name);
 
   const r1 = await tool(controlTools, 'bossclaw_app_state').handler({});
@@ -187,11 +186,11 @@ try {
   const r3 = await tool(controlTools, 'bossclaw_app_action').handler({ action: 'screenshot', params: {} });
   record('MCP app_action screenshot 产出 image 内容块', Array.isArray(r3.images) && r3.images.length === 1 && r3.images[0].mimeType === 'image/png', `images=${r3.images?.length}`);
 
-  const r4 = await tool(stateTools, 'bossclaw_engine_status').handler({});
-  record('MCP bossclaw_engine_status 读到实时引擎段', !r4.isError && r4.text.includes('## 实时'), r4.text.split('\n').find((l) => l.includes('✅ 可用'))?.slice(0, 80) || '');
+  const r4 = await tool(controlTools, 'bossclaw_app_action').handler({ action: 'engineStatus', params: {} });
+  record('MCP app_action engineStatus（只读探测两套引擎）', !r4.isError && r4.data?.next?.camoufox !== undefined, r4.text.split('\n')[0].slice(0, 80));
 
-  const r5 = await tool(stateTools, 'bossclaw_state_summary').handler({});
-  record('MCP bossclaw_state_summary 正常', !r5.isError && r5.text.includes('投递安全参数'), r5.text.split('\n')[2]?.slice(0, 80));
+  const r5 = await tool(controlTools, 'bossclaw_app_state').handler({});
+  record('MCP bossclaw_app_state 含投递安全段', !r5.isError && r5.text.includes('投递安全'), r5.text.split('\n')[2]?.slice(0, 80));
 
   // ===== 业务数据管理全链路（本会话新增）=====
   const gr = await tool(controlTools, 'bossclaw_app_action').handler({

@@ -7,7 +7,7 @@
 //   BOSSCLAW_MCP_DEBUG 置 1 时把 stderr 日志也写一份到 mcp/bossclaw-mcp/mcp-debug.log
 import { createServer } from '../src/server.mjs';
 import { allTools, validateTools } from '../src/tools/index.mjs';
-import { REPO_ROOT, DESKTOP_DIR, PATHS, readControlBridgeInfo } from '../src/context.mjs';
+import { DESKTOP_DIR, PATHS, readControlBridgeInfo } from '../src/context.mjs';
 
 const { ok, problems, count } = validateTools();
 if (!ok) {
@@ -16,28 +16,23 @@ if (!ok) {
 }
 
 const instructions = [
-  'BossClaw 应用操作 MCP —— 让 agent 能够读取、启动、诊断并驱动已安装的 BossClaw 桌面应用（如 <安装目录>）。',
+  'BossClaw 应用操作 MCP —— 让 agent 只能**控制已安装的 BossClaw 桌面应用**（如 <安装目录>）：启动/停止/运行状态 + 实时内存状态 + 白名单动作。不提供任何测试/开发类能力。',
   '',
-  `工作区根：${REPO_ROOT}`,
   `应用目录：${DESKTOP_DIR}`,
   `应用数据目录：${PATHS.userData}`,
-  `本地备份快照：${PATHS.backupFile}`,
   '',
   '推荐工作流：',
-  '  1) bossclaw_guidelines（读约束与安全不变量）→ bossclaw_app_status（应用是否在跑 / 控制桥）',
-  '  2) 理解应用：bossclaw_list_dir / bossclaw_read_file / bossclaw_search',
-  '  3) 观察/驱动运行中的应用：bossclaw_app_start（默认开控制桥）→ bossclaw_app_state → bossclaw_app_action',
-  '  4) 排查现场：bossclaw_logs（app/render/webview）+ bossclaw_state_summary（任务与安全状态）',
+  '  1) bossclaw_app_status（应用是否在跑 / 控制桥是否就绪）',
+  '  2) bossclaw_app_start（启动；默认开启应用内控制桥）',
+  '  3) bossclaw_app_state（实时状态：路由 / 队列 / 统计 / 投递安全参数 / 日志尾部）',
+  '  4) bossclaw_app_action（白名单动作：切页 / 暂停续投 / 配置 / 数据 / AI 生成 / 截图等）',
   '',
-  '单向链路：仅 agent → MCP → 应用（启动/状态/动作）。应用内按钮不再转交 agent 代答；',
-  '未配置 API Key 时 AI 功能走应用内本地规则兜底。',
+  '单向链路：仅 agent → MCP → 应用（启动/状态/动作）。应用内 AI 能力在未配置 API Key 时走本地规则兜底。',
   '',
-  '工作区边界：agent 只能控制/读取已安装打包版（如 <安装目录>，含 resources/app）内的文件；',
-  '测试/开发类能力不提供（git、构建、冒烟测试等一律不开放）。',
-  '',
-  '硬性约束（不可违反，详见 bossclaw_guidelines）：',
+  '硬性约束（不可违反）：',
   '  · 不绕过验证码 / 速率限制；不自动批量投递；不代替用户确认文字气泡；',
   '  · 首次成功投递后必须暂停验收；验证码与风控码（31/32/35/36/37/38）一律停止交人工；',
+  '  · 自动发送（deliverySendNow）仅当用户在应用内开启「全自动」（executionMode=auto）时可用；review 模式只能草拟+人工发送；',
   '  · 渠道以 job-claw-main 的既有实现为准，禁止重新发明业务逻辑。',
 ].join('\n');
 
