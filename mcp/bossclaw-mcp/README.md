@@ -5,9 +5,9 @@
 
 - **零依赖**：只用 Node 内置模块实现 JSON-RPC / stdio 协议，不需要 `npm install`，不会因依赖问题启动失败。
 - **传输**：stdio（标准 MCP 传输）。
-- **15 个工具**，分 5 组：应用认知 / 运行控制 / 状态诊断 / 应用控制 / 工作区路径。
+- **14 个工具**，分 5 组：应用认知 / 运行控制 / 状态诊断 / 应用控制 / 工作区路径。
 - **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时走**本地规则**兜底（见 §4）。
-- **面向已安装打包版**：默认只读取 `<安装目录>` 等**安装包**内的文件；不提供 git / 构建 / 冒烟等开发类内容。
+- **只控制应用，不涉及测试/开发**：默认只读取 `<安装目录>` 等**安装包**内的文件；不提供 git / 构建 / 冒烟等开发类能力。
 
 ---
 
@@ -67,7 +67,6 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 
 | 工具 | 用途 |
 | --- | --- |
-| `bossclaw_project_info` | 应用总览：版本、Node/Electron、脚本、侧栏入口、dist/release 新旧、应用是否在跑、快照新鲜度 |
 | `bossclaw_guidelines` | **开工必读**：安全不变量 + 工程约定（命令 / 沙箱陷阱 / 主题 / 持久化键 / 关键文件地图） |
 | `bossclaw_list_dir` | 目录树（默认跳过 node_modules / dist / release） |
 | `bossclaw_read_file` | 读文件（支持行区间，返回带行号文本） |
@@ -228,7 +227,7 @@ BossClaw 的 MCP 通道是**单向**的：仅外部 agent **→** MCP **→** �
 ## 5. 推荐工作流
 
 ```
-1) bossclaw_guidelines  →  bossclaw_project_info        建立认知、对齐约束
+1) bossclaw_guidelines（读约束） → bossclaw_app_status（运行态与控制桥）
 2) bossclaw_search / read_file / list_dir                理解应用文件
 3) bossclaw_app_start → bossclaw_app_state               观察真实运行态
 4) bossclaw_app_action { screenshot }                    让 agent 看见界面

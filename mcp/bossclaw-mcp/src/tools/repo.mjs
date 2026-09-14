@@ -1,143 +1,28 @@
 // src/tools/repo.mjs —— 应用认知工具组（只读）
 // ---------------------------------------------------------------------------
 // 让 agent 动手前建立对已安装 BossClaw 应用（如 <安装目录>）的认知：约束手册、
-// 目录与文件、正则检索、以及应用级元信息汇总。
+// 目录与文件、正则检索。定位边界：agent 只能控制/读取已安装应用，不涉及测试与开发。
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import {
-  PATHS,
   REPO_ROOT,
-  DESKTOP_DIR,
   MODE,
   resolveInRepo,
   walkFiles,
   readTextSafe,
-  readJsonSafe,
   statSafe,
   humanBytes,
   relToRepo,
   ok,
   fail,
   DEFAULT_IGNORES,
-  readSnapshot,
 } from '../context.mjs';
 import { obj, str, num, bool, arr, READ_ONLY } from '../schema.mjs';
 import { CONVENTIONS, REQUIRED_READING, REFERENCE_PROJECTS, OPERATING_LOOP } from '../knowledge.mjs';
-import { listBossclawProcesses } from '../procs.mjs';
 
 const MAX_SEARCH_RESULTS = 400;
 
-async function readPkg() {
-  const r = await readJsonSafe(path.join(DESKTOP_DIR, 'package.json'));
-  return r.ok ? r.data : null;
-}
-
-/** 解析 NAV_ITEMS（侧栏入口）与 RouteKey —— 以源码为准，避免文档漂移 */
-async function readRoutes() {
-  const src = await readTextSafe(path.join(DESKTOP_DIR, 'src', 'store', 'useAppStore.ts'), 512 * 1024).catch(() => ({ text: '' }));
-  const items = [...src.text.matchAll(/\{\s*key:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)].map((m) => ({
-    key: m[1],
-    label: m[2],
-  }));
-  return items;
-}
-
-async function listReleaseArtifacts() {
-  const info = await statSafe(PATHS.releaseDir);
-  if (!info.exists) return [];
-  const out = [];
-  for (const f of await fsp.readdir(PATHS.releaseDir)) {
-    const p = path.join(PATHS.releaseDir, f);
-    const st = await statSafe(p);
-    if (st.exists && !st.isDir && st.size > 1024 * 1024) out.push({ name: f, size: st.size, sizeText: humanBytes(st.size), mtime: st.mtime });
-  }
-  return out.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
-}
-
 export const repoTools = [
-  {
-    name: 'bossclaw_project_info',
-    title: 'BossClaw 项目总览',
-    description:
-      '建立项目全局认知：仓库路径、应用版本、Node/Electron 版本、npm 脚本、侧栏路由入口、构建产物与打包产物的新旧、' +
-      '应用当前是否在运行、备份快照新鲜度。开工第一步建议先调它。',
-    annotations: READ_ONLY,
-    inputSchema: obj({}),
-    handler: async () => {
-      const pkg = await readPkg();
-      const routes = await readRoutes();
-      const dist = await statSafe(PATHS.distDir);
-      const indexHtml = await statSafe(path.join(PATHS.distDir, 'index.html'));
-      const releases = await listReleaseArtifacts();
-      const electronPkg = await readJsonSafe(path.join(DESKTOP_DIR, 'node_modules', 'electron', 'package.json'));
-      const { processes, method, bridge } = await listBossclawProcesses();
-      const snap = await readSnapshot();
-      const backupStat = await statSafe(PATHS.backupFile);
-
-      const data = {
-        repoRoot: REPO_ROOT,
-        desktopDir: DESKTOP_DIR,
-        app: {
-          name: pkg?.name,
-          version: pkg?.version,
-          description: pkg?.description,
-          main: pkg?.main,
-          engines: pkg?.engines,
-        },
-        runtime: {
-          node: process.version,
-          nodeBin: process.execPath,
-          platform: `${process.platform}-${process.arch}`,
-          electronDeclared: pkg?.devDependencies?.electron,
-          electronInstalled: electronPkg.ok ? electronPkg.data.version : null,
-          electronBinExists: (await statSafe(PATHS.electronBin)).exists,
-        },
-        scripts: pkg?.scripts || {},
-        routes: { count: routes.length, items: routes },
-        build: {
-          distExists: dist.exists,
-          distMtime: dist.mtime,
-          indexHtmlMtime: indexHtml.mtime,
-          staleHint: dist.exists && indexHtml.exists ? 'dist 比 src 新才算新鲜；改源码后需重新构建' : '尚未构建',
-        },
-        release: { dir: PATHS.releaseDir, artifacts: releases.slice(0, 8) },
-        appRuntime: {
-          running: processes.length > 0,
-          processCount: processes.length,
-          detectMethod: method,
-          processes: processes.slice(0, 6).map((p) => ({ pid: p.pid, name: p.name })),
-          controlBridge: bridge ? { port: bridge.port, pid: bridge.pid, stale: !!bridge.stale } : null,
-        },
-        state: {
-          userDataDir: PATHS.userData,
-          backupFile: PATHS.backupFile,
-          backupExists: backupStat.exists,
-          backupAgeMinutes: snap.ok ? snap.ageMinutes : null,
-        },
-      };
-
-      const lines = [
-        `# BossClaw 项目总览`,
-        ``,
-        `- 仓库：${REPO_ROOT}`,
-        `- 应用：${data.app.name} v${data.app.version}（${data.app.description || '-'}）`,
-        `- 运行环境：node ${data.runtime.node} / electron ${data.runtime.electronInstalled || data.runtime.electronDeclared}，${data.runtime.platform}`,
-        `- 侧栏入口（${routes.length}）：${routes.map((r) => r.label).join(' / ')}`,
-        `- 生产构建：${dist.exists ? `dist 存在（${dist.mtime}）` : 'dist 不存在，需先构建'}`,
-        `- 打包产物：${releases.length ? releases.slice(0, 3).map((r) => `${r.name}(${r.sizeText})`).join('，') : 'release/ 无产物'}`,
-        `- 应用进程：${processes.length ? `运行中 ${processes.length} 个（${processes.slice(0, 3).map((p) => p.pid).join(', ')}）` : '未运行'}`,
-        `- 控制桥：${bridge ? `可用 :${bridge.port}${bridge.stale ? '（记录已失效）' : ''}` : '未开启（用 bossclaw_app_start 启动可自动开启）'}`,
-        `- 状态快照：${snap.ok ? `${PATHS.backupFile}（${snap.ageMinutes} 分钟前）` : '暂无备份快照'}`,
-        ``,
-        `可用脚本：${Object.entries(data.scripts || {}).map(([k]) => k).join(' / ')}`,
-        ``,
-        `建议操作顺序：`,
-        ...OPERATING_LOOP.map((l) => `  ${l}`),
-      ];
-      return ok(lines.join('\n'), data);
-    },
-  },
-
   {
     name: 'bossclaw_guidelines',
     title: '读取项目约束与操作手册',

@@ -67,8 +67,8 @@ export const REFERENCE_PROJECTS = [
 ];
 
 export const OPERATING_LOOP = [
-  '1) 先 bossclaw_guidelines 读约束与安全不变量，再 bossclaw_project_info 建立对已安装应用（如 <安装目录>）的总览。',
-  '2) 定位/理解应用用 bossclaw_list_dir / bossclaw_read_file / bossclaw_search（仅在安装包或显式指定的工作区根内）。',
+  '1) 先 bossclaw_guidelines 读约束与安全不变量。定位边界：agent 只能控制/读取已安装应用，不涉及测试与开发。',
+  '2) 定位/理解应用：bossclaw_workspace（工作区根）+ bossclaw_app_status（运行态）；按需用 bossclaw_list_dir / bossclaw_read_file / bossclaw_search（仅安装包或显式指定的工作区根内）。',
   '3) 要观察或驱动运行中的应用：bossclaw_app_start（默认开控制桥）→ bossclaw_app_state（实时状态）→ bossclaw_app_action（白名单动作）。',
   '4) 排查现场：bossclaw_logs（app/render/webview）+ bossclaw_state_summary（任务与安全状态）。',
 ];
