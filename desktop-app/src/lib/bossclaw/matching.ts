@@ -335,7 +335,7 @@ export async function analyzeJob(
   // 校名披露规则：本地名单裁定「允许/禁止写校名」后注入（与 greetings 指令同属 greeting 口径，
   // 故紧随其后、放在 system 末尾）。仅由简历决定、与岗位无关 → 跨岗位恒定，不破坏前缀缓存。
   const schoolRule = buildSchoolDisclosureRule(
-    resolveSchoolTier(normalizeStringList(profile.facts?.education, 8), resumeText)
+    resolveSchoolTier(normalizeStringList(profile?.facts?.education, 8), resumeText)
   );
   const systemPrompt = buildAnalyzeSystemPrompt() + jobAnalysisRules + greetingsSkill + schoolRule;
   // 打招呼语统一口径全文（供长度不达标时的独立重写再生成复用）：技能正文 > 简历中心输入框内容 > 内置默认。

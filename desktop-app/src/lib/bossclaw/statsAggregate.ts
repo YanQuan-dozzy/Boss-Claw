@@ -32,6 +32,7 @@ import { cleanCompanyName } from './jobDisplay';
 import { platformLabel } from './platforms';
 import { effectiveDailyCap } from './safety';
 import { selectedDirectionItems } from './directions';
+import { fitLevelFromScore, type FitLevel } from './fitLevel';
 
 /* ============================ 时间范围 ============================ */
 
@@ -82,6 +83,25 @@ export const STATS_DECISION_META: Record<Decision, { label: string; color: strin
   cautious: { label: '谨慎投递', color: '#F59E0B' },
   reject: { label: '不推荐', color: '#EF4444' },
 };
+
+/** 提示词四档适配度口径（strong >80 / match 65-80 / cautious 50-64 / unfit <50） */
+export const STATS_FIT_LEVEL_META: { key: FitLevel; label: string; scoreRange: string; color: string; hint: string }[] = [
+  { key: 'strong', label: '推荐', scoreRange: '81-100', color: '#10B981', hint: 'AI 整体裁决：高度吻合（81-100分）' },
+  { key: 'match', label: '匹配', scoreRange: '65-80', color: '#13B5AC', hint: 'AI 整体裁决：正常达标（65-80分）' },
+  { key: 'cautious', label: '谨慎', scoreRange: '50-64', color: '#F59E0B', hint: 'AI 整体裁决：存在缺口（50-64分），需人工确认' },
+  { key: 'unfit', label: '不推荐', scoreRange: '<50', color: '#EF4444', hint: 'AI 整体裁决：门槛不符或方向错位（0-49分）' },
+];
+
+export type MatchDimensionKey = 'skill' | 'direction' | 'experience' | 'education' | 'salary' | 'location';
+
+export const STATS_DIMENSION_META: { key: MatchDimensionKey; label: string; hint: string }[] = [
+  { key: 'skill', label: '核心技能', hint: '岗位专业技能与简历掌握程度的契合度' },
+  { key: 'direction', label: '发展方向', hint: '岗位业务定位与期望方向的贴合度' },
+  { key: 'experience', label: '工作经验', hint: '岗位年限与行业背景要求的匹配度' },
+  { key: 'education', label: '学历门槛', hint: '院校层级与学历达标程度' },
+  { key: 'salary', label: '薪资契合', hint: '岗位薪资区间与期望薪资的重合度' },
+  { key: 'location', label: '工作地点', hint: '岗位工作城市与目标城市的符合度' },
+];
 
 /**
  * 任务状态中文口径（TaskRun.status）。
@@ -158,6 +178,18 @@ export interface StatsSnapshot {
   analysisCoverage: number;
   avgScore: number | null;
   scoreBands: { high: number; mid: number; low: number; none: number; total: number };
+  /** 推荐投递率 recommend / decisionTotal（0-1），分母为 0 时为 null */
+  recommendRate: number | null;
+  /** 优质高分率 (score >= 70) / scored（0-1），分母为 0 时为 null */
+  highScoreRate: number | null;
+  /** 四档适配度分布计数（strong / match / cautious / unfit） */
+  fitLevels: Record<FitLevel, number>;
+  /** 六维契合度均分（0-100），样本无该维度则为 null */
+  dimensionAvg: Record<MatchDimensionKey, number | null>;
+  /** 高频匹配优势 Top N（[标签, 频次]） */
+  topStrengths: [string, number][];
+  /** 常见关注风险与差距 Top N（[标签, 频次]） */
+  topCautions: [string, number][];
 
   /** 今日投递成功数（按 sentAt，独立于时间范围） */
   todaySent: number;
@@ -299,6 +331,39 @@ function topN(map: Map<string, number>, n: number): [string, number][] {
     .slice(0, n);
 }
 
+/** 清洗并提取优势/风险的精炼标签文本 */
+function cleanInsightTag(raw: unknown, maxLen = 14): string {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  // 去除 Markdown 粗体/行内代码等符号
+  s = s.replace(/[*`_~]/g, '');
+  // 去除前置序号如 "1. "、"- "、"· "、"（1）"
+  s = s.replace(/^([0-9]+[.\-、]|[•·\-*]|\([0-9]+\))\s*/, '').trim();
+  // 若包含破折号或长横线，如「岗位要求 React — 简历具备 React 开发经历」，提取后半句作为亮点
+  if (s.includes('—') || s.includes('——')) {
+    const parts = s.split(/——|—/).map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 1 && parts[1].length >= 2) s = parts[1];
+  } else if (s.includes('：') || s.includes(':')) {
+    const parts = s.split(/[：:]/).map((p) => p.trim()).filter(Boolean);
+    // 若冒号前很短（2-10字，如技能名“Docker/K8s”），优先用冒号前的技能名作为标签；否则用后半句
+    if (parts[0].length >= 2 && parts[0].length <= 10) s = parts[0];
+    else if (parts.length > 1 && parts[1].length >= 2) s = parts[1];
+  }
+  // 若含有逗号/分号/顿号且整体较长，提取第一个短句核心（如“3天迭代节奏快、需软硬协同...” → “3天迭代节奏快”）
+  if (s.length > maxLen && /[，,；;、]/.test(s)) {
+    const segments = s.split(/[，,；;、]/).map((p) => p.trim()).filter(Boolean);
+    if (segments.length > 0 && segments[0].length >= 2) {
+      s = segments[0];
+    }
+  }
+  // 去除末尾常见标点
+  s = s.replace(/[。，；;,.!！?？]+$/, '').trim();
+  if (s.length > maxLen) {
+    s = s.slice(0, maxLen - 1) + '…';
+  }
+  return s;
+}
+
 function rate(numerator: number, denominator: number): number | null {
   if (denominator <= 0) return null;
   return numerator / denominator;
@@ -384,6 +449,13 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
   let scoreMid = 0;
   let scoreLow = 0;
 
+  const fitLevels: Record<FitLevel, number> = { strong: 0, match: 0, cautious: 0, unfit: 0 };
+  const dimKeys: MatchDimensionKey[] = ['skill', 'direction', 'experience', 'education', 'salary', 'location'];
+  const dimSums: Record<MatchDimensionKey, number> = { skill: 0, direction: 0, experience: 0, education: 0, salary: 0, location: 0 };
+  const dimCounts: Record<MatchDimensionKey, number> = { skill: 0, direction: 0, experience: 0, education: 0, salary: 0, location: 0 };
+  const strengthMap = new Map<string, number>();
+  const cautionMap = new Map<string, number>();
+
   // runId → 方向名（pending 只有 runId，方向要回查 taskRuns）
   const runDirection = new Map<string, string>();
   taskRuns.forEach((r) => {
@@ -434,6 +506,47 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
         if (s >= 70) scoreHigh += 1;
         else if (s >= 40) scoreMid += 1;
         else scoreLow += 1;
+      }
+
+      // 适配档位统计（有 fitLevel 优先，缺失时由有效 score 反推）
+      const fit = p.analysis.fitLevel || (s >= 0 ? fitLevelFromScore(s) : null);
+      if (fit && fitLevels[fit] !== undefined) {
+        fitLevels[fit] += 1;
+      }
+
+      // 六维分数累加
+      const dims = p.analysis.dimensions;
+      if (dims) {
+        for (const k of dimKeys) {
+          const v = dims[k];
+          if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+            dimSums[k] += v;
+            dimCounts[k] += 1;
+          }
+        }
+      }
+
+      // 高频匹配优势统计
+      if (Array.isArray(p.analysis.matchedEvidence)) {
+        for (const item of p.analysis.matchedEvidence) {
+          const tag = cleanInsightTag(item);
+          if (tag && tag.length >= 2) {
+            strengthMap.set(tag, (strengthMap.get(tag) || 0) + 1);
+          }
+        }
+      }
+
+      // 关注风险与差距门槛统计
+      const cautions = [
+        ...(Array.isArray(p.analysis.hardBlocks) ? p.analysis.hardBlocks : []),
+        ...(Array.isArray(p.analysis.risks) ? p.analysis.risks : []),
+        ...(Array.isArray(p.analysis.gaps) ? p.analysis.gaps : []),
+      ];
+      for (const item of cautions) {
+        const tag = cleanInsightTag(item);
+        if (tag && tag.length >= 2) {
+          cautionMap.set(tag, (cautionMap.get(tag) || 0) + 1);
+        }
       }
     } else {
       scoreNone += 1;
@@ -505,6 +618,19 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     analysisCoverage: rate(analyzed, total) ?? 0,
     avgScore: scored > 0 ? scoreSum / scored : null,
     scoreBands: { high: scoreHigh, mid: scoreMid, low: scoreLow, none: scoreNone, total: scoreHigh + scoreMid + scoreLow + scoreNone },
+    recommendRate: rate(decisions.recommend, decisions.recommend + decisions.cautious + decisions.reject),
+    highScoreRate: scored > 0 ? scoreHigh / scored : null,
+    fitLevels,
+    dimensionAvg: {
+      skill: dimCounts.skill > 0 ? Math.round(dimSums.skill / dimCounts.skill) : null,
+      direction: dimCounts.direction > 0 ? Math.round(dimSums.direction / dimCounts.direction) : null,
+      experience: dimCounts.experience > 0 ? Math.round(dimSums.experience / dimCounts.experience) : null,
+      education: dimCounts.education > 0 ? Math.round(dimSums.education / dimCounts.education) : null,
+      salary: dimCounts.salary > 0 ? Math.round(dimSums.salary / dimCounts.salary) : null,
+      location: dimCounts.location > 0 ? Math.round(dimSums.location / dimCounts.location) : null,
+    },
+    topStrengths: topN(strengthMap, 5),
+    topCautions: topN(cautionMap, 5),
 
     todaySent,
     dailyTarget,

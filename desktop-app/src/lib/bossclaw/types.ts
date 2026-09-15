@@ -73,12 +73,20 @@ export interface AppConfig {
   hrActivityFilter: HrActivityFilter;
   /** 面试方式筛选：不限 / 仅线上 / 仅线下（确定性规则，非 AI 判断） */
   interviewModeFilter: InterviewModeFilter;
+  /** 最低薪资筛选单位：'day'（按日薪）| 'month'（按月薪），默认 'day' */
+  minSalaryMode: 'day' | 'month';
   /**
    * 最低日薪（元/天，确定性硬约束，非 AI 判断）：把岗位任意薪资口径（月/日/时）
    * 折算到「元/天」后，低于该值即判定为硬拦截（reject，不进入投递队列）。
    * 0（默认）= 不限，任何日薪都放行；设为 100 即「日薪 < 100 元/天」的岗位（如 50 元/天）被排除。
    */
   minSalaryPerDay: number;
+  /**
+   * 最低月薪（K元/月，确定性硬约束，非 AI 判断，支持 1 位小数）：把岗位任意薪资口径（月/日/时）
+   * 折算到「K元/月」后，低于该值即判定为硬拦截（reject，不进入投递队列）。
+   * 0（默认）= 不限，任何月薪都放行；如设为 8 或 8.5 即「月薪 < 8 或 8.5 K元/月」的岗位被排除。
+   */
+  minSalaryPerMonth: number;
   /** 是否排除猎头岗位（对齐 AI-BossJob 的 excludeHeadhunters） */
   excludeHeadhunters: boolean;
   /** 搜索采集时是否自动下拉加载更多岗位卡片（BOSS 列表为无限滚动，默认开启以收集更多岗位） */

@@ -21,12 +21,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Dropdown, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
   AimOutlined,
+  AlertOutlined,
   ArrowRightOutlined,
   BarChartOutlined,
   CheckCircleFilled,
   ClockCircleOutlined,
   CloseCircleFilled,
-  DownOutlined,
   DownloadOutlined,
   EnvironmentOutlined,
   FlagOutlined,
@@ -36,12 +36,14 @@ import {
   StopOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
+import { ChevronDown } from '@/components/ChevronDown';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/lib/electronApi';
 import {
-  STATS_DECISION_META,
+  STATS_DIMENSION_META,
+  STATS_FIT_LEVEL_META,
   STATS_RANGES,
   STATS_STATUS_META,
   buildStatsSnapshot,
@@ -89,6 +91,57 @@ function HBar({
           <div className="hbar-fill" style={{ width: `${percent}%`, background: color }} />
         </Tooltip>
       </div>
+    </div>
+  );
+}
+
+function DimensionBar({ label, score, hint }: { label: string; score: number | null; hint?: string }) {
+  const hasScore = score !== null && Number.isFinite(score);
+  const color = !hasScore
+    ? 'var(--border-strong)'
+    : score >= 80
+      ? '#10B981'
+      : score >= 65
+        ? '#13b5ac'
+        : score >= 50
+          ? '#F59E0B'
+          : '#EF4444';
+
+  return (
+    <div className="ai-dim-row">
+      <span className="ai-dim-label" title={hint}>{label}</span>
+      <div className="ai-dim-track-wrap">
+        <Tooltip title={hint ? `${label}：${hasScore ? `${score} 分` : '暂无'} · ${hint}` : `${label}：${hasScore ? `${score} 分` : '暂无'}`}>
+          <div className="ai-dim-track">
+            <div className="ai-dim-fill" style={{ width: `${hasScore ? Math.min(100, Math.max(4, score)) : 0}%`, background: color }} />
+          </div>
+        </Tooltip>
+      </div>
+      <span className="ai-dim-val">{hasScore ? `${score}分` : '—'}</span>
+    </div>
+  );
+}
+
+function InsightTags({
+  items,
+  type,
+  emptyText,
+}: {
+  items: [string, number][];
+  type: 'strength' | 'caution';
+  emptyText: string;
+}) {
+  if (!items.length) {
+    return <div className="ai-insight-empty">{emptyText}</div>;
+  }
+  return (
+    <div className="ai-tag-group">
+      {items.map(([tag, count]) => (
+        <span className={`ai-insight-tag ${type}`} key={tag} title={`${tag}（出现 ${count} 次）`}>
+          <span className="ai-insight-text">{tag}</span>
+          {count > 1 && <span className="ai-insight-count">×{count}</span>}
+        </span>
+      ))}
     </div>
   );
 }
@@ -237,6 +290,7 @@ export default function Stats() {
   const [range, setRange] = useState<StatsRangeKey>('7d');
   const [crossBy, setCrossBy] = useState<'platform' | 'direction'>('platform');
   const [exporting, setExporting] = useState<ExportKind | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
@@ -357,9 +411,15 @@ export default function Stats() {
             onChange={(v) => setRange(v as StatsRangeKey)}
             options={STATS_RANGES.map((r) => ({ label: r.label, value: r.key }))}
           />
-          <Dropdown menu={exportMenu} trigger={['click']} placement="bottomRight">
+          <Dropdown
+            menu={exportMenu}
+            trigger={['click']}
+            placement="bottomRight"
+            open={exportOpen}
+            onOpenChange={setExportOpen}
+          >
             <Button type="primary" icon={<DownloadOutlined />} loading={Boolean(exporting)}>
-              导出 <DownOutlined style={{ fontSize: 10 }} />
+              导出 <ChevronDown open={exportOpen} size={11} style={{ marginLeft: 4 }} />
             </Button>
           </Dropdown>
         </div>
@@ -414,42 +474,71 @@ export default function Stats() {
 
           {/* 状态分布 + AI 匹配分析 */}
           <div className="stats-row stats-row--2">
-            <Card size="small" title="岗位状态分布"
-              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {snapshot.total} 条记录</Text>}>
-              {STATS_STATUS_META.map((m) => (
-                <HBar
-                  key={m.key}
-                  label={m.label}
-                  hint={m.hint}
-                  value={snapshot.counts[m.key] ?? 0}
-                  total={snapshot.total}
-                  color={m.color}
-                />
-              ))}
+            <Card
+              size="small"
+              title="岗位状态分布"
+              className="stats-card-status"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {snapshot.total} 条记录</Text>}
+            >
+              <div className="status-hbar-list">
+                {STATS_STATUS_META.map((m) => (
+                  <HBar
+                    key={m.key}
+                    label={m.label}
+                    hint={m.hint}
+                    value={snapshot.counts[m.key] ?? 0}
+                    total={snapshot.total}
+                    color={m.color}
+                  />
+                ))}
+              </div>
             </Card>
 
             <Card
               size="small"
               title="AI 匹配分析"
+              className="stats-card-ai"
               extra={
                 <Tag icon={<RiseOutlined />} color="processing" style={{ borderRadius: 6 }}>
                   已分析 {snapshot.analyzed} / {snapshot.total}
                 </Tag>
               }
             >
+              {/* 头部微指标看板 */}
+              <div className="ai-kpi-grid">
+                <div className="ai-kpi-item">
+                  <div className="ai-kpi-val">{formatScore(snapshot.avgScore)}</div>
+                  <div className="ai-kpi-lbl">平均匹配分</div>
+                </div>
+                <div className="ai-kpi-item">
+                  <div className="ai-kpi-val">{formatRate(snapshot.recommendRate)}</div>
+                  <div className="ai-kpi-lbl">推荐投递率</div>
+                </div>
+                <div className="ai-kpi-item">
+                  <div className="ai-kpi-val">{formatRate(snapshot.highScoreRate)}</div>
+                  <div className="ai-kpi-lbl">优质高分率</div>
+                </div>
+                <div className="ai-kpi-item">
+                  <div className="ai-kpi-val">{formatRate(snapshot.analysisCoverage)}</div>
+                  <div className="ai-kpi-lbl">分析覆盖率</div>
+                </div>
+              </div>
+
+              {/* 决策分布（提示词四档）与匹配分数分布 */}
               <div className="stats-2col">
                 <div>
-                  <div className="block-label">决策分布</div>
-                  {snapshot.decisionTotal === 0 ? (
+                  <div className="block-label">决策分布（四档）</div>
+                  {snapshot.analyzed === 0 ? (
                     <Text type="secondary" style={{ fontSize: 12 }}>尚无 AI 分析结果</Text>
                   ) : (
-                    (Object.keys(STATS_DECISION_META) as (keyof typeof STATS_DECISION_META)[]).map((k) => (
+                    STATS_FIT_LEVEL_META.map((m) => (
                       <HBar
-                        key={k}
-                        label={STATS_DECISION_META[k].label}
-                        value={snapshot.decisions[k]}
-                        total={snapshot.decisionTotal}
-                        color={STATS_DECISION_META[k].color}
+                        key={m.key}
+                        label={`${m.label}（${m.scoreRange}）`}
+                        hint={m.hint}
+                        value={snapshot.fitLevels[m.key] ?? 0}
+                        total={snapshot.analyzed || 1}
+                        color={m.color}
                       />
                     ))
                   )}
@@ -466,6 +555,56 @@ export default function Stats() {
                       <HBar label="未分析" value={snapshot.scoreBands.none} total={snapshot.scoreBands.total} color="#CBD5E1" />
                     </>
                   )}
+                </div>
+              </div>
+
+              {/* 深度多维评估与特征洞察 */}
+              <div className="ai-divider" />
+
+              <div className="ai-deep-grid">
+                <div>
+                  <div className="ai-section-title">
+                    <span>六维契合度均分</span>
+                    <Tooltip title="基于 AI 语义评估与本地确定性规则的多维评分均值（0-100分）">
+                      <QuestionCircleOutlined style={{ fontSize: 11, cursor: 'pointer' }} />
+                    </Tooltip>
+                  </div>
+                  <div className="ai-dim-list">
+                    {STATS_DIMENSION_META.map((dim) => (
+                      <DimensionBar
+                        key={dim.key}
+                        label={dim.label}
+                        hint={dim.hint}
+                        score={snapshot.dimensionAvg[dim.key]}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="ai-insight-box">
+                  <div>
+                    <div className="ai-insight-sub">
+                      <CheckCircleFilled style={{ color: '#10B981', fontSize: 11 }} />
+                      <span>高频优势亮点</span>
+                    </div>
+                    <InsightTags
+                      items={snapshot.topStrengths.slice(0, 3)}
+                      type="strength"
+                      emptyText={snapshot.analyzed > 0 ? '未提取到突出技能优势' : '尚无分析数据'}
+                    />
+                  </div>
+
+                  <div>
+                    <div className="ai-insight-sub">
+                      <AlertOutlined style={{ color: '#F59E0B', fontSize: 11 }} />
+                      <span>关注风险与门槛</span>
+                    </div>
+                    <InsightTags
+                      items={snapshot.topCautions.slice(0, 3)}
+                      type="caution"
+                      emptyText={snapshot.analyzed > 0 ? '未检出明显风险项' : '尚无风险数据'}
+                    />
+                  </div>
                 </div>
               </div>
             </Card>

@@ -250,6 +250,139 @@ try {
   const badUi = await act('uiEvalRaw', { ops: ['eval'] });
   record('接管 非法动作被拒', badUi.isError === true && /不支持的动作/.test(badUi.text || ''), (badUi.text || '').split('\n')[0]?.slice(0, 80));
 
+  // ===== agent 代答全链路（应用未配置 API Key 时，AI 任务交给外部 agent 用自有模型作答）=====
+  // 隔离实例是全新 userData → 没有 API Key，正好命中代答通道的触发条件。
+  const { agentTools } = await import('../src/tools/agent.mjs');
+  const agentTasks = (args = {}) => tool(agentTools, 'bossclaw_agent_tasks').handler(args);
+  const agentSubmit = (args) => tool(agentTools, 'bossclaw_agent_submit').handler(args);
+  const agentCancel = (args) => tool(agentTools, 'bossclaw_agent_cancel').handler(args);
+
+  const keyState = await tool(controlTools, 'bossclaw_app_state').handler({ path: 'settings.config.model.apiKey' });
+  record(
+    '前置：隔离实例确实没有 API Key',
+    keyState.data?.value === null || keyState.data?.value === '' || keyState.data?.value === undefined,
+    `apiKey=${JSON.stringify(keyState.data?.value)}`
+  );
+
+  const hb = await agentTasks({ waitMs: 0 });
+  record(
+    '代答心跳：agent_tasks 首次调用即被判为在线',
+    hb.data?.online === true && typeof hb.data?.stats?.pending === 'number',
+    (hb.text || '').split('\n')[0]
+  );
+
+  // aiAnalyzeJob 前置要求「已有职业画像」（matching.ts 无画像直接抛错），先播种一份最小可用画像
+  const seedProfile = await act('dataSetProfile', {
+    profile: {
+      facts: {
+        education: ['本科 · 计算机科学与技术'],
+        experiences: ['2022 至今 前端开发工程师：负责中后台系统 React + TypeScript 开发，主导组件库建设'],
+        projects: ['中后台组件库（React/TypeScript）', '首屏性能优化：首屏时间下降 40%'],
+        skills: ['React', 'TypeScript', 'Vite'],
+        certificates: [],
+        capabilities: ['React 组件开发', 'TypeScript 类型设计', '首屏性能优化'],
+      },
+      primaryDirections: [{ name: '前端开发', confidence: 0.9, evidence: ['三年 React 前端开发经验'] }],
+      secondaryDirections: ['全栈开发'],
+      searchKeywords: ['前端开发工程师', 'React'],
+      hardConstraints: { locations: [], employmentTypes: ['全职'], salary: '', experience: '', degree: '本科' },
+      excludeDirections: [],
+      summary: '三年 React 前端开发经验，主导中后台组件库建设与首屏性能优化。',
+      generation: { mode: 'local', label: 'e2e 测试画像', aiStatus: 'success', generatedAt: Date.now() },
+    },
+  });
+  record('代答前置：播种职业画像', !seedProfile.isError && seedProfile.data?.applied === true, (seedProfile.text || '').split('\n')[0]);
+
+  const job = {
+    title: '前端开发工程师',
+    company: '代答测试公司',
+    salary: '20-30K',
+    location: '上海',
+    description: '负责中后台系统的 React 前端开发，使用 TypeScript；参与组件库建设与首屏性能优化；要求 3 年相关经验。',
+    url: 'https://www.zhipin.com/job_detail/e2e-delegate-1.html',
+    platform: 'boss',
+  };
+  const resumeText =
+    '代答测试简历：三年 React 前端开发经验，熟练使用 TypeScript 与 React，主导中后台组件库建设，做过首屏性能优化，熟悉 Vite 构建。';
+
+  const MARKER = '代答标记A7号';
+  // 招呼语必须落在合格区间（120-200 字）且是求职者口吻，否则会触发「再生成」而需要第二次代答
+  let greeting = `您好，我想应聘贵司前端开发工程师岗位，希望进一步沟通。我有三年 React 与 TypeScript 前端开发经验，主导过中后台组件库建设与首屏性能优化，${MARKER}，与贵司岗位的技术要求高度重合。`;
+  while (greeting.length < 150) greeting += '希望有机会当面沟通。';
+  record('代答用例：招呼语落在合格区间（120-200 字）', greeting.length >= 120 && greeting.length <= 200, `${greeting.length} 字`);
+
+  // 触发一次真实 AI 分析（不 await：它会挂起等待代答）
+  const aiPending = act('aiAnalyzeJob', { job, resumeText, customGreetingPrompt: 'e2e 首答用例' });
+
+  let task = null;
+  for (let i = 0; i < 6 && !task; i += 1) {
+    const got = await agentTasks({ waitMs: 3000 });
+    task = (got.data?.tasks || [])[0] || null;
+  }
+  record(
+    '代答任务入队并可被 agent 领取',
+    !!task && task.jsonMode === true && JSON.stringify(task.messages || []).includes('前端开发工程师'),
+    task
+      ? `id=${task.id} purpose=${task.purpose} jsonMode=${task.jsonMode} messages=${(task.messages || []).length} 条`
+      : '队列为空（若岗位命中本地硬约束会提前返回、不再进 AI）'
+  );
+
+  if (!task) {
+    // 诊断：把 AI 动作的真实返回打出来，便于区分「动作异常」与「提前回落本地」
+    const settled = await Promise.race([aiPending, sleep(8000).then(() => null)]);
+    const diag = settled
+      ? `isError=${settled.isError} text=${(settled.text || '').split('\n').slice(0, 3).join(' | ').slice(0, 400)}`
+      : 'AI 动作 8s 内未返回（仍在等待，未入队原因见上）';
+    record('诊断：AI 动作返回内容', false, diag);
+  }
+
+  if (task) {
+    const sub = await agentSubmit({
+      id: task.id,
+      content: JSON.stringify({
+        score: 78,
+        fitLevel: 'match',
+        decision: 'recommend',
+        hardBlocks: [],
+        matchedEvidence: ['具备三年 React 与 TypeScript 前端开发经验'],
+        gaps: ['缺少大型性能优化量化案例'],
+        risks: [],
+        reason: '代答测试：岗位要求与简历技术栈匹配。',
+        greeting,
+      }),
+    });
+    record('代答回填成功（合法 JSON）', !sub.isError && sub.data?.applied === true, (sub.text || '').split('\n')[0]);
+
+    const aiRes = await aiPending;
+    const out = aiRes.data?.next || {};
+    record(
+      'AI 动作采用 agent 代答结果（而非本地兜底）',
+      String(out.greeting || '').includes(MARKER) && String(out.reason || '').includes('代答测试'),
+      `score=${out.score} greeting=${String(out.greeting || '').length} 字 reason=${String(out.reason || '').slice(0, 30)}`
+    );
+    record('代答结果按 AI 口径落分', out.scoreSource === 'ai', `scoreSource=${out.scoreSource}`);
+  }
+
+  // 放弃代答 → 应用立刻回落本地规则（不必等满等待时限）
+  // 注意：改用不同的 customGreetingPrompt，避免命中上一次 AI 结果的本地缓存（缓存命中不会再入队）
+  // 首答用例没拿到任务时直接跳过本段：否则 AI 动作要等满 180s 超时才回落，白白拖长整轮 e2e。
+  if (task) {
+    const cancelPending = act('aiAnalyzeJob', { job, resumeText, customGreetingPrompt: 'e2e 取消用例' });
+    let task2 = null;
+    for (let i = 0; i < 10 && !task2; i += 1) {
+      const got = await agentTasks({ waitMs: 2000 });
+      task2 = (got.data?.tasks || [])[0] || null;
+    }
+    const cxl = task2 ? await agentCancel({ id: task2.id, reason: 'e2e 主动放弃' }) : { isError: true, text: '未领取到任务' };
+    record('代答可被 agent 主动放弃', !cxl.isError && cxl.data?.applied === true, (cxl.text || '').split('\n')[0]);
+    const cxlRes = await cancelPending;
+    record(
+      '放弃后 AI 动作回落本地规则',
+      cxlRes.data?.next?.scoreSource === 'local' && typeof cxlRes.data?.next?.score === 'number',
+      `scoreSource=${cxlRes.data?.next?.scoreSource} score=${cxlRes.data?.next?.score}`
+    );
+  }
+
   // ===== 阶段 2：端口回退 + CLI 开关（--control-bridge，不带环境变量）=====
   // 旧实现把端口写死，被占用时桥整个不可用；这里用一个占位服务顶住 17650 来验证回退。
   // 同时**故意不设置 BOSSCLAW_CONTROL**，只靠命令行开关开启 —— 这是启动脚本用的方式

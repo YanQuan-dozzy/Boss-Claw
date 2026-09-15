@@ -705,7 +705,7 @@ safeHandle('jc:camoufox-call', async (_event, action, payload) => {
     const r = await startCamoufoxBridge(readyPython);
     if (!r.running) return { ok: false, error: r.error || '桥启动失败' };
   }
-  const pathMap = { search: '/search', send: '/send', chat: '/chat', login: '/login', logout: '/logout', clear: '/clear' };
+  const pathMap = { search: '/search', send: '/send', chat: '/chat', login: '/login', logout: '/logout', clear: '/clear', platforms: '/platforms', progress: '/collection-progress' };
   const apiPath = pathMap[action];
   if (!apiPath) return { ok: false, error: `unknown action: ${action}` };
   try {

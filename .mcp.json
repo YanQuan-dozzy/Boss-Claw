@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "bossclaw": {
-      "command": "<Node.js 可执行文件绝对路径>",
+      "command": "E:\\Node.js\\node.exe",
       "args": [
-        "<本仓库绝对路径>\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"
+        "F:\\projects\\Boss-claw\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"
       ],
       "env": {}
     }

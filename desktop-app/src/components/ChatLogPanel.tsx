@@ -3,7 +3,6 @@ import { Button, Input, Segmented, Tag, Tooltip } from 'antd';
 import {
   MessageOutlined,
   DeleteOutlined,
-  DownOutlined,
   SearchOutlined,
   SyncOutlined,
   CheckCircleOutlined,
@@ -12,6 +11,7 @@ import {
   UnorderedListOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
+import { ChevronDown } from '@/components/ChevronDown';
 import { ChatLogItem } from './ChatLogItem';
 import type { ChatLogEntry } from '@/store/useDataStore';
 
@@ -201,7 +201,7 @@ export const ChatLogPanel = memo<ChatLogPanelProps>(function ChatLogPanel({
           className="chat-log-panel__scroll-btn"
           onClick={scrollToBottom}
         >
-          <DownOutlined />
+          <ChevronDown size={11} style={{ marginRight: 4 }} />
           <span>最新日志</span>
         </button>
       )}

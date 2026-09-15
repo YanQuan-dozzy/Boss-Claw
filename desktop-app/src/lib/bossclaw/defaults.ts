@@ -47,8 +47,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   hrActivityFilter: 'any',
   // 面试方式筛选（对齐用户需求：仅线上/仅线下时排除冲突岗位，默认不限）
   interviewModeFilter: 'any',
+  // 最低薪资筛选单位：'day'（按日薪）| 'month'（按月薪）
+  minSalaryMode: 'day',
   // 最低日薪（元/天，确定性硬约束）：0 = 不限；>0 时岗位折算日薪低于该值即硬性排除（如 50 元/天的不合理岗位）
   minSalaryPerDay: 0,
+  // 最低月薪（K元/月，确定性硬约束，支持 1 位小数）：0 = 不限；>0 时岗位折算月薪低于该值即硬性排除（如 8 或 8.5 K元/月）
+  minSalaryPerMonth: 0,
   // 猎头过滤（对齐 AI-BossJob 的 excludeHeadhunters，默认关闭）
   excludeHeadhunters: false,
   // 搜索采集自动下拉加载更多岗位（默认开启，解决「收集太少」问题）

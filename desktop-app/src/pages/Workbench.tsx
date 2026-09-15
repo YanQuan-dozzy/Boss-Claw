@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
 import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select, Alert } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
-  DownOutlined, RightOutlined, StopOutlined, UndoOutlined, ThunderboltOutlined,
+  StopOutlined, UndoOutlined, ThunderboltOutlined,
   PauseOutlined, CaretRightOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useDataStore, type LogLevel } from '@/store/useDataStore';
@@ -11,6 +11,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
 import PlatformChip from '@/components/PlatformChip';
+import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
@@ -28,7 +29,7 @@ import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
 import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
-import { platformEnabled, platformLabel, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
   ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
   cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS,
@@ -237,6 +238,9 @@ export default function Workbench() {
   const collectListReadyLoggedRef = useRef(false);
   // 本次会话已处理过的岗位 URL（无论入库还是被跳过），避免同一卡片被采集循环重复 analyze/打重复日志
   const ingestedSeenRef = useRef<Set<string>>(new Set());
+  // 可视化采集：该平台未登录 / 登录态已失效（由页内 loginWallDetected() 回传 login-required）。
+  // 属「平台级」故障 —— 只收口本平台本批剩余搜索组合，其余平台照常采集（与 collectFaultScope 口径一致）。
+  const visualLoginBlockedRef = useRef('');
   // 采集岗位福利后台补全（对齐「加入任务」同源 card.json welfareList），异步执行不阻塞采集循环
   const enrichWelfareRef = useRef<(id: string, job: JobMeta) => void>(() => {});
   // 采集 AI 分析有界并发队列：可视化采集对每张卡片 fire-and-forget 调 ingestJob，而单次
@@ -789,6 +793,10 @@ export default function Workbench() {
   // 合并 welfareList（五险一金/年终奖等），让工作台绿标可显示；API 风控/网络失败静默降级为已提取内容。
   const enrichCollectedWelfare = useCallback(async (id: string, job: JobMeta) => {
     try {
+      // 平台门禁：该补全走 BOSS 官方 card.json（boss-api 通道），非 BOSS 标签页**未注册该通道**
+      // （webview.cjs 里 boss-api 仅在 PLATFORM==='boss' 时注册）→ 调用会空等到超时且拿不到数据。
+      // 多平台采集放开后每个非 BOSS 岗位都会走到这里，必须在此短路。
+      if ((job.platform || 'boss') !== 'boss') return;
       // 已有社保信号（五险/六险/三险/公积金）则无需补全（webview 采集兜底可能已合并）
       const cur0 = useDataStore.getState().pending.find((p) => p.id === id);
       if (!cur0) return;
@@ -889,6 +897,13 @@ export default function Workbench() {
       addLog('warn', `页面已加载完但未命中岗位卡片（列表选择器可能失效）：${String(data?.status || '').slice(0, 300)}`);
     } else if (data?.phase === 'no-cards-diag') {
       addLog('warn', `当前页未找到岗位卡片，DOM 诊断：${String(data?.status || '').slice(0, 300)}`);
+    } else if (data?.phase === 'login-required') {
+      // 平台未登录：记入 ref，采集主循环立即收口（不再对同一平台空跑剩余搜索组合）
+      visualLoginBlockedRef.current = String(data?.status || '平台未登录或登录态已失效');
+      addLog('warn', `可视化采集收口：${String(data?.status || '').slice(0, 200)}`);
+    } else if (data?.phase === 'platform-mismatch') {
+      // 仅诊断：preload 以页面 hostname 为权威，不一致说明标签选错了（不会静默采错平台）
+      addLog('warn', `采集平台自检：${String(data?.status || '').slice(0, 200)}`);
     }
   }, [ingestJob, addLog]);
 
@@ -981,22 +996,39 @@ export default function Workbench() {
     }
   }, [updateTaskRun]);
 
-  const runVisualCollect = async (runIds?: string[]) => {
-    if (visualActiveRef.current) return;
+  /**
+   * 可视化采集（内置浏览器 webview 链路，**已多平台化**）：
+   *   BOSS    ：逐卡片滚动 + 高亮 + 点击展开内联详情 + 提取完整信息（原链路不变）
+   *   其余平台：列表级采集（滚动 + 高亮，**不点击卡片**）—— 猎聘/智联/前程无忧的搜索页没有
+   *             内联详情面板，点卡片会导航走；详情 JD 由 Camoufox 隐身采集链路补齐
+   *             （见 webview.cjs::visualCollectListOnly 头注释）。
+   * runIds 非空 = 「任务进度」页定向重新采集（仍按平台各自队列过滤）。
+   */
+  const runVisualCollect = async (platform: JobPlatform = 'boss', runIds?: string[]): Promise<CollectOutcome> => {
+    if (visualActiveRef.current) return 'skip';
     ingestedSeenRef.current = new Set(); // 新一采集批重置去重，允许重新扫描
     collectListReadyLoggedRef.current = false; // 新一批重新记录首个「列表就绪」
-    if (!(await ensureBossLogin())) return;
+    visualLoginBlockedRef.current = '';
+    // BOSS 登录态由 wt2 cookie 判定（webview 与隐身引擎共用同一会话）；
+    // 其余平台的登录态在各自标签页内，由页内 loginWallDetected() 判定后回传 login-required
+    // —— 不能拿 BOSS cookie 口径去判断猎聘/智联/前程无忧（会误判成未登录而拒绝采集）。
+    if (platform === 'boss' && !(await ensureBossLogin())) return 'skip';
     const cfg0 = useSettingsStore.getState().config;
     if (isLockedOut(cfg0)) {
       message.warning(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg0) / 60000)} 分钟），暂不能采集`);
-      return;
+      return 'skip';
     }
-    if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
+    if (!profile) { message.warning('请先在简历中心生成职业画像'); return 'skip'; }
     // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
-    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
     if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
-    await loadBossCityCodes();
-    const queue = filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds);
+    // 搜索队列按平台分源，两条通道口径统一：
+    //   BOSS   → searchUrl.ts（官方筛选码 + 城市码表）
+    //   其余平台 → platformUrls.ts（城市/薪资/关键词进 URL，基础求职条件同步拼接）—— 与隐身采集同一构建器
+    if (platform === 'boss') await loadBossCityCodes();
+    const queue = platform === 'boss'
+      ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds)
+      : filterQueueByRunIds(platform, buildPlatformSearchQueue(platform, directionPlan, config), runIds);
     if (!queue.length) {
       if (runIds?.length) {
         // 定向重跑：该组合已不在当前搜索条件中（方向/关键词/城市/求职类型被改过）→ 收口卡片并说明原因
@@ -1014,13 +1046,16 @@ export default function Workbench() {
       } else {
         message.warning('没有可搜索的方向/条件，请先确认投递方向并设置城市/求职类型');
       }
-      return;
+      return 'skip';
     }
 
-    const unresolvedCities = [...new Set(queue.map((q) => q.location).filter(Boolean))] as string[];
-    const badCities = unresolvedCities.filter((loc) => !resolveCityCode(loc));
-    if (badCities.length) {
-      addLog('warn', `以下目标城市无法识别，将按 BOSS 当前定位城市搜索（请在「设置-求职条件」核对城市名）：${badCities.join('、')}`);
+    // BOSS 城市码校验（非 BOSS 平台的城市码由 platformUrls.ts 各自解析并直接进 URL，此处不适用）
+    if (platform === 'boss') {
+      const unresolvedCities = [...new Set(queue.map((q) => q.location).filter(Boolean))] as string[];
+      const badCities = unresolvedCities.filter((loc) => !resolveCityCode(loc));
+      if (badCities.length) {
+        addLog('warn', `以下目标城市无法识别，将按 BOSS 当前定位城市搜索（请在「设置-求职条件」核对城市名）：${badCities.join('、')}`);
+      }
     }
 
     visualActiveRef.current = true;
@@ -1028,14 +1063,27 @@ export default function Workbench() {
     setVisualPaused(false);
     setVisualItem({ index: 0, total: 0, title: '', company: '', status: '准备中', phase: '' });
 
-    // 可视化采集固定使用第一个主标签（滚动/点击全程可见，不随用户切换标签而漂移）
-    const collectTabId = webviewApi.current?.getFirstTabId?.() || webviewApi.current?.getActiveTabId?.();
+    // 采集标签选择（滚动/点击全程可见，不随用户切换标签而漂移）：
+    //   BOSS   → 沿用「第一个主标签」（存量行为，不动）；
+    //   其余平台 → 优先复用已有同平台标签，否则为该平台新建一个 main 标签。
+    //   不能在 BOSS 标签页里导航到猎聘/智联：既污染 BOSS 标签，又把用户视线带走。
+    let collectTabId = '';
+    if (platform === 'boss') {
+      collectTabId = webviewApi.current?.getFirstTabId?.() || webviewApi.current?.getActiveTabId?.() || '';
+    } else {
+      collectTabId = webviewApi.current?.findTabByPlatform?.(platform) || '';
+      if (!collectTabId) {
+        collectTabId = webviewApi.current?.openInNewTab?.(queue[0].url, `${platformLabel(platform)} · 采集`, 'main') || '';
+        // 等新标签的 webview 挂载；后续 loadURLInTab + waitTabReady 仍会兜底
+        if (collectTabId) await sleep(900);
+      }
+    }
     visualTabRef.current = collectTabId || '';
     if (!collectTabId) {
       visualActiveRef.current = false;
       setVisualCollecting(false);
       message.warning('没有可用标签页，无法启动可视化采集');
-      return;
+      return 'skip';
     }
 
     const collectSpeedMs = Math.max(400, Number(config.collectSpeedMs) || 1200);
@@ -1099,12 +1147,14 @@ export default function Workbench() {
       return false;
     };
 
-    addLog('info', `开始可视化采集：共 ${queue.length} 个搜索组合，逐岗位平滑滚动 + 高亮 + 点击展开详情${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+    addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${platform === 'boss' ? '逐岗位平滑滚动 + 高亮 + 点击展开详情' : '列表级滚动 + 高亮（不点开详情，详情 JD 由隐身采集补齐）'}${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
     // 本批采集任务的 runId（用于结束时把未收尾的卡片统一收口）
     const batchRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
       const item = queue[qi];
       if (!visualActiveRef.current) break;
+      // 该平台未登录：后续搜索组合必然同样失败 → 立即收口（登录墙判定在页内完成，不靠猜）
+      if (visualLoginBlockedRef.current) break;
       addLog('info', `可视化采集「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}（${qi + 1}/${queue.length}）`);
       let tabId = collectTabId;
       if (!webviewApi.current?.hasTab(tabId)) {
@@ -1115,7 +1165,7 @@ export default function Workbench() {
       }
 
       // 采集任务卡片（写入 taskRuns → 「任务进度」页实时出现/更新对应卡片）
-      const runId = collectRunId('boss', item);
+      const runId = collectRunId(platform, item);
       batchRunIds.push(runId);
       const baseRun: Partial<TaskRun> = {
         directionId: item.directionId,
@@ -1176,6 +1226,8 @@ export default function Workbench() {
         autoScroll: config.listAutoScroll !== false,
         scrollRounds: Number(config.listScrollRounds) > 0 ? Number(config.listScrollRounds) : 0,
         maxJobs: Math.max(1, Number(config.maxJobsPerRun) || 1000),
+        // 平台自检用：preload 以页面 hostname 为权威，不一致时回传 platform-mismatch 诊断
+        platform,
       });
       const got = Math.max(0, ingestedSeenRef.current.size - before);
       if (!visualActiveRef.current) break;
@@ -1193,36 +1245,54 @@ export default function Workbench() {
     // 用户停止：本批仍在「采集中」的采集任务收口为「已跳过」，避免任务进度页停留在进行中
     if (wasStopped) settleCollectRuns(batchRunIds, '已停止（未完成）');
     const processed = ingestedSeenRef.current.size;
+    const loginBlocked = visualLoginBlockedRef.current;
     visualActiveRef.current = false;
     visualTabRef.current = '';
     setVisualCollecting(false);
     setVisualPaused(false);
     setVisualItem((v) => ({ ...v, status: '', phase: '' }));
     recomputeStats();
-    addLog(wasStopped ? 'warn' : 'success', `可视化采集${wasStopped ? '已停止' : '完成'}：共处理 ${processed} 个岗位（已按条件过滤入库）`);
+    addLog(
+      wasStopped ? 'warn' : 'success',
+      loginBlocked
+        ? `可视化采集（${platformLabel(platform)}）未执行：${loginBlocked}`
+        : `可视化采集${wasStopped ? '已停止' : '完成'}：共处理 ${processed} 个岗位（已按条件过滤入库）`
+    );
     if (useAppStore.getState().autoAssist) requestRunNext();
+    // 未登录属「平台级」故障：只跳过本平台，剩余平台继续（与 collectFaultScope 的平台级口径一致）
+    return loginBlocked ? 'skip' : 'done';
   };
 
   // ===== Camoufox 隐身采集（可选增强，保留）——多平台：按 platform 参数走对应平台模块 =====
-  const runCamoufoxCollect = async (platform: JobPlatform = 'boss', runIds?: string[]) => {
-    if (cfxActiveRef.current) return;
+  /**
+   * 采集单平台的续行信号（对齐 BossHunter `collection/orchestrator.py` 的平台级故障隔离）：
+   *   'done'  正常跑完（含「无岗位」）→ 继续下一平台；
+   *   'skip'  平台级不可用（未启用/未登录/冷却期/无可用组合）→ 跳过本平台，后续平台继续；
+   *   'abort' 需要人工确认的阻断（风控 35/36、平台受限 32、环境异常 37/38）→ 整批队列中止。
+   * 判定唯一入口 = platforms.ts 的 collectFaultScope()，勿在此硬编码码值。
+   */
+  type CollectOutcome = 'done' | 'skip' | 'abort';
+
+  const runCamoufoxCollect = async (platform: JobPlatform = 'boss', runIds?: string[]): Promise<CollectOutcome> => {
+    if (cfxActiveRef.current) return 'skip';
     ingestedSeenRef.current = new Set(); // 新一采集批重置去重，允许重新扫描
     const cfg0 = useSettingsStore.getState().config;
     const cfx0 = cfg0.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
-    if (!cfx0.enabled) { message.warning('请在「设置 → Camoufox 隐身引擎」启用后再使用'); return; }
+    if (!cfx0.enabled) { message.warning('请在「设置 → Camoufox 隐身引擎」启用后再使用'); return 'skip'; }
     if (isLockedOut(cfg0)) {
       message.warning(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg0) / 60000)} 分钟），暂不能隐身采集`);
-      return;
+      return 'skip';
     }
-    if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
+    if (!profile) { message.warning('请先在简历中心生成职业画像'); return 'skip'; }
     // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
-    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return; }
+    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
     if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
     const st = await camoufoxStatus(platform);
-    if (!st.ready) { message.warning('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测并安装 camoufox')); return; }
+    if (!st.ready) { message.warning('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测并安装 camoufox')); return 'skip'; }
     if (!st.engine?.loggedIn) {
       message.warning(`平台「${platformLabel(platform)}」未登录 Camoufox，请先到「设置 → 招聘平台」扫码登录后再采集`);
-      return;
+      // 登录墙属「当前平台」本地故障：其它平台登录态各自独立，不受影响（BossHunter orchestrator 口径）
+      return 'skip';
     }
     if (platform === 'boss') await loadBossCityCodes();
     const queue = platform === 'boss'
@@ -1244,7 +1314,7 @@ export default function Workbench() {
       } else {
         message.warning('没有可搜索的方向/条件，请先确认投递方向并设置城市/求职类型');
       }
-      return;
+      return 'skip';
     }
     const pfLabel = platformLabel(platform);
 
@@ -1252,6 +1322,10 @@ export default function Workbench() {
     setCfxCollecting(true);
     let collectedCount = 0;
     let lastCode: number | null = null;
+    // 队列级阻断标记：一旦命中风控/环境异常，本平台收尾后整批队列必须中止（不再跑后续平台）
+    let queueAborted = false;
+    // 定向重新采集（runIds 非空）语义 = 用户明确要求重跑该组合 → 忽略断点续采强制重采
+    const forceRecheck = Boolean(runIds?.length);
     addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带关键词，仅保留城市等筛选）' : ''}`);
     const cfxRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
@@ -1283,9 +1357,19 @@ export default function Workbench() {
         stageLabel: `隐身采集中（${qi + 1}/${queue.length}）`,
         progress: comboProgress,
       });
+      lastCode = null; // 每组重置：故障范围判定与 catch 兜底只看本组结果，避免沿用上一组残留码
       try {
-        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria);
-        if (result.ok && result.jobs?.length) {
+        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria, forceRecheck);
+        if (result.skipped) {
+          // 断点续采命中：既非失败、也非「无岗位」，单独记账便于用户理解「为什么没采」
+          addLog('info', `「${keywordLabel(item.keyword)}」跳过本次采集：${result.message || '近期已采过（断点续采）'}`);
+          markCollectRun(runId, baseRun, {
+            status: 'success',
+            stage: 'success',
+            stageLabel: '断点续采跳过（近期已采过）',
+            progress: Math.round(((qi + 1) / queue.length) * 100),
+          });
+        } else if (result.ok && result.jobs?.length) {
           let added = 0;
           for (const j of result.jobs) {
             if (!cfxActiveRef.current) break;
@@ -1306,6 +1390,9 @@ export default function Workbench() {
         } else {
           lastCode = result.code ?? null;
           const errMsg = result.message || result.error || '无岗位';
+          // 故障影响范围：队列级（风控/受限/环境异常）→ 本平台收尾后整批中止；
+          // 平台级（未登录/单次动作失败）→ 只收尾本平台，后续平台继续。
+          if (collectFaultScope(lastCode) === 'queue') queueAborted = true;
           if (isCamoufoxStopCode(lastCode)) {
             addLog('error', `隐身采集命中风控码 ${lastCode}：${result.message || ''}。立即停止并进入冷却，请人工处理。`);
             useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
@@ -1335,7 +1422,7 @@ export default function Workbench() {
           status: 'failed', stage: 'failed', stageLabel: '隐身搜索失败', error: String(e?.message || e),
           progress: Math.round(((qi + 1) / queue.length) * 100),
         });
-        if (isCamoufoxStopCode(lastCode)) break;
+        if (isCamoufoxStopCode(lastCode)) { queueAborted = true; break; }
       }
       if (cfxActiveRef.current) await sleep(1500 + Math.random() * 1000);
     }
@@ -1346,6 +1433,8 @@ export default function Workbench() {
     recomputeStats();
     addLog(collectedCount > 0 ? 'success' : 'info', `Camoufox 隐身采集结束（${pfLabel}）：共入库 ${collectedCount} 个岗位`);
     if (useAppStore.getState().autoAssist) requestRunNext();
+    // 队列级阻断 → 上报 'abort'，由整批采集循环决定是否继续剩余平台
+    return queueAborted ? 'abort' : 'done';
   };
 
   const camoufoxJobToMeta = (j: CamoufoxJob, platform: JobPlatform = 'boss'): JobMeta => ({
@@ -1364,17 +1453,17 @@ export default function Workbench() {
     publishTime: '',
   });
 
-  /** 按指定平台执行一次采集（等待完成）：
-   * 非 BOSS 平台只能走 Camoufox 隐身引擎（webview 视觉采集为 BOSS 专属链路）；
-   * BOSS 按当前引擎模式分流（camoufox 启用 → 隐身采集，否则 webview 视觉采集）。
-   * runIds 非空时只重跑这些搜索组合（「任务进度」页「开始/继续」的定向采集）。 */
-  const runCollectFor = async (platform: JobPlatform, runIds?: string[]) => {
-    if (platform !== 'boss') {
-      await runCamoufoxCollect(platform, runIds);
-      return;
-    }
-    if (config.camoufox?.enabled) await runCamoufoxCollect('boss', runIds);
-    else await runVisualCollect(runIds);
+  /** 按指定平台执行一次采集（等待完成），返回本平台对整批队列的续行信号。
+   *
+   * 引擎选择（**全平台统一语义**）：
+   *   camoufox.enabled → Camoufox 隐身引擎通道（列表 + 详情 JD + 词级断点续采）
+   *   否则             → 内置浏览器 webview 可视化采集（BOSS 详情级 / 其余平台列表级）
+   * 历史行为是「非 BOSS 只能走 Camoufox」（当时 webview 链路只有 BOSS 选择器）；2026-09-15
+   * webview 多平台化后放开闸门 —— 未安装 Camoufox 内核也能采集非 BOSS 平台（列表级）。
+   * runIds 非空时只重跑这些搜索组合（「任务进度」页「开始/继续」的定向采集，忽略断点续采）。 */
+  const runCollectFor = async (platform: JobPlatform, runIds?: string[]): Promise<CollectOutcome> => {
+    if (config.camoufox?.enabled) return runCamoufoxCollect(platform, runIds);
+    return runVisualCollect(platform, runIds);
   };
 
   /** 手动「搜索采集」入口：按当前所选平台串行采集（不等待，引擎常驻执行） */
@@ -1391,10 +1480,16 @@ export default function Workbench() {
       for (const pf of targets) {
         // 中途有手动采集介入则不再启动剩余平台（各引擎入口自带 busy 防御）
         if (visualActiveRef.current || cfxActiveRef.current) break;
+        let outcome: CollectOutcome = 'done';
         try {
-          await runCollectFor(pf);
+          outcome = await runCollectFor(pf);
         } catch (e) {
           addLog('error', `采集平台「${platformLabel(pf)}」执行失败：${String((e as Error)?.message || e)}`);
+        }
+        // 队列级阻断（风控/受限/环境异常）：不再继续剩余平台，交人工确认后再采（BossHunter orchestrator 口径）
+        if (outcome === 'abort') {
+          addLog('warn', `采集批次已中止：平台「${platformLabel(pf)}」触发需人工确认的阻断，剩余平台不再继续`);
+          break;
         }
       }
     })();
@@ -1445,10 +1540,16 @@ export default function Workbench() {
         if (visualActiveRef.current || cfxActiveRef.current) break;
         // 只把属于该平台的 runId 传下去（空数组会被视为「整批」，故此处必须过滤）
         const ids = runIdsAll?.filter((id) => String(id).split('_')[1] === pf);
+        let outcome: CollectOutcome = 'done';
         try {
-          await runCollectFor(pf, ids);
+          outcome = await runCollectFor(pf, ids);
         } catch (e) {
           addLog('error', `采集平台「${platformLabel(pf)}」执行失败：${String((e as Error)?.message || e)}`);
+        }
+        // 队列级阻断：定时采集同样整批中止，避免在风控/受限状态下继续打其它平台
+        if (outcome === 'abort') {
+          addLog('warn', `定时采集已中止：平台「${platformLabel(pf)}」触发需人工确认的阻断，剩余平台不再继续`);
+          break;
         }
       }
     })();
@@ -1995,12 +2096,17 @@ export default function Workbench() {
 
   const isHiddenStatus = (status: string) => status === 'ignored' || status === 'skipped';
   const rankedAll = useMemo(() => rerankPending(pending, config), [pending, config]);
+  // 「全部」只展示**尚未投递**的岗位：已投递（sent）不混入总览，避免队列越用越长。
+  // 已投递数据完整保留在 pending 中，仍可通过「已投递」标签单独查看（见下方 ranked 分支）。
+  const activeAll = useMemo(() => rankedAll.filter((p) => p.status !== 'sent'), [rankedAll]);
+  // 「全部」走 activeAll（排除 sent）；选具体标签时走全量 rankedAll，保证「已投递」标签能正常筛出内容。
   const ranked = useMemo(() => {
-    const base = filter === 'all' ? rankedAll : rankedAll.filter((p) => p.status === filter);
+    const base = filter === 'all' ? activeAll : rankedAll.filter((p) => p.status === filter);
     return showIgnored ? base : base.filter((p) => !isHiddenStatus(p.status));
-  }, [rankedAll, filter, showIgnored]);
+  }, [activeAll, rankedAll, filter, showIgnored]);
 
-  const visibleAllCount = showIgnored ? pending.length : pending.filter((p) => !isHiddenStatus(p.status)).length;
+  // 标签数字与各自列表同源：全部 = 未投递总数；其余 = 对应状态总数（含已投递）
+  const visibleAllCount = showIgnored ? activeAll.length : activeAll.filter((p) => !isHiddenStatus(p.status)).length;
   const WB_FILTERS = [
     { key: 'all', label: `全部 ${visibleAllCount}` },
     { key: 'pending', label: `待确认 ${pending.filter((p) => p.status === 'pending').length}` },
@@ -2416,7 +2522,7 @@ export default function Workbench() {
                             {p.priorityRank != null && <span className="score-rank">#{p.priorityRank}</span>}
                             {chip.cls && <span className={'score-chip ' + chip.cls}>{chip.text}</span>}
                             <button className="job-expand-btn" type="button" title={isExpanded ? '收起' : '展开'} onClick={(e) => { e.stopPropagation(); toggleExpanded(p.id); }}>
-                              {isExpanded ? <DownOutlined /> : <RightOutlined />}
+                              <ChevronDown rotate={isExpanded ? 0 : -90} size={11} />
                             </button>
                           </div>
                         </div>

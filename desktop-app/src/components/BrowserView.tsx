@@ -19,7 +19,7 @@
 //      强制 will-change:transform 触发 GPU 合成层，解决 offscreen 初始点击无响应问题。
 //
 // 对外 apiRef 契约（Workbench 使用）：send / loadURL / closeTab / openInNewTab / openEngineTab /
-// loadURLInTab / sendInTab / hasTab / isPreloadReady / getActiveTabId / getFirstTabId / bossApi。
+// loadURLInTab / sendInTab / hasTab / isPreloadReady / findTabByPlatform / getActiveTabId / getFirstTabId / bossApi。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Modal, Tooltip, Select, message } from 'antd';
 import {
@@ -100,6 +100,12 @@ export interface WebviewApi {
   getDetailTabIds: () => string[];
   getActiveTabId: () => string;
   getFirstTabId: () => string;
+  /**
+   * 查找**已打开**且属于指定平台的标签（按 URL hostname 判定，与 platforms.ts::resolvePlatform 同口径）。
+   * 多平台采集靠它复用已有标签，避免每次为同一平台新开标签；未命中返回 ''。
+   * 优先返回 kind==='main' 的标签（detail 标签有 5 分钟空闲自动关闭策略，不适合长采集）。
+   */
+  findTabByPlatform: (platform: JobPlatform) => string;
   /** 在指定标签页面上下文执行 BOSS 官方 API，返回原始响应（{code, zpData, ...} 或 {error}） */
   bossApi: (action: string, params?: Record<string, any>, tabId?: string) => Promise<any>;
   /**
@@ -906,6 +912,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       pageStatus,
       getActiveTabId: () => activeIdRef.current || '',
       getFirstTabId: () => tabsRef.current[0]?.id || '',
+      // 多平台采集入口复用标签：优先 main 标签（detail 标签会被空闲回收），其次任意同平台标签
+      findTabByPlatform: (platform: JobPlatform) => {
+        const list = tabsRef.current;
+        const main = list.find((t) => t.kind === 'main' && resolvePlatform(t.url) === platform);
+        return (main || list.find((t) => resolvePlatform(t.url) === platform))?.id || '';
+      },
     };
   }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus]);
   const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
