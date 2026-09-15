@@ -1510,12 +1510,14 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 # 设置页「基础求职条件」（全平台共用）：猎聘/智联/前程无忧 由 platforms.filters
                 # 翻译为各平台筛选参数（BOSS 走 searchUrl.ts + webview，此处忽略）。
                 criteria = body.get('criteria') if isinstance(body.get('criteria'), dict) else {}
+                # 定向重新采集（「任务进度」页「开始/继续」）：忽略断点续采，强制重采
+                force = body.get('force') is True
                 if not query:
                     return self._send(400, {"ok": False, "error": "缺少 query"})
                 if platform == 'boss':
                     result = search_jobs(query, city, pages, os_name)
                 else:
-                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria)
+                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria, force)
                 return self._send(200, result)
 
             if parsed.path == '/send':
@@ -1593,6 +1595,18 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
             if parsed.path == '/clear':
                 clear_cookies(platform)
                 return self._send(200, {"ok": True})
+
+            # 平台能力矩阵（对齐 BossHunter collection/capabilities.py）：
+            # 设置页 / 工作台据此判断某平台是否支持 collect / deliver / attach 等动作。
+            if parsed.path == '/platforms':
+                return self._send(200, {"ok": True, **platform_mods.platform_capabilities()})
+
+            # 断点续采进度：查询 / 清除（clear=true 时清除，platform 可限定单平台）
+            if parsed.path == '/collection-progress':
+                if body.get('clear') is True:
+                    target = platform if body.get('platform') else None
+                    return self._send(200, platform_mods.clear_collection_progress(target))
+                return self._send(200, {"ok": True, **platform_mods.collection_progress(platform)})
 
             return self._send(404, {"ok": False, "error": "not found"})
         except Exception as e:

@@ -9,6 +9,20 @@ export type { JobPlatform } from './types';
 /** 投递动作语义：boss=聊天文字气泡；liepin=App 预设招呼语自动发送；zhaopin/job51=投递简历按钮 */
 export type DeliveryKind = 'chat' | 'greetAuto' | 'resume';
 
+/**
+ * 平台动作能力（与 Python 侧 `camoufox/platforms/capabilities.py` 的
+ * PLATFORM_CAPABILITIES **同源同口径**，新增能力必须两处同时改）：
+ *   collect 隐身采集 / score AI 评分 / greet 招呼语生成 / deliver 自动投递 /
+ *   attach 投递时补发简历附件·在线简历（**仅 BOSS** —— 其余平台 deliver() 忽略该参数）
+ * 注意：表里只声明**代码事实**，不虚报。业务上要用「该平台能不能做 X」时
+ * 一律走 `platformSupports()`，不要在业务代码里硬编码 `platform === 'boss'`。
+ */
+export type PlatformCapability = 'collect' | 'score' | 'greet' | 'deliver' | 'attach';
+
+/** 能力全集（设置页 / 诊断可据此列举，避免各处硬编码字符串） */
+export const ALL_PLATFORM_CAPABILITIES: readonly PlatformCapability[] =
+  ['collect', 'score', 'greet', 'deliver', 'attach'] as const;
+
 export interface PlatformMeta {
   id: JobPlatform;
   /** 展示名 */
@@ -18,6 +32,8 @@ export interface PlatformMeta {
   homeUrl: string;
   loginUrl: string;
   deliveryKind: DeliveryKind;
+  /** 该平台实际支持的动作能力（与 Python capabilities.py 同源） */
+  capabilities: readonly PlatformCapability[];
   /** 外部网申 / 第三方跳转岗位的按钮文本（命中即跳过，安全不变量） */
   externalApplyHints: string[];
   /** 各平台阶段标签覆盖（未覆盖项回退 BOSS 通用口径） */
@@ -47,6 +63,8 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
     homeUrl: 'https://www.zhipin.com',
     loginUrl: 'https://www.zhipin.com/web/user/?ka=header-login',
     deliveryKind: 'chat',
+    // BOSS 是唯一支持「附件 / 在线简历补发」的通道（webview 官方接口链路）
+    capabilities: ['collect', 'score', 'greet', 'deliver', 'attach'],
     externalApplyHints: [
       '立即网申', '去网申', '前往网申', '立即申请', '去申请',
       '申请职位', '立即投递', '投递简历', '前往申请',
@@ -61,6 +79,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
     homeUrl: 'https://www.liepin.com',
     loginUrl: 'https://www.liepin.com/login/',
     deliveryKind: 'greetAuto',
+    capabilities: ['collect', 'score', 'greet', 'deliver'],
     // 猎聘投递=点「聊一聊」即沟通，无网申概念（聊一聊不跳第三方）
     externalApplyHints: ['立即网申', '去网申', '前往申请', '申请职位'],
     stageLabels: {
@@ -84,6 +103,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
     homeUrl: 'https://www.zhaopin.com',
     loginUrl: 'https://passport.zhaopin.com/login',
     deliveryKind: 'resume',
+    capabilities: ['collect', 'score', 'greet', 'deliver'],
     // 智联投递=站内「投递」按钮；第三方外链岗位需跳过
     externalApplyHints: ['立即网申', '去网申', '前往申请', '查看详情并投递', '前往企业官网'],
     stageLabels: {
@@ -107,6 +127,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
     homeUrl: 'https://we.51job.com',
     loginUrl: 'https://we.51job.com/pc/login',
     deliveryKind: 'resume',
+    capabilities: ['collect', 'score', 'greet', 'deliver'],
     externalApplyHints: ['立即网申', '去网申', '前往申请', '查看详情并投递', '前往企业官网'],
     stageLabels: {
       open_chat: '打开岗位',
@@ -225,6 +246,47 @@ export function isExternalApplyText(text: string, platform: JobPlatform = 'boss'
   const t = String(text || '').replace(/\s+/g, '');
   const meta = PLATFORM_META[platform] || PLATFORM_META.boss;
   return meta.externalApplyHints.some((h) => t.includes(h.replace(/\s+/g, '')));
+}
+
+/**
+ * 平台是否支持指定动作能力（唯一判定入口，避免业务代码硬编码 `platform === 'boss'`）。
+ * 口径与 Python 侧 `camoufox/platforms/capabilities.py::platform_supports` 完全一致。
+ */
+export function platformSupports(platform: JobPlatform, capability: PlatformCapability): boolean {
+  const meta = PLATFORM_META[platform];
+  return Boolean(meta) && meta.capabilities.includes(capability);
+}
+
+// ============================================================
+// 采集批次的故障影响范围（对齐 BossHunter collection/orchestrator.py）
+// ============================================================
+/**
+ * 一次采集失败对**本批多平台队列**的影响范围：
+ *   - 'platform'：只影响当前平台，剩余平台继续采集；
+ *   - 'queue'   ：需要人工确认的阻断，整批队列立即中止。
+ *
+ * BossHunter 的原始口径（orchestrator.py）：
+ *   登录墙属于「当前招聘平台」，保留该平台的 blocked 结果但让后续独立平台继续；
+ *   其它风控/未知阻断在队列范围内生效，直到有同等明确的平台本地分类为止。
+ *
+ * Boss-claw 的码值归类（与 `camoufox.ts` 的 isCamoufoxStopCode / isCamoufoxEnvCode 对齐）：
+ *   31 未登录                     → platform（登录墙属该平台）
+ *   400/404/500/501/600 单次动作失败 → platform（参数/下架/未确认/外部网申）
+ *   32/35/36 风控·平台侧受限        → queue（账号级，必须立即停并交人工）
+ *   37/38 环境·引擎异常             → queue（引擎级，后续平台同样会失败）
+ *   未知码                          → queue（fail-safe：未分类阻断按队列级处理）
+ */
+export type CollectFaultScope = 'platform' | 'queue';
+
+const QUEUE_FAULT_CODES = new Set([32, 35, 36, 37, 38]);
+const PLATFORM_FAULT_CODES = new Set([31, 400, 404, 500, 501, 600]);
+
+/** 采集失败码 → 影响范围（无码/0 视为无故障，返回 'platform' 不影响后续平台） */
+export function collectFaultScope(code?: number | null): CollectFaultScope {
+  if (code == null || code === 0) return 'platform';
+  if (QUEUE_FAULT_CODES.has(code)) return 'queue';
+  if (PLATFORM_FAULT_CODES.has(code)) return 'platform';
+  return 'queue';
 }
 
 /** 按平台取阶段标签（未覆盖回退原始标签） */

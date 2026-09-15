@@ -94,6 +94,10 @@ try {
   record('tools/list', tools.length > 0, `${tools.length} 个工具`);
   const badSchema = tools.filter((t) => !t.name || !t.description || !t.inputSchema || t.inputSchema.type !== 'object');
   record('工具 schema 完整', badSchema.length === 0, badSchema.map((t) => t.name).join(', ') || '全部合法');
+  // agent 代答组必须在册（应用未配置 API Key 时靠这三个工具接管 AI 生成）
+  const agentNames = ['bossclaw_agent_tasks', 'bossclaw_agent_submit', 'bossclaw_agent_cancel'];
+  const missingAgent = agentNames.filter((n) => !tools.some((t) => t.name === n));
+  record('agent 代答工具已注册', missingAgent.length === 0, missingAgent.length ? `缺：${missingAgent.join(', ')}` : agentNames.join(', '));
   const groups = tools.reduce((acc, t) => {
     const g = t.name.replace(/^bossclaw_/, '').split('_')[0];
     acc[g] = (acc[g] || 0) + 1;
@@ -106,8 +110,9 @@ try {
     ['bossclaw_app_status', {}],
     ['bossclaw_app_state', {}],
     ['bossclaw_app_action', { action: 'navigate', params: { route: 'home' } }],
+    ['bossclaw_agent_tasks', { waitMs: 0 }],
   ];
-  const CONTROl_DEPENDENT = ['bossclaw_app_state', 'bossclaw_app_action'];
+  const CONTROl_DEPENDENT = ['bossclaw_app_state', 'bossclaw_app_action', 'bossclaw_agent_tasks'];
   for (const [name, args] of readOnlySamples) {
     const res = await rpc('tools/call', { name, arguments: args });
     const text = res.result?.content?.[0]?.text || '';
@@ -122,6 +127,11 @@ try {
   record('未知工具返回错误', !!bad.error);
   const missingParam = await rpc('tools/call', { name: 'bossclaw_app_action', arguments: {} });
   record('缺参返回 isError', missingParam.result?.isError === true);
+  // agent 代答的参数校验在进控制桥之前就应拦下（缺 id / 空 content），不依赖应用是否在跑
+  const submitNoId = await rpc('tools/call', { name: 'bossclaw_agent_submit', arguments: {} });
+  record('agent_submit 缺 id 返回 isError', submitNoId.result?.isError === true && /缺少 id/.test(submitNoId.result?.content?.[0]?.text || ''));
+  const cancelNoId = await rpc('tools/call', { name: 'bossclaw_agent_cancel', arguments: {} });
+  record('agent_cancel 缺 id 返回 isError', cancelNoId.result?.isError === true);
   const unknownMethod = await rpc('nonexistent/method');
   record('未知方法返回 -32601', unknownMethod.error?.code === -32601);
 } catch (e) {

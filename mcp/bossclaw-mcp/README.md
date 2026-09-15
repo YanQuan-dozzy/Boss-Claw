@@ -5,8 +5,8 @@
 
 - **零依赖**：只用 Node 内置模块实现 JSON-RPC / stdio 协议，不需要 `npm install`，不会因依赖问题启动失败。
 - **传输**：stdio（标准 MCP 传输）。
-- **5 个工具**，分 2 组：运行控制 / 应用控制。只面向「控制已安装应用」，不提供任何测试/开发类能力。
-- **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时走**本地规则**兜底（见 §4）。
+- **8 个工具**，分 3 组：运行控制（3）/ 应用控制（2）/ agent 代答（3）。只面向「控制已安装应用」，不提供任何测试/开发类能力。
+- **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时，若 agent 在线则交 **agent 代答**（见 §4），否则走**本地规则**兜底。
 
 ---
 
@@ -98,6 +98,18 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 | 数据统计导出（**只读**） | `statsExport{range?:"7d"\|"30d"\|"all", kind?:"summary"\|"detail"\|"report"}`（与统计页同源口径，返回 `filename` + `content` 文本；**不落盘、不弹保存对话框** —— 落盘必须由人工在应用内完成，因为导出硬契约要求每次由用户自选位置；`detail` 已剔除 `chatUrl`/`encryptUserId`/招呼语正文） |
 | 主进程 | `focusWindow`、`minimize`、`maximize`、`windowState`、`reloadRenderer`、`openDevTools`、`screenshot` |
 
+### 2.3 agent 代答（agent，需控制桥）
+
+应用**未配置 AI API Key** 时，它内部的 AI 能力（岗位分析 / 职业画像 / 打招呼语 / 定制简历）会等外部 agent 用自有模型作答。链路仍是单向的：应用把提示词放进本地待答队列，agent 领走再回填（详见 §4）。
+
+| 工具 | 用途 |
+| --- | --- |
+| `bossclaw_agent_tasks` | 领取待代答任务（含完整提示词与期望输出格式）。**该调用同时是心跳**——应用只在最近 90s 内有过本调用时才把 AI 任务交给 agent。建议 `waitMs: 30000` 长轮询 |
+| `bossclaw_agent_submit` | `{ id, content }` 回填回答：`jsonMode` 任务必须是合法 JSON 字符串，否则为纯文本；应用按与真实模型调用相同的口径解析并继续它自己的校验链 |
+| `bossclaw_agent_cancel` | `{ id, reason? }` 放弃某任务，让应用**立刻**回落本地规则（不必等满超时） |
+
+这三个动作同样存在于渲染层白名单里（`agentTasks` / `agentSubmit` / `agentCancel`），必要时也能通过 `bossclaw_app_action` 直接调用；常规用法请走上面的专用工具。
+
 ---
 
 ## 3. 应用内控制桥
@@ -180,16 +192,41 @@ MCP 不提供「应用未运行时」的离线文件 / 快照诊断——安装�
 
 ---
 
-## 4. 单向链路（不反向调 agent）
+## 4. agent 代答（应用未配置 API Key 时）
 
-BossClaw 的 MCP 通道是**单向**的：仅外部 agent **→** MCP **→** 应用（启动 / 状态 / 白名单动作）。
+应用内的 AI 能力（岗位分析 / 职业画像 / 打招呼语 / 定制简历）在**用户未配置 API Key** 时，
+若外部 agent 在线，就由 **agent 用自己的模型代答**；agent 不在线 / 超时未答 / 主动放弃，则照旧退回
+**应用内本地规则**兜底（`buildLocalProfile`、`localFallback` 等）。两条路径的产出在业务侧是等价的，
+只是来源不同（前者 `scoreSource` 等标记按 AI 结果走）。
 
-应用内的 AI 能力（岗位分析 / 职业画像 / 打招呼语 / 定制简历）在**用户未配置 API Key** 时**不再转交外部 agent**，
-一律退回**应用内本地规则**兜底（`buildLocalProfile`、`localFallback` 等）——不会出现「等待 agent 生成」。
-应用侧无 `agentTask` / `agent-broker`、无 `/agent-tasks` 接口，无「Agent 代答」UI；MCP 侧无
-`bossclaw_agent_tasks` / `bossclaw_agent_submit` 工具。
+### 4.1 工作流
 
-要恢复完整的 AI 能力，请在「设置 → AI」配置 API Key（直连模型）。
+```
+1) 应用侧：某次 AI 调用发现没有 apiKey → 把「完整提示词 + 用途 + 是否要 JSON」挂进本地待答队列并等待
+        （application 内实现：desktop-app/src/lib/bossclaw/agentAnswer.ts，由 llm.ts 的 callModel 触发）
+2) agent：bossclaw_agent_tasks（建议 waitMs: 30000 长轮询）领取任务
+3) agent：用自有模型生成回答（任务 jsonMode=true 时必须产出合法 JSON 字符串）
+4) agent：bossclaw_agent_submit { id, content } 回填 → 应用按与真实模型调用相同的口径解析并继续自身校验链
+   （答不出来就 bossclaw_agent_cancel { id, reason }，应用立刻回落本地规则）
+```
+
+### 4.2 心跳与时限（重要）
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| 在线判定 | 最近 **90s** 内调用过 `bossclaw_agent_tasks` | 应用**无法主动调用** stdio MCP，因此「有没有 agent」只能靠心跳。**首次**任务只会在心跳有效时入队 |
+| 单任务等待 | 30s ~ 240s（由业务侧超时推导，`AGENT_ANSWER_MIN_WAIT_MS` / `AGENT_ANSWER_MAX_WAIT_MS` 夹定） | 超时 → 抛错回落本地规则；`bossclaw_agent_cancel` 可让应用立刻结束等待 |
+| JSON 纠偏 | 1 次 | 首次回填不是合法 JSON 会再派发一次任务（`attempt: 2`，附「只输出 JSON」提示）；仍失败才判无效 |
+| 长轮询上限 | `waitMs` ≤ 55s | MCP 侧工具超时按 `waitMs + 20s` 放宽 |
+
+### 4.3 边界（硬约束不变）
+
+- **只搬运「提示词 ↔ 生成文本」**：不提供投递 / 发送 / 验证码 / 速率限制 / `SAFETY_LIMITS` 相关能力。
+- 回填内容仍要过应用既有校验链（事实与口吻、校名披露、招呼语长度截断等），不合规照样被本地规则替换 —— 这是**预期行为**。
+- 代答结果同样进入应用本地 AI 缓存（`cachedCallModel`），相同输入不会反复占用 agent。
+- 用户**配置了 API Key** 就直连真模型，不会走代答（此时 `bossclaw_agent_tasks` 一直是空队列）。
+- 代答状态可在 `bossclaw_app_state` 的 `agentAnswer` 字段查看：`online` / `lastSeenAgoMs` / `pending` /
+  `claimed` / `answered` / `timeouts` / `cancelled` / `unavailable` / `events`（最近 20 条）。
 
 ---
 
@@ -198,9 +235,10 @@ BossClaw 的 MCP 通道是**单向**的：仅外部 agent **→** MCP **→** �
 ```
 1) bossclaw_app_status          应用是否在跑 / 控制桥是否就绪
 2) bossclaw_app_start           启动（默认开启应用内控制桥）
-3) bossclaw_app_state           实时状态：路由 / 队列 / 统计 / 投递安全参数 / 日志尾部
+3) bossclaw_app_state           实时状态：路由 / 队列 / 统计 / 投递安全参数 / 日志尾部 / 代答状态 agentAnswer
 4) bossclaw_app_action { screenshot }   让 agent 看见界面
 5) bossclaw_app_action { navigate / pauseDelivery / … }   驱动应用
+6) bossclaw_agent_tasks → bossclaw_agent_submit   应用未配置 API Key 时接管其 AI 生成（见 §4）
 ```
 
 ---
@@ -215,10 +253,11 @@ mcp/bossclaw-mcp/
 │   ├── context.mjs             路径解析（含已安装版应用自动探测）、进程执行器（env 清理 + 超时）、控制桥客户端
 │   ├── procs.mjs               进程探测（CIM 命令行匹配，避免误伤其它 Electron 应用）
 │   ├── schema.mjs              JSON Schema 片段助手 + 工具注解
-│   └── tools/                  runtime / control + index.mjs
+│   └── tools/                  runtime / control / agent + index.mjs
 └── test/
     ├── selftest.mjs            协议 + 工具自检
-    └── bridge-e2e.mjs          全链路端到端（隔离实例，含 HOME 隔离与备份兜底）
+    ├── bridge-e2e.mjs          全链路端到端（隔离实例，含 HOME 隔离与备份兜底）
+    └── live-acceptance.mjs     面向运行中应用的真机验收（含 agent 代答队列）
 ```
 
 应用侧对应文件：
@@ -227,7 +266,10 @@ mcp/bossclaw-mcp/
 desktop-app/
 ├── electron/control-bridge.cjs   控制桥（HTTP + token；仅 /state、/action；单向 agent→应用）
 └── src/lib/
-    └── controlRuntime.ts         渲染层白名单动作（唯一权威实现）
+    ├── controlRuntime.ts         渲染层白名单动作（唯一权威实现）
+    └── bossclaw/
+        ├── llm.ts                模型调用层；无 apiKey 时转入 agent 代答
+        └── agentAnswer.ts        代答待答队列 / 心跳 / 超时 / 取消 / 统计
 ```
 
 ---
@@ -238,4 +280,6 @@ desktop-app/
 - 进程探测依赖 PowerShell CIM（Windows）。**CIM 不可用时不再退回「名称匹配」**（那会误杀用户的其它 Electron 应用），而是返回「未运行」+ 警告。
 - MCP 只服务「控制已安装的应用」：实时状态 / 动作一律经应用内控制桥；**不提供** git / tsc / vite 构建 / 冒烟 / 打包等任何测试与开发类能力。
 - 应用根解析链：`BOSSCLAW_REPO`（显式）> 已安装应用自探测（检测到 `BossClaw.exe` 的安装根）> 开发仓库兜底。
-- 应用内 AI 未配置 API Key 时走本地规则兜底（不转交 agent），因此 `bossclaw_app_action` 的 AI 动作在无密钥时会返回本地生成结果。
+- 应用内 AI 未配置 API Key 时：agent 在线（最近 90s 内调用过 `bossclaw_agent_tasks`）则交给 agent 代答；否则回落本地规则。
+  因此无密钥时 `bossclaw_app_action` 的 AI 动作既可能是 agent 代答结果、也可能是本地结果，取决于当时有没有心跳；
+  具体来源可在日志与 `bossclaw_app_state.agentAnswer` 里看到。

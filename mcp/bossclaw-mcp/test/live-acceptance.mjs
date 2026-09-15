@@ -115,7 +115,7 @@ try {
 
   const list = await rpc('tools/list');
   const tools = list.result?.tools || [];
-  record('tools/list', tools.length === 5, `${tools.length} 个工具`);
+  record('tools/list', tools.length === 8, `${tools.length} 个工具`);
 
   // ---- 3) 应用控制类（实时；需要应用以控制桥运行）----
   const status = await tool('bossclaw_app_status');
@@ -152,6 +152,21 @@ try {
 
   const back = await tool('bossclaw_app_action', { action: 'navigate', params: { route: live.data?.app?.activeRoute || 'home' } });
   record('bossclaw_app_action navigate（原地切回，无副作用）', !back.isError, back.text.split('\n')[0]);
+
+  // ---- 4) agent 代答组（拉取即心跳；无任务也应正常返回队列统计）----
+  const agentList = await tool('bossclaw_agent_tasks', { waitMs: 0 });
+  record(
+    'bossclaw_agent_tasks（代答队列 + 心跳）',
+    !agentList.isError && agentList.data?.online === true && typeof agentList.data?.stats?.pending === 'number',
+    agentList.isError ? agentList.text.split('\n')[0].slice(0, 100) : agentList.text.split('\n')[0].slice(0, 80)
+  );
+  record(
+    '  └ 应用状态里可见代答通道',
+    live.data?.agentAnswer !== undefined && typeof live.data.agentAnswer.online === 'boolean',
+    `agentAnswer.online=${live.data?.agentAnswer?.online}`
+  );
+  const submitBad = await tool('bossclaw_agent_submit', { id: 'at_not_exist', content: 'x' });
+  record('bossclaw_agent_submit 未知 id 返回未生效', submitBad.isError === true, submitBad.text.split('\n')[0].slice(0, 80));
 } catch (e) {
   record('验收执行', false, String(e?.message || e));
 } finally {

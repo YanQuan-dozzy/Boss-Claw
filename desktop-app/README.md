@@ -157,14 +157,13 @@ npm run package            # 构建并打包 Windows NSIS 安装包 + 绿色便�
 npm run package:portable   # 仅打包绿色便携版（无需安装）
 npm run package:dir        # 仅生成解压目录（不打包，便于本地试运行）
 npm run package:mac        # 打包 macOS dmg + zip（只能在 macOS 系统执行）
-npm run package:source     # 生成 macOS 源码自构建档案（无 Mac 环境时交给 Mac 用户自行打包）
-npm run package:linux      # 打包 Linux AppImage + deb + rpm + pacman + tar.gz（5 种格式）
-npm run package:linux:deb / :rpm / :pacman / :tar   # 单独打某一种 Linux 格式
+npm run package:source     # 生成 macOS 源码打包档案（无 Mac 环境时交给 Mac 用户自行打包）
+npm run package:linux      # 打包 Linux AppImage + deb
 npm run package:all        # 打包 Windows + Linux
 ```
 
 > **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）；Windows / Linux 可在本机直接打包。
-> **没有 Mac 环境**：执行 `npm run package:source`，在 `release/` 生成 `BossClaw-<版本>-mac.tar.gz` 源码档案；Mac 用户安装 [Node.js 20+](https://nodejs.org) 后解压，运行内含的 `./build-mac.sh` 一键完成依赖安装与 dmg/zip 打包（Intel + Apple Silicon 双架构）。
+> **没有 Mac 环境**：执行 `npm run package:source`，在 `release/` 生成 `BossClaw-<版本>-mac自行打包.tar.gz` 源码档案；Mac 用户安装 [Node.js 20+](https://nodejs.org) 后解压，运行内含的 `./build-mac.sh` 一键完成依赖安装与 dmg/zip 打包（Intel + Apple Silicon 双架构）。
 
 > **Electron dev 模式**：开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179 端口），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
 > **首次运行需在本机有 Electron 运行环境**（`npm install` 会安装 `electron` 包及其二进制）。
@@ -197,28 +196,26 @@ release/
 
 ```
 release/
-├── BossClaw-2.5.3-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
-├── BossClaw-2.5.3-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
-├── BossClaw-2.5.3-x86_64.rpm        # RHEL / Fedora / CentOS / openSUSE 等 rpm 系
-├── BossClaw-2.5.3-x64.pacman        # Arch Linux / Manjaro / EndeavourOS 等 pacman 系
-├── BossClaw-2.5.3-x64.tar.gz        # 通用 gzip 压缩包（解压后直接运行）
+├── BossClaw-2.1.0-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
+├── BossClaw-2.1.0-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
+├── BossClaw-2.1.0-x86_64.rpm        # RHEL / Fedora / CentOS / openSUSE 等 rpm 系
+├── BossClaw-2.1.0-x64.pacman        # Arch Linux / Manjaro / EndeavourOS 等 pacman 系
+├── BossClaw-2.1.0-x64.tar.gz        # 通用 gzip 压缩包（解压后直接运行）
 └── linux-unpacked/                   # Linux 解压目录
 ```
 
 也可以单独指定某一种：`npm run package:linux:deb` / `:rpm` / `:pacman` / `:tar`。
 
-> rpm / pacman 由 fpm 以 xz 压缩整包，耗时明显更长（rpm 尤甚）；随 v2.5.3 发布到 GitHub Releases 的 Linux 产物为 AppImage / deb / tar.gz 三种，其余格式可按上述命令自行构建。
-
 ### macOS（`npm run package:mac`，只能在 macOS 系统执行）
 
 ```
 release/
-├── BossClaw-2.5.3-x64.dmg / .zip    # Intel Mac（x86_64）
-├── BossClaw-2.5.3-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
+├── BossClaw-2.1.0-x64.dmg / .zip    # Intel Mac（x86_64）
+├── BossClaw-2.1.0-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
 └── mac/                              # macOS 解压目录（.app）
 ```
 
-没有 Mac 环境时，执行 `npm run package:source` 生成 `BossClaw-2.5.3-mac.tar.gz` 源码档案（含 `build-mac.sh` 一键脚本），交给 Mac 用户解压后直接 `./build-mac.sh` 即可完成双架构 dmg/zip 打包。
+没有 Mac 环境时，执行 `npm run package:source` 生成 `BossClaw-2.1.0-mac自行打包.tar.gz` 源码档案（含 `build-mac.sh` 一键脚本），交给 Mac 用户解压后直接 `./build-mac.sh` 即可完成双架构 dmg/zip 打包。
 
 ***
 

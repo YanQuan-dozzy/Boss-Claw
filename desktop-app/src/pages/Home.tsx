@@ -9,6 +9,8 @@ import {
   SettingOutlined,
   BarChartOutlined,
   RocketOutlined,
+  RobotOutlined,
+  MessageOutlined,
   CheckCircleFilled,
   RightOutlined,
   HomeOutlined,
@@ -31,7 +33,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { createTasks } from '@/lib/bossclaw/tasks';
 import { MetricCard } from '@/components/MetricCard';
 import { electronApi } from '@/lib/electronApi';
-import { effectiveDailyCap } from '@/lib/bossclaw/safety';
+import { effectiveDailyCap, dailySentCount } from '@/lib/bossclaw/safety';
 import MarkdownView from '@/components/MarkdownView';
 
 const { Paragraph, Text } = Typography;
@@ -46,8 +48,8 @@ const STEPS = [
 const QUICK_ENTRIES = [
   { key: 'workbench', icon: <ThunderboltOutlined />, title: '打开工作台', desc: '浏览器为主，中栏看进度与岗位' },
   { key: 'tasks', icon: <ProfileOutlined />, title: '任务进度', desc: '查看任务与岗位记录，失败恢复' },
-  { key: 'stats', icon: <BarChartOutlined />, title: '数据统计', desc: '岗位状态 / AI 分析 / 趋势排行' },
-  { key: 'openclaw', icon: <ApiOutlined />, title: 'OpenClaw 桥接', desc: 'OCR / 日报 / 任务恢复' },
+  { key: 'assistant', icon: <RobotOutlined />, title: '定制简历', desc: '针对岗位 AI 定制 / 导出 PDF' },
+  { key: 'autochat', icon: <MessageOutlined />, title: '自动沟通', desc: '批量自动投递 / 智能打招呼' },
   { key: 'settings', icon: <SettingOutlined />, title: '设置', desc: '主题 / LLM / 数据管理' },
 ];
 
@@ -71,6 +73,10 @@ export default function Home() {
   const config = useSettingsStore((s) => s.config);
   // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
   const dailyGoal = effectiveDailyCap(config);
+  // 「今日投递」必须按 sentAt 过滤当天，与每日上限（dailySentCountFor / paceDelivery）同口径。
+  // 注意：store 的 stats.sent 是**累计**已投递总数（无日期过滤），直接拿来当「今日」会把
+  // 昨天乃至更早投递的岗位也算进来（表现为「昨天投的显示成今日投递」）。
+  const sentToday = dailySentCount(pending);
   const [progress, setProgress] = useState(0);
   // 使用前必读文档抽屉
   const [docOpen, setDocOpen] = useState(false);
@@ -214,14 +220,14 @@ export default function Home() {
       <div className="short-grid cols-4" style={{ marginBottom: 20 }}>
         <MetricCard
           title="今日投递"
-          value={stats.sent}
+          value={sentToday}
           suffix="次"
           subText={`目标 ${dailyGoal} 次 / 建议分时段投递`}
           icon={<CheckCircleFilled />}
         />
         <MetricCard
           title="成功率"
-          value={pending.length > 0 ? Math.round((stats.sent / pending.length) * 100) : 0}
+          value={pending.length > 0 ? Math.round((sentToday / pending.length) * 100) : 0}
           type="success-rate"
           subText={`已处理 ${pending.length} 个岗位 (${selectedCount} 方向)`}
           icon={<BarChartOutlined />}
@@ -236,7 +242,7 @@ export default function Home() {
         />
         <MetricCard
           title="剩余次数"
-          value={Math.max(0, dailyGoal - stats.sent)}
+          value={Math.max(0, dailyGoal - sentToday)}
           suffix="次"
           type="remaining"
           subText="今日安全限制额度内"
@@ -255,7 +261,7 @@ export default function Home() {
               待处理 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.pending}</span>
             </Tag>
             <Tag color="cyan" style={{ margin: 0, padding: '4px 12px', fontSize: 13, borderRadius: 6 }}>
-              已投递 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.sent}</span>
+              已投递 <span style={{ fontWeight: 700, marginLeft: 4 }}>{sentToday}</span>
             </Tag>
             <Tag color="error" style={{ margin: 0, padding: '4px 12px', fontSize: 13, borderRadius: 6 }}>
               失败 <span style={{ fontWeight: 700, marginLeft: 4 }}>{stats.failed}</span>
@@ -310,10 +316,10 @@ export default function Home() {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>今日投递目标（各已启用平台合计）</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>{stats.sent} / {dailyGoal}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>{sentToday} / {dailyGoal}</Text>
           </div>
           <Progress
-            percent={Math.min(100, Math.round((stats.sent / Math.max(1, dailyGoal)) * 100))}
+            percent={Math.min(100, Math.round((sentToday / Math.max(1, dailyGoal)) * 100))}
             showInfo={false}
             strokeColor={{ from: '#14B8A6', to: '#0D9488' }}
           />

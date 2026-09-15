@@ -25,6 +25,12 @@ import { createTasks } from '@/lib/bossclaw/tasks';
 import { buildStatsSnapshot, DEFAULT_STATS_RANGE, rangeText, type StatsRangeKey } from '@/lib/bossclaw/statsAggregate';
 import { buildDetailRows, buildSummaryRows, exportFilename, toCsv } from '@/lib/bossclaw/statsExport';
 import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
+import {
+  listAgentTasks,
+  submitAgentAnswer,
+  cancelAgentAnswer,
+  agentAnswerStats,
+} from '@/lib/bossclaw/agentAnswer';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { TASK_STAGE_META, TERMINAL_RUN_STATUSES, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { isDeliveryClaimed } from '@/lib/bossclaw/deliveryLock';
@@ -57,6 +63,11 @@ interface ControlResult {
 
 /** 禁止通过 patchConfig 直接改写的字段（走专用动作或会破坏安全语义） */
 const CONFIG_DENY = new Set(['model', 'pausedUntil', 'platforms']);
+
+/** agent 代答长轮询上限：agent 一次调用最多等这么久（避免客户端工具超时） */
+const AGENT_TASKS_MAX_WAIT_MS = 55_000;
+/** agent 代答长轮询的检查间隔 */
+const AGENT_TASKS_POLL_INTERVAL_MS = 800;
 
 const ROUTE_KEYS = new Set(NAV_ITEMS.map((n) => n.key));
 
@@ -130,6 +141,8 @@ function snapshotState(): Record<string, unknown> {
     },
     schedule: { entries: sched.entries || [] },
     autochat: { chatRunning: auto.chatRunning, activeChatId: auto.activeChatId, progress: auto.progress },
+    // agent 代答通道状态（只读，不刷新心跳）：online=false 时应用内 AI 无密钥一律走本地规则
+    agentAnswer: agentAnswerStats(),
     engine: {
       engineStatus: app.engineStatus,
       autoAssist: app.autoAssist,
@@ -368,7 +381,7 @@ const handlers: Record<string, Handler> = {
     return { applied: true, message: `定时任务 ${sid} 已${enabled ? '启用' : '停用'}` };
   },
 
-  // ---- AI 按需生成（复用工作台定制提示词链路，自带 agent 代答与缓存；长耗时）----
+  // ---- AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时该链路回退本地规则，不转交 agent；长耗时）----
   aiAnalyzeJob: async ({ job, resumeText, customGreetingPrompt }) => {
     if (!job || typeof job !== 'object') return { applied: false, message: '缺少岗位对象 job（含 title/company/salary/location/description 等字段）' };
     const cfg = useSettingsStore.getState().config;
@@ -395,6 +408,37 @@ const handlers: Record<string, Handler> = {
       greetingInstructions !== undefined ? String(greetingInstructions) : undefined
     );
     return { applied: true, message: 'AI 定制简历/求职信完成', next: out };
+  },
+
+  // ---- agent 代答（未配置 API Key 时，外部 agent 经 bossclaw_agent_* 工具领取提示词 / 回填结果）----
+  // 本组动作只搬运「提示词 ↔ 生成文本」，不触碰投递 / 发送 / 安全上限；代答结果同样要过上层既有校验链。
+  agentTasks: async ({ waitMs, includeMessages, limit }) => {
+    const wait = Math.min(Math.max(Number(waitMs) || 0, 0), AGENT_TASKS_MAX_WAIT_MS);
+    const opts = { includeMessages: includeMessages !== false, limit: Number(limit) || 10 };
+    const started = Date.now();
+    let out = listAgentTasks(opts);
+    while (!out.tasks.length && Date.now() - started < wait) {
+      await new Promise((resolve) => setTimeout(resolve, AGENT_TASKS_POLL_INTERVAL_MS));
+      out = listAgentTasks(opts);
+    }
+    const waitedMs = Date.now() - started;
+    if (out.tasks.length) {
+      useDataStore.getState().addLog('info', `[agent] 领取代答任务 ${out.tasks.length} 个：${out.tasks.map((t) => `${t.id}(${t.purpose})`).join('、')}`);
+    }
+    const message = out.tasks.length
+      ? `待代答任务 ${out.tasks.length} 个（等待 ${Math.round(waitedMs / 1000)}s）`
+      : `暂无待代答任务（已等待 ${Math.round(waitedMs / 1000)}s）`;
+    return { applied: true, message, next: { ...out.stats, tasks: out.tasks, waitedMs } };
+  },
+  agentSubmit: async ({ id, content }) => {
+    const res = submitAgentAnswer(String(id ?? ''), String(content ?? ''));
+    useDataStore.getState().addLog(res.applied ? 'success' : 'warn', `[agent] 代答回填：${res.message}`);
+    return { applied: res.applied, message: res.message, next: { remaining: res.remaining } };
+  },
+  agentCancel: async ({ id, reason }) => {
+    const res = cancelAgentAnswer(String(id ?? ''), reason !== undefined ? String(reason) : undefined);
+    useDataStore.getState().addLog('warn', `[agent] 放弃代答：${res.message}`);
+    return { applied: res.applied, message: res.message, next: { remaining: res.remaining } };
   },
 
   // ---- 浏览器只读探索（经 browserRegistry；cloak 引擎不可用或返回明确说明）----

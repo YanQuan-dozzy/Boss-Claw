@@ -3,7 +3,6 @@
   "version": "2.5.3",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
   "private": true,
-  "homepage": "https://github.com/YanQuan-dozzy/Boss-Claw",
   "author": "YanQuan",
   "license": "Apache-2.0",
   "main": "electron/main.cjs",
@@ -21,12 +20,7 @@
     "package:portable": "npm run build && electron-builder --win portable",
     "package:dir": "npm run build && electron-builder --win --dir",
     "package:mac": "npm run build && electron-builder --mac",
-    "package:source": "node scripts/make-source-package.mjs",
     "package:linux": "npm run build && electron-builder --linux",
-    "package:linux:deb": "npm run build && electron-builder --linux deb",
-    "package:linux:rpm": "npm run build && electron-builder --linux rpm",
-    "package:linux:pacman": "npm run build && electron-builder --linux pacman",
-    "package:linux:tar": "npm run build && electron-builder --linux tar.gz",
     "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
     "verify": "npm run typecheck && npm run build"
@@ -102,10 +96,7 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb",
-        "rpm",
-        "pacman",
-        "tar.gz"
+        "deb"
       ],
       "icon": "resources/icon.png",
       "category": "Office",

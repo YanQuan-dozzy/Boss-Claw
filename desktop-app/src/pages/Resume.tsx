@@ -714,6 +714,11 @@ export default function Resume() {
                   </div>
                 ) : (
                   <EmptyState
+                    icon={
+                      <div className="resume-preview-empty-icon">
+                        <CommentOutlined />
+                      </div>
+                    }
                     title="尚未生成打招呼语预览"
                     description="填写测试岗位 JD 后点击「生成打招呼语」，按工作台提示词生成针对该岗位的 1 条招呼语。请勿替用户承诺薪资、到岗或面试时间。"
                   />

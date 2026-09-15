@@ -1,11 +1,14 @@
 // src/tools/index.mjs —— 工具汇总注册
-// 分组：runtime（运行控制）/ control（应用控制）。只面向「控制已安装应用」，不提供任何测试/开发类能力。
+// 分组：runtime（运行控制）/ control（应用控制）/ agent（代答）。
+// 只面向「控制已安装应用」，不提供任何测试/开发类能力。
 import { runtimeTools } from './runtime.mjs';
 import { controlTools } from './control.mjs';
+import { agentTools } from './agent.mjs';
 
 export const TOOL_GROUPS = [
   { group: 'runtime', title: '运行控制', tools: runtimeTools },
   { group: 'control', title: '应用控制', tools: controlTools },
+  { group: 'agent', title: 'agent 代答', tools: agentTools },
 ];
 
 export const allTools = TOOL_GROUPS.flatMap((g) => g.tools);

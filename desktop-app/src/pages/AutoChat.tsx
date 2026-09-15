@@ -7,10 +7,11 @@ import {
   ReloadOutlined, SafetyCertificateOutlined, StopOutlined, DeleteOutlined,
   UploadOutlined, CheckOutlined, CaretRightOutlined,
   LockOutlined, EyeOutlined, PictureOutlined, FileTextOutlined,
-  UsergroupAddOutlined, FieldTimeOutlined, DownOutlined,
+  UsergroupAddOutlined, FieldTimeOutlined,
   ThunderboltOutlined, HourglassOutlined, PlusOutlined, CodeOutlined,
   RobotOutlined, SyncOutlined,
 } from '@ant-design/icons';
+import { ChevronDown } from '@/components/ChevronDown';
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -522,7 +523,7 @@ export default function AutoChat() {
 
                 {queueItems.length > QUEUE_VISIBLE_COUNT && (
                   <div className="autochat-queue-more">
-                    <DownOutlined aria-hidden="true" />
+                    <ChevronDown size={13} style={{ marginRight: 6 }} aria-hidden="true" />
                     <span>共 {queueItems.length} 个岗位，向下滚动查看全部</span>
                   </div>
                 )}

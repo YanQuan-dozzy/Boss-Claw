@@ -3999,20 +3999,204 @@ html[data-theme='dark'] .task-ghost-btn:hover,
   transition: width 0.4s ease;
 }
 
-/* 3. 两列对比布局 (Stats 2Col) */
+/* 3. 两列对比布局 (Stats 2Col) 与左侧整高铺满 */
+.stats-card-status {
+  display: flex;
+  flex-direction: column;
+}
+.stats-card-status .ant-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.status-hbar-list {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 1;
+  gap: 6px;
+}
+.status-hbar-list .hbar {
+  margin-bottom: 0;
+}
+
 .stats-2col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 10px;
 }
 /* 卡内最后一块不该再撑底部间距（否则卡片底部比左右留白厚一截） */
 .stats-2col:last-child { margin-bottom: 0; }
+.stats-2col .hbar {
+  margin-bottom: 7px;
+}
+.stats-2col .hbar:last-child {
+  margin-bottom: 0;
+}
 .block-label {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--fg);
+  margin-bottom: 8px;
+}
+
+/* 3.1 AI 匹配分析卡专属增强布局 */
+.ai-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
   margin-bottom: 10px;
+}
+.ai-kpi-item {
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+.ai-kpi-val {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  line-height: 1.2;
+}
+.ai-kpi-lbl {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-divider {
+  border-top: 1px dashed var(--border);
+  margin: 10px 0;
+}
+.ai-deep-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 16px;
+}
+.ai-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ai-dim-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-dim-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.ai-dim-label {
+  width: 48px;
+  flex-shrink: 0;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-dim-track-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.ai-dim-track {
+  height: 6px;
+  background: var(--hover-bg);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ai-dim-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.ai-dim-val {
+  width: 32px;
+  flex-shrink: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.ai-insight-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-insight-sub {
+  font-size: 11px;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.ai-tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.ai-insight-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 4px;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.ai-insight-tag.strength {
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.22);
+}
+html[data-theme='dark'] .ai-insight-tag.strength {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+.ai-insight-tag.caution {
+  background: rgba(245, 158, 11, 0.08);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+}
+html[data-theme='dark'] .ai-insight-tag.caution {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.ai-insight-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-insight-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.8;
+}
+.ai-insight-empty {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  line-height: 18px;
 }
 
 /* 4. 趋势柱状图 (TrendChart) + 匹配分数趋势 (ScoreTrend) */
@@ -6393,33 +6577,72 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
 }
 .resume-preview-warn { display: block; margin-top: 6px; font-size: 12px; }
 
-/* 预览结果区：吃掉右栏剩余高度；空态紧凑 + 左对齐，与上方表单同一基线
-   （antd 默认 Empty 居中、图标 48px、上下留白大，会把右栏撑得又高又松） */
-.resume-preview-result { flex: 1 1 auto; min-width: 0; }
+/* 预览结果区：吃掉右栏剩余高度；空态卡片内容居中布局与视觉美化 */
+.resume-preview-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .resume-preview-result .ant-empty {
-  margin: 10px 0 0;
-  padding: 14px 16px;
-  border: 1px dashed var(--border);
+  flex: 1 1 auto;
+  margin: 12px 0 0;
+  padding: 24px 20px;
+  border: 1px dashed var(--border-brand);
   border-radius: var(--radius-card);
   background: var(--hover-bg);
-  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  transition: all 0.25s ease;
+}
+.resume-preview-result .ant-empty:hover {
+  border-color: var(--brand);
+  background: var(--card-bg, #fff);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
 }
 .resume-preview-result .ant-empty .ant-empty-image {
   height: auto;
-  margin-bottom: 6px;
+  margin-bottom: 12px;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.resume-preview-result .ant-empty .ant-empty-image .anticon { font-size: 24px; }
+.resume-preview-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-brand);
+  color: var(--brand);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+}
+.resume-preview-result .ant-empty:hover .resume-preview-empty-icon {
+  transform: translateY(-2px) scale(1.06);
+  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.2);
+}
 .resume-preview-result .ant-empty .empty-state-title {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--fg);
+  letter-spacing: 0.2px;
 }
 .resume-preview-result .ant-empty .empty-state-desc {
-  margin-top: 4px;
+  margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--fg-muted);
+  max-width: 440px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* 招呼语预览结果（此前无样式）：编号圆点 + 品牌色浅底气泡 */
@@ -6633,6 +6856,113 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
     justify-content: center;
   }
 }
+
+/* ═════════════════════════════════════════════════════════════════════
+   现代高质感下拉符号与展开箭头规范 (Select / Dropdown / Cascader / TreeSelect)
+   将 Ant Design 默认生硬细尖的 V 字形替换为微圆角、平缓舒展的现代 Chevron
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* 1. Ant Design 原生 Select / Cascader / TreeSelect 下拉箭头优化 */
+.ant-select-arrow,
+.ant-cascader-picker-arrow,
+.ant-tree-select-arrow {
+  color: var(--fg-muted, #94a3b8) !important;
+  font-size: 11px !important;
+  transition: color 0.2s ease, opacity 0.2s ease !important;
+}
+
+.ant-select:not(.ant-select-disabled):hover .ant-select-arrow {
+  color: var(--fg, #0f172a) !important;
+}
+
+.ant-select-open .ant-select-arrow {
+  color: var(--brand, #0d9488) !important;
+}
+
+/* 隐藏 Select 默认生硬锐利的 DownOutlined 内部 svg */
+.ant-select-arrow .anticon-down svg,
+.ant-cascader-picker-arrow .anticon-down svg,
+.ant-tree-select-arrow .anticon-down svg {
+  display: none !important;
+}
+
+/* 用基于 currentColor 的几何平滑圆润 Chevron 呈现 */
+.ant-select-arrow .anticon-down,
+.ant-cascader-picker-arrow .anticon-down,
+.ant-tree-select-arrow .anticon-down {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  position: relative;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.ant-select-arrow .anticon-down::after,
+.ant-cascader-picker-arrow .anticon-down::after,
+.ant-tree-select-arrow .anticon-down::after {
+  content: '';
+  display: block;
+  width: 11px;
+  height: 11px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  opacity: 0.85;
+}
+
+/* Select 展开时平滑翻转 180 度 */
+.ant-select-open .ant-select-arrow .anticon-down,
+.ant-cascader-picker-open .ant-cascader-picker-arrow .anticon-down,
+.ant-tree-select-open .ant-tree-select-arrow .anticon-down {
+  transform: rotate(180deg) !important;
+}
+
+/* 2. 按钮与操作组件内部的下拉箭头美化（如 Dropdown 触发按钮） */
+.ant-btn > .anticon-down,
+.ant-btn > span > .anticon-down {
+  font-size: 11px !important;
+  margin-left: 4px;
+  vertical-align: -0.1em;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+.ant-btn > .anticon-down svg,
+.ant-btn > span > .anticon-down svg {
+  display: none !important;
+}
+
+.ant-btn > .anticon-down::after,
+.ant-btn > span > .anticon-down::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  vertical-align: middle;
+}
+
+/* 按钮绑定的 Dropdown 打开时，箭头自动联动 180 度翻转 */
+.ant-dropdown-open.ant-btn > .anticon-down,
+.ant-dropdown-open.ant-btn > span > .anticon-down,
+.ant-dropdown-trigger[aria-expanded="true"] .anticon-down {
+  transform: rotate(180deg);
+}
+
+/* 3. 独立 ChevronDown 组件基础样式 */
+.chevron-down {
+  display: inline-block;
+  vertical-align: -0.125em;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+.chevron-down--open {
+  transform: rotate(180deg) !important;
+}
+
 
 
 

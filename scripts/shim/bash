@@ -1,0 +1,58 @@
+#!/bin/sh
+# Boss-claw shim —— 让 `bash` 解析到真实的 MSYS/Cygwin bash。
+#
+# 背景
+#   Windows 的 C:\Windows\System32\bash.exe 是 "Microsoft Bash Launcher"
+#   （即 WSL 启动器），且在 PATH 中位置靠前。npm / npx 的启动脚本 shebang 是
+#   `#!/usr/bin/env bash`，env 按 PATH 找到它之后会把 Windows 脚本交给 WSL 执行，
+#   于是报出 MountDisk/HCS/ERROR_PATH_NOT_FOUND 之类的 UTF-16 乱码错误，
+#   表现为「npm / npx 完全不可用」。
+#
+# 用法
+#   这个目录前置到 PATH 即可：
+#     PATH="<repo>/scripts/shim:$PATH" npm install
+#   或用配套包装器（推荐）：
+#     ./scripts/dev-env.sh npm install
+#
+# 覆盖
+#   BOSSCLAW_REAL_BASH=/path/to/bash.exe 可显式指定真实 bash。
+
+set -e
+
+find_real_bash() {
+  if [ -n "${BOSSCLAW_REAL_BASH:-}" ] && [ -x "${BOSSCLAW_REAL_BASH}" ]; then
+    printf '%s\n' "${BOSSCLAW_REAL_BASH}"
+    return 0
+  fi
+
+  # WorkBuddy 托管的 PortableGit（本机已知位置）
+  for d in "${HOME}"/.workbuddy/binaries/PortableGit/versions/*/bin; do
+    if [ -x "$d/bash.exe" ]; then
+      printf '%s\n' "$d/bash.exe"
+      return 0
+    fi
+  done
+
+  # 常见 Git for Windows 安装位置
+  while IFS= read -r cand; do
+    if [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done <<'CANDIDATES'
+/c/Program Files/Git/bin/bash.exe
+/c/Program Files (x86)/Git/bin/bash.exe
+/c/Git/bin/bash.exe
+/d/Git/bin/bash.exe
+/e/Git/bin/bash.exe
+CANDIDATES
+
+  return 1
+}
+
+REAL_BASH="$(find_real_bash)" || {
+  echo "bossclaw-shim: 未找到可用的真实 bash；请用 BOSSCLAW_REAL_BASH 指定其绝对路径" >&2
+  exit 127
+}
+
+exec "$REAL_BASH" "$@"

@@ -51,6 +51,7 @@ import {
   GlobalOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -162,6 +163,30 @@ export default function Settings() {
   useEffect(() => {
     ensureSkillsLoaded().then(refreshSkills).catch(() => {});
   }, []);
+
+  // ===== 最低薪资口径切换（日薪 ↔ 月薪）=====
+  const isMonthlySalary = (config.minSalaryMode ?? 'day') === 'month';
+  const toggleSalaryMode = useCallback(() => {
+    if (isMonthlySalary) {
+      // 切换为日薪：K元/月 * 1000 / 22 工作日
+      const nextDay = (config.minSalaryPerDay ?? 0) > 0
+        ? config.minSalaryPerDay
+        : (config.minSalaryPerMonth ? Math.round((config.minSalaryPerMonth * 1000) / 22) : 0);
+      setConfig({
+        minSalaryMode: 'day',
+        minSalaryPerDay: nextDay,
+      });
+    } else {
+      // 切换为月薪：日薪 * 22 工作日 / 1000 = K元/月，保留 1 位小数
+      const nextMonth = (config.minSalaryPerMonth ?? 0) > 0
+        ? config.minSalaryPerMonth
+        : (config.minSalaryPerDay ? Math.round(((config.minSalaryPerDay * 22) / 1000) * 10) / 10 : 0);
+      setConfig({
+        minSalaryMode: 'month',
+        minSalaryPerMonth: nextMonth,
+      });
+    }
+  }, [config.minSalaryMode, config.minSalaryPerDay, config.minSalaryPerMonth, isMonthlySalary, setConfig]);
 
   // ===== 自定义技能（导入 / 新建 / 删除）=====
   const skillImportRef = useRef<HTMLInputElement>(null);
@@ -1086,17 +1111,47 @@ export default function Settings() {
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">最低日薪（元/天，0=不限）</span>
+                <span className="field-label">
+                  {isMonthlySalary ? '最低月薪（K元/月，0=不限）' : '最低日薪（元/天，0=不限）'}
+                  <Tooltip title={isMonthlySalary ? "薪资区间按最低值计算（如 3k-5k 按 3k 计算）。低于该月薪的岗位将被硬性排除。" : "薪资区间按最低值折算为日薪计算。低于该日薪的岗位将被硬性排除。"}>
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
                 <InputNumber
                   min={0}
-                  max={2000}
-                  step={10}
-                  value={config.minSalaryPerDay ?? 0}
-                  onChange={(v) => setConfig({ minSalaryPerDay: v ?? 0 })}
+                  max={isMonthlySalary ? 300 : 2000}
+                  step={isMonthlySalary ? 0.1 : 10}
+                  precision={isMonthlySalary ? 1 : 0}
+                  value={isMonthlySalary ? (config.minSalaryPerMonth ?? 0) : (config.minSalaryPerDay ?? 0)}
+                  onChange={(v) => {
+                    if (isMonthlySalary) {
+                      setConfig({ minSalaryPerMonth: v ?? 0 });
+                    } else {
+                      setConfig({ minSalaryPerDay: v ?? 0 });
+                    }
+                  }}
                   style={{ width: '100%' }}
-                  addonAfter="元/天"
-                  placeholder="如 100"
+                  addonAfter={
+                    <span
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={toggleSalaryMode}
+                      title="点击切换日薪/月薪"
+                    >
+                      {isMonthlySalary ? 'K元/月' : '元/天'}
+                    </span>
+                  }
+                  placeholder={isMonthlySalary ? '如 3 或 8.5' : '如 100'}
                 />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">薪资单位切换</span>
+                <Button
+                  icon={<SwapOutlined />}
+                  onClick={toggleSalaryMode}
+                  style={{ width: '100%' }}
+                >
+                  {isMonthlySalary ? '切换为日薪' : '切换为月薪'}
+                </Button>
               </div>
             </div>
           </div>

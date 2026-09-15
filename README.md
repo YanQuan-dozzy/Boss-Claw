@@ -26,40 +26,43 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.3-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.3-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
+> 当前最新发布 v2.5.3 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
+
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🐧 AppImage（通用） | [BossClaw-2.5.3-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
-| 🐧 Debian / Ubuntu | [BossClaw-2.5.3-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-amd64.deb) | `sudo dpkg -i BossClaw-2.5.3-amd64.deb` 安装 |
-| 🐧 通用压缩包 | [BossClaw-2.5.3-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
-
-> rpm（RHEL / Fedora / CentOS）与 pacman（Arch / Manjaro）格式未随 v2.5.3 发布；需要时可从源码执行 `npm run package:linux:rpm` / `npm run package:linux:pacman` 自行构建（走 fpm 压缩，耗时较长）。
+| 🐧 AppImage（通用） | [BossClaw-2.1.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
+| 🐧 Debian / Ubuntu | [BossClaw-2.1.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-amd64.deb) | `sudo dpkg -i BossClaw-2.1.0-amd64.deb` 安装 |
+| 🐧 RHEL / Fedora / CentOS | [BossClaw-2.1.0-x86_64.rpm](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.rpm) | `sudo rpm -ivh BossClaw-2.1.0-x86_64.rpm` 安装 |
+| 🐧 Arch / Manjaro | [BossClaw-2.1.0-x64.pacman](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.pacman) | `sudo pacman -U BossClaw-2.1.0-x64.pacman` 安装 |
+| 🐧 通用压缩包 | [BossClaw-2.1.0-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
 
 ### macOS（源码自构建包）
 
-> macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；此处提供源码打包档案，在 macOS 上解压后一键自建 dmg/zip（x64 + arm64 双架构）：
+> macOS 产物同样沿用 **v2.1.0** 版本，或在 macOS 系统上从当前源码执行 `npm run package:mac` 自建：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🍎 源码打包档案 | [BossClaw-2.5.3-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（x64 + arm64）打包；需 Node.js 20+ 和 macOS 系统 |
+| 🍎 源码打包档案 | [BossClaw-2.1.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（x64 + arm64）打包；需 Node.js 20+ 和 macOS 系统 |
 
 ### 全平台产物一览（按版本发布）
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.3（最新） | Windows x64 安装版 + 便携版 / Linux（AppImage·deb·tar.gz）/ macOS（mac.tar.gz 自建档案） |
+| v2.5.3（最新） | Windows x64 安装版 + 便携版 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
-| v2.4.0 | Windows x64 安装版 + 便携版 |
+| v2.5.0 | Windows x64 安装版 + 便携版 |
 | v2.3.0 | Windows x64 安装版 + 便携版 |
+| v2.1.0 | Windows / Linux（AppImage·deb·rpm·pacman·tar.gz）/ macOS（mac.tar.gz 自建档案） |
 
 > **运行要求**：
 > - Windows：10/11（x64）
 > - Linux：主流 x86_64 发行版（Ubuntu 20.04+、Debian 11+、Fedora 34+、Arch rolling 等已验证）
-> - macOS：需在 macOS 系统上自构建（下载上方源码档案，或直接从源码执行 `npm run package:mac`）
+> - macOS：需在 macOS 系统上自构建（见上表说明，或直接从源码执行 `npm run package:mac`）
 >
 > 首次启动按提示在「设置」页填写求职条件与 AI API Key 即可使用（API Key 仅保存在本机，不会上传）。
 
@@ -157,7 +160,7 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 
 ### 2. 安装依赖并启动
 
-> **已有打包成品？** 直接从上方[「下载安装」](#下载安装)选择对应平台的安装包（Windows exe / Linux AppImage·deb·tar.gz / macOS 自构建包）即可，无需手动搭建环境。
+> **已有打包成品？** 直接从上方[「下载安装」](#下载安装)选择对应平台的安装包（Windows exe / Linux AppImage·deb·rpm·pacman·tar.gz / macOS 自构建包）即可，无需手动搭建环境。
 
 仓库**不含**任何运行时依赖（node_modules / Electron 二进制 / Python 包均需自行下载），首次使用请先准备环境：
 
@@ -333,7 +336,6 @@ npm run build        # tsc 类型检查 + vite 构建到 dist/
 npm run package      # 打包 Windows 安装包（NSIS + 便携版，产出到 release/）
 npm run package:linux   # 打包 Linux（AppImage + deb + rpm + pacman + tar.gz，共 5 种格式）
 npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需在 macOS 上执行）
-npm run package:source  # 无 Mac 环境时生成 macOS 源码自构建档案（release/BossClaw-<版本>-mac.tar.gz）
 ```
 
 > macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；Windows / Linux 可在本机直接打包。

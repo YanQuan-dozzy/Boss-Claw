@@ -37,7 +37,7 @@ const RENDERER_ACTIONS = [
   'scheduleUpdate',
   'scheduleRemove',
   'scheduleToggle',
-  // AI 按需生成（复用工作台定制提示词链路 + agent 代答）
+  // AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时回退本地规则）
   'aiAnalyzeJob',
   'aiTailorResume',
   // 浏览器只读探索
@@ -80,6 +80,12 @@ const RENDERER_ACTIONS = [
   'tasksGenerate',
   // F. 数据统计导出（只读：回传汇总 / 明细 / 报表文本，不落盘、不弹对话框）
   'statsExport',
+  // G. agent 代答（应用未配置 API Key 时由外部 agent 接管 AI 生成）——
+  //    常规用法请走专用工具 bossclaw_agent_tasks / bossclaw_agent_submit / bossclaw_agent_cancel；
+  //    这里保留动作名是为了让「渲染层白名单唯一权威」与 MCP 侧清单保持一一对应（可被 app_action 直接调用）。
+  'agentTasks',
+  'agentSubmit',
+  'agentCancel',
 ];
 
 /** 主进程侧动作（electron/control-bridge.cjs） */
@@ -104,7 +110,8 @@ export const controlTools = [
     title: '应用实时状态',
     description:
       '从运行中的应用读取**实时**状态（内存中的 Zustand store）：当前路由 / 主题 / 引擎开关 / 侧栏动作、完整 config、' +
-      '岗位队列与统计、定时任务、自动沟通运行态、沟通日志尾部。支持点路径过滤以避免上下文膨胀。' +
+      '岗位队列与统计、定时任务、自动沟通运行态、沟通日志尾部、agent 代答状态（agentAnswer：是否在线 / 队列 / 统计）。' +
+      '支持点路径过滤以避免上下文膨胀。' +
       '需要应用以 BOSSCLAW_CONTROL=1 运行（bossclaw_app_start 默认开启）。',
     annotations: READ_ONLY,
     inputSchema: obj({
@@ -137,6 +144,8 @@ export const controlTools = [
       const stats = data?.data?.stats || {};
       const pending = data?.data?.pendingCounts || {};
       const auto = data?.autochat || {};
+      const aa = data?.agentAnswer || {};
+      const lastSeen = aa.lastSeenAgoMs === null || aa.lastSeenAgoMs === undefined ? '从未' : `${Math.round(aa.lastSeenAgoMs / 1000)}s 前`;
       const lines = [
         `# 应用实时状态（bridge pid ${res.data?.pid ?? '-'}，${new Date(res.data?.at || Date.now()).toISOString()}）`,
         ``,
@@ -161,6 +170,13 @@ export const controlTools = [
         `- 简历：${data?.data?.resume?.chars || 0} 字｜画像：${data?.data?.profile?.present ? '已生成' : '未生成'}｜招呼语 ${data?.data?.greetings?.length || 0} 条`,
         `- 日志 ${data?.data?.logs?.count ?? 0} 条｜沟通日志 ${data?.data?.chatLogs?.count ?? 0} 条`,
         ``,
+        `## agent 代答（未配置 API Key 时由 agent 接管应用内 AI 生成）`,
+        `- AI 密钥：${cfg.model?.apiKey ? '已配置（直连真模型，不走代答）' : '未配置'}`,
+        `- agent 在线：${aa.online ? '是' : '否'}（心跳窗口 ${Math.round((aa.presenceWindowMs || 0) / 1000)}s，最近一次任务调用 ${lastSeen}）`,
+        `- 队列：挂起 ${aa.pending ?? 0}｜已领取 ${aa.claimed ?? 0}｜已回填 ${aa.answered ?? 0}｜超时 ${aa.timeouts ?? 0}｜放弃 ${aa.cancelled ?? 0}｜无 agent 回落本地 ${aa.unavailable ?? 0}`,
+        aa.lastEvent ? `- 最近事件：${aa.lastEvent}` : '',
+        `- 提示：未配置密钥时要接管 AI，请循环调用 bossclaw_agent_tasks（建议 waitMs: 30000）；**没有心跳时应用直接走本地规则**。`,
+        ``,
         `提示：需要细节用 path 参数取子路径（例如 path="settings.config"）。`,
       ].filter(Boolean);
       return ok(lines.join('\n'), data);
@@ -184,8 +200,10 @@ export const controlTools = [
       '  - 业务数据：dataSetResume{text,fileName?}｜dataSetProfile{profile}｜dataSetDirectionPlan{plan}｜dataSetGreetings{items}｜' +
       'dataSetGreetingPrompt{prompt}｜dataSetCommunicationInfo{info}｜dataPendingAdd{item}｜dataPendingUpdate{id,patch}｜' +
       'dataTaskRunUpdate{id,patch}｜dataAddChatLog{entry}｜scheduleAdd{entry}｜scheduleUpdate{id,patch}｜scheduleRemove{id}｜scheduleToggle{id,enabled}\n' +
-      '  - AI 按需生成（复用工作台定制提示词链路，无密钥时走本地规则兜底；较长耗时）：aiAnalyzeJob{job,resumeText?,customGreetingPrompt?}｜' +
+      '  - AI 按需生成（复用工作台定制提示词链路；未配置 API Key 时若 agent 在线则转由 bossclaw_agent_* 代答，否则回落本地规则；较长耗时）：aiAnalyzeJob{job,resumeText?,customGreetingPrompt?}｜' +
       'aiTailorResume{job,greetingInstructions?}\n' +
+      '  - agent 代答（常规用法请走专用工具 bossclaw_agent_tasks / bossclaw_agent_submit / bossclaw_agent_cancel）：' +
+      'agentTasks{waitMs?,includeMessages?,limit?}｜agentSubmit{id,content}｜agentCancel{id,reason?}\n' +
       '  - 浏览器只读探索（webview 引擎可用）：browserSearch{query,city?,page?,pageSize?}｜browserOpenJob{url,tabId?}｜' +
       'browserReadPage{tabId?}｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
       '  - 投递：deliverySetMode{mode:"auto"|"review"}｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
@@ -212,8 +230,10 @@ export const controlTools = [
     ),
     handler: async (args) => {
       if (!ACTIONS.includes(args.action)) return fail(`不支持的动作：${args.action}`);
-      // AI 动作（aiAnalyzeJob/aiTailorResume）含真实 LLM 调用，较长耗时；统一给宽超时
-      const timeoutMs = /^ai/.test(args.action) ? 200_000 : 90_000;
+      // AI 动作（aiAnalyzeJob/aiTailorResume）含真实 LLM 调用（或 agent 代答往返），较长耗时；
+      // agentTasks 是长轮询，超时按 waitMs 放宽。统一给宽超时。
+      const waitMs = Math.min(Math.max(Number(args.params?.waitMs) || 0, 0), 55_000);
+      const timeoutMs = args.action === 'agentTasks' ? waitMs + 20_000 : /^ai/.test(args.action) ? 200_000 : 90_000;
       const res = await controlCall('POST', '/action', { action: args.action, params: args.params || {} }, timeoutMs);
       if (!res.ok) {
         return fail(`动作 ${args.action} 失败：${res.error || '未知错误'}\n\n${await bridgeHint()}`, {

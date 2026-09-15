@@ -15,6 +15,9 @@
 'use strict';
 
 const { ipcRenderer } = require('electron');
+// 多平台 DOM 适配表（webview 侧唯一权威：列表选择器 / 链接形态 / 页面形态判定）。
+// 纯数据 + 纯函数、零 DOM 依赖 → 可直接单测（见 desktop-app/tmp/probe-webview-platforms.cjs）。
+const ADAPTERS = require('./platform-adapters.cjs');
 // ===== 防重复注入保护（session.setPreloads 与元素 preload 属性双路径可能重复注入同一脚本）=====
 (function () {
   if (typeof window !== 'undefined' && window.__bossclawWebviewPreload) return;
@@ -104,20 +107,21 @@ function jitterDelay(baseMs, jitterRatio = 0.35) {
 // BOSS 直聘走完整 boss-api / 视觉采集链路（下方原逻辑不变）；
 // 其余平台提供轻量适配：列表页判定 + 卡片提取 + 详情提取 + 「加入任务」（手动浏览/采集）。
 // 投递动作仍由 Camoufox Python 桥负责（本 preload 不重复实现）。
+// 平台判定统一走适配表（hostname 相等或点号后缀，与 src/lib/bossclaw/platforms.ts 同口径）。
+// 历史实现是 host.includes('liepin.com')（子串命中）：对真实域名（www./wow./sou./we./jobs. 前缀）
+// 结果完全一致，但子串匹配会把 evil-liepin.com 之类误判——改为后缀匹配后更严格。
 function detectPlatform() {
-  const host = String(location.hostname || '').toLowerCase();
-  if (host.includes('liepin.com')) return 'liepin';
-  if (host.includes('zhaopin.com')) return 'zhaopin';
-  if (host.includes('51job.com')) return 'job51';
-  return 'boss';
+  return ADAPTERS.detectPlatform(location.hostname);
 }
 const PLATFORM = detectPlatform();
 
-const PLATFORM_LIST_SELECTORS = {
-  liepin: ['li[data-tlg-ext]', '[class*="job-card"]', '[class*="jobCard"]', 'a[href*="/job/"]'],
-  zhaopin: ['[class*="joblist-box"] a', '[class*="joblist"] a', '[class*="job-card"]', 'a[href*="/jobdetail/"]'],
-  job51: ["a[href*='/pc/jobdetail?jobId=']", "a[href*='jobs.51job.com/']", '[class*="j_joblist"] li', '.joblist li', '.j_joblist .joblist-item'],
-};
+// 列表卡片候选选择器（按平台取；BOSS 保留真机验证过的 8 个候选，逐字未改）
+const PLATFORM_LIST_SELECTORS = ADAPTERS.PLATFORM_CARD_SELECTORS;
+// 当前平台的适配常量（webview 采集链路的唯一差异来源）
+const LINK_SELECTOR = ADAPTERS.PLATFORM_LINK_SELECTOR[PLATFORM];
+const FIELD_SELECTORS = ADAPTERS.PLATFORM_FIELD_SELECTORS[PLATFORM] || ADAPTERS.PLATFORM_FIELD_SELECTORS.boss;
+const LIST_ROOT_SELECTORS = ADAPTERS.PLATFORM_LIST_ROOT_SELECTORS[PLATFORM] || ADAPTERS.PLATFORM_LIST_ROOT_SELECTORS.boss;
+const SCROLLER_SELECTORS = ADAPTERS.PLATFORM_SCROLLER_SELECTORS[PLATFORM] || ADAPTERS.PLATFORM_SCROLLER_SELECTORS.boss;
 
 function pickText(selectors, root = document) {
   for (const sel of selectors) {
@@ -135,7 +139,7 @@ function platformCollectCards() {
     for (const el of all(sel)) {
       if (seen.has(el)) continue;
       seen.add(el);
-      const card = el.closest('li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]') || el;
+      const card = el.closest(ADAPTERS.PLATFORM_CARD_CONTAINER_SELECTOR[PLATFORM] || 'li') || el;
       if (visible(card) && textOf(card).length > 5 && textOf(card).length <= 900) out.push(card);
     }
   }
@@ -145,11 +149,8 @@ function platformCollectCards() {
 function platformListPage() {
   const url = String(location.href || '');
   const count = (() => { try { return platformCollectCards().length; } catch { return 0; } })();
-  let isList = false;
-  if (PLATFORM === 'liepin') isList = /\/zhaopin\//.test(url);
-  else if (PLATFORM === 'zhaopin') isList = /\/sou\//.test(url) || /sou\.zhaopin/.test(url);
-  else if (PLATFORM === 'job51') isList = /\/pc\/search/.test(url);
-  return { isListPage: isList && !/job_detail|jobdetail|\/job\/\d+/i.test(url), listCardCount: count };
+  // 列表页判定统一走适配表（URL 形态 + 非详情页）
+  return { isListPage: ADAPTERS.isListPage(PLATFORM, url), listCardCount: count };
 }
 
 // 非 BOSS 平台详情页岗位提取（URL jobId + 通用文本字段）
@@ -1276,16 +1277,9 @@ async function clickElement(element) {
 // BOSS 新版列表 DOM 是 li.job-card-box（推荐/搜索页），旧版是 .job-card-wrapper，两者都收。
 // quiet=true 时跳过诊断 notify（用于滚动加载期间的快速轮询，避免刷屏）。
 function collectCards(quiet = false) {
-  const selectors = [
-    '.job-list-box .job-card-wrapper',
-    'li.job-card-wrapper',
-    '.search-job-result .job-card-wrapper',
-    'li.job-card-box',
-    '.job-card-box',
-    '.job-list-box li',
-    '.search-job-result li.job-card-box',
-    'a[href*="/job_detail/"]',
-  ];
+  // 选择器来自适配表：BOSS = 真机验证过的 8 个候选（逐字未改）；其余平台 = 各自稳定选择器
+  // （猎聘只用稳定属性，不用哈希类名——CSS Modules 每次发布会变）
+  const selectors = PLATFORM_LIST_SELECTORS[PLATFORM] || PLATFORM_LIST_SELECTORS.boss;
   if (!quiet) {
     // 诊断：如果所有选择器都命中 0，就回传完整的 DOM 诊断信息帮助定位问题
     const diag = selectors.map((s) => {
@@ -1305,7 +1299,7 @@ function collectCards(quiet = false) {
     }
   }
   const candidates = selectors.flatMap((s) => all(s))
-    .map((el) => el.closest('.job-card-wrapper, .job-card-box, li') || el)
+    .map((el) => el.closest(ADAPTERS.PLATFORM_CARD_CONTAINER_SELECTOR[PLATFORM] || 'li') || el)
     .filter(visible);
   // 诊断：再统计去重后的候选数
   if (!quiet) {
@@ -1315,7 +1309,7 @@ function collectCards(quiet = false) {
     const content = textOf(el);
     if (!content || content.length > 900) return false;
     // 必须是真实岗位卡：含 job_detail 链接或薪资文本（排除筛选栏 / 无关 li）
-    const isJobCard = el.querySelector?.('a[href*="job_detail"]') || /\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上/.test(content);
+    const isJobCard = el.querySelector?.(LINK_SELECTOR) || /\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上/.test(content);
     if (!isJobCard) return false;
     return !items.some((other, oi) => oi !== i && other.contains(el) && textOf(other).length < content.length);
   });
@@ -1382,13 +1376,13 @@ function pickFromCard(card, selectorCandidates) {
 
 // 卡片身份（对齐 job-claw-main cardIdentity，多选择器候选 + 行兜底）
 function cardIdentity(card) {
-  const anchor = card.querySelector('a[href*="job_detail"]');
+  const anchor = card.querySelector(LINK_SELECTOR);
   const cardLines = textOf(card).split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  const title = pickFromCard(card, ['.job-name', '.job-title .job-name', '.job-title', '.position-name', '[class*="job-name"]', '[class*="job-title"]', '[class*="jobName"]', 'h3', 'h4'])
+  const title = pickFromCard(card, FIELD_SELECTORS.title)
     || textOf(anchor)
     || cardLines[0]
     || '';
-  let company = pickFromCard(card, ['.company-name', '.job-card-right .company-info h3', 'h3.company-name', 'a.company-name', '[class*="company-name"]', '[class*="companyName"]', '[class*="company-brand"]', 'a[href*="gongsi"]']);
+  let company = pickFromCard(card, FIELD_SELECTORS.company);
   if (!company) {
     for (const line of cardLines.slice(1)) {
       // 跳过地点串（如「深圳·南山区·科技园」）与噪声行，避免把地名误判为公司名
@@ -1403,22 +1397,25 @@ function cardIdentity(card) {
 function cardFields(card) {
   const cardText = textOf(card);
   // 薪资：选择器命中值优先；兜底正则在「还原混淆后的文本」上跑，否则 PUA 数字永远匹配不到
-  const salary = decodeSalaryDigits(pickFromCard(card, ['.salary', '.job-salary', '[class*="salary"]']))
+  const salary = decodeSalaryDigits(pickFromCard(card, FIELD_SELECTORS.salary))
     || decodeSalaryDigits(cardText).match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
     || '';
-  const location = pickFromCard(card, ['.job-area', '.job-area-wrapper', '.job-address-desc', '.job-location', '.company-location', '[class*="job-area"]'])
+  // 地点：选择器 → 平台特有形态（猎聘卡片把城市写成「【北京】」）→ 城市名正则
+  const location = pickFromCard(card, FIELD_SELECTORS.location)
+    || (PLATFORM === 'liepin' ? cardText.match(/【\s*([^】]{2,20})\s*】/)?.[1] : '')
     || cardText.match(/北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|全国/)?.[0]
     || '';
   const hrActive = cardText.match(/在线|刚刚活跃|今日活跃|昨日活跃|\d+\s*日内活跃|\d+\s*周内活跃|\d+\s*月内活跃|\d+\s*(?:分钟|小时)前活跃/)?.[0] || '';
-  const recruiterTitle = pickFromCard(card, ['.boss-title', '.job-card-footer .boss-title', '[class*="boss-title"]', '.boss-info-attr']);
+  const recruiterTitle = pickFromCard(card, FIELD_SELECTORS.recruiterTitle);
   const isHeadhunter = /猎头/.test(cardText);
   return { salary, location, hrActive, recruiterTitle, isHeadhunter };
 }
 
 // 去重 key（对齐 job-claw-main cardKey）
 function collectCardKey(card) {
-  const anchor = card.querySelector('a[href*="job_detail"]');
-  return anchor?.href || card.getAttribute('data-jobid') || textOf(card).slice(0, 220);
+  const anchor = card.querySelector(LINK_SELECTOR);
+  // data-tlg-ext（猎聘卡片携带 jobId）仅作兜底：BOSS 卡片无该属性，行为不变
+  return anchor?.href || card.getAttribute('data-jobid') || card.getAttribute('data-tlg-ext') || textOf(card).slice(0, 220);
 }
 
 // jobId token（对齐 job-claw-main jobUrlToken）：优先 pathname /job_detail/{id}，回退 query 参数
@@ -1614,7 +1611,7 @@ async function waitWhilePaused() {
 // 滚动容器探测：BOSS 列表容器自身可滚动（scrollHeight > clientHeight）时优先滚容器，
 // 否则回退 window 滚动。返回 null 表示用 window。
 function findListScroller() {
-  const candidates = all('.job-list-box, .search-job-result, .job-list, [class*="job-list"], [class*="search-job"]');
+  const candidates = all(SCROLLER_SELECTORS.join(', '));
   let hitCandidate = false;
   for (const el of candidates) {
     hitCandidate = true;
@@ -1685,6 +1682,12 @@ async function scrollJobListLoadMore(processed, opts = {}) {
 // 当本批卡片处理完（index 越界）时，从最后岗位滑块位置渐进下拉加载更多，直到达到 maxJobs
 // 兜底上限，或滚到列表物理底部则停止（对齐 AI-BossJob-plus autoScrollJobList 的 maxHistory=3 判定）。
 async function visualCollect(opts = {}) {
+  // 平台自检：宿主传入的 platform 与页面 hostname 判定不一致时回传诊断（以页面事实为准，不阻断）
+  if (opts.platform && opts.platform !== PLATFORM) {
+    notify('collect-progress', { phase: 'platform-mismatch', status: `宿主指定平台 ${opts.platform} 与页面判定 ${PLATFORM} 不一致，已按页面判定为准` });
+  }
+  // 非 BOSS 平台没有「列表内联详情面板」，走列表级采集（见 visualCollectListOnly 头注释）
+  if (!ADAPTERS.supportsInlineDetail(PLATFORM)) return visualCollectListOnly(opts);
   collectCtl.paused = false;
   collectCtl.stopped = false;
   collectCtl.settleMs = Math.max(400, Number(opts.settleMs) || 1200);
@@ -1966,15 +1969,8 @@ function domDump() {
 // 这里直接读页面自身的事实：document.readyState / 正文长度 / 岗位卡片命中数 / 选择器逐一命中数 /
 // 列表容器 / 骨架屏启发式；宿主以这些事实为权威，遮罩状态只作参考。
 function pageStatusData() {
-  const selectors = [
-    '.job-list-box .job-card-wrapper',
-    'li.job-card-wrapper',
-    '.search-job-result .job-card-wrapper',
-    'li.job-card-box',
-    '.job-card-box',
-    '.job-list-box li',
-    'a[href*="/job_detail/"]',
-  ];
+  // 选择器按平台取（BOSS 覆盖原 7 项，另多一项 .search-job-result li.job-card-box 诊断键）
+  const selectors = [...new Set([...(PLATFORM_LIST_SELECTORS[PLATFORM] || []), LINK_SELECTOR])];
   const counts = {};
   for (const s of selectors) {
     try { counts[s] = all(s).length; } catch { counts[s] = -1; }
@@ -1982,7 +1978,7 @@ function pageStatusData() {
   let cards = -1;
   try { cards = collectCards(true).length; } catch {}
   const bodyText = String(document.body?.innerText || '');
-  const listRoot = $('.job-list-box, .search-job-result, .job-list, [class*="job-list"]');
+  const listRoot = $(LIST_ROOT_SELECTORS.join(', '));
   return {
     url: location.href,
     title: document.title,
@@ -1992,7 +1988,8 @@ function pageStatusData() {
     counts,
     listRootCls: listRoot ? String(listRoot.className || '').slice(0, 120) : '',
     skeleton: all('[class*="skeleton"], [class*="loading"], [class*="spinner"], [class*="placeholder"]').length,
-    loginWall: /请登录|扫码登录|安全验证|验证码/.test(bodyText.slice(0, 500)),
+    // 登录墙 = 原文案命中（含安全验证/验证码等风控文案）或「平台登录墙特征 且 无任何岗位链接」
+    loginWall: /请登录|扫码登录|安全验证|验证码/.test(bodyText.slice(0, 500)) || loginWallDetected(),
   };
 }
 
@@ -2052,8 +2049,170 @@ async function prefillGreetingText(rawText) {
   }
 }
 
+// ===== 非 BOSS 平台「列表级」可视化采集 =====
+// 为什么只做列表级（重要设计口径，勿「顺手」加成详情级）：
+//   猎聘 / 智联 / 前程无忧 的搜索页**没有内联详情面板**（BOSS 独有的 master-detail 形态），
+//   点卡片会导航到独立详情页或开新标签页。在内置浏览器里逐卡点开会把「可视化采集」变成
+//   「逐页跳转」：既慢（每次导航都要重新等页面），又会把标签页带离搜索页（跨搜索组合串台）。
+//   因此本通道只做**列表卡片级**采集——标题 / 公司 / 薪资 / 地点 / 经验 / 学历 / 链接 +
+//   卡片文本作为描述（AI 评分对缺 JD 的岗位按列表信息评估）。
+//   **详情 JD 由 Camoufox 隐身采集链路补齐**：camoufox/platforms/{liepin,zhaopin,job51}.py
+//   已实现「列表 + 详情」两段采集并带词级断点续采。两条通道职责清晰、互不重复。
+// 复用件：collectCtl（暂停/继续/停止/调速）/ smoothScrollIntoView / highlightElement /
+//         scrollJobListLoadMore / collectCards / cardIdentity / cardFields / collectCardKey。
+
+// 登录墙判定：URL 命中登录页特征，或「正文命中登录文案 且 页面内没有任何本平台岗位链接」。
+// 后者是必须的守卫——页脚/导航常出现「登录」字样，只有「一条岗位链接都没有」时才能判定为登录墙。
+function loginWallDetected() {
+  try {
+    const loc = String(location.pathname || '') + String(location.search || '');
+    if (ADAPTERS.LOGIN_WALL_URL_RE.test(loc)) return true;
+    if (all(LINK_SELECTOR).length > 0) return false;
+    const head = String(document.body?.innerText || document.body?.textContent || '').slice(0, 2000);
+    return ADAPTERS.LOGIN_WALL_TEXT_RE.test(head);
+  } catch { return false; }
+}
+
+// 列表级字段提取（不点开详情）：选择器优先 + 文本正则兜底，口径与「加入任务」(platformExtractJob) 一致
+function extractJobFromCardOnly(card) {
+  const identity = cardIdentity(card);
+  const fields = cardFields(card);
+  const url = String(identity.href || '');
+  let jobId = '';
+  try {
+    const m = url.match(/jobId=(\d+)/i)
+      || url.match(/jobdetail\/([^/?#]+)/i)
+      || url.match(/\/job\/(\d+)/i)
+      || url.match(/jobs\.51job\.com\/([^/?#]+)/i);
+    if (m) jobId = m[1];
+  } catch {}
+  return {
+    platform: PLATFORM,
+    title: identity.title || '岗位',
+    company: identity.company || '',
+    salary: fields.salary || '',
+    location: fields.location || '',
+    hrActive: fields.hrActive || '',
+    isHeadhunter: Boolean(fields.isHeadhunter),
+    // 列表级采集拿不到详情 JD：用卡片文本兜底（详情 JD 由 Camoufox 采集链路补齐）
+    description: textOf(card).slice(0, 800),
+    url: url || location.href,
+    jobId,
+    labels: [],
+    skills: [],
+    welfare: [],
+  };
+}
+
+async function visualCollectListOnly(opts = {}) {
+  collectCtl.paused = false;
+  collectCtl.stopped = false;
+  collectCtl.settleMs = Math.max(400, Number(opts.settleMs) || 1200);
+  const settleMs = collectCtl.settleMs;
+  const maxJobs = Math.max(1, Number(opts.maxJobs) || 1000);
+  const autoScroll = opts.autoScroll !== false;
+  const scrollRounds = Math.max(0, Number(opts.scrollRounds) || 0);
+  const listTimeoutMs = Math.max(5000, Number(opts.listTimeoutMs) || 30000);
+  let scrollRoundsUsed = 0;
+  const processed = new Set();
+  let processedCount = 0;
+  let emptyRounds = 0;
+  notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, platform: PLATFORM, status: `准备中（${PLATFORM} · 列表级采集）` });
+
+  // 一次性 DOM 诊断（与 BOSS 同口径，选择器取自适配表）
+  try {
+    const diagLines = (PLATFORM_LIST_SELECTORS[PLATFORM] || []).map((s) => `${s}=${all(s).length}`);
+    const diagRoot = $(LIST_ROOT_SELECTORS.join(', '));
+    notify('collect-progress', { phase: 'dom-diag', index: 0, total: 0, processed: 0, maxJobs, platform: PLATFORM, status: `[DOM] ${diagLines.join(' | ')} | root=${diagRoot ? String(diagRoot.className || '').slice(0, 60) : 'none'} | url=${location.href.slice(0, 80)}` });
+  } catch {}
+
+  // 列表首屏等待（含登录墙判定）：拿到卡片即进入主循环
+  const listWaitStartedAt = Date.now();
+  const listReadyDeadline = listWaitStartedAt + listTimeoutMs;
+  let initialWaitCount = 0;
+  while (Date.now() < listReadyDeadline && !collectCtl.stopped) {
+    let cards = [];
+    try { cards = collectCards(true); } catch (e) {
+      notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: 0, maxJobs, status: `列表查询异常：${String(e?.message || e).slice(0, 80)}` });
+    }
+    if (cards.length > 0) {
+      notify('collect-progress', { phase: 'list-ready', index: 0, total: cards.length, processed: 0, maxJobs, status: `列表就绪（${cards.length} 卡）` });
+      break;
+    }
+    // 未登录：明确回传 login-required，由宿主提示用户去该平台标签页扫码登录（不猜、不绕过）
+    if (loginWallDetected()) {
+      notify('collect-progress', { phase: 'login-required', index: 0, total: 0, processed: 0, maxJobs, status: `${PLATFORM} 未登录或登录态已失效：请先在该平台标签页扫码登录后再采集` });
+      notify('collect-done', { listUrl: location.href, processed: 0, total: 0, maxJobs, loginRequired: true });
+      return;
+    }
+    initialWaitCount += 1;
+    if (initialWaitCount === 1 || initialWaitCount % 4 === 0) {
+      notify('collect-progress', { phase: 'waiting-list', index: 0, total: 0, processed: 0, maxJobs, status: `等待列表渲染（已 ${Math.round((Date.now() - listWaitStartedAt) / 1000)}s / 上限 ${Math.round(listTimeoutMs / 1000)}s，页面 ${String(document.readyState)}）` });
+    }
+    await sleep(settleMs * 0.6);
+  }
+
+  // 主循环：逐卡滚动 + 高亮 + 回传（**不点击卡片** —— 见函数头注释）
+  while (!collectCtl.stopped) {
+    await waitWhilePaused();
+    if (collectCtl.stopped) break;
+    if (processedCount >= maxJobs) break;
+    let cards = [];
+    try { cards = collectCards(); } catch (e) {
+      notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: processedCount, maxJobs, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
+      await sleep(settleMs);
+      continue;
+    }
+    const pending = cards.filter((c) => {
+      const k = collectCardKey(c);
+      return Boolean(k) && !processed.has(k);
+    });
+    if (pending.length === 0) {
+      // 本屏已采完 → 按设置渐进下拉加载更多（复用 BOSS 同一套滚动判定）
+      if (!autoScroll) {
+        notify('collect-progress', { phase: 'list-bottom', index: 0, total: cards.length, processed: processedCount, maxJobs, status: '已按「不自动下拉」设置采完首屏可见卡，停止加载' });
+        break;
+      }
+      if (scrollRounds > 0 && scrollRoundsUsed >= scrollRounds) {
+        notify('collect-progress', { phase: 'list-bottom', index: 0, total: cards.length, processed: processedCount, maxJobs, status: `已达到下拉轮数上限（${scrollRounds} 轮），停止加载` });
+        break;
+      }
+      scrollRoundsUsed += 1;
+      const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs });
+      if (atBottom) {
+        notify('collect-progress', { phase: 'list-bottom', index: 0, total: cards.length, processed: processedCount, maxJobs, status: '已滚动到列表底部，加载完毕' });
+        break;
+      }
+      if (!grew) emptyRounds += 1;
+      else emptyRounds = 0;
+      if (emptyRounds >= 3) {
+        notify('collect-progress', { phase: 'list-bottom', index: 0, total: cards.length, processed: processedCount, maxJobs, status: '连续 3 轮无新卡，停止加载' });
+        break;
+      }
+      continue;
+    }
+    const card = pending[0];
+    const key = collectCardKey(card);
+    processed.add(key);
+    const identity = cardIdentity(card);
+    await smoothScrollIntoView(card);
+    highlightElement(card, settleMs);
+    notify('collect-progress', { phase: 'scroll', index: processedCount + 1, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: '滚动中' });
+    await sleep(settleMs);
+    if (collectCtl.stopped) break;
+    await waitWhilePaused();
+    const job = extractJobFromCardOnly(card);
+    processedCount += 1;
+    notify('collect-progress', { phase: 'done', index: processedCount, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
+    await sleep(settleMs);
+  }
+  notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
+}
+
+
 // ===== IPC 通道注册 =====
-// BOSS 专属通道仅在 BOSS 页面注册；其余平台注册轻量提取（多平台适配）
+// BOSS 专属通道（boss-api / start-apply / open-chat）仅在 BOSS 页面注册；
+// 其余平台注册轻量提取（多平台适配）。visual-collect / collect-control 已改为**全平台注册**（见下）。
 if (PLATFORM === 'boss') {
   // boss-api：BOSS 官方 API（joblist / jobCard / jobDetail / friendAdd），seq 用于上层 promise 化
   ipcRenderer.on('boss-api', async (_e, arg) => {
@@ -2068,23 +2227,26 @@ if (PLATFORM === 'boss') {
   // open-chat：工作台「点击立即沟通」——仅打开聊天窗口（不发送文字，发文字交给「自动沟通」页）
   ipcRenderer.on('open-chat', () => { openChatOnly(); });
 
-  // visual-collect：可视化采集（对齐 job-claw-main，逐卡片滚动高亮点击展开）
-  ipcRenderer.on('visual-collect', (_e, arg) => {
-    const opts = (arg && typeof arg === 'object') ? arg : {};
-    visualCollect(opts).catch((e) => notify('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
-  });
-  // collect-control：运行时控制（暂停 / 继续 / 停止 / 调速）
-  ipcRenderer.on('collect-control', (_e, arg) => {
-    const action = (arg && arg.action) || '';
-    if (action === 'pause') collectCtl.paused = true;
-    else if (action === 'resume') collectCtl.paused = false;
-    else if (action === 'stop') { collectCtl.stopped = true; collectCtl.paused = false; }
-    else if (action === 'speed') {
-      const ms = Number((arg && arg.settleMs) || 0);
-      if (ms >= 300) collectCtl.settleMs = Math.min(5000, ms);
-    }
-  });
 }
+
+// visual-collect：可视化采集（**全平台注册**）
+//   BOSS：逐卡片滚动 + 高亮 + 点击展开内联详情 + 提取完整信息（原逻辑不变）
+//   其余平台：列表级采集（滚动 + 高亮，不点击卡片 —— 无内联详情，见 visualCollectListOnly 头注释）
+ipcRenderer.on('visual-collect', (_e, arg) => {
+  const opts = (arg && typeof arg === 'object') ? arg : {};
+  visualCollect(opts).catch((e) => notify('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
+});
+// collect-control：运行时控制（暂停 / 继续 / 停止 / 调速）—— **全平台注册**
+ipcRenderer.on('collect-control', (_e, arg) => {
+  const action = (arg && arg.action) || '';
+  if (action === 'pause') collectCtl.paused = true;
+  else if (action === 'resume') collectCtl.paused = false;
+  else if (action === 'stop') { collectCtl.stopped = true; collectCtl.paused = false; }
+  else if (action === 'speed') {
+    const ms = Number((arg && arg.settleMs) || 0);
+    if (ms >= 300) collectCtl.settleMs = Math.min(5000, ms);
+  }
+});
 
 // extract-job：提取当前详情页岗位（BOSS=API 优先/DOM 兜底；其余平台=轻量通用提取）
 ipcRenderer.on('extract-job', () => {
@@ -2355,7 +2517,9 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
 const ipcChannels = PLATFORM === 'boss'
   ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval']
-  : ['extract-job', 'platform-apply', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
+  // 非 BOSS 平台自 2026-09-15 起也支持「可视化采集（列表级）」→ 这两个通道必须注册，
+  // 否则宿主 sendInTab('visual-collect') 无监听器、collect-done 永不回传，界面会静默卡到兜底超时（最长 15min）。
+  : ['extract-job', 'platform-apply', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
 ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);

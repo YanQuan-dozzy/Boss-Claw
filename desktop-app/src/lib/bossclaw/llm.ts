@@ -3,6 +3,7 @@
 // P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定），不再渲染层直连 fetch 规避 CORS。
 import type { AppConfig } from './types';
 import { electronApi } from '@/lib/electronApi';
+import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 
 export class AIError extends Error {
   code: string;
@@ -18,6 +19,10 @@ export class AIError extends Error {
 export function aiFailureKind(error: { code?: string; message?: string } | null): string {
   const code = String(error?.code || '');
   const message = String(error?.message || '');
+  // agent 代答通道的失败态（见 agentAnswer.ts）：无 agent 在线 / agent 主动放弃 → 与「未配置密钥」同属
+  // 「AI 不可用」，上层照旧回落本地规则；等待超时 → agent 在线但未按时回填，按「服务不可用」归因。
+  if (code === 'AI_AGENT_UNAVAILABLE' || code === 'AI_AGENT_CANCELLED') return 'config-missing';
+  if (code === 'AI_AGENT_TIMEOUT') return 'service-error';
   if (code === 'AI_CONFIG' || /API Key|未配置|401|unauthorized/i.test(message)) return 'config-missing';
   if (['AI_NETWORK', 'AI_HTTP', 'AI_TIMEOUT'].includes(code) || /HTTP|fetch|网络|超时|服务不可用/i.test(message)) return 'service-error';
   return 'output-invalid';
@@ -355,8 +360,12 @@ async function repairJsonViaModel(
 
 /**
  * 发起模型调用。
- * 未配置 API Key 时直接抛 AI_CONFIG（不转交 agent 代答）：由上层业务走**本地规则**兜底
- * （职业画像 buildLocalProfile、求职信/定制简历 localFallback 等）。单向链路：应用不再反向调 agent。
+ * 未配置 API Key 时的可能路径（见下方 answerViaAgent 与 agentAnswer.ts）：
+ *   ① 有 agent 在线（外部 agent 最近调用过 bossclaw_agent_tasks）→ 交给 agent 代答：
+ *      任务挂进本地待答队列，agent 用自有模型作答后回填文本，应用按与真实调用相同的口径解析；
+ *   ② 无 agent 在线 / 超时未答 / agent 主动放弃 → 抛 AIError，由上层业务走**本地规则**兜底
+ *      （职业画像 buildLocalProfile、求职信/定制简历 localFallback 等）。
+ * 链路方向仍是**单向**：应用只能把任务放进本地队列等 agent 来取，从不主动调用 agent。
  *
  * JSON 模式（jsonMode=true，默认）严格对齐 DeepSeek JSON Output 官方要求与已知失败模式：
  *   ① 请求体设置 response_format = {'type':'json_object'}（网关不支持时自动降级重发）；
@@ -367,8 +376,19 @@ async function repairJsonViaModel(
  */
 export async function callModel(messages: ChatMessage[], config: AppConfig['model'], options: CallOptions = {}): Promise<any> {
   const jsonMode = options.jsonMode ?? true;
+  const baseMaxTokens = effectiveMaxTokens(options.maxTokens, jsonMode);
+  // 官方要求②兜底：JSON 模式 prompt 必须含 json 字样，并统一注入 JSON 输出契约（幂等）。
+  // 已合规时原样透传，不改动 messages（保住服务端 prompt cache 前缀）。
+  const effectiveMessages = jsonMode ? ensureJsonPromptContract(messages) : messages;
+  // 未配置 API Key：优先交给外部 agent 代答（agent 在线时把任务挂进本地队列，等 agent 用自有模型回填，
+  // 结果形态与真实模型调用完全一致）；agent 不在线 / 超时未答 / 主动放弃 → 抛 AIError 由上层走本地规则兜底。
   if (!config.apiKey) {
-    throw new AIError('AI_CONFIG', '尚未配置 AI API Key，请在「设置 → AI」填写密钥；未配置时使用本地规则生成。');
+    return await answerViaAgent(effectiveMessages, {
+      jsonMode,
+      purpose: options.purpose,
+      maxTokens: baseMaxTokens,
+      timeoutMs: Number(options.timeoutMs || 90000),
+    });
   }
   const url = `${String(config.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
   // DeepSeek V4 默认开启思考模式（官方文档：thinking 默认 enabled，effort 默认 high），
@@ -378,10 +398,6 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   const isDeepSeek = config.provider === 'deepseek' || /deepseek/i.test(String(config.baseUrl || ''));
   const timeoutMs = Number(options.timeoutMs || 90000);
   const temperature = Number(options.temperature ?? config.temperature ?? 0.1);
-  const baseMaxTokens = effectiveMaxTokens(options.maxTokens, jsonMode);
-  // 官方要求②兜底：JSON 模式 prompt 必须含 json 字样，并统一注入 JSON 输出契约（幂等）。
-  // 已合规时原样透传，不改动 messages（保住服务端 prompt cache 前缀）。
-  const effectiveMessages = jsonMode ? ensureJsonPromptContract(messages) : messages;
 
   // 服务端提示词缓存（DeepSeek 等 provider 的 context caching）用量：命中时输入价约为未命中的 1/10。
   // 多轮尝试（重试/补齐）时逐次累计到会话统计（设置页可见）。
@@ -535,6 +551,60 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   return parsed;
 }
 
+/**
+ * 「agent 代答」通道（未配置 API Key 时由 callModel 调用）。
+ * 只做两件事：把这次调用交给 agentAnswer 的待答队列，并按**与真实模型调用完全一致**的口径解析回填文本：
+ *   · JSON 模式 → extractJson 确定性解析；失败则带 nudge 再要一次（第 2 次 attempt），仍失败才算无效输出；
+ *   · 非 JSON 模式 → 直接返回文本。
+ * 队列超时 / agent 放弃 / agent 不在线都在此转成 AIError，交由上层既有的本地规则兜底，不引入新语义。
+ */
+async function answerViaAgent(
+  messages: ChatMessage[],
+  ctx: { jsonMode: boolean; purpose?: string; maxTokens: number; timeoutMs: number }
+): Promise<any> {
+  // 代答需要 agent 侧一次完整的模型往返，等待窗口比直连模型宽（下限 30s、上限由 agentAnswer 夹定）。
+  const waitMs = Math.max(ctx.timeoutMs * 2, AGENT_ANSWER_MIN_WAIT_MS);
+  const ask = async (attempt: number, nudge?: string): Promise<string> => {
+    try {
+      const text = await requestAgentAnswer({
+        messages: nudge ? withNudge(messages, nudge) : messages,
+        jsonMode: ctx.jsonMode,
+        purpose: ctx.purpose,
+        maxTokens: ctx.maxTokens,
+        timeoutMs: waitMs,
+        attempt,
+      });
+      return String(text ?? '').trim();
+    } catch (error) {
+      if (error instanceof AgentAnswerError) {
+        throw new AIError(error.code, error.message, error.details);
+      }
+      throw error;
+    }
+  };
+
+  let content = await ask(1);
+  if (!content) throw new AIError('AI_EMPTY', 'agent 代答返回为空');
+  if (!ctx.jsonMode) return content;
+
+  try {
+    return extractJson(content);
+  } catch {
+    /* 落到下方一次纠偏重试 */
+  }
+  content = await ask(
+    2,
+    '（上一次回填的内容不是合法 json）请只输出完整、可解析的 json：必须以 { 开头、以 } 结尾，' +
+      '不要包含解释文字、不要使用 Markdown 代码块围栏。'
+  );
+  if (!content) throw new AIError('AI_EMPTY', 'agent 二次代答返回为空');
+  try {
+    return extractJson(content);
+  } catch {
+    throw new AIError('AI_INVALID_JSON', 'agent 代答返回的 JSON 无效，自动修复未能成功', { partial: content });
+  }
+}
+
 // ===== 服务端提示词缓存（prompt cache）会话统计 =====
 // 统计本会话内各次请求返回的 prompt_cache_hit_tokens / prompt_cache_miss_tokens，
 // 用于确认「相同前缀的请求是否命中了 provider 的上下文缓存」（命中价约为未命中价的 1/10）。
@@ -591,7 +661,7 @@ const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {  // 画像 / 打招
   assistant: 7 * 24 * 3600 * 1000,
 };
 
-/** 缓存作用域 → 中文用途标签（用于「转交 agent 代答」时的任务描述与日志） */
+/** 缓存作用域 → 中文用途标签（作为 callModel 的 purpose，用于调用日志与缓存命中统计展示） */
 const AI_SCOPE_LABELS: Record<AICacheScope, string> = {
   profile: '职业画像',
   greetings: '打招呼语',

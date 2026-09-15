@@ -58,6 +58,10 @@ export interface CamoufoxJob {
   companySize: string;
   companyType: string;
   url: string;
+  /** 采集溯源：该岗位由哪个关键词采到（多平台来源统计用；Python JobCandidate 追加字段） */
+  sourceKeyword?: string;
+  /** 招聘类型：campus(校招) / experienced(社招) / unknown(未识别)；本地保守判定，不猜测 */
+  recruitmentType?: string;
 }
 
 export interface CamoufoxSearchResult {
@@ -66,6 +70,10 @@ export interface CamoufoxSearchResult {
   message?: string;
   jobs?: CamoufoxJob[];
   error?: string;
+  /** 断点续采命中：该「关键词 × 城市」在 TTL 内已采过，本次整组跳过（非失败） */
+  skipped?: boolean;
+  /** 本轮实际完成的页数 */
+  pages?: number;
 }
 
 export interface CamoufoxSendResult {
@@ -104,7 +112,7 @@ export interface CamoufoxLoginResult {
   error?: string;
 }
 
-export type CamoufoxAction = 'search' | 'send' | 'chat' | 'login' | 'logout' | 'clear';
+export type CamoufoxAction = 'search' | 'send' | 'chat' | 'login' | 'logout' | 'clear' | 'platforms' | 'progress';
 
 /** 查询 Camoufox 引擎状态（会尝试自动拉起桥；platform 指定平台登录态） */
 export async function camoufoxStatus(platform: string = 'boss'): Promise<CamoufoxStatus> {
@@ -142,6 +150,10 @@ const CAMOUFOX_IN_FLIGHT = new Set<string>();
  * 由 Python 侧 `camoufox/platforms/filters.py` 翻译成各平台自身筛选参数
  * （字段名与码值口径见该文件的「口径来源」与 FILTER_CAPABILITIES 能力表）。
  * BOSS 分支忽略该参数（BOSS 走 searchUrl.ts + webview 通道）。
+ *
+ * force = true 时忽略断点续采、强制重采（「任务进度 → 开始/继续」的定向重采语义）。
+ * 非 BOSS 平台默认走词级断点：同一「关键词 × 城市」在 24h（可配 `resume_ttl_hours`）
+ * 内采过就整组跳过，避免重复劳动与被风控盯上；命中的结果带 `skipped: true`。
  */
 export function camoufoxSearch(
   query: string,
@@ -150,10 +162,12 @@ export function camoufoxSearch(
   os?: string,
   platform: string = 'boss',
   criteria?: Record<string, unknown>,
+  force = false,
 ): Promise<CamoufoxSearchResult> {
   return camoufoxCall<CamoufoxSearchResult>('search', {
     query, city, pages, os: os || undefined, platform,
     criteria: criteria && Object.keys(criteria).length ? criteria : undefined,
+    force: force || undefined,
   });
 }
 

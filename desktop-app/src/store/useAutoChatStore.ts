@@ -22,7 +22,7 @@ import { cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { generateReply } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
-import { platformEnabled, platformLabel, platformPriority } from '@/lib/bossclaw/platforms';
+import { platformEnabled, platformLabel, platformPriority, platformSupports } from '@/lib/bossclaw/platforms';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
 import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
 
@@ -156,20 +156,24 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
   try {
     // 多平台适配：岗位平台（boss/liepin/zhaopin/job51），缺省 boss
     const platform = String(item.job?.platform || 'boss');
+    // 能力矩阵判定（唯一入口，勿硬编码 platform === 'boss'）：
+    // attach = 投递时补发简历附件 / 在线简历。当前仅 BOSS 聊天链路支持；
+    // 其余平台 deliver() 会忽略这两个参数，故这里直接不下发，避免构造无用的 base64 负载。
+    const canAttach = platformSupports(platform as JobPlatform, 'attach');
     // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
     if (cancelRequested) {
       addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
       return 'stop';
     }
-    const resumeImages: { name: string; data: string }[] = cfg.sendResumeImage
+    const resumeImages: { name: string; data: string }[] = canAttach && cfg.sendResumeImage
       ? (useDataStore.getState().imageResumes as ImageResume[]).map((r) => ({ name: r.name, data: r.data }))
       : [];
     const baseOpts = {
       os: cfg.camoufox?.os,
       platform,
       url: item.job?.url || '',
-      sendResumeImage: Boolean(cfg.sendResumeImage),
-      sendOnlineResume: Boolean(cfg.sendOnlineResume),
+      sendResumeImage: canAttach && Boolean(cfg.sendResumeImage),
+      sendOnlineResume: canAttach && Boolean(cfg.sendOnlineResume),
       attachmentDelaySeconds: Math.max(0, Number(cfg.attachmentDelaySeconds) || 4),
       recruiterName: item.job?.recruiterName || '',
       company: item.job?.company || '',

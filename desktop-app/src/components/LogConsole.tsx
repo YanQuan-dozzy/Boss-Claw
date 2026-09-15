@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo, memo } from 'react';
-import { DownOutlined, ClearOutlined } from '@ant-design/icons';
+import { ClearOutlined } from '@ant-design/icons';
 import { Tooltip, Button } from 'antd';
+import { ChevronDown } from '@/components/ChevronDown';
 import { LogItem, type LogEntry } from './LogItem';
 import { useDataStore } from '@/store/useDataStore';
 
@@ -120,7 +121,7 @@ export const LogConsole = memo<LogConsoleProps>(function LogConsole({
           className="log-console__scroll-btn"
           onClick={scrollToBottom}
         >
-          <DownOutlined />
+          <ChevronDown size={11} style={{ marginRight: 4 }} />
           <span>回到最新</span>
         </button>
       )}

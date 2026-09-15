@@ -95,6 +95,22 @@ export function jobDailySalaryFloor(job?: Partial<JobMeta> | null): number | nul
   return Number.isFinite(daily) ? Math.round(daily * 10) / 10 : null;
 }
 
+/**
+ * 计算岗位的「月薪等效值」（K元/月）。
+ * 把任意薪资口径（月 K、元/月、万/月、日薪、时薪）按岗位工作制度折算到统一的「K元/月」，
+ * 用于「最低月薪」确定性硬约束（与用户设定的 minSalaryPerMonth 比较，单位 K元/月，支持 1 位小数）。
+ * 无法解析（面议 / 无薪资 / 纯占位）返回 null —— 此时不拦截（与 salaryPriority 口径一致：无薪资信号既不抬升也不压低）。
+ */
+export function jobMonthlySalaryFloor(job?: Partial<JobMeta> | null): number | null {
+  if (!job) return null;
+  const schedule = detectWorkSchedule(job);
+  const range = parseSalaryRange(job.salary, schedule.monthlyWorkDays);
+  if (!range.valid) return null;
+  // range.low 单位即为千元/月（K元/月），保留 1 位小数
+  const monthlyK = range.low;
+  return Number.isFinite(monthlyK) ? Math.round(monthlyK * 10) / 10 : null;
+}
+
 // ===== 学历等级（用于「JD 要求学历 vs 画像学历」比较）=====
 const DEGREE_LEVEL: Record<string, number> = { 不限: 0, 大专: 1, 本科: 2, 硕士: 3, 博士: 4 };
 
@@ -328,14 +344,25 @@ export function computeLocalMatch(
       hardBlocks.push(`岗位要求${required}面试，与设定的「仅${wanted}」冲突`);
     }
   }
-  // 9. 最低日薪（设置 → 元/天；0 表示不限）
-  //     将岗位任意薪资口径折算为「元/天」后低于阈值即硬拦截，确保 50 元/天之类的不合理岗位不进入投递队列。
+  // 9. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
+  //     将岗位任意薪资口径折算为「元/天」或「元/月」后低于阈值即硬拦截，确保不合理低薪岗位不进入投递队列。
   //     面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
-  const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
-  if (minSalaryPerDay > 0) {
-    const dailyFloor = jobDailySalaryFloor(job);
-    if (dailyFloor != null && dailyFloor < minSalaryPerDay) {
-      hardBlocks.push(`岗位日薪约 ${dailyFloor} 元/天，低于设定的最低日薪 ${minSalaryPerDay} 元/天`);
+  const isMonthlySalary = config?.minSalaryMode === 'month';
+  if (isMonthlySalary) {
+    const minSalaryPerMonth = Number(config?.minSalaryPerMonth ?? 0);
+    if (minSalaryPerMonth > 0) {
+      const monthlyFloor = jobMonthlySalaryFloor(job);
+      if (monthlyFloor != null && monthlyFloor < minSalaryPerMonth) {
+        hardBlocks.push(`岗位月薪约 ${monthlyFloor} K元/月，低于设定的最低月薪 ${minSalaryPerMonth} K元/月`);
+      }
+    }
+  } else {
+    const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
+    if (minSalaryPerDay > 0) {
+      const dailyFloor = jobDailySalaryFloor(job);
+      if (dailyFloor != null && dailyFloor < minSalaryPerDay) {
+        hardBlocks.push(`岗位日薪约 ${dailyFloor} 元/天，低于设定的最低日薪 ${minSalaryPerDay} 元/天`);
+      }
     }
   }
 
