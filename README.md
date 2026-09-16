@@ -6,7 +6,7 @@
 
 从简历解析、职业画像和岗位方向选择，到岗位信息整理、AI 匹配排序、沟通草稿生成与投递进度管理，集中在一个本地桌面应用中完成。
 
-[快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki 教程](docs/wiki/Home.md)
+[快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
 ![Version](https://img.shields.io/badge/version-v2.5.3-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
@@ -17,6 +17,8 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
 
 </div>
+
+> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.3**（2026-09-14 发布）。`main` 上另有一批**尚未随安装包发布**的能力（多平台采集层重构、外部 Agent 代答、面试方式筛选等），已在下方功能表标注「main 新增」。
 
 ## 下载安装
 
@@ -31,33 +33,30 @@
 
 ### Linux（x86_64）
 
-> 当前最新发布 v2.5.3 仅产出 **Windows** 安装包；以下 Linux 产物沿用 **v2.1.0** 版本（功能同步的架构与打包配置不变，可直接下载使用，或按下方「本地开发」从源码自行打包）：
+| 版本 | 文件 | 说明 |
+| --- | --- | --- |
+| 🐧 AppImage（通用） | [BossClaw-2.5.3-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
+| 🐧 Debian / Ubuntu | [BossClaw-2.5.3-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-amd64.deb) | `sudo dpkg -i BossClaw-2.5.3-amd64.deb` 安装 |
+| 🐧 通用压缩包 | [BossClaw-2.5.3-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
+
+> rpm（RHEL / Fedora / CentOS）与 pacman（Arch / Manjaro）**未随 v2.5.3 发布**。需要时可在源码目录执行 `npm run package:linux`（默认产出 AppImage + deb）后按需转换，或在 `package.json` 的 `build.linux.target` 中自行补充 `rpm` / `pacman` 目标后重新打包。
+
+### macOS（源码自构建档案）
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🐧 AppImage（通用） | [BossClaw-2.1.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.AppImage) | 跨发行版通用，`chmod +x` 后双击运行，无需安装 |
-| 🐧 Debian / Ubuntu | [BossClaw-2.1.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-amd64.deb) | `sudo dpkg -i BossClaw-2.1.0-amd64.deb` 安装 |
-| 🐧 RHEL / Fedora / CentOS | [BossClaw-2.1.0-x86_64.rpm](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x86_64.rpm) | `sudo rpm -ivh BossClaw-2.1.0-x86_64.rpm` 安装 |
-| 🐧 Arch / Manjaro | [BossClaw-2.1.0-x64.pacman](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.pacman) | `sudo pacman -U BossClaw-2.1.0-x64.pacman` 安装 |
-| 🐧 通用压缩包 | [BossClaw-2.1.0-x64.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-x64.tar.gz) | `tar -xzf` 解压后进入目录运行 `./bossclaw-desktop` |
+| 🍎 源码打包档案 | [BossClaw-2.5.3-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.5.3/BossClaw-2.5.3-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（Intel x64 + Apple Silicon arm64）打包；需 Node.js 20+ 与 macOS 系统 |
 
-### macOS（源码自构建包）
-
-> macOS 产物同样沿用 **v2.1.0** 版本，或在 macOS 系统上从当前源码执行 `npm run package:mac` 自建：
-
-| 版本 | 文件 | 说明 |
-| --- | --- | --- |
-| 🍎 源码打包档案 | [BossClaw-2.1.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.1.0/BossClaw-2.1.0-mac.tar.gz) | 解压后运行内含的 `./build-mac.sh`，一键完成依赖安装与 dmg/zip 双架构（x64 + arm64）打包；需 Node.js 20+ 和 macOS 系统 |
+> 该档案内的 `build-mac.sh` 属 **v2.5.3 随包产物**；`main` 分支已移除源码打包脚本，Mac 用户也可直接从源码执行 `npm run package:mac`（受 electron-builder 限制，dmg 只能在 macOS 上构建）。
 
 ### 全平台产物一览（按版本发布）
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.3（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.3（最新） | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
-| v2.5.0 | Windows x64 安装版 + 便携版 |
+| v2.4.0 | Windows x64 安装版 + 便携版 |
 | v2.3.0 | Windows x64 安装版 + 便携版 |
-| v2.1.0 | Windows / Linux（AppImage·deb·rpm·pacman·tar.gz）/ macOS（mac.tar.gz 自建档案） |
 
 > **运行要求**：
 > - Windows：10/11（x64）
@@ -115,30 +114,31 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 | 模块 | 能力 |
 | --- | --- |
 | 首页 | 运行状态概览、快捷入口、最近投递动态、内置「阅读使用文档」入口（Markdown 渲染） |
-| 工作台 | 三栏主界面（侧栏 + 消息进度 + 内置浏览器），手动 / 半自动投递闭环；搜索采集支持多平台选择、按平台串行采集；支持公司规模筛选 |
-| 多平台招聘 | 在 BOSS 直聘基础上可选启用 **猎聘 / 智联招聘 / 前程无忧 51Job**：设置页启用 + 独立登录与每日配额（BOSS / 猎聘 / 前程无忧默认 120/日，智联 100/日），岗位卡片带平台标识（BOSS 绿 / 智联蓝 / 猎聘橙 / 前程无忧紫） |
+| 工作台 | 三栏主界面（侧栏 + 消息进度 + 内置浏览器），手动 / 半自动投递闭环；搜索采集支持多平台勾选、按平台**串行**采集（引擎闸门：开启隐身引擎走 Camoufox，否则走内置浏览器可视化采集，**全平台可用**）；支持公司规模筛选 |
+| 多平台招聘 | 在 BOSS 直聘基础上可选启用 **猎聘 / 智联招聘 / 前程无忧 51Job**：设置页启用 + 平台优先级 + 独立登录态与每日配额（BOSS / 猎聘 / 前程无忧默认 120/日，智联 100/日），岗位卡片带平台标识（BOSS 绿 / 智联蓝 / 猎聘橙 / 前程无忧紫）；各平台支持能力由能力矩阵声明（`platformSupports()`，Python / TS 双源同口径） |
 | 简历中心 | 导入 PDF、DOCX、TXT，本地解析并保留可编辑原文；打招呼语提示词可编辑 |
 | 职业画像 | 根据教育、项目、技能和求职条件生成可编辑画像 |
 | 投递方向 | 自主勾选岗位方向、修改搜索词、调整优先级、添加自定义方向 |
 | 岗位整理 | 内置浏览器打开岗位 → 点「加入任务」→ 中栏记录该岗位；页面噪音自动清洗（jdCleaner）；可附加公司规模过滤（BOSS scale） |
-| AI 匹配 | 本地确定性多维匹配（硬约束拦截 + 维度分）与 AI 结果融合，给出匹配分、判断理由、技能命中、能力缺口和待确认项 |
+| 面试方式筛选 <br>（main 新增） | 设置页指定「线上 / 线下 / 不限」；「加入任务」时按岗位标题 / 描述 / 卡片文本**确定性**识别面试方式（未明确披露一律判为合格，不参与过滤、不误杀），排除与设定冲突的岗位，避免浪费每日招呼配额 |
 | 智能排序 | 综合匹配度、硬性条件、HR 活跃度、地点、薪资、新鲜度和风险提示进行排序 |
-| 评分与采集优化 | 岗位评分改为「AI 分 ×0.7 + 本地综合分 ×0.3」融合、修正谨慎（cautious）档位、移除本地预筛开关，减少「大量岗位被跳过」；增设工作台会话级去重 + 合并重复跳过日志 |
+| AI 匹配与评分 | 岗位匹配为 **AI 四层整体裁决**（硬门槛 → 优先条件 → 职责信号 → 团队信号），一次判断给出 `fitLevel` 档位（strong / match / cautious / unfit），**分数由档位映射、不跨档，AI 分即最终分**；本地五维分只用于界面展示与 AI 不可用时兜底，唯一改分能力为硬约束拦截（`score ≤ 35` / reject）；入队门槛由设置页 `minQueueScore` 控制；工作台会话级去重 + 合并重复跳过日志 |
 | 多页浏览 | 内置浏览器支持多标签 / 多页管理（browserRegistry），优化窗口尺寸变化的 force-resize 重绘，修复页面加载异常导致的崩溃 |
 | 方向智能校准 | 投递方向支持 AI 生成 / 校准搜索关键词；新增薪资校准模块与工作时间偏好，用于 AI 判断岗位匹配与约束沟通内容 |
-| Agent 控制桥 + MCP | 应用内置 Agent 控制桥（白名单动作、本地随机令牌鉴权、默认关闭需显式开启）；`mcp/bossclaw-mcp` 零依赖 stdio MCP 服务器，供外部 Agent 读取约束 / 状态并驱动应用（发送类能力默认不开放） |
+| Agent 控制桥 + MCP | 应用内置控制桥（白名单动作、本地随机令牌鉴权、**默认关闭**需显式开启，`start-bossclaw.cmd` 启动默认开启）；`mcp/bossclaw-mcp` 零依赖 stdio MCP 服务器（**8 个工具 / 3 组**：运行控制 · 应用控制 · agent 代答），供外部 Agent 读取约束 / 状态并驱动应用（发送类能力默认不开放） |
+| Agent 代答 <br>（main 新增） | 未配置 AI API Key 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）可由**在线外部 Agent** 代答；心跳 90s、单任务等待 30~240s，Agent 离线 / 超时 / 放弃则回落应用内本地规则。**只搬运「提示词 ↔ 生成文本」**，回填内容仍要过全部校验链（事实与口吻、校名披露、招呼语长度等） |
 | 沟通草稿 | 根据简历证据和岗位要求生成可编辑的应聘沟通内容与个性化打招呼语 |
 | 定制简历 | 输入目标岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，失败回退本地规则 |
-| AI 技能 | 标准 SKILL.md 技能体系（内置 resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
+| AI 技能 | 标准 SKILL.md 技能体系（内置 7 项：resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
 | 自动沟通 | 可选真实浏览器引擎（Camoufox）多平台批量沟通：BOSS 发送打招呼语（文字气泡确认）、猎聘「聊一聊」（App 预设招呼语自动发送）、智联 / 前程无忧投递简历（投递成功确认）；按平台优先级串行处理，各平台独立登录态与每日计数 |
 | 定时任务 | 按设定时刻（分 + 星期）自动触发「投递 / 采集 / 备份」三种动作；每条任务可圈定目标平台并设单轮条数上限；一键创建 早/午/晚「分批投递模板」；心跳扫描、按时刻去重；最小化仍触发（关闭后台节流） |
 | 本地备份 | localStorage 主存储 + 每 5 分钟脏检查写盘到可配置备份目录（默认 userData/backup）；内容未变化不重写；主存储缺失时自动回签恢复 |
 | 开机自启动 | 设置页一键开关，Windows 登录项（打包安装版生效），配合定时任务后台自动运行 |
 | 任务进度 | 每个任务和岗位均可显示独立进度、阶段、结果和异常原因 |
-| 数据统计 | 投递量、沟通量、成功率等关键指标的可视化统计 |
+| 数据统计 | 投递量、沟通量、成功率等关键指标看板（趋势「已投递」按投递成功时间归桶），支持导出**岗位明细 CSV / 统计汇总 CSV / 统计报表 PDF（A4 横版）**，每次导出均由系统保存对话框选择位置 |
 | 失败恢复 | 异常任务可重新打开、单条重试、标记忽略或由用户继续处理 |
 | OpenClaw | 可选本地 Node 桥接，用于 OCR、日报、本地文件和任务状态恢复 |
-| 隐身引擎 | 可选增强（Python 桥）：仅使用 Camoufox 原生隐身内核（本地 Chrome / Edge 不可复用），需自行 `pip install "camoufox[geoip]" && camoufox fetch` 安装内核；降低正常操作被误判为机器人的概率；隐身搜索不占内置浏览器标签 |
+| 隐身引擎 | 可选增强（Python 桥）：仅使用 Camoufox 原生隐身内核（本地 Chrome / Edge 不可复用），需自行 `pip install "camoufox[geoip]" && camoufox fetch` 安装内核；多平台采集层 `camoufox/platforms/` 分层（模型 / 能力矩阵 / 搜索·投递·登录三段骨架 / 平台注册表 / 断点续采，各平台只声明差异），**词级断点续采**（TTL 24h，宁重复不遗漏）；隐身搜索不占内置浏览器标签 |
 | 隐身浏览器 | 可选增强：Playwright 持久上下文 + 多 Page 的隐身浏览器模式，用于降低反检测概率 |
 | 主题 | 浅色 / 深色 / 跟随系统（antd 主题，状态持久化） |
 
@@ -150,6 +150,8 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 - **侧栏 11 入口**：首页 / 工作台 / 简历中心 / 投递方向 / 任务进度 / 定时任务 / 数据统计 / 定制简历 / OpenClaw / 自动沟通 / 设置。
 - **布局规则**：「工作台」为**三栏**（侧栏 + 消息进度 + 内置浏览器），其余页面为**双栏**（侧栏 + 功能页）。
 - **内置浏览器**：Electron `<webview>` 默认加载 BOSS 直聘；「新标签页」下拉可选已启用招聘平台（猎聘 / 智联招聘 / 前程无忧）首页，各平台登录态本地持久化（免重复登录）；外部链接经 `shell.openExternal` 打开。
+- **多平台采集口径**：平台差异集中在 `electron/preload/platform-adapters.cjs`（列表 / 链接 / 字段 / 页面形态选择器，纯数据 + 纯函数），`webview.cjs` 不再内联平台选择器；BOSS 是唯一「列表内联详情」形态，非 BOSS 只做**列表级**采集（详情 JD 由隐身引擎链路补齐）。
+- **故障隔离**：采集遇到平台级故障（未登录 / 4xx·5xx）只收口当前平台、后续平台继续；队列级故障（风控码 32·35·36、环境异常 37·38、未知码 fail-safe）立即中止整批交人工。
 
 ## 快速开始
 
@@ -176,7 +178,7 @@ npm run dev          # 启动 Vite dev server
 npm run dev:electron # 构建 renderer 并以 Electron 打开
 ```
 
-> **前置要求**：Node.js 18+（推荐 20）；隐身引擎需 Python 3.10+。
+> **前置要求**：Node.js 20+（推荐 22，`desktop-app/.nvmrc` 已固定）；隐身引擎需 Python 3.10+。
 > **国内网络提示**：`npm install` 失败时加 `--registry=https://registry.npmmirror.com`；
 > Electron 二进制下载失败时执行 `set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ && node node_modules/electron/install.js`。
 
@@ -234,7 +236,9 @@ AI 结果只是初稿。请检查个人定位、技能、项目、学历、城�
 - **自动沟通**：启动后按匹配优先级依次处理队列岗位，在真实浏览器中打开沟通窗口、输入并发送打招呼语，发送结果确认后才计成功。
 - **自动辅助**：启动后按匹配优先级依次投递 `approved_queue` 队列，失败自动暂停交人工核对。**全自动**为后续阶段目标。
 
-> **多平台投递入口**：工作台「一键投递」仅处理 **BOSS 直聘**岗位（内置浏览器链路）；**猎聘 / 智联招聘 / 前程无忧**岗位确认后停留在投递队列，由「自动沟通」引擎（Camoufox 隐身引擎）按平台语义投递（BOSS 聊天、猎聘「聊一聊」+ App 预设招呼语、智联 / 前程无忧投递简历），对应平台须先在「设置 → 招聘平台」启用并完成该通道登录。非 BOSS 平台的**搜索采集**同样须走 Camoufox 隐身引擎（webview 可视化采集为 BOSS 专属链路）。
+> **多平台投递入口**：工作台「一键投递」仅处理 **BOSS 直聘**岗位（内置浏览器链路）；**猎聘 / 智联招聘 / 前程无忧**岗位确认后停留在投递队列，由「自动沟通」引擎（Camoufox 隐身引擎）按平台语义投递（BOSS 聊天、猎聘「聊一聊」+ App 预设招呼语、智联 / 前程无忧投递简历），对应平台须先在「设置 → 招聘平台」启用并完成该通道登录。
+>
+> **多平台搜索采集**：引擎闸门只看 `camoufox.enabled` —— 开启隐身引擎则走 Camoufox（列表 + 详情 JD + 词级断点续采），**否则走内置浏览器可视化采集**（BOSS 为详情级、其余平台为列表级），因此**未安装 Camoufox 内核也能采集非 BOSS 平台**。各平台按设置页优先级**串行**采集，中途遇队列级阻断即中止整批，交人工确认后再采。
 
 遇到安全验证、登录异常、对象不确定、页面结构异常或结果无法确认时，应立即暂停，不继续执行后续动作。自动辅助不代表平台授权，也不保证账号不会受到网站规则、频率控制或其他安全机制影响。
 
@@ -253,6 +257,33 @@ OpenClaw 是**可选的本地执行与恢复中心**，不是普通用户开始�
 - 日志查看
 
 普通的岗位分析、沟通草稿生成和人工确认不强制安装 OpenClaw。
+
+## 外部 Agent 接入（可选）：控制桥 · MCP · 代答
+
+BossClaw 自带一条**面向外部 Agent 的本地控制通道**，用于让 Claude / WorkBuddy / Cursor 等任意 MCP 客户端读取应用实时状态并驱动白名单动作。**默认关闭，必须显式开启**，无需任何云端服务。
+
+| 组成 | 位置 / 端点 | 说明 |
+| --- | --- | --- |
+| 应用内控制桥 | `127.0.0.1:17650`（`electron/control-bridge.cjs`） | 仅监听本机回环；除 `/health` 外全部要求 `x-bossclaw-token` 头，令牌随机生成后写入 `<userData>/control-bridge.json` |
+| 开启方式 | `BOSSCLAW_CONTROL=1` 或 `--control-bridge` | 仓库根 `start-bossclaw.cmd` 启动**默认开启**（`--no-agent` 可关）；裸 `electron .` 与打包版默认关闭；显式关闭优先 |
+| MCP 服务器 | `mcp/bossclaw-mcp`（零依赖 stdio） | **8 个工具 / 3 组**：运行控制（3）· 应用控制（2）· agent 代答（3）；只面向「控制已安装应用」，不提供开发 / 构建类能力 |
+
+**动作边界（硬约束）**：动作由渲染层白名单（`src/lib/controlRuntime.ts`）强制，只有状态读取、切页、主题、暂停 / 恢复投递、平台与调度配置、数据写入、AI 生成、浏览器只读 + 白名单操作等；**不提供任何发消息、批量投递、绕过验证码或速率限制的能力**，也不会放开 `SAFETY_LIMITS`。
+
+**Agent 代答**（`main` 新增）：当用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）会把「完整提示词 + 用途 + 是否要 JSON」挂进本地待答队列，由**在线外部 Agent** 用自有模型回答后回填：
+
+```text
+应用（无 apiKey）→ 入队等待
+  → Agent：bossclaw_agent_tasks（长轮询领取，领取即心跳）
+  → Agent：用自己的模型生成回答
+  → Agent：bossclaw_agent_submit 回填 → 应用按与真实模型调用相同口径解析并继续自身校验链
+  （答不出可 bossclaw_agent_cancel，应用立刻回落本地规则）
+```
+
+- **在线判定**：最近 **90s** 内调用过 `bossclaw_agent_tasks`（应用无法主动调用 stdio MCP，只能靠心跳）；首次任务只在心跳有效时入队。
+- **等待区间**：单任务 30s ~ 240s，超时即抛错回落本地规则；JSON 纠偏最多 1 次。
+- **只搬运「提示词 ↔ 生成文本」**：不涉及投递、发送、验证码、速率限制或安全参数；回填内容仍要过全部校验链（事实与口吻、校名披露、招呼语长度截断等），不合规照样被本地规则替换 —— 这是预期行为。
+- 用户**配置了 API Key** 即直连自己的模型，不走代答；代答状态可在 MCP 的 `bossclaw_app_state` 的 `agentAnswer` 字段查看。
 
 ## 数据与隐私
 
@@ -300,24 +331,31 @@ BossClaw 官方版本不应实现、宣传或用于：
 - **首次成功投递一条后必须暂停验收**，让用户核对聊天对象、文字气泡与附件
 - 不得替用户承诺薪资、到岗时间、面试时间或不存在的经历
 - 所有提示词与招呼语必须使用求职者口吻，仅引用真实简历事实
+- 外部 Agent 通道（控制桥 / MCP / agent 代答）**只读写提示词与生成文本**，不得代替用户确认或触发发送、投递，也不得改动安全参数
 
 ## 项目结构
 
 ```
 Boss-claw/
 ├── desktop-app/               当前主应用（Electron + React，v2.5.3）
-│   ├── electron/              主进程 main.cjs + preload（app.cjs / webview.cjs / cloakPreload.cjs）
+│   ├── electron/              主进程 main.cjs + control-bridge.cjs（外部 Agent 控制桥）
+│   │   ├── preload/           app.cjs / webview.cjs / platform-adapters.cjs（多平台 DOM 适配表）
+│   │   └── cloakbrowser/      CloakBrowser 隐身浏览器生命周期
 │   ├── bridge/                OpenClaw Node 桥接后端（server.cjs + config.json）
-│   ├── camoufox/              Python 隐身引擎桥（camoufox_server.py）
-│   ├── skills/                AI 技能库（SKILL.md，内置 resume-profile / job-analysis / greetings / tailor-cv / great-resume / job-match）
+│   ├── camoufox/              Python 隐身引擎桥
+│   │   ├── camoufox_server.py 多平台调度基座
+│   │   └── platforms/         models / capabilities / base（三段骨架）/ registry / progress（断点续采）/ filters + 各平台差异声明
+│   ├── skills/                AI 技能库（SKILL.md，内置 7 项：resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match）
 │   ├── src/                   React 渲染进程（main / App / theme / store / components / pages / lib）
-│   ├── resources/             应用图标等资源
-│   └── package.json           依赖与 scripts（dev / build / package）
-├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（外部 Agent 读取约束/状态与控制应用）
-├── docs/
-│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / FAQ 等）
-│   └── release-notes-*.md     版本发布说明
-├── start-bossclaw.cmd         Windows 一键启动脚本
+│   ├── resources/             应用图标 + docs（「使用前必读」随包文档）
+│   └── package.json           依赖与 scripts（dev / build / package）+ electron-builder 打包目标
+├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（8 工具 / 3 组；外部 Agent 读取状态与控制应用、agent 代答）
+├── docs/                      **本地内部文档，未随仓库分发**（`.gitignore` 忽略）
+│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / Safety / FAQ）
+│   ├── release-notes-*.md     版本发布说明
+│   └── 使用前必读.md / 使用注意事项.md
+├── install-deps.cmd           Windows 一键安装依赖（Node + Electron，可选 Python 隐身引擎）
+├── start-bossclaw.cmd         Windows 一键启动脚本（默认开启控制桥，`--dev` / `--visible` 可选）
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知
 └── LICENSE                    Apache License 2.0
 ```
@@ -333,12 +371,14 @@ cd desktop-app
 npm install          # 安装依赖
 npm run dev          # Vite dev server（http://localhost:5173）
 npm run build        # tsc 类型检查 + vite 构建到 dist/
+npm run verify        # typecheck + build 组合
 npm run package      # 打包 Windows 安装包（NSIS + 便携版，产出到 release/）
-npm run package:linux   # 打包 Linux（AppImage + deb + rpm + pacman + tar.gz，共 5 种格式）
+npm run package:linux   # 打包 Linux（electron-builder 目标 = AppImage + deb）
 npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需在 macOS 上执行）
 ```
 
 > macOS 安装包受 electron-builder 限制只能在 macOS 系统构建；Windows / Linux 可在本机直接打包。
+> 打包格式由 `desktop-app/package.json` 的 `build.*.target` 决定（Windows = nsis + portable，Linux = AppImage + deb，macOS = dmg + zip）；需要 rpm / pacman 等其它格式时自行补充目标后重新打包。
 
 > 开发模式下 Electron 加载 `http://localhost:5173`；生产模式加载 `dist/index.html`。
 
@@ -346,7 +386,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 ## 反馈与联系
 
-遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」与 [`docs/wiki/FAQ.md`](docs/wiki/FAQ.md)，再提交 Issue。提交时请包含：
+遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「功能闭环」「常见问题」两节（开发与故障排查口径最全）。提交 Issue 时请包含：
 
 - BossClaw 版本（桌面版 v2.5.3）
 - 操作系统与 Electron 版本
