@@ -208,7 +208,6 @@ export default function Workbench() {
   const extractLock = useRef(false);
   const searchTriggered = useRef(false);
   const runNextRef = useRef<() => void>(() => {});
-  const preferIdRef = useRef<string | null>(null);
   const activeTabRef = useRef<string | null>(null);
   const commStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // BOSS DOM 投递结果等待槽：runNext 打开岗位下发 start-apply 后挂起，等 handleApplyStage 回写终态
@@ -576,6 +575,10 @@ export default function Workbench() {
 
   const startDelivery = () => { if (!running) setAutoAssist(true); };
 
+  // 批准即入队（approved_queue = 「投递中」）：点「批准」直接进投递队列，不再经过
+  // 「待投递」中间态、也不必再点一次「一键投递」。招呼语非空校验保持不变（无招呼语仍拒绝批准）。
+  // 引擎启动策略：仅当投递引擎已在运行时新岗位自动排队；引擎停着时不擅自启动
+  // （避免「随手批准一下」就把投递打开）。首次启动仍由用户点「开始投递」。
   const onApprove = (id: string, greeting?: string) => {
     const latestPending = useDataStore.getState().pending;
     const target = latestPending.find((p) => p.id === id);
@@ -589,18 +592,44 @@ export default function Workbench() {
       }
     }
     if (!finalGreeting) { message.warning('请先填写求职招呼语，再确认沟通'); return; }
-    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, deliveryGreeting: finalGreeting, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p)), useSettingsStore.getState().config);
+    const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, deliveryGreeting: finalGreeting, status: 'approved_queue' as const, approvedAt: p.approvedAt || Date.now() } : p)), useSettingsStore.getState().config);
     setPending(next);
-    addLog('info', '已确认岗位，进入「待投递」，等「一键投递」发送');
-    preferIdRef.current = id;
+    addLog('info', '已批准并加入「投递中」队列，将按匹配分与平台优先级投递');
+    // 只在引擎已运行时续跑；同时刻可能有多个岗位被批准，runNext 内部有重入锁（runNextLock/runNextQueued）
+    if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
   const onApproveAll = () => {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (!waiting.length) { message.info('没有待确认的岗位'); return; }
-    const next = rerankPending(pending.map((p) => (p.status === 'pending' ? { ...p, status: 'approved' as const, approvedAt: Date.now() } : p)), useSettingsStore.getState().config);
+    // 批量确认走同一口径：直接入队。逐个校验招呼语——无招呼语者**不入队**（保持待确认），
+    // 与单个「批准」的「无招呼语则拒绝批准」一致，不做静默兜底。
+    const noGreeting: string[] = [];
+    const approvedIds = new Set(
+      waiting
+        .filter((p) => {
+          const g = String(p.deliveryGreeting || p.analysis?.greeting || '').trim();
+          if (!g) { noGreeting.push(p.job?.title || p.id); return false; }
+          return true;
+        })
+        .map((p) => p.id)
+    );
+    if (!approvedIds.size) {
+      message.warning('待确认岗位均无求职招呼语，请先补充后再批量确认');
+      addLog('warn', `批量确认未执行：${noGreeting.length} 个岗位缺少招呼语`);
+      return;
+    }
+    const next = rerankPending(
+      pending.map((p) => (approvedIds.has(p.id) ? { ...p, status: 'approved_queue' as const, approvedAt: Date.now() } : p)),
+      useSettingsStore.getState().config,
+    );
     setPending(next);
-    addLog('success', `已确认 ${waiting.length} 个岗位，进入「待投递」`);
+    addLog('success', `已批量确认 ${approvedIds.size} 个岗位，进入「投递中」队列`);
+    if (noGreeting.length) {
+      message.warning(`${noGreeting.length} 个岗位因缺少招呼语未入队，仍留在「待确认」`);
+      addLog('warn', `以下岗位缺少招呼语，未入队：${noGreeting.slice(0, 5).join('、')}${noGreeting.length > 5 ? ` 等 ${noGreeting.length} 个` : ''}`);
+    }
+    if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
   const onRejectAll = () => {
@@ -622,17 +651,49 @@ export default function Workbench() {
   const onSkip = (id: string) => updatePending(id, { status: 'skipped' });
 
   const onRevert = (id: string) => {
+    // 「撤回」只对队列中的岗位开放（approved_queue / approved）。终态（sent）已在下方拦截；
+    // 其它状态（failed/skipped/ignored）不渲染该按钮，此处再兜一层防御性判断。
+    const cur = useDataStore.getState().pending.find((p) => p.id === id);
+    if (!cur) return;
+    if (cur.status === 'sent') { message.warning('已投递的岗位无法撤回'); return; }
+    if (cur.status !== 'approved_queue' && cur.status !== 'approved') {
+      message.warning('仅「投递中 / 待投递」的岗位可以撤回');
+      return;
+    }
+    // 撤回后引擎当前 activeId 可能正指向该岗位——一并释放 activeId/applyStage 并关闭本次
+    // 投递标签，避免引擎继续对一个已退回「待确认」的岗位投递（状态与动作脱节）。
     const next = rerankPending(pending.map((p) => (p.id === id ? { ...p, status: 'pending' as const } : p)), useSettingsStore.getState().config);
     setPending(next);
+    if (id === activeId) {
+      setActiveId(null);
+      setApplyStage(null);
+      if (activeTabRef.current) {
+        webviewApi.current?.closeTab(activeTabRef.current);
+        activeTabRef.current = null;
+      }
+    }
     addLog('info', '已撤回岗位，退回「待确认」');
+    recomputeStats();
+    if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
+  // 兼容入口：现在「批准」已直接入队，正常情况下不会有 approved 残留。
+  // 保留它用于两种情况：1) 老版本数据里遗留的 approved 岗位（升级后一次性清掉）；
+  // 2) 未来若重新引入「先攒一批再统一投放」的两步用法。
+  // 「一键投递」与「开始投递」口径统一（09-16）：
+  // 批准即入队后，队列里的岗位本身就是 approved_queue，本按钮的职责是「把队列里的岗位立刻开投」。
+  // 历史 bug：启用条件只看 approved —— 已确认入队的岗位全在「投递中」下，按钮恒为灰，
+  // 用户以为坏了，只能去右侧浏览器工具栏找「开始投递」（另一个按钮、另一套条件）。
+  // 现在两者语义对齐：本按钮 = 入队 + 启动引擎（引擎已在跑则无操作可做，故禁用）。
   const onOneClickDeliver = () => {
     const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
-    if (!count) { message.info('没有已批准、等待投递的岗位'); return; }
-    setPending(next);
-    addLog('success', `已将 ${count} 个已批准岗位加入投递中队列，开始投递`);
+    const queued = pending.filter((p) => p.status === 'approved_queue').length;
+    if (!count && !queued) { message.info('队列里没有待投递的岗位'); return; }
+    if (count) setPending(next);
     if (!running) setAutoAssist(true);
+    addLog('success', count
+      ? `已将 ${count} 个「待投递」岗位并入「投递中」队列，开始投递`
+      : `队列中已有 ${queued} 个岗位，开始投递`);
   };
 
   const toggleExpanded = (id: string) => {
@@ -663,7 +724,16 @@ export default function Workbench() {
     addLog('warn', reason);
   };
 
-  const paceDelivery = async (): Promise<boolean> => {
+  // ===== 投递节流：拆成「预检」+「间隔等待」两段 =====
+  // 拆分动机（09-17 实测）：岗位间隔节流（betweenJobsSeconds，默认 20s）原本发生在**打开标签页之前**，
+  // 而 BOSS 岗位详情页实际只需 ~0.7s 加载（diag：ATTACH → DOM-READY）。结果是每次投递前有 13~27s
+  // 完全空转、界面毫无反应，用户感知为「打开新岗位很慢」。
+  // 现在把间隔等待与「打开页面 + 等页面就绪」并行：页面立刻开始加载并显示，
+  // **投递动作（点击立即沟通 / 发送招呼语）之间的时间间隔完全不变**，风控特征不变 —— 只是用原本空转的
+  // 等待时间把加载盖掉。预检（冷却/每日上限）仍必须在打开页面之前，避免白开一个页面。
+
+  /** 预检：冷却期 / 每日上限 / 限速器预算校准。纯检查，不做长等待。返回 false 表示已暂停（内部已 pauseAssist）。 */
+  const precheckDelivery = (): boolean => {
     const cfg = useSettingsStore.getState().config;
     if (isLockedOut(cfg)) {
       pauseAssist(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟），已暂停投递，请勿重复启动以免升级封禁`);
@@ -679,14 +749,33 @@ export default function Workbench() {
     }
     const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
     if (pacerRef.current.budget !== pacerMax) pacerRef.current = new ActionPacer(pacerMax);
+    return true;
+  };
+
+  /**
+   * 等待「限速器预算 + 岗位间隔」。
+   * ⚠️ **三条投递路径都必须调用本函数**（BOSS DOM / 非 BOSS DOM / Camoufox）——它是唯一的
+   * 岗位间隔落点，漏掉任何一条就等于该路径失去节流保护。BOSS DOM 路径把它与页面加载并行
+   * （见 runNext 的 Promise.all），其余两条路径按串行等待。
+   * ⚠️ 安全语义不变：等的仍是两次投递动作之间的间隔，`lastDeliveryAt` 仍在**即将执行投递动作时**刷新，
+   * 因此点击/发送的时序与串行版本一致。**禁止**把它改成「不等」或缩短间隔。
+   */
+  const awaitDeliveryGap = async (): Promise<void> => {
+    const cfg = useSettingsStore.getState().config;
     await pacerRef.current.waitForSlot();
     const baseSec = Math.max(Number(cfg.betweenJobsSeconds) || SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
     const gapMs = humanDelayMs(baseSec * 1000, 0.35);
     const elapsed = Date.now() - lastDeliveryAt.current;
     const wait = Math.max(0, gapMs - elapsed);
-    if (wait > 0) await sleep(wait);
+    if (wait > 0) {
+      // 必须显式告知「在等什么、等多久」：岗位页现在是立刻打开的，若不说明，界面看起来就是「停住了」，
+      // 用户容易以为卡死而手动重复点投递 —— 那才是真正会触发风控的高频操作。
+      const waitSec = Math.ceil(wait / 1000);
+      addLog('info', `为降低风控风险，本岗位将等待 ${waitSec} 秒后投递（岗位间隔约 ${Math.round(gapMs / 1000)}s，距上次投递已过 ${Math.round(elapsed / 1000)}s）。页面已在后台加载完成，期间请勿手动重复投递`);
+      await sleep(wait);
+      addLog('info', `等待结束（${waitSec}s），继续投递本岗位`);
+    }
     lastDeliveryAt.current = Date.now();
-    return true;
   };
 
   // ===== 岗位入库（去重 -> 活跃度/猎头/城市过滤 -> AI 分析 -> 入队）=====
@@ -850,14 +939,26 @@ export default function Workbench() {
     addLog('success', `投递成功：${c?.job?.title || ''}（${c?.job?.company || ''}）`);
     setApplyStage(null);
     recomputeStats();
+    // 标签页收尾必须在「首次验收暂停」分支之前完成：本条投递已终态成功，用于本次投递的标签页
+    // 已无用途，留着只会占用标签配额并让 activeTabRef 悬挂指向已关闭/待回收的页。
+    // 注意 tabId 与 activeTabRef 可能不是同一个页（API 路径用 res.tabId；DOM 路径 domTab 已写入
+    // activeTabRef 且与 domResult.tabId 相同），故两者都关、并防御性判重避免重复关同一个。
+    if (tabId) webviewApi.current?.closeTab(tabId);
+    const owned = activeTabRef.current;
+    if (owned && owned !== tabId) webviewApi.current?.closeTab(owned);
+    activeTabRef.current = null;
     const cfg = useSettingsStore.getState().config;
     if (cfg.requireSingleJobValidation && !cfg.singleJobValidationCompletedAt) {
       useSettingsStore.getState().setConfig({ singleJobValidationCompletedAt: Date.now() });
+      // 安全不变量：首次投递成功后必须暂停验收（核对沟通对象/文字气泡/附件）。
+      // pauseAssist 会 setAutoAssist(false) + setActiveId(null) + setApplyStage(null)，
+      // 引擎自身不再续跑；但用户点「开始投递」重新启动时，useEffect([running]) 的
+      // requestRunNext() 必须能继续——它依赖 activeTabRef 已被清空（否则会误关新标签页）。
+      // 历史 bug：此处曾直接 return，跳过上面的标签收尾，导致 activeId/activeTabRef 悬挂、
+      // 引擎停在已 sent 的岗位上无法推进（表现为「投递一个就要重新确认」）。
       pauseAssist('首次投递成功，已暂停投递：请核对右侧沟通对象、文字气泡与附件，确认无误后再启动');
       return;
     }
-    if (tabId) webviewApi.current?.closeTab(tabId);
-    activeTabRef.current = null;
     if (useAppStore.getState().autoAssist) requestRunNext();
   }, [updatePending, addLog, recomputeStats, pauseAssist]);
 
@@ -1575,13 +1676,13 @@ export default function Workbench() {
   }
 
   const runNext = async () => {
-    // 多平台适配：一键投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
+    // 多平台适配：投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
     // 分别新建对应平台标签页做 DOM 投递（见下方平台分派分支）。
+    // 投递顺序完全由 rerankPending 决定（状态组 → 平台优先级 → priorityScore → AI 分 → 入队时间），
+    // 不再记忆「最近点击批准的那个」：原 preferIdRef 是单值 ref，连点多个批准只会记最后一个，
+    // 反而让先批准的被无理由后置，属于伪优先级，已移除。
     const ranked = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
-    const candidate =
-      (preferIdRef.current && ranked.find((p) => p.id === preferIdRef.current && p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform))) ||
-      ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform));
-    if (candidate) preferIdRef.current = null;
+    const candidate = ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform));
     if (!candidate) {
       if (visualActiveRef.current || cfxActiveRef.current) return;
       if (useSettingsStore.getState().config.executionMode === 'auto' && !searchTriggered.current) {
@@ -1602,8 +1703,9 @@ export default function Workbench() {
     const url = String(candidate.job?.url || '').trim();
     if (!url) { pauseAssist('岗位缺少详情链接，无法投递'); return; }
 
-    const ok = await paceDelivery();
-    if (!ok) return;
+    // 预检（冷却/每日上限）：不通过就别白开页面。
+    // 岗位间隔节流不在这里等 —— 已挪到打开标签页之后，与页面加载并行（见下方 Promise.all）。
+    if (!precheckDelivery()) return;
 
     const sendCfg = useSettingsStore.getState().config;
     const cfx0 = sendCfg.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
@@ -1613,7 +1715,11 @@ export default function Workbench() {
     if (pf && pf !== 'boss') {
       if (!claimDelivery(candidate.id, pf)) {
         addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
-        updatePending(candidate.id, { status: 'approved' }); // 交回后台「自动沟通」
+        // 不降级状态：该岗位是 approved_queue（「投递中」），只是本轮投递权被后台占用。
+        // 历史 bug：此处曾写 status:'approved' 把它打回「待投递」，造成状态机倒流
+        // （approved_queue → approved）——用户看到的就是「按钮从已批准状态撤回」。
+        // 正确做法：保持队列态，本轮让给后台；后台跑完（sent/failed）后状态自有其归属，
+        // 若仍未投递则后续 runNext 会重新参与竞争，无需在此改写状态。
         setApplyStage(null);
         recomputeStats();
         if (useAppStore.getState().autoAssist) requestRunNext();
@@ -1623,6 +1729,9 @@ export default function Workbench() {
       addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
       let r: any;
       try {
+        // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
+        // 因此与串行版本保持一致：先等满岗位间隔再执行（安全语义优先于观感）。
+        await awaitDeliveryGap();
         r = await webviewApi.current?.platformApply(url, pf, candidate.job);
       } catch (e) {
         r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
@@ -1692,6 +1801,9 @@ export default function Workbench() {
         }
         let cfxResult: any;
         try {
+          // Camoufox 路径没有可并行的页面加载（发送在独立进程内完成），
+          // 因此与串行版本一致：先等满岗位间隔再发送。
+          await awaitDeliveryGap();
           cfxResult = await camoufoxSend(jobId, greeting, cfx0.os);
         } finally {
           releaseDelivery(candidate.id);
@@ -1753,7 +1865,8 @@ export default function Workbench() {
     // 共享占位锁：与后台「自动沟通」互斥，避免对同一岗位重复投递
     if (!claimDelivery(candidate.id)) {
       addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
-      updatePending(candidate.id, { status: 'approved' }); // 交回后台「自动沟通」（approved 归它处理）
+      // 同前一处：不把它降级回 approved（approved_queue → approved 是状态机倒流，
+      // 界面上表现为「已批准被撤回」）。保持队列态，本轮让给后台即可。
       setApplyStage(null);
       recomputeStats();
       if (useAppStore.getState().autoAssist) requestRunNext();
@@ -1789,34 +1902,42 @@ export default function Workbench() {
           if (timerRef) clearTimeout(timerRef);
           resolve({ mode, payload, tabId });
         };
-        // 兜底超时：先于看门狗（commStuckTimeoutSec，默认 180s）收敛，避免与超时看门狗双重处理
-        const stuckSec = Math.max(60, Number(useSettingsStore.getState().config.commStuckTimeoutSec) || 180);
+        // 兜底超时：先于看门狗（commStuckTimeoutSec，默认 60s）收敛，避免与超时看门狗双重处理
+        const stuckSec = Math.max(30, Number(useSettingsStore.getState().config.commStuckTimeoutSec) || 60);
         timerRef = setTimeout(() => settle('timeout', { error: `DOM 沟通投递超时（${stuckSec - 5}s），已跳过该岗位` }), (stuckSec - 5) * 1000);
         domWaitRef.current = settle;
-        // 等 preload 就绪且页面可用后，再下发 start-apply（domApply）。
-        // 「可用」以 IPC 探针（pageStatus 往返成功）为权威：BOSS 岗位页常因长轮询/慢子资源让
-        // isLoading 长期为 true（did-stop-loading 迟迟不到），若仅等 isPreloadReady && !isLoading
-        // 会把「点击立即沟通」拖死满 25s（日志表现为打开岗位 → 打开沟通窗口间隔一条看门狗）。
+        // 页面加载（waitDomReady）与投递节奏（awaitDeliveryGap）并行，随后才下发 start-apply（domApply）。
         const payload = { job: candidate.job, greeting: finalGreeting };
         const sendOnce = () => webviewApi.current?.sendInTab?.(domTab, 'start-apply', payload);
         const isChatUrl = (u: string) => /app\.zhipin\.com/i.test(u) || /(\/web\/geek\/chat|\/chat(?:\/|\?|$))/i.test(u);
         void (async () => {
-          const domDeadline = Date.now() + 25000;
-          let lastProbeAt = 0;
-          let probedOk = false;
-          while (Date.now() < domDeadline && !probedOk) {
-            // 快速路径（原逻辑）：preload 就绪且不再 loading 直接下发
-            if (webviewApi.current?.isPreloadReady?.(domTab) && !webviewApi.current?.isLoading?.(domTab)) break;
-            // 兜底路径：preload 就绪标记 / loading 标志被卡住时，用 pageStatus 探针实测页面可用性
-            if (Date.now() - lastProbeAt >= 1500) {
-              lastProbeAt = Date.now();
-              try {
-                const st = await webviewApi.current?.pageStatus?.(domTab);
-                if (st && !st.error) { probedOk = true; break; }
-              } catch {}
+          // 页面就绪探测：与「岗位间隔节流」并行执行（见下方 Promise.all）。
+          // 「可用」以 IPC 探针（pageStatus 往返成功）为权威：BOSS 岗位页常因长轮询/慢子资源让
+          // isLoading 长期为 true（did-stop-loading 迟迟不到），若仅等 isPreloadReady && !isLoading
+          // 会把「点击立即沟通」拖死满 25s（日志表现为打开岗位 → 打开沟通窗口间隔一条看门狗）。
+          const waitDomReady = async (): Promise<void> => {
+            const domDeadline = Date.now() + 25000;
+            let lastProbeAt = 0;
+            while (Date.now() < domDeadline) {
+              // 快速路径（原逻辑）：preload 就绪且不再 loading 直接视为可用
+              if (webviewApi.current?.isPreloadReady?.(domTab) && !webviewApi.current?.isLoading?.(domTab)) return;
+              // 兜底路径：preload 就绪标记 / loading 标志被卡住时，用 pageStatus 探针实测页面可用性。
+              // 探针节拍 1500ms → 600ms（09-17）：实测「页面已 DOM-READY（~0.7s）」到「下发 start-apply」
+              // 之间会白等 3~5s（探针要等满一个节拍才问一次），压缩节拍后这段时间基本消失。
+              if (Date.now() - lastProbeAt >= 600) {
+                lastProbeAt = Date.now();
+                try {
+                  const st = await webviewApi.current?.pageStatus?.(domTab);
+                  if (st && !st.error) return;
+                } catch {}
+              }
+              await sleep(250);
             }
-            await sleep(350);
-          }
+          };
+          // 并行：页面加载（通常 <1s） + 岗位间隔节流（13~27s）。
+          // 串行版本是「先等节流 → 再开页面」，用户要盯着空转的十几秒；并行后页面几乎立刻打开，
+          // 而 start-apply（点击立即沟通）仍要等节流结束才下发 —— 投递动作的时序完全不变。
+          await Promise.all([awaitDeliveryGap(), waitDomReady()]);
           if (!webviewApi.current) return;
           sendOnce();
           // 「继续沟通/立即沟通」的沟通入口常整页跳转到聊天页（app.zhipin.com / /web/geek/chat），导航会使 preload 重注入、
@@ -1943,10 +2064,16 @@ export default function Workbench() {
 
   // ===== webview 回传的投递阶段（apply-stage，DOM 兜底投递用）=====
   const handleApplyStage = (stage: string, data: any = {}, tabId?: string) => {
+    // 诊断日志（stage:'log'）不驱动状态机，放行且不受跨标签守卫影响，便于排查外来标签的串台。
     if (stage === 'log') { addLog('info', String(data?.message || '')); return; }
     const current = useDataStore.getState();
     const active = current.pending.find((p) => p.id === activeId);
     if (!activeId || !active) return;
+    // 跨标签防串台：只有「本次投递所用标签页」回传的阶段才驱动当前岗位的状态机。
+    // 历史现象：上一个岗位超时/失败后其标签页虽有 closeTab，但关闭是异步的，在途回传仍会到达；
+    // 这些外来事件会被当成当前岗位的进度（日志里冒出上一个岗位的标题，甚至把阶段写错）。
+    // 同一次投递内整页跳转（job_detail → 聊天页）tabId 不变，故正常流程不受影响。
+    if (tabId && activeTabRef.current && tabId !== activeTabRef.current) return;
 
     if (stage === 'risk') {
       if (domWaitRef.current) { domWaitRef.current('risk', { code: data?.code, message: data?.message || '' }, tabId); return; }
@@ -2077,6 +2204,9 @@ export default function Workbench() {
   const deliverySentCount = deliveryTasks.filter((t) => t.p.status === 'sent').length;
   const deliveryFailedCount = deliveryTasks.filter((t) => t.p.status === 'failed').length;
   const deliveryApprovedCount = pending.filter((p) => p.status === 'approved').length;
+  // 「一键投递」可点条件 = 队列里还有可投递的岗位（「待投递」或已入队的「投递中」）。
+  // 与右侧「开始投递」口径统一，避免批准即入队后本按钮长期置灰（详见 onOneClickDeliver 注释）。
+  const deliverableCount = pending.filter((p) => p.status === 'approved' || p.status === 'approved_queue').length;
   const collecting = visualCollecting || cfxCollecting;
 
   // 采集任务概览（与「任务进度」页共用 taskRuns，用于卡片内联动展示）
@@ -2480,7 +2610,7 @@ export default function Workbench() {
               </span>
             </button>
             <div className="wb-filter-toolbar__right">
-              <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!pending.some((p) => p.status === 'approved')}>一键投递</Button>
+              <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={onOneClickDeliver} disabled={!deliverableCount || running} title={running ? '投递引擎已在运行' : '把队列里已确认的岗位立刻开始投递（与右侧「开始投递」同一引擎开关）'}>一键投递</Button>
               <Button size="small" icon={<CheckOutlined />} onClick={onApproveAll}>批量确认</Button>
               <Button size="small" onClick={onRejectAll}>全部忽略</Button>
             </div>
@@ -2489,7 +2619,7 @@ export default function Workbench() {
         <div className="wb-sort-hint">
           <InfoCircleOutlined className="wb-sort-hint__icon" />
           <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.4 }}>
-            待确认岗位按 AI 匹配分从高到低排列；点「确认」后进入「待投递」，确认前可先修改求职招呼语。
+            待确认岗位按 AI 匹配分从高到低排列；点「确认」即加入「投递中」队列，确认前可先修改求职招呼语（招呼语为空则无法确认）。
           </Text>
         </div>
         <div className="wb-jobs">
@@ -2582,6 +2712,7 @@ export default function Workbench() {
                     {p.error && <div className="job-error">⚠ {p.error}</div>}
                     <div className="job-actions">
                       {isPending ? (
+                        // ===== 待确认：唯一可「确认沟通」的态（无招呼语会被 onApprove 拒绝）=====
                         <>
                           <div className="job-actions-right">
                             <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => onApprove(p.id)}>确认沟通</Button>
@@ -2591,7 +2722,11 @@ export default function Workbench() {
                             <Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button>
                           </div>
                         </>
-                      ) : p.status === 'approved' ? (
+                      ) : p.status === 'approved_queue' || p.status === 'approved' ? (
+                        // ===== 已确认入队（投递中）/ 历史遗留待投递：只能「撤回」退回待确认 =====
+                        // 09-16：批准即入队后 approved_queue 是常态。此前该态落入下面的兜底分支，
+                        // 显示「批准 / 重试」（语义错位：已确认的岗位还让人再点一次批准，点重试则被打回待确认），
+                        // 与 pending 卡的「确认沟通」不构成对称动作 —— 现统一为「撤回」。
                         <>
                           <div className="job-actions-right">
                             <Button size="small" icon={<UndoOutlined />} onClick={() => onRevert(p.id)}>撤回</Button>
@@ -2602,14 +2737,17 @@ export default function Workbench() {
                           </div>
                         </>
                       ) : (
+                        // ===== 终态：已投递 / 失败 / 已跳过等 =====
                         <>
                           <div className="job-actions-left">
                             {p.status === 'sent' ? (
                               <Button size="small" type="primary" icon={<CheckOutlined />} disabled>已投递</Button>
                             ) : (
-                              <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => onApprove(p.id)}>批准</Button>
+                              // 失败等非终态：允许重新投递（回到投递队列）。
+                              // 不再叫「批准」——该岗位已确认过，此时只是重跑投递，叫「重试」才不会
+                              // 与待确认卡的「确认沟通」混淆（用户反馈：已确认的岗位还显示「批准」很怪）。
+                              <Button size="small" type="primary" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>重试</Button>
                             )}
-                            <Button size="small" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)} disabled={p.status === 'sent'}>重试</Button>
                           </div>
                           <div className="job-actions-right">
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>

@@ -89,6 +89,11 @@ import {
 } from '@/lib/bossclaw/platforms';
 import type { LLMProvider } from '@/store/useSettingsStore';
 import type { PendingItem } from '@/lib/bossclaw/types';
+import {
+  resolveThinkingProfile,
+  isThinkingActive,
+  thinkingEffortLabel,
+} from '@/lib/bossclaw/thinkingCapability';
 
 const { Paragraph, Text } = Typography;
 
@@ -619,6 +624,23 @@ export default function Settings() {
   };
 
   const llmReady = isLLMConfigured();
+
+  // ===== 思考强度（唯一判据见 lib/bossclaw/thinkingCapability.ts）=====
+  // 能力只由「服务商 + 模型名」决定：未验证支持的模型恒为关闭，且请求侧也不会发任何思考参数
+  // —— 即使 localStorage 里残留 enabled:true，UI 与实际请求都按关闭处理（开关不可用）。
+  const thinkingProfile = resolveThinkingProfile(
+    config.model.provider,
+    config.model.model,
+    config.model.baseUrl,
+  );
+  const thinkingSupported = thinkingProfile.mode !== 'unsupported';
+  const thinkingOn = isThinkingActive(thinkingProfile, config.model.thinking);
+  // always-on（glm-5.3 / GPT-6 Astra）思考由服务侧固定开启，开关锁死在「开」且不可点
+  const thinkingLocked = thinkingProfile.mode === 'always-on';
+  const thinkingEffort = String(config.model.thinking?.effort || thinkingProfile.defaultEffort || '');
+  const thinkingCanAdjustEffort = thinkingOn && thinkingProfile.efforts.length > 0;
+  const setThinking = (patch: { enabled?: boolean; effort?: string }) =>
+    setModel({ thinking: { ...config.model.thinking, ...patch } });
 
   // ===== 开机自启动 & 本地备份目录 =====
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -1416,6 +1438,45 @@ export default function Settings() {
                     String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
                   }
                 />
+              </div>
+              {/* 思考强度：填在「模型名称」右侧的留白格里。能力判定完全由 thinkingCapability.ts 决定 ——
+                  不支持思考的模型开关恒为关且不可点，请求侧也不会附加任何思考参数。
+                  排版：开关（antd 原生尺寸）+ 强度档（antd 原生尺寸 Select，flex:1 撑满整列），
+                  不自绘边框 —— 这样强度档与同排 Input 完全同款，右边缘与 Base URL / API Key 齐平。 */}
+              <div className="sg-item">
+                <span className="field-label">思考强度</span>
+                <Tooltip title={thinkingProfile.note}>
+                  <div className="llm-thinkingrow">
+                    <Switch
+                      checked={thinkingOn}
+                      disabled={!thinkingSupported || thinkingLocked}
+                      onChange={(v) => { setThinking({ enabled: v }); setTestResult(null); }}
+                    />
+                    {!thinkingSupported ? (
+                      <span className="llm-thinkingrow__hint">该模型不支持思考</span>
+                    ) : thinkingProfile.efforts.length > 0 ? (
+                      <Select
+                        popupMatchSelectWidth={false}
+                        value={
+                          thinkingProfile.efforts.includes(thinkingEffort)
+                            ? thinkingEffort
+                            : thinkingProfile.defaultEffort || thinkingProfile.efforts[0]
+                        }
+                        disabled={!thinkingCanAdjustEffort}
+                        onChange={(v) => { setThinking({ effort: v }); setTestResult(null); }}
+                        options={thinkingProfile.efforts.map((e) => ({
+                          value: e,
+                          label: thinkingEffortLabel(thinkingProfile, e),
+                        }))}
+                      />
+                    ) : (
+                      // 该服务商（如 GLM）只提供开关、不提供强度档
+                      <span className="llm-thinkingrow__hint">
+                        {thinkingLocked ? '固定开启' : thinkingOn ? '已开启' : '未开启'}
+                      </span>
+                    )}
+                  </div>
+                </Tooltip>
               </div>
             </div>
 

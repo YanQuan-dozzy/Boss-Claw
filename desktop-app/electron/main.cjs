@@ -1550,6 +1550,19 @@ ipcMain.on('jc:webview-input', (event, payload) => {
   const reply = (result) => { try { wc.send('jc:webview-input-done', { seq, ...result }); } catch {} };
   try {
     switch (action) {
+      case 'clickAt': {
+        // 真实鼠标点击（isTrusted:true）：与 insertText/pressEnter 同源思路。
+        // 背景：BOSS「立即沟通」对 preload 里 dispatchEvent 的合成点击**完全不响应**
+        // （线上实测：点击后按钮仍在、无弹窗、无输入框、无导航、无风控），
+        // 必须由主进程 sendInputEvent 产生可信鼠标事件。坐标为视口坐标（= getBoundingClientRect）。
+        const x = Math.round(Number(payload && payload.x));
+        const y = Math.round(Number(payload && payload.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return reply({ ok: false, action, error: 'bad coords' });
+        wc.sendInputEvent({ type: 'mouseMove', x, y });
+        wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+        return reply({ ok: true, action, x, y });
+      }
       case 'insertText':
         if (!text) return reply({ ok: false, action, error: 'empty text' });
         wc.insertText(text);

@@ -176,6 +176,12 @@ export interface AppConfig {
     apiKey: string;
     model: string;
     temperature: number;
+    /**
+     * 思考强度（可选增强）。`enabled` 是**用户意图**，不是最终状态：
+     * 实际是否发思考参数由 `thinkingCapability.ts` 判定 —— 不支持的模型一律不发（见 llm.ts）。
+     * `effort` 为强度档位的 API 原始取值（如 low / high / max）。
+     */
+    thinking: { enabled: boolean; effort: string };
   };
 }
 

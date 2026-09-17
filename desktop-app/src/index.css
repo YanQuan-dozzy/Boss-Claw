@@ -1965,6 +1965,38 @@ html[data-theme='dark'] .direction-tag {
   align-items: center;
 }
 
+/* 思考强度行（「模型名称」右侧留白格）：开关 + 强度档同一行、垂直居中对齐。
+   关键做法 —— **不自绘边框**：强度档直接用原生尺寸的 antd Select（32px 高，与同排 Input 同源同款），
+   并用 flex:1 撑满整列，于是它的右边缘与 Base URL / API Key 落在同一条列边界上（这就是「整齐」的来源）；
+   开关是 22px 的 antd Switch，与 32px 控件同行时由 flex 居中 —— antd 表单的既有搭配。
+   早先版本给这一格自绘了边框外壳，反而带来「圆角/高度与相邻 Input 对不齐」的问题，故弃用。 */
+.llm-thinkingrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.llm-thinkingrow .ant-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.llm-thinkingrow .ant-switch {
+  flex: none;
+}
+
+/* 不可调档 / 不支持的模型：右侧改为状态文案，右对齐以维持与 Select 相同的收边位置 */
+.llm-thinkingrow__hint {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  text-wrap: initial;
+}
+
 
 /* ===== 统一控制面板与工具栏 (Control Panel Toolbar) ===== */
 .ctrl-panel {

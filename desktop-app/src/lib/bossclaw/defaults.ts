@@ -39,9 +39,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   sendOnlineResume: false,
   betweenJobsSeconds: 20,
   attachmentDelaySeconds: 4,
-  // 沟通阶段卡住超时（秒）：默认 180s（3 分钟）。投递常「立即沟通/继续沟通」整页跳转聊天页，
-  // 聊天窗口渲染慢时留给它充分时间（含登录/重绘/自愈补发）；超过仍未进展再跳过转投下一个。
-  commStuckTimeoutSec: 180,
+  // 沟通阶段卡住超时（秒）：默认 60s（1 分钟，09-16 由 180s 收紧）。
+  // 投递常「立即沟通/继续沟通」整页跳转聊天页，聊天窗口渲染慢时留给它时间；
+  // 180s 过长会让「点击未生效」的岗位白等 3 分钟才跳过，观感上像卡死，故收敛到 1 分钟。
+  commStuckTimeoutSec: 60,
   requireSingleJobValidation: true,
   singleJobValidationCompletedAt: 0,
   hrActivityFilter: 'any',
@@ -104,8 +105,14 @@ export const DEFAULT_CONFIG: AppConfig = {
     provider: 'deepseek',
     baseUrl: 'https://api.deepseek.com',
     apiKey: '',
-    model: 'deepseek-v4-flash',
+    // DeepSeek 官方现行模型名（2026-09-16 核对 api-docs.deepseek.com/quick_start/pricing）：
+    // `deepseek-flash` = DeepSeek-V4.1-Flash（原 deepseek-v4-flash 已退役为别名，第三方网关会 400）；
+    // `deepseek-v4-pro` = DeepSeek-V4-Pro-0813。
+    model: 'deepseek-flash',
     temperature: 0.1,
+    // 思考强度默认关闭：保持原有「直接产出结构化 JSON」的行为不变（思考模式下 temperature 失效、
+    // 且思维链会额外消耗输出 token）。用户可在设置页显式开启，能力判定见 thinkingCapability.ts。
+    thinking: { enabled: false, effort: 'high' },
   },
 };
 
