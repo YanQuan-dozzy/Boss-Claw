@@ -53,6 +53,10 @@ NO_FILTER_WORDS = ('', '不限', '全部', '不限制', '所有', '不限学历'
 # 多值连接符（各平台多选参数的分隔符不同；猎聘用 `$`，投递类平台用 `,`）
 MULTI_SEP = {'liepin': '$', 'zhaopin': ',', 'job51': ','}
 
+# 区间式**单值**维度（P6-12）：值形如「起始$结束」（猎聘 workYearCode 1$3=1-3年），
+# $ 是区间分隔而非多选分隔——摘要反查时整体展示，禁止按分隔符拆开（否则 9$12 显示成 9/12）。
+_RANGE_SINGLE_DIMS = {('liepin', 'experience')}
+
 
 def _clean_one(value: Any) -> str:
     v = str(value or '').strip()
@@ -263,6 +267,8 @@ def summarize_applied(platform: str, params: dict) -> str:
         rev = _REVERSE_CODES.get((p, dim)) or {}
         if v in rev:  # 区间式/单值（如猎聘 1$3）整体命中
             labels = [rev[v]]
+        elif (p, dim) in _RANGE_SINGLE_DIMS:
+            labels = [v]  # 区间式单值：不按分隔符拆，原样展示（避免 9$12 被误拆成 9/12）
         else:
             labels = [rev.get(code, code) for code in v.split(sep) if code]
         parts.append(f"{names[dim]}={'/'.join(labels)}")

@@ -8,7 +8,7 @@
 //   backup  → 调本地备份写盘（无备份目录则跳过并记日志）
 import { useAutoChatStore } from '@/store/useAutoChatStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
-import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { getBackupDir, writeLocalBackup } from './localBackup';
 import { platformLabel } from './bossclaw/platforms';
 import type { ScheduleEntry } from '@/store/useScheduleStore';
@@ -17,6 +17,8 @@ import type { JobPlatform } from '@/lib/bossclaw/types';
 const TICK_MS = 15_000;
 const GRACE_MS = 90_000; // 目标时刻后的容差窗口（应对节流/半分延迟）
 let started = false;
+// P2-08：保存 interval 句柄，支持 stop（此前 setInterval 返回值被丢弃，测试/重置场景定时器持续累积）
+let tickTimer: ReturnType<typeof setInterval> | null = null;
 
 function parseMinute(t: string): number {
   const m = String(t || '').match(/^(\d{1,2}):(\d{1,2})/);
@@ -56,7 +58,7 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
       // 引擎为模块级单例，跨页后台运行；若已有批量沟通（含手动启动）在运行则跳过本次触发，
       // 避免两条 run 争抢岗位（start() 内部 busy 互斥也会静默丢弃，这里显式留痕）。
       if (useAutoChatStore.getState().chatRunning) {
-        useDataStore.getState().addChatLog({
+        useRuntimeLogsStore.getState().addChatLog({
           level: 'warn',
           stage: 'system',
           msg: `⏰ 定时任务「${entry.name}」触发但已有批量沟通在运行，本次触发已跳过（将于下一个触发时刻再次尝试）。`,
@@ -68,7 +70,7 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
         platforms: targetPlatforms(entry),
         maxCount: maxCount > 0 ? maxCount : undefined,
       });
-      useDataStore.getState().addChatLog({
+      useRuntimeLogsStore.getState().addChatLog({
         level: 'info',
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已启动批量自动投递（平台：${platformText(targetPlatforms(entry))}${maxCount > 0 ? `；本次上限 ${maxCount} 条` : ''}）。`,
@@ -78,7 +80,7 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
     case 'collect': {
       // 置位采集请求（携带目标平台），由常驻工作台组件消费（跨页可触发）
       store.setCollectRequest({ platforms: targetPlatforms(entry) });
-      useDataStore.getState().addChatLog({
+      useRuntimeLogsStore.getState().addChatLog({
         level: 'info',
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已请求搜索采集（平台：${platformText(targetPlatforms(entry))}）。`,
@@ -88,14 +90,14 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
     case 'backup': {
       const dir = await getBackupDir();
       if (!dir) {
-        useDataStore.getState().addLog('warn', `定时备份「${entry.name}」触发但未设置本地备份目录，已跳过`);
+        useRuntimeLogsStore.getState().addLog('warn', `定时备份「${entry.name}」触发但未设置本地备份目录，已跳过`);
         break;
       }
       const r = await writeLocalBackup();
       if (r.wrote) {
-        useDataStore.getState().addLog('success', `定时备份「${entry.name}」已写入本地备份（${dir}）`);
+        useRuntimeLogsStore.getState().addLog('success', `定时备份「${entry.name}」已写入本地备份（${dir}）`);
       } else {
-        useDataStore.getState().addLog('info', `定时备份「${entry.name}」：内容未变化，未重写文件`);
+        useRuntimeLogsStore.getState().addLog('info', `定时备份「${entry.name}」：内容未变化，未重写文件`);
       }
       break;
     }
@@ -122,22 +124,33 @@ function tick(): void {
         useScheduleStore.getState().markRun(entry.id, targetMs);
         // P30：单条触发异常不得影响其余条目与整个间隔循环（网络/备份失败等）
         void fireAction(entry).catch((e: unknown) => {
-          useDataStore.getState().addLog('error', `定时任务「${entry.name}」执行异常：${e instanceof Error ? e.message : String(e)}`);
+          useRuntimeLogsStore.getState().addLog('error', `定时任务「${entry.name}」执行异常：${e instanceof Error ? e.message : String(e)}`);
         });
       } catch (e: unknown) {
-        useDataStore.getState().addLog('error', `定时任务「${entry.name}」处理异常：${e instanceof Error ? e.message : String(e)}`);
+        useRuntimeLogsStore.getState().addLog('error', `定时任务「${entry.name}」处理异常：${e instanceof Error ? e.message : String(e)}`);
       }
     }
   } catch (e: unknown) {
-    useDataStore.getState().addLog('error', `定时任务调度心跳异常：${e instanceof Error ? e.message : String(e)}`);
+    useRuntimeLogsStore.getState().addLog('error', `定时任务调度心跳异常：${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-/** 启动定时任务调度器（幂等）；应用启动时调用一次。 */
-export function startScheduler(): void {
-  if (started) return;
+/** 启动定时任务调度器（幂等）；应用启动时调用一次。返回 stop 函数（测试/重置用；重复调用返回空函数）。 */
+export function startScheduler(): () => void {
+  if (started) return () => {};
   started = true;
   // 初次进入先补一次检查（覆盖启动即到点的情况）
   tick();
-  setInterval(tick, TICK_MS);
+  tickTimer = setInterval(tick, TICK_MS);
+  return stopScheduler;
+}
+
+/** 停止定时任务调度器（幂等）。 */
+export function stopScheduler(): void {
+  if (!started) return;
+  started = false;
+  if (tickTimer !== null) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
 }

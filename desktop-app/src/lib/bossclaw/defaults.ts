@@ -1,5 +1,6 @@
 import type { AppConfig, Profile, ProfileDraft, DirectionPlan, Stats, Workflow } from './types';
 import { PLATFORM_DEFAULT_DAILY_TARGET } from './platforms';
+import { PROVIDER_DEFAULTS, DEFAULT_PROVIDER, DEFAULT_MODEL_NAME } from './providerPresets';
 
 // 对齐 job-claw-main\source\src\common.js 的 DEFAULTS
 export const DEFAULT_CONFIG: AppConfig = {
@@ -102,13 +103,13 @@ export const DEFAULT_CONFIG: AppConfig = {
     prefer: false,
   },
   model: {
-    provider: 'deepseek',
-    baseUrl: 'https://api.deepseek.com',
+    // P1-10：默认模型名/端点由 providerPresets.ts 单源提供，勿再手写模型名（改一处即可）
+    provider: DEFAULT_PROVIDER,
+    baseUrl: PROVIDER_DEFAULTS[DEFAULT_PROVIDER].baseUrl,
     apiKey: '',
-    // DeepSeek 官方现行模型名（2026-09-16 核对 api-docs.deepseek.com/quick_start/pricing）：
-    // `deepseek-flash` = DeepSeek-V4.1-Flash（原 deepseek-v4-flash 已退役为别名，第三方网关会 400）；
-    // `deepseek-v4-pro` = DeepSeek-V4-Pro-0813。
-    model: 'deepseek-flash',
+    // 默认模型名来自 providerPresets.ts（= DeepSeek-V4.1-Flash，原 deepseek-v4-flash 已退役为别名，
+    // 第三方网关会 400）；`deepseek-v4-pro` = DeepSeek-V4-Pro-0813。
+    model: DEFAULT_MODEL_NAME,
     temperature: 0.1,
     // 思考强度默认关闭：保持原有「直接产出结构化 JSON」的行为不变（思考模式下 temperature 失效、
     // 且思维链会额外消耗输出 token）。用户可在设置页显式开启，能力判定见 thinkingCapability.ts。

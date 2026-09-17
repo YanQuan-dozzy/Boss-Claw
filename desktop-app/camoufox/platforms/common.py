@@ -40,27 +40,6 @@ def cookie_file(platform: str = 'boss') -> Path:
     return DATA_DIR / f'camoufox-cookies-{p}.json'
 
 
-# 可复用的系统浏览器内核候选路径（Windows 优先，macOS/Linux 兜底；仅检测用，不参与回退）
-CHROME_CANDIDATES = [
-    r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-    r'C:\Program Files\Google\Chrome\Application\chrome',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
-]
-EDGE_CANDIDATES = [
-    r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
-    r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
-    r'/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    '/usr/bin/microsoft-edge',
-]
-FIREFOX_CANDIDATES = [
-    r'C:\Program Files\Mozilla Firefox\firefox.exe',
-    r'C:\Program Files (x86)\Mozilla Firefox\firefox.exe',
-    '/Applications/Firefox.app/Contents/MacOS/firefox',
-    '/usr/bin/firefox',
-]
-
 # 内核检测结果缓存（进程生命周期内只检测一次）
 _KERNEL_CACHE: dict | None = None
 
@@ -191,96 +170,26 @@ def detect_kernel(force: bool = False) -> dict:
     return _KERNEL_CACHE
 
 
-def stealth_init_script() -> str:
-    """Chromium 系 stealth 初始化脚本（仅当 Camoufox 不可用时的尽力而为路径；BOSS 实测仍需 Camoufox）。"""
-    return """
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    try {
-      if (!window.chrome) window.chrome = {};
-      if (!window.chrome.runtime) {
-        window.chrome.runtime = {
-          connect: () => ({ postMessage: () => {}, disconnect: () => {} }),
-          sendMessage: () => {},
-          id: undefined,
-        };
-      }
-      if (!window.chrome.app) window.chrome.app = { isInstalled: false };
-      if (!window.chrome.csi) window.chrome.csi = () => ({});
-      if (!window.chrome.loadTimes) window.chrome.loadTimes = () => ({});
-    } catch (e) {}
-    try {
-      const origQuery = window.navigator.permissions && window.navigator.permissions.query;
-      if (origQuery) {
-        window.navigator.permissions.query = (parameters) => (
-          parameters && parameters.name === 'notifications'
-            ? Promise.resolve({ state: Notification.permission })
-            : origQuery(parameters)
-        );
-      }
-    } catch (e) {}
-    try {
-      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5].map((i) => ({ name: 'Plugin ' + i, filename: 'plugin' + i + '.dll', description: '' })),
-      });
-    } catch (e) {}
-    """
-
-
-@contextmanager
 def open_browser(os_name: str | None = None, headless: bool = False):
-    """按检测到的内核打开浏览器，yield page；退出时自动关闭。仅 Camoufox 原生内核可用。"""
-    kernel = detect_kernel()
-    if kernel["kind"] == "camoufox":
-        from camoufox.sync_api import Camoufox
-        kwargs = {"humanize": True, "block_images": False}
-        if os_name:
-            kwargs["os"] = os_name
-        if headless:
-            kwargs["headless"] = "virtual"
-        with Camoufox(**kwargs) as browser:
-            page = browser.new_page()
-            yield page
-        return
+    """按检测到的内核打开浏览器，yield page；退出时自动关闭。仅 Camoufox 原生内核可用。
 
-    from playwright.sync_api import sync_playwright
-    exe = kernel.get("path")
-    launch_args = {
-        "headless": headless,
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-infobars",
-            "--disable-features=AutomationControlled",
-            "--lang=zh-CN",
-            "--disable-blink-features=IdleDetection",
-        ],
-        "ignore_default_args": [
-            "--enable-automation",
-            "--enable-blink-features=IdleDetection",
-            "--disable-component-update",
-        ],
-    }
-    if exe:
-        launch_args["executable_path"] = exe
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_args)
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 850},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-        )
-        context.add_init_script(stealth_init_script())
-        page = context.new_page()
+    内核缺失时显式抛错（fail-safe）：不静默回退到 Playwright 自带 Chromium ——
+    BOSS 反爬对该内核返回空壳页，静默回退只会把「内核缺失」伪装成「被反爬拦截」误导排查。
+    （P6-05：原 15 个系统浏览器候选路径 + stealth_init_script 为死代码，已删除。）
+    """
+    kernel = detect_kernel()
+    if kernel["kind"] != "camoufox":
+        raise RuntimeError(kernel.get("message") or "隐身引擎未就绪：请先安装 Camoufox 内核")
+    from camoufox.sync_api import Camoufox
+    kwargs = {"humanize": True, "block_images": False}
+    if os_name:
+        kwargs["os"] = os_name
+    if headless:
+        kwargs["headless"] = "virtual"
+    with Camoufox(**kwargs) as browser:
+        page = browser.new_page()
         yield page
-        try:
-            browser.close()
-        except Exception:
-            pass
+    return
 
 
 def goto_stable(page, url, *, max_tries=4, min_content=500, wait=3):

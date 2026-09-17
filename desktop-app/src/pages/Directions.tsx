@@ -1,3 +1,10 @@
+/**
+ * 【主模块：投递方向】导航 key = 'directions'
+ * 子模块：
+ * - 页头操作区（根据画像更新 / 新增自定义方向 / 确认方向（N）+ 已确认徽标）
+ * - 方向卡片网格（directions-grid：方向开关/名称/来源(画像|自定义)/优先级，编辑、删除、按需补充建议）
+ * - 空态引导（无画像或无方向时的 Empty 提示）
+ */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
@@ -436,6 +443,7 @@ export default function Directions() {
           <Empty description="暂无投递方向，点击「根据画像更新」生成" />
         </Card>
       ) : (
+        // 子模块：方向卡片网格（开关/名称/来源/优先级，编辑与删除）
         <div className="directions-grid">
           {sortedItems.map((it) => (
             <Card

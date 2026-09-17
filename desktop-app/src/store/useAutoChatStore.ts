@@ -9,6 +9,7 @@
 // 「分批」改由定时任务显式表达（每次触发可带 scope：目标平台 + 单轮上限）。
 import { create } from 'zustand';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import {
   camoufoxChat, camoufoxRestart, isCamoufoxStopCode, isCamoufoxEnvCode,
@@ -53,14 +54,18 @@ const BATCH_ELIGIBLE = ['approved', 'opened'];
 const IDLE_POLL_MS = 6000;
 
 // ---- 模块级运行态（不受组件卸载影响）----
-let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
-let runToken = 0; // 递增即作废进行中的批量（start/stop）
-let busy = false; // 批量与单条互斥
-let ownerRun = 0; // 当前持有 busy 的 run token（避免 stop 后再 start 时被旧运行误清）
-let processedIds: Set<string> = new Set(); // 本次运行已处理/已取走的岗位 id
-// P04：stop() 置位的发送取消信号。chatJob 在真正调用网络发送（camoufoxChat）前检查，
-// 已取消则不再发送、不计成功。start()/chatOne() 启动时复位。
-let cancelRequested = false;
+// P2-04：原 5 个独立 let（runToken / busy / ownerRun / processedIds / cancelRequested）承载运行态，
+// 其中「busy 互斥」与「ownerRun 归属」是同一件事的两个表达，曾有两处手写复位需人工保证一致。
+// 现收敛为单一对象 currentRun：null = 空闲，busy↔owner 的配对由「对象是否仍是 currentRun」唯一表达；
+// 运行 token 单调递增，stop()/自然结束时 currentRun 置空即作废旧 run（并发/串台由引用比较保证）。
+interface EngineRun {
+  token: number;             // 本 run 的唯一标识（nextRunToken 单调递增生成）
+  processedIds: Set<string>; // 本次运行已处理/已取走的岗位 id
+  cancelRequested: boolean;  // stop() 置位的发送取消信号：chatJob 在真正网络发送前检查，已置位则不发送、不计成功
+}
+let nextRunToken = 0;                    // 单调递增：每次 start()/chatOne() 取新 token
+let currentRun: EngineRun | null = null; // 单一真值：null = 空闲（替代原 busy 互斥量 + ownerRun 归属）
+let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE); // 跨 run 共享的动作节流器（预算重置在 start()）
 
 // ===== Camoufox 引擎自愈重启（误触关闭后自动拉起；多次失败自动停止）=====
 const MAX_ENGINE_RESTART = 3;
@@ -83,7 +88,7 @@ async function chatWithEngineRecovery(
   let result = await send();
   if (!looksEngineDown(result)) return { result, dead: false };
   for (let i = 1; i <= MAX_ENGINE_RESTART; i += 1) {
-    useDataStore.getState().addChatLog({
+    useRuntimeLogsStore.getState().addChatLog({
       level: 'warn',
       stage: 'system',
       jobTitle,
@@ -99,7 +104,7 @@ async function chatWithEngineRecovery(
     }
     await sleep(ENGINE_RESTART_WAIT_MS);
     if (ready) {
-      useDataStore.getState().addChatLog({
+      useRuntimeLogsStore.getState().addChatLog({
         level: 'info',
         stage: 'system',
         jobTitle,
@@ -114,7 +119,8 @@ async function chatWithEngineRecovery(
 
 /** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致） */
 async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
-  const { updatePending, addLog, addChatLog } = useDataStore.getState();
+  const { updatePending } = useDataStore.getState();
+  const { addLog, addChatLog } = useRuntimeLogsStore.getState();
   const cfg = useSettingsStore.getState().config;
   const title = cleanTitle(item.job?.title);
   const company = item.job?.company || '';
@@ -161,7 +167,8 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     // 其余平台 deliver() 会忽略这两个参数，故这里直接不下发，避免构造无用的 base64 负载。
     const canAttach = platformSupports(platform as JobPlatform, 'attach');
     // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
-    if (cancelRequested) {
+    // （chatJob 仅由持有 currentRun 的 start()/chatOne() 调用，此处即本 run 的取消信号）
+    if (currentRun?.cancelRequested) {
       addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
       return 'stop';
     }
@@ -378,7 +385,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
   } catch (e: unknown) {
     const msg = getErrorMessage(e);
     useDataStore.getState().updatePending(item.id, { status: 'failed', error: msg, retryable: true });
-    useDataStore.getState().addChatLog({
+    useRuntimeLogsStore.getState().addChatLog({
       level: 'error',
       stage: 'system',
       jobId,
@@ -425,16 +432,12 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   progress: { index: 0, total: 0 },
 
   start: (scope?: AutoChatScope) => {
-    if (busy || useAutoChatStore.getState().chatRunning) return;
-    busy = true;
-    runToken += 1;
-    cancelRequested = false; // P04：复位取消信号
-    const myToken = runToken;
-    ownerRun = myToken;
+    if (currentRun || useAutoChatStore.getState().chatRunning) return;
+    const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
+    currentRun = run; // 建立互斥（busy）：单一真值，null = 空闲
     const cfg = useSettingsStore.getState().config;
     const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
     if (pacer.budget !== pacerMax) pacer = new ActionPacer(pacerMax);
-    processedIds = new Set();
     set({ chatRunning: true, activeChatId: null, progress: { index: 0, total: 0 } });
     // 范围描述（定时任务触发时为任务 scope；手动启动无 scope → 全平台不限量）
     const scopeText = (() => {
@@ -443,7 +446,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
       if (scope?.maxCount && scope.maxCount > 0) parts.push(`本次上限 ${scope.maxCount} 条`);
       return parts.length ? `（${parts.join('；')}）` : '';
     })();
-    useDataStore.getState().addChatLog({
+    useRuntimeLogsStore.getState().addChatLog({
       level: 'info',
       stage: 'system',
       msg: `🚀 批量自动沟通已在后台启动${scopeText}：持续处理当前队列，并会在工作台新批准岗位时自动加入继续沟通（切到工作台仍会继续运行）。`,
@@ -454,7 +457,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
       let stopAll = false;
       let greeted = false;
       try {
-        while (runToken === myToken) {
+        while (currentRun === run) {
           const data = useDataStore.getState();
           const loopCfg = useSettingsStore.getState().config;
           // 多平台串行消费：
@@ -467,8 +470,8 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           const allEligible = rerankPending(data.pending, loopCfg).filter(
             (p: PendingItem) =>
               BATCH_ELIGIBLE.includes(p.status) &&
-              !processedIds.has(p.id) &&
-              !isDeliveryClaimed(p.id) &&
+              !run.processedIds.has(p.id) &&
+              !isDeliveryClaimed(p.id, String(p.job?.platform || 'boss')) &&
               platformEnabled(loopCfg, String(p.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51') &&
               // 定时投递 scope：仅处理本次任务圈定的平台（空/缺省 = 全部已启用平台）
               (!scope?.platforms?.length ||
@@ -479,13 +482,13 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           if (allEligible.length === 0) {
             if (!greeted) {
               greeted = true;
-              useDataStore.getState().addChatLog({
+              useRuntimeLogsStore.getState().addChatLog({
                 level: 'info',
                 stage: 'system',
                 msg: '👀 当前后台队列已处理完。任务保持运行，工作台新批准的岗位会自动进入沟通队列。',
               });
             }
-            set({ progress: { index: processedIds.size, total: processedIds.size } });
+            set({ progress: { index: run.processedIds.size, total: run.processedIds.size } });
             await sleep(IDLE_POLL_MS);
             continue;
           }
@@ -495,13 +498,13 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           const item = eligible[0];
 
           // —— 消费前守卫（P03：冷却/每日上限/单轮上限这些非「实际发送」的判定，
-          //    必须在 claimDelivery + processedIds.add 之前执行，否则会把整队列预占却一条不发，
+          //    必须在 claimDelivery + run.processedIds.add 之前执行，否则会把整队列预占却一条不发，
           //    守卫放行后这些岗位才会被 processedIds 排除 → 不会永久空轮询）——
           const nowCfg = useSettingsStore.getState().config;
-          // B1：冷却/每日上限/首条验收/风控这些内部退出路径不再自增 runToken 使 isCurrent=false，
+          // B1：冷却/每日上限/首条验收/风控这些内部退出路径不置空 currentRun，
           //    直接 break 由 finally 正常复位 chatRunning（否则 chatRunning 卡死、start() 被拦死）。
           if (isLockedOut(nowCfg)) {
-            useDataStore.getState().addChatLog({
+            useRuntimeLogsStore.getState().addChatLog({
               level: 'warn',
               stage: 'risk',
               msg: `账号处于安全冷却期，后台沟通已暂停（剩余约 ${Math.ceil(cooldownRemaining(nowCfg) / 60000)} 分钟）。点击「停止」后可稍后重试。`,
@@ -509,7 +512,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             break;
           }
           if (dailySentCount(useDataStore.getState().pending) >= effectiveDailyCap(nowCfg)) {
-            useDataStore.getState().addChatLog({
+            useRuntimeLogsStore.getState().addChatLog({
               level: 'warn',
               stage: 'risk',
               msg: `今日沟通数已触及安全上限 ${effectiveDailyCap(nowCfg)} 条，后台沟通已暂停。`,
@@ -521,18 +524,18 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           {
             const itemPlatform = (item.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51';
             if (dailySentCountFor(useDataStore.getState().pending, itemPlatform) >= effectiveDailyCapFor(nowCfg, itemPlatform)) {
-              useDataStore.getState().addChatLog({
+              useRuntimeLogsStore.getState().addChatLog({
                 level: 'warn',
                 stage: 'risk',
                 msg: `平台 ${itemPlatform} 今日投递已达上限 ${effectiveDailyCapFor(nowCfg, itemPlatform)} 条，该平台剩余岗位本轮跳过（可在「设置 → 招聘平台」调整每日目标）。`,
               });
-              for (const e of eligible) processedIds.add(e.id);
+              for (const e of eligible) run.processedIds.add(e.id);
               continue;
             }
           }
           // 单轮上限（定时投递任务限定）：成功沟通达到 scope.maxCount 即结束本次运行
           if (scope?.maxCount && scope.maxCount > 0 && sentCount >= scope.maxCount) {
-            useDataStore.getState().addChatLog({
+            useRuntimeLogsStore.getState().addChatLog({
               level: 'warn',
               stage: 'system',
               msg: `⏱ 本次投递已达设定上限（${scope.maxCount} 条），本次任务结束（下个触发时刻会再次启动）。`,
@@ -547,8 +550,8 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             // 已被其他引擎认领投递，本轮跳过（交给认领方），下周期若被释放则重新纳入
             continue;
           }
-          processedIds.add(item.id);
-          set({ activeChatId: item.id, progress: { index: processedIds.size, total: processedIds.size + eligible.length } });
+          run.processedIds.add(item.id);
+          set({ activeChatId: item.id, progress: { index: run.processedIds.size, total: run.processedIds.size + eligible.length } });
           try {
             await pacer.waitForSlot();
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
@@ -559,7 +562,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
               sentCount += 1;
               if (nowCfg.requireSingleJobValidation && !nowCfg.singleJobValidationCompletedAt) {
                 useSettingsStore.getState().setConfig({ singleJobValidationCompletedAt: Date.now() });
-                useDataStore.getState().addChatLog({
+                useRuntimeLogsStore.getState().addChatLog({
                   level: 'warn',
                   stage: 'confirm',
                   msg: '🛡️ 首条自动沟通成功并已安全暂停：请核对沟通 HR、文字气泡与附件，确认无误后点击「开始批量沟通」继续。',
@@ -576,18 +579,14 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           }
         }
       } finally {
-        const isCurrent = runToken === myToken;
-        if (isCurrent) runToken += 1;
-        // 仅当本运行仍持有 busy 时才释放，避免 stop()→start() 或旧运行回写串台
-        if (ownerRun === myToken) {
-          ownerRun = 0;
-          busy = false;
-        }
-        if (isCurrent) {
+        // 仅当本运行仍是 currentRun 时才复位（原 busy/ownerRun 的配对检查被引用相等替代），
+        // 避免 stop()→start() 或旧运行回写串台；token 单调递增，旧 run 的引用必然失配。
+        if (currentRun === run) {
+          currentRun = null;
           set({ activeChatId: null, chatRunning: false, progress: { index: 0, total: 0 } });
           useDataStore.getState().recomputeStats();
           if (!stopAll) {
-            useDataStore.getState().addChatLog({
+            useRuntimeLogsStore.getState().addChatLog({
               level: sentCount > 0 ? 'success' : 'info',
               stage: 'system',
               msg: `🏁 后台批量沟通任务结束：本次成功沟通 ${sentCount} 个岗位。`,
@@ -599,21 +598,16 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   },
 
   chatOne: (item) => {
-    if (busy || useAutoChatStore.getState().chatRunning) return;
-    busy = true;
-    cancelRequested = false; // P04：复位取消信号
-    const myToken = (runToken += 1);
-    ownerRun = myToken;
+    if (currentRun || useAutoChatStore.getState().chatRunning) return;
+    const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
+    currentRun = run;
     set({ chatRunning: true, activeChatId: item.id, progress: { index: 0, total: 1 } });
     void (async () => {
       try {
         await chatJob(item);
       } finally {
-        if (ownerRun === myToken) {
-          ownerRun = 0;
-          busy = false;
-        }
-        if (runToken === myToken) {
+        if (currentRun === run) {
+          currentRun = null;
           set({ activeChatId: null, chatRunning: false, progress: { index: 0, total: 0 } });
           useDataStore.getState().recomputeStats();
         }
@@ -622,14 +616,12 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   },
 
   stop: () => {
-    runToken += 1; // 作废进行中的批量循环
-    cancelRequested = true; // P04：通知进行中的发送取消（发送前检查，已发出则无法撤回）
-    if (ownerRun !== 0) {
-      ownerRun = 0;
-      busy = false;
-    }
+    // 作废进行中的批量循环并释放互斥（currentRun = null；token 单调递增无需额外递增）
+    const run = currentRun;
+    if (run) run.cancelRequested = true; // P04：通知进行中的发送取消（发送前检查，已发出则无法撤回）
+    currentRun = null;
     set({ chatRunning: false, activeChatId: null, progress: { index: 0, total: 0 } });
-    useDataStore.getState().addChatLog({
+    useRuntimeLogsStore.getState().addChatLog({
       level: 'warn',
       stage: 'system',
       msg: '⏹ 用户手动停止了后台自动沟通任务。',

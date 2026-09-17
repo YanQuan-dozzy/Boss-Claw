@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.3-078A83)
+![Version](https://img.shields.io/badge/version-v2.5.4-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.3**（2026-09-14 发布）。`main` 上另有一批**尚未随安装包发布**的能力（多平台采集层重构、外部 Agent 代答、面试方式筛选等），已在下方功能表标注「main 新增」。
+> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.4**（2026-09-17 发布）。后续功能更新在下方功能表直接以当前实现标注。
 
 ## 下载安装
 
@@ -28,8 +28,8 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.3-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.3-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.4-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.4-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
@@ -53,7 +53,8 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.3（最新） | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
+| v2.5.4（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.3 | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
 | v2.4.0 | Windows x64 安装版 + 便携版 |
 | v2.3.0 | Windows x64 安装版 + 便携版 |
@@ -120,13 +121,13 @@ BossClaw 选择另一条路：**它是一个独立安装的桌面应用，不抢
 | 职业画像 | 根据教育、项目、技能和求职条件生成可编辑画像 |
 | 投递方向 | 自主勾选岗位方向、修改搜索词、调整优先级、添加自定义方向 |
 | 岗位整理 | 内置浏览器打开岗位 → 点「加入任务」→ 中栏记录该岗位；页面噪音自动清洗（jdCleaner）；可附加公司规模过滤（BOSS scale） |
-| 面试方式筛选 <br>（main 新增） | 设置页指定「线上 / 线下 / 不限」；「加入任务」时按岗位标题 / 描述 / 卡片文本**确定性**识别面试方式（未明确披露一律判为合格，不参与过滤、不误杀），排除与设定冲突的岗位，避免浪费每日招呼配额 |
+| 面试方式筛选 | 设置页指定「线上 / 线下 / 不限」；「加入任务」时按岗位标题 / 描述 / 卡片文本**确定性**识别面试方式（未明确披露一律判为合格，不参与过滤、不误杀），排除与设定冲突的岗位，避免浪费每日招呼配额 |
 | 智能排序 | 综合匹配度、硬性条件、HR 活跃度、地点、薪资、新鲜度和风险提示进行排序 |
 | AI 匹配与评分 | 岗位匹配为 **AI 四层整体裁决**（硬门槛 → 优先条件 → 职责信号 → 团队信号），一次判断给出 `fitLevel` 档位（strong / match / cautious / unfit），**分数由档位映射、不跨档，AI 分即最终分**；本地五维分只用于界面展示与 AI 不可用时兜底，唯一改分能力为硬约束拦截（`score ≤ 35` / reject）；入队门槛由设置页 `minQueueScore` 控制；工作台会话级去重 + 合并重复跳过日志 |
 | 多页浏览 | 内置浏览器支持多标签 / 多页管理（browserRegistry），优化窗口尺寸变化的 force-resize 重绘，修复页面加载异常导致的崩溃 |
 | 方向智能校准 | 投递方向支持 AI 生成 / 校准搜索关键词；新增薪资校准模块与工作时间偏好，用于 AI 判断岗位匹配与约束沟通内容 |
 | Agent 控制桥 + MCP | 应用内置控制桥（白名单动作、本地随机令牌鉴权、**默认关闭**需显式开启，`start-bossclaw.cmd` 启动默认开启）；`mcp/bossclaw-mcp` 零依赖 stdio MCP 服务器（**8 个工具 / 3 组**：运行控制 · 应用控制 · agent 代答），供外部 Agent 读取约束 / 状态并驱动应用（发送类能力默认不开放） |
-| Agent 代答 <br>（main 新增） | 未配置 AI API Key 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）可由**在线外部 Agent** 代答；心跳 90s、单任务等待 30~240s，Agent 离线 / 超时 / 放弃则回落应用内本地规则。**只搬运「提示词 ↔ 生成文本」**，回填内容仍要过全部校验链（事实与口吻、校名披露、招呼语长度等） |
+| Agent 代答 | 未配置 AI API Key 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）可由**在线外部 Agent** 代答；心跳 90s、单任务等待 30~240s，Agent 离线 / 超时 / 放弃则回落应用内本地规则。**只搬运「提示词 ↔ 生成文本」**，回填内容仍要过全部校验链（事实与口吻、校名披露、招呼语长度等） |
 | 沟通草稿 | 根据简历证据和岗位要求生成可编辑的应聘沟通内容与个性化打招呼语 |
 | 定制简历 | 输入目标岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，失败回退本地规则 |
 | AI 技能 | 标准 SKILL.md 技能体系（内置 7 项：resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
@@ -270,7 +271,7 @@ BossClaw 自带一条**面向外部 Agent 的本地控制通道**，用于让 Cl
 
 **动作边界（硬约束）**：动作由渲染层白名单（`src/lib/controlRuntime.ts`）强制，只有状态读取、切页、主题、暂停 / 恢复投递、平台与调度配置、数据写入、AI 生成、浏览器只读 + 白名单操作等；**不提供任何发消息、批量投递、绕过验证码或速率限制的能力**，也不会放开 `SAFETY_LIMITS`。
 
-**Agent 代答**（`main` 新增）：当用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）会把「完整提示词 + 用途 + 是否要 JSON」挂进本地待答队列，由**在线外部 Agent** 用自有模型回答后回填：
+**Agent 代答**：当用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）会把「完整提示词 + 用途 + 是否要 JSON」挂进本地待答队列，由**在线外部 Agent** 用自有模型回答后回填：
 
 ```text
 应用（无 apiKey）→ 入队等待
@@ -337,7 +338,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.3）
+├── desktop-app/               当前主应用（Electron + React，v2.5.4）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs（外部 Agent 控制桥）
 │   │   ├── preload/           app.cjs / webview.cjs / platform-adapters.cjs（多平台 DOM 适配表）
 │   │   └── cloakbrowser/      CloakBrowser 隐身浏览器生命周期
@@ -388,7 +389,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「功能闭环」「常见问题」两节（开发与故障排查口径最全）。提交 Issue 时请包含：
 
-- BossClaw 版本（桌面版 v2.5.3）
+- BossClaw 版本（桌面版 v2.5.4）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图

@@ -428,6 +428,25 @@ export function bridgeRequest(info, method, urlPath, body, timeoutMs = 15_000) {
   return new Promise((resolve) => {
     if (!info?.port) return resolve({ ok: false, error: '控制桥未就绪' });
     const payload = body == null ? null : Buffer.from(JSON.stringify(body), 'utf8');
+    // settled 幂等守卫：timeout / error / aborted 可能双触发，首个结算生效
+    // （否则后到分支的字符串会覆盖先到分支的具体错误信息）。
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      resolve(v);
+    };
+    // 总时长兜底：socket timeout 只管空闲，对端「缓慢滴字节」不会触发——
+    // 响应中途断流（桥进程退出 / 渲染层崩溃 / 代理干预）必须有兜底，否则 Promise 永久挂起。
+    const hardTimer = setTimeout(() => {
+      try {
+        req.destroy();
+      } catch {
+        /* 已结束 */
+      }
+      finish({ ok: false, error: `控制桥请求总超时（${timeoutMs + 5_000}ms）` });
+    }, timeoutMs + 5_000);
     const req = http.request(
       {
         host: '127.0.0.1',
@@ -452,14 +471,17 @@ export function bridgeRequest(info, method, urlPath, body, timeoutMs = 15_000) {
             data = { raw: text };
           }
           const ok = res.statusCode >= 200 && res.statusCode < 300;
-          resolve({ ok, status: res.statusCode, data, error: ok ? undefined : data?.error || `HTTP ${res.statusCode}` });
+          finish({ ok, status: res.statusCode, data, error: ok ? undefined : data?.error || `HTTP ${res.statusCode}` });
         });
+        // 响应中途断流（服务端 destroy / 进程退出）→ 必须兜底，否则永久挂起
+        res.on('error', (e) => finish({ ok: false, error: `控制桥响应异常：${e?.message || e}` }));
+        res.on('aborted', () => finish({ ok: false, error: '控制桥响应被中断' }));
       }
     );
     req.on('timeout', () => {
       req.destroy(new Error(`控制桥请求超时（${timeoutMs}ms）`));
     });
-    req.on('error', (e) => resolve({ ok: false, error: String(e?.message || e) }));
+    req.on('error', (e) => finish({ ok: false, error: String(e?.message || e) }));
     if (payload) req.write(payload);
     req.end();
   });

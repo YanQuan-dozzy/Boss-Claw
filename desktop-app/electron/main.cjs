@@ -14,6 +14,8 @@ const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs'
 // ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
 // 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
 let _debugLogEnabled = null;
+// P4-12：jc:webview-input 频率兜底的滑动窗口（近 60s 时间戳）
+let inputWindow = [];
 function isDebugEnabled() {
   if (_debugLogEnabled !== null) return _debugLogEnabled;
   // process.env 在 require 阶段即可访问；app.isPackaged 仅在 app 已 require 后才可用，
@@ -813,7 +815,12 @@ async function createMainWindow() {
       mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
         const tag = wc.getURL?.() || '';
         diagLog('WEBVIEW-ATTACHED url=' + tag);
-        wc.on('did-start-navigation', (_ev, url, _isInPlace, _isMainFrame) => diagLog('WEBVIEW did-start-navigation url=' + url));
+        // 主框架过滤（对齐渲染层 BrowserView.tsx 口径）：iframe 子框架导航（广告/内嵌卡片）不写诊断日志
+        wc.on('did-start-navigation', (ev, url, _isInPlace, legacyIsMainFrame) => {
+          const isMainFrame = typeof ev?.isMainFrame === 'boolean' ? ev.isMainFrame : legacyIsMainFrame !== false;
+          if (!isMainFrame) return;
+          diagLog('WEBVIEW did-start-navigation url=' + url);
+        });
         wc.on('did-navigate', (_ev, url) => diagLog('WEBVIEW did-navigate url=' + url));
         wc.on('did-fail-load', (_ev, code, desc, url) => diagLog('WEBVIEW did-fail-load code=' + code + ' desc=' + desc + ' url=' + url));
         wc.on('did-finish-load', () => diagLog('WEBVIEW did-finish-load url=' + (wc.getURL?.() || '')));
@@ -1243,13 +1250,15 @@ safeHandle('jc:qualified-jobs-dir-pick', async () => {
 // ===== 经历补充材料：按路径选择 + 每次调用现读（不落缓存/不持久化内容） =====
 // 口径：渲染层只持有文件绝对路径；正文每次调用 AI 前经 jc:material-read 现读并重新解析，
 // 因此用户在外部改了素材文件即时生效，应用内不保存任何素材内容副本。
+// 素材扩展名白名单（P4-10 双端共享口径：选择对话框 filters 与读取校验必须一致）
+const MATERIAL_EXT_WHITELIST = ['pdf', 'docx', 'md', 'markdown', 'txt', 'text'];
 safeHandle('jc:material-pick', async () => {
   try {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
       title: '选择经历补充材料（PDF / DOCX / MD / TXT）',
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: '简历与文本', extensions: ['pdf', 'docx', 'md', 'markdown', 'txt', 'text'] },
+        { name: '简历与文本', extensions: MATERIAL_EXT_WHITELIST },
         { name: '全部文件', extensions: ['*'] },
       ],
     });
@@ -1269,8 +1278,12 @@ safeHandle('jc:material-read', async (_event, filePath) => {
     if (!stat.isFile()) return { ok: false, error: '不是文件' };
     // 单文件上限 20MB：避免超大素材拖垮解析与内存
     if (stat.size > 20 * 1024 * 1024) return { ok: false, error: '文件超过 20MB' };
-    const buf = await fs.promises.readFile(p);
+    // P4-10：扩展名白名单与 jc:material-pick 的 filters 同源（拒绝任意绝对路径读取 → 防敏感文件外泄）
     const ext = path.extname(p).replace(/^\./, '').toLowerCase();
+    if (!MATERIAL_EXT_WHITELIST.includes(ext)) {
+      return { ok: false, error: `不支持的素材格式：.${ext}（仅 PDF/DOCX/MD/TXT）` };
+    }
+    const buf = await fs.promises.readFile(p);
     const mime = ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
     return {
       ok: true,
@@ -1438,12 +1451,15 @@ safeHandle('jc:fetch-url', async (_event, url) => {
 safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000) => {
   const target = String(url || '');
   if (!/^https?:\/\//.test(target)) return { ok: false, status: 0, text: '', error: 'invalid url' };
+  // P1-11：apiKey 从网页复制常带尾部空格/换行，trim 后再拼 Authorization 头，
+  // 否则 fetch 会抛 `TypeError: Invalid value` 且被下面 catch 吞成模糊的失败信息。
+  const key = String(apiKey || '').trim();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 90000));
   try {
     const res = await fetch(target, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${String(apiKey || '')}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: typeof payload === 'string' ? payload : JSON.stringify(payload),
       signal: ctrl.signal,
     });
@@ -1451,7 +1467,17 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
     return { ok: res.ok, status: res.status, text };
   } catch (e) {
     const msg = String((e && e.message) || e);
-    return { ok: false, status: 0, text: '', error: /aborted?|timeout/i.test(msg) ? 'timeout' : msg };
+    const timedOut = /aborted?|timeout/i.test(msg);
+    return {
+      ok: false, status: 0, text: '',
+      error: timedOut ? 'timeout' : msg,
+      // P1-11：区分「超时 / 请求头非法 / 网络」，供渲染层给用户可定位的提示
+      hint: timedOut
+        ? '请求超时：可增大模型请求超时上限或检查网络'
+        : /invalid/i.test(msg)
+          ? '请求头非法：请检查 API Key 是否包含多余空格或换行'
+          : '网络请求失败：请检查网络连通性或服务地址',
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -1542,6 +1568,17 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
 // 由 webview preload（webview.cjs）直接 ipcRenderer.send 到本主进程，event.sender 即 guest webContents。
 ipcMain.on('jc:webview-input', (event, payload) => {
   const wc = event.sender;
+  // P4-12：主进程侧频率兜底（渲染层自律之外的最后防线）。
+  // 阈值 = 16 次/分钟（渲染层 ActionPacer 正常 8 次/分钟，留 2 倍余量：
+  // 既能拦住渲染层 bug 引发的输入风暴，又不误伤「填字 → 回车」两连击）。
+  const now = Date.now();
+  inputWindow = inputWindow.filter((t) => t > now - 60_000);
+  if (inputWindow.length >= 16) {
+    try { wc.send('jc:webview-input-done', { seq: String((payload && payload.seq) || ''), ok: false, action: String((payload && payload.action) || ''), error: 'rate limited' }); } catch {}
+    dlog('warn', 'webview-input rate limited（主进程兜底）');
+    return;
+  }
+  inputWindow.push(now);
   // ⚠️ 严禁 Number() 强转：preload 的 seq 是 "时间戳_随机数" 字符串，Number() 后变 NaN→0，
   // 回执 seq 与请求不匹配，preload 的 trustedInput 会每 4s 超时一次（3 次=13s）且永远配对不上。
   const seq = String((payload && payload.seq) || '');
@@ -1630,10 +1667,16 @@ app.whenReady().then(() => {
     // ===== 磁盘缓存配置：增大缓存上限（默认值偏小，BOSS 首页资源较多）=====
     // setCacheSize 在 Electron 31+ 中对 persistent session 有效；
     // 256MB 缓存可显著减少二次加载时间（JS/CSS/图片缓存命中），冷启动也因缓存预热而加速。
-    if (typeof bossclawSession.getCacheSize === 'function') {
-      bossclawSession.getCacheSize().then((size) => {
-        dlog('info', 'bossclaw session cache size', { size });
-      }).catch(() => {});
+    if (typeof bossclawSession.setCacheSize === 'function') {
+      bossclawSession.setCacheSize(256 * 1024 * 1024)
+        .then(() => {
+          if (typeof bossclawSession.getCacheSize !== 'function') return;
+          return bossclawSession.getCacheSize();
+        })
+        .then((size) => {
+          if (typeof size === 'number') dlog('info', 'bossclaw session cache size', { size });
+        })
+        .catch(() => {});
     }
   } catch (e) { console.error('session init failed:', e); }
 

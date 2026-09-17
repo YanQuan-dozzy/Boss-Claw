@@ -1,6 +1,6 @@
 // 渲染端通用 hooks 集合。
 // 仅做无副作用、可在任意组件复用的工具函数；不包含与 BOSS/业务强耦合的逻辑。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * 浅比较两个值是否相等。
@@ -45,17 +45,6 @@ export function useInterval(fn: () => void | Promise<void>, delayMs: number | nu
       clearInterval(t);
     };
   }, [delayMs, immediate]);
-}
-
-/**
- * 上一次的某值；常用于「上一次 vs 当前」的对比日志或行为分支。
- */
-export function usePrevious<T>(value: T): T | undefined {
-  const ref = useRef<T | undefined>(undefined);
-  useEffect(() => {
-    ref.current = value;
-  }, [value]);
-  return ref.current;
 }
 
 /**
@@ -134,12 +123,4 @@ export function useDebouncedCallback<T extends (...args: any[]) => any>(fn: T, d
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => fnRef.current(...args), delayMs);
   }, [delayMs]);
-}
-
-/**
- * 把任意稳定的派生统计量按依赖记忆；避免内联 useMemo。
- */
-export function useStableMemo<T>(fn: () => T, deps: React.DependencyList): T {
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(fn, deps);
 }

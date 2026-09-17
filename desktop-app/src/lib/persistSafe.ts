@@ -10,8 +10,8 @@
 // 对策：
 //   1) 写防抖：把短窗口内多次 set 合并成一次真实写盘（默认 250ms，突发日志风暴合批后
 //      序列化次数降到约 4 次/秒，主线程不再被连续大 stringify 卡死）；
-//   2) 容错降级：真实写盘失败（配额超限/隐私模式）不抛出——去掉最占空间的运行时日志字段
-//      重试一次，仍失败则丢弃该次持久化并限频告警，绝不让存储异常冒泡进业务代码；
+//   2) 容错降级：真实写盘失败（配额超限/隐私模式）不抛出——运行时日志键（bossclaw-runtime-logs，
+//      独立小键）直接丢弃整个键重试，业务键丢弃该次持久化并限频告警，绝不让存储异常冒泡进业务代码；
 //   3) 退出兜底：pagehide / visibilitychange(hidden) 时同步 flush 待写数据，防抖窗口内
 //      的状态（如刚发送成功的岗位）不会因关窗/切后台而丢失。
 //
@@ -70,7 +70,7 @@ export function persistDirtyEpoch(name: string): number {
   return persistWriteEpoch.get(name) ?? 0;
 }
 
-/** 真实写盘（尽力而为，绝不抛出）。首次失败会剥离运行时日志字段抢救业务状态。 */
+/** 真实写盘（尽力而为，绝不抛出）。写失败时按「键的类型」处置：运行时日志键直接丢弃（重启即重新累积），业务键丢弃该次持久化。 */
 function writeWithFallback(store: Storage, name: string, value: StorageValue<unknown>): boolean {
   const payload = () => {
     try {
@@ -85,18 +85,19 @@ function writeWithFallback(store: Storage, name: string, value: StorageValue<unk
     store.setItem(name, json);
     return true;
   } catch (err) {
-    // 第一次失败：剥离最占空间的运行时字段（chatLogs/logs——重启后仍从内存/再生成恢复）后重试
+    // 第一次失败：按键的种类降级。P2-05 后日志已拆成独立小键（bossclaw-runtime-logs），
+    // 业务键不再含 chatLogs/logs（旧版残留字段也不应再被剥离重写——那只会造成「内存仍持日志、
+    // 落盘为无日志副本」的反复降级抖动）。日志键若仍写不进（极端长文本/配额告急），
+    // 直接丢弃整个键：日志为运行时产物，重启即重新累积，绝不让存储异常冒泡进业务代码。
     try {
-      const st = value.state as { chatLogs?: unknown[]; logs?: unknown[]; [k: string]: unknown } | undefined;
-      if (st) {
-        delete st.chatLogs;
-        delete st.logs;
-        json = payload();
+      const st = value.state as { chatLogs?: unknown[]; logs?: unknown[] } | undefined;
+      if (st && (Array.isArray(st.chatLogs) || Array.isArray(st.logs))) {
+        store.removeItem(name); // 丢弃日志键（不写空副本，避免内存与落盘不一致的反复降级）
+        warnOnceThrottled(`localStorage 配额告警：${name} 过大，已放弃持久化运行时日志（重启后重新累积）`);
+        return true;
       }
-      if (json == null) return false;
-      store.setItem(name, json);
-      warnOnceThrottled(`localStorage 配额告警：${name} 过大，已降级为不持久化运行时日志（chatLogs/logs）`);
-      return true;
+      warnOnceThrottled(`localStorage 写入失败（${name}：${String((err as Error)?.message || err)}），本次持久化已丢弃`);
+      return false;
     } catch {
       warnOnceThrottled(`localStorage 写入失败（${String((err as Error)?.message || err)}），本次持久化已丢弃`);
       return false;

@@ -42,7 +42,6 @@ from .common import (
     goto_stable, risk_text_hit,
 )
 from .filters import build_filter_params, normalize_criteria, summarize_applied
-from .models import JobCandidate
 from .progress import ProgressStore, normalize_ttl_hours, ttl_from_config
 
 # 页面等待与节奏（改造前各平台共用同一组数值）
@@ -90,6 +89,8 @@ class CollectorBase:
     capture_wait_attempts: int = 8
     # 确认成功的最长等待（秒）
     confirm_timeout_seconds: float = 12.0
+    # 确认窗口结束后、二次确认前的收尾停顿（秒）；子类可覆盖以对齐改造前取值
+    confirm_settle_seconds: float = 1.2
     # 是否支持「已建立会话/已投递」短路（点击前即视为成功）
     supports_already_sent: bool = False
     # 是否支持「外部网申」短路（返回 code 600）
@@ -256,6 +257,13 @@ class CollectorBase:
         """投递骨架：所有平台共用同一套「校验 → 风控 → 登录墙 → 按钮 → 确认」流程。
 
         平台差异只在 `find_action_button` / `confirm_sent` / `handle_action_state`。
+
+        说明（P6-09）：属性形参 send_resume_image / send_online_resume / resume_images
+        仅 BOSS 通道（webview 老链路）实现，见 capabilities.PLATFORM_CAPABILITIES 的
+        attach 能力；本骨架是 Camoufox 链路，忽略这些设置——命中时记日志以免误以为已生效。
+        形参 expected / mode / reply_text 为与 webview 老链路 deliver() 签名对齐而保留，
+        Camoufox 链路暂不使用（mode/reply_text 属 BOSS 聊天回复场景，expected 为老链路
+        投递前校验入参），保留以保持跨链路调用签名一致。
         """
         job_id = str(job.get('jobId') or job.get('id') or '').strip()
         url = str(job.get('url') or '').strip()
@@ -264,6 +272,8 @@ class CollectorBase:
         # 安全不变量：招呼语为空拒绝投递（所有平台一致，不可放宽）
         if not str(greeting or '').strip():
             return {'ok': False, 'code': 400, 'message': '招呼语为空，拒绝投递', 'sent': False}
+        if send_resume_image or send_online_resume or resume_images:
+            log('ℹ️', f'[{self.platform}] 该平台不支持补发简历附件（attach 能力仅 BOSS），本次忽略该设置')
 
         log('💬', f'[{self.platform}] 投递 → job={job_id}（{self.label}）')
 
@@ -347,6 +357,13 @@ class CollectorBase:
             return {'ok': True, 'code': 0, 'sent': True, 'method': self.success_method()}
 
     def _fail(self, code: int, message: str, page=None) -> dict:
+        # P6-11：page 参数此前未使用——失败路径上把当前（可能已更新的）登录态 cookie 落盘，
+        # 与成功路径 save_cookies 口径一致，避免失败后再扫码时登录态丢失
+        if page is not None:
+            try:
+                save_cookies(page.context, self.platform)
+            except Exception:
+                pass
         return {'ok': False, 'code': code, 'message': message, 'sent': False}
 
     # ---------- 投递相关：子类可覆盖的提示 / 后置动作 ----------
@@ -366,10 +383,14 @@ class CollectorBase:
         """投递成功后的收尾（如关闭聊天窗口）——失败不影响结果。"""
         return None
 
+    def already_sent_method(self) -> str:
+        """「已建立会话/已投递」短路返回的 method 标识；子类可覆盖（如猎聘"继续聊"）。"""
+        return f'{self.platform}-already'
+
     def handle_action_state(self, state: str) -> dict | None:
         """按钮态短路：返回 dict 表示已定论（不再点击），None 表示继续点击流程。"""
         if state == 'already' and self.supports_already_sent:
-            return {'ok': True, 'code': 0, 'sent': True, 'method': f'{self.platform}-already'}
+            return {'ok': True, 'code': 0, 'sent': True, 'method': self.already_sent_method()}
         if state == 'external' and self.supports_external_skip:
             return {'ok': False, 'code': 600, 'sent': False, 'external': True,
                     'message': '该岗位为外部网申，无法自动投递，跳过'}

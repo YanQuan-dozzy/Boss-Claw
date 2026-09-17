@@ -1,6 +1,6 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.5.3",
+  "version": "2.5.4",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
   "private": true,
   "author": "YanQuan",
@@ -23,7 +23,8 @@
     "package:linux": "npm run build && electron-builder --linux",
     "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
-    "verify": "npm run typecheck && npm run build"
+    "verify": "npm run typecheck && npm run build",
+    "test:theme-vars": "node scripts/theme-vars-regression.mjs"
   },
   "build": {
     "appId": "com.bossclaw.desktop",

@@ -5,6 +5,17 @@ const { contextBridge, ipcRenderer } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
+// P4-09：IPC 通道命名断言（桥接层逃生口 invoke/send/on 用）。
+// 本项目对外通道统一 `jc:` 前缀，与 main.cjs 的 safeHandle / ipcMain 注册面对应；
+// 逃生口保留是为了兼容历史桥接调用，但通道名不合规（拼写错 / 漏前缀）会在控制台给出警告，
+// 避免「通道是否受支持」只能靠全仓库 grep 推断。仅工程可维护性断言，不做访问控制。
+const assertIpcChannel = (method, channel) => {
+  if (typeof channel !== 'string' || !/^jc:/.test(channel)) {
+    console.warn(`[preload/app] 非约定前缀 IPC 通道 ${method}('${String(channel)}') —— 通道须以 jc: 开头并在 main.cjs 注册`);
+  }
+  return channel;
+};
+
 const api = {
   // 版本信息（状态栏显示）
   versions: {
@@ -152,9 +163,17 @@ const api = {
   },
 
   // 通用 IPC 调用（桥接 / LLM 代理等后续阶段使用）
-  invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
-  send: (channel, ...args) => ipcRenderer.send(channel, ...args),
+  // @deprecated 仅桥接层遗留使用（P4-09），新代码请用具名方法（上方各具名通道均以 jc: 前缀规范命名）
+  invoke: (channel, ...args) => {
+    assertIpcChannel('invoke', channel);
+    return ipcRenderer.invoke(channel, ...args);
+  },
+  send: (channel, ...args) => {
+    assertIpcChannel('send', channel);
+    return ipcRenderer.send(channel, ...args);
+  },
   on: (channel, callback) => {
+    assertIpcChannel('on', channel);
     const listener = (_event, ...args) => callback(...args);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);

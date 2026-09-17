@@ -208,7 +208,10 @@ class ProgressStore:
             return removed
 
     def prune(self, keywords: list | None = None) -> int:
-        """清理超 TTL 条目（可选按关键词白名单收窄），返回清理条数。"""
+        """清理超 TTL 条目（可选按关键词白名单收窄），返回清理条数。
+
+        keywords 语义 =「本次只处理白名单内的词」：不在白名单的条目保留（收窄清理范围）。
+        """
         with self._lock:
             self._load()
             allow = {str(k).strip() for k in (keywords or []) if str(k).strip()} or None
@@ -217,7 +220,9 @@ class ProgressStore:
                 parts = str(key).split('|')
                 keyword = parts[2] if len(parts) > 2 else ''
                 if allow is not None and keyword and keyword not in allow:
-                    continue
+                    continue            # 本次只处理白名单内的词
+                if keyword == '' and allow is not None:
+                    continue            # 无关键词条目不在白名单语义内，保留
                 if self._valid(key, fresh=False) is None:
                     self._combos.pop(key, None)
                     removed += 1

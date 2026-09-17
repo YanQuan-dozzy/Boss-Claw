@@ -193,9 +193,11 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
     except Exception:
         pass
 
-    # 风险码透传：code 36/32/35/37/38 交给渲染层统一分类
-    if last_code in (36, 32, 35, 37, 38):
-        return {"ok": False, "code": last_code, "message": last_msg, "jobs": []}
+    # 失败码收口：仅「显式成功」（code=0，或整批一页未跑且无失败码）才算成功。
+    # 未列入已知风险码的码值一律 fail-safe 上报（对齐 platforms.ts::collectFaultScope 的未知码口径：
+    # 命中 queue → 整批中止交人工；403 等归属 PLATFORM_FAULT_CODES → 平台级，其余平台继续）。
+    if last_code not in (0, None):
+        return {"ok": False, "code": last_code, "message": last_msg or f'采集失败（code {last_code}）', "jobs": []}
 
     formatted = format_jobs(all_jobs)
     log('🎉', f'搜索完成：共 {len(formatted)} 个岗位')
@@ -238,6 +240,8 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
     greeting = str(greeting or '').strip()
     if not greeting:
         return {"ok": False, "code": 400, "message": "招呼语为空，拒绝发送", "sent": False}
+    # P6-06：前端权威长度口径见 greetings.ts::GREETING_MAX_CHARS（200）与 GREETING_LENGTH_RULE；
+    # 此处 800 仅为服务端防御上限（拦截异常超长输入），不承担「内容长度规范」职责。
     if len(greeting) > 800:
         return {"ok": False, "code": 400, "message": "招呼语过长（>800 字），拒绝发送", "sent": False}
 

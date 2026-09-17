@@ -10,6 +10,7 @@
 import { useAppStore, NAV_ITEMS } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import { useAutoChatStore } from '@/store/useAutoChatStore';
 import { writeLocalBackup, restoreFromLocalBackup } from '@/lib/localBackup';
@@ -90,6 +91,7 @@ function snapshotState(): Record<string, unknown> {
   const app = useAppStore.getState();
   const cfg = useSettingsStore.getState().config;
   const data = useDataStore.getState();
+  const rlogs = useRuntimeLogsStore.getState();
   const sched = useScheduleStore.getState();
   const auto = useAutoChatStore.getState();
   const now = Date.now();
@@ -136,8 +138,8 @@ function snapshotState(): Record<string, unknown> {
       greetings: data.greetings || [],
       greetingPromptChars: (data.greetingPrompt || '').length,
       directionPlan: !!data.directionPlan,
-      logs: { count: (data.logs || []).length, tail: (data.logs || []).slice(-20) },
-      chatLogs: { count: (data.chatLogs || []).length, tail: (data.chatLogs || []).slice(-20) },
+      logs: { count: (rlogs.logs || []).length, tail: (rlogs.logs || []).slice(-20) },
+      chatLogs: { count: (rlogs.chatLogs || []).length, tail: (rlogs.chatLogs || []).slice(-20) },
     },
     schedule: { entries: sched.entries || [] },
     autochat: { chatRunning: auto.chatRunning, activeChatId: auto.activeChatId, progress: auto.progress },
@@ -283,12 +285,12 @@ const handlers: Record<string, Handler> = {
 
   addLog: ({ level, msg }) => {
     const lv = (['info', 'warn', 'error', 'success'] as const).includes(level as never) ? (level as 'info' | 'warn' | 'error' | 'success') : 'info';
-    useDataStore.getState().addLog(lv, `[agent] ${String(msg ?? '').slice(0, 400)}`);
+    useRuntimeLogsStore.getState().addLog(lv, `[agent] ${String(msg ?? '').slice(0, 400)}`);
     return { applied: true, message: '已写入日志面板' };
   },
 
   clearLogs: () => {
-    useDataStore.getState().clearLogs();
+    useRuntimeLogsStore.getState().clearLogs();
     return { applied: true, message: '日志面板已清空' };
   },
 
@@ -354,7 +356,7 @@ const handlers: Record<string, Handler> = {
   },
   dataAddChatLog: ({ entry }) => {
     if (!entry || typeof entry !== 'object') return { applied: false, message: '缺少沟通日志对象 entry' };
-    useDataStore.getState().addChatLog(entry as never);
+    useRuntimeLogsStore.getState().addChatLog(entry as never);
     return { applied: true, message: '已追加一条沟通日志' };
   },
   scheduleAdd: ({ entry }) => {
@@ -423,7 +425,7 @@ const handlers: Record<string, Handler> = {
     }
     const waitedMs = Date.now() - started;
     if (out.tasks.length) {
-      useDataStore.getState().addLog('info', `[agent] 领取代答任务 ${out.tasks.length} 个：${out.tasks.map((t) => `${t.id}(${t.purpose})`).join('、')}`);
+      useRuntimeLogsStore.getState().addLog('info', `[agent] 领取代答任务 ${out.tasks.length} 个：${out.tasks.map((t) => `${t.id}(${t.purpose})`).join('、')}`);
     }
     const message = out.tasks.length
       ? `待代答任务 ${out.tasks.length} 个（等待 ${Math.round(waitedMs / 1000)}s）`
@@ -432,12 +434,12 @@ const handlers: Record<string, Handler> = {
   },
   agentSubmit: async ({ id, content }) => {
     const res = submitAgentAnswer(String(id ?? ''), String(content ?? ''));
-    useDataStore.getState().addLog(res.applied ? 'success' : 'warn', `[agent] 代答回填：${res.message}`);
+    useRuntimeLogsStore.getState().addLog(res.applied ? 'success' : 'warn', `[agent] 代答回填：${res.message}`);
     return { applied: res.applied, message: res.message, next: { remaining: res.remaining } };
   },
   agentCancel: async ({ id, reason }) => {
     const res = cancelAgentAnswer(String(id ?? ''), reason !== undefined ? String(reason) : undefined);
-    useDataStore.getState().addLog('warn', `[agent] 放弃代答：${res.message}`);
+    useRuntimeLogsStore.getState().addLog('warn', `[agent] 放弃代答：${res.message}`);
     return { applied: res.applied, message: res.message, next: { remaining: res.remaining } };
   },
 
@@ -626,7 +628,7 @@ const handlers: Record<string, Handler> = {
       item = rerankPending(data.pending, cfg).find(
         (p) =>
           (p.status === 'approved' || p.status === 'opened') &&
-          !isDeliveryClaimed(p.id) &&
+          !isDeliveryClaimed(p.id, String(p.job?.platform || 'boss')) &&
           platformEnabled(cfg, String(p.job?.platform || 'boss') as JobPlatform)
       );
     }
@@ -666,6 +668,7 @@ const handlers: Record<string, Handler> = {
   // ===== C. 完整数据读取 =====
   appDataFull: ({ sections, maxPending, maxLogs }) => {
     const data = useDataStore.getState();
+    const rlogs = useRuntimeLogsStore.getState();
     const sched = useScheduleStore.getState();
     const want = (k: string) => !Array.isArray(sections) || sections.length === 0 || (sections as string[]).map(String).includes(k);
     const maxP = Math.min(Math.max(Number(maxPending) || 100, 1), 500);
@@ -685,7 +688,7 @@ const handlers: Record<string, Handler> = {
     }
     if (want('taskRuns')) sectionsOut.taskRuns = { present: (data.taskRuns || []).length > 0, items: (data.taskRuns || []).slice(0, 200) };
     if (want('schedule')) sectionsOut.schedule = { present: (sched.entries || []).length > 0, items: sched.entries };
-    if (want('chatLogs')) sectionsOut.chatLogs = { present: (data.chatLogs || []).length > 0, items: (data.chatLogs || []).slice(-maxL) };
+    if (want('chatLogs')) sectionsOut.chatLogs = { present: (rlogs.chatLogs || []).length > 0, items: (rlogs.chatLogs || []).slice(-maxL) };
     if (want('imageResumes')) sectionsOut.imageResumes = (data.imageResumes || []).map((r) => ({ id: r.id, name: r.name, createdAt: r.createdAt }));
     return {
       applied: true,
@@ -695,7 +698,7 @@ const handlers: Record<string, Handler> = {
           pending: data.pending.length,
           taskRuns: data.taskRuns.length,
           greetings: data.greetings.length,
-          chatLogs: data.chatLogs.length,
+          chatLogs: rlogs.chatLogs.length,
           schedule: sched.entries.length,
           imageResumes: (data.imageResumes || []).length,
         },
@@ -965,9 +968,10 @@ declare global {
 
 let installed = false;
 
-/** 在应用启动时调用一次（main.tsx） */
+/** 在应用启动时调用一次（main.tsx）；DEV（Vite HMR）下允许覆盖，保证 actions 快照不陈旧 */
 export function installControlRuntime(): void {
-  if (installed || typeof window === 'undefined') return;
+  if (typeof window === 'undefined') return;
+  if (installed && !import.meta.env.DEV) return;
   installed = true;
   window.__bossclawControl = {
     version: '1.1.0',

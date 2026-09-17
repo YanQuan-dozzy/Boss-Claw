@@ -93,9 +93,10 @@ def platform_capabilities(platforms: list | None = None) -> dict:
     return capabilities_payload(platforms or PLATFORMS)
 
 
-def collection_progress(platform: str | None = None) -> dict:
-    """断点续采进度快照；指定 platform 时只看该平台。"""
-    store = progress.ProgressStore()
+def collection_progress(platform: str | None = None, config: dict | None = None) -> dict:
+    """断点续采进度快照；指定 platform 时只看该平台。ttlHours 按实际配置回显（否则为默认 24）。"""
+    ttl = progress.ttl_from_config(config, platform or '') if config else progress.DEFAULT_TTL_HOURS
+    store = progress.ProgressStore(ttl_hours=ttl)
     snap = store.snapshot()
     if platform:
         prefix = f"{str(platform).strip().lower()}|"

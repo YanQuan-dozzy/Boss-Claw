@@ -24,6 +24,23 @@ export interface NavItem {
 
 export type { ThemeMode };
 
+/**
+ * 侧边栏导航（11 模块）唯一权威定义：key = 路由标识，label = 中文展示名。
+ * 维护定位：渲染在 components/Sidebar.tsx（图标见其 NAV_ICONS）；
+ * 各模块 key(中文) → 页面组件 → 页面文件（App.tsx 中按 key 渲染）：
+ *   home(首页)        → Home          → src/pages/Home.tsx
+ *   workbench(工作台) → Workbench     → src/pages/Workbench.tsx（常驻宿主，App.tsx 单独挂载）
+ *   resume(简历中心)  → Resume        → src/pages/Resume.tsx
+ *   directions(投递方向) → Directions → src/pages/Directions.tsx
+ *   tasks(任务进度)   → Tasks         → src/pages/Tasks.tsx
+ *   schedule(定时任务) → ScheduleTasks → src/pages/ScheduleTasks.tsx
+ *   stats(数据统计)   → Stats         → src/pages/Stats.tsx
+ *   assistant(定制简历) → JobAssistant → src/pages/JobAssistant.tsx
+ *   openclaw(OpenClaw) → OpenClaw     → src/pages/OpenClaw.tsx
+ *   autochat(自动沟通) → AutoChat     → src/pages/AutoChat.tsx
+ *   settings(设置)    → Settings      → src/pages/Settings.tsx
+ * ⚠️ 顺序即展示顺序；新增模块需同步：RouteKey 类型 + NAV_ITEMS + 图标 + App.tsx 渲染分支。
+ */
 export const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: '首页' },
   { key: 'workbench', label: '工作台' },

@@ -1,15 +1,26 @@
+/**
+ * 【主模块：工作台】导航 key = 'workbench'（App.tsx 常驻宿主单独挂载，切换页面仍后台运行）
+ * 布局：左（侧栏 Sidebar）｜中（投递任务控制台）｜右（内置浏览器 <BrowserView>）
+ * 中栏子模块：
+ * - 岗位进度卡（wb-progress-card：搜索中/待确认/待投递/投递中/已完成/失败 统计 + 搜索采集/隐身采集/加入任务 + 可视化采集进度 + 当前投递任务详情）
+ * - 岗位筛选区（wb-filter-section：Segmented 过滤器 + 显示已忽略/跳过）
+ * - 岗位卡片列表（wb-jobs：待确认岗位卡，批准/跳过/修正优先级等操作）
+ * 右栏子模块：内置浏览器（BrowserView 多平台标签 webview，含 BOSS 等平台登录态与岗位详情页）
+ */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Input, Select, Alert } from 'antd';
+import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Select, Alert } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   StopOutlined, UndoOutlined, ThunderboltOutlined,
   PauseOutlined, CaretRightOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
-import { useDataStore, type LogLevel } from '@/store/useDataStore';
+import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore, type LogLevel } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
-import BrowserView, { NavInfo, WebviewApi } from '@/components/BrowserView';
+import BrowserView, { WebviewApi } from '@/components/BrowserView';
+import GreetingEditor from '@/components/GreetingEditor';
 import PlatformChip from '@/components/PlatformChip';
 import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
@@ -29,7 +40,7 @@ import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
 import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
-import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
   ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
   cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS,
@@ -108,12 +119,11 @@ const filterQueueByRunIds = <T extends { keyword?: string; location?: string; em
 };
 
 /** 从定向 runId 反推目标平台（runId 形如 cr_<platform>_…，平台名不含下划线，parts[1] 即平台）。 */
-const KNOWN_PLATFORMS: JobPlatform[] = ['boss', 'liepin', 'zhaopin', 'job51'];
 const platformsFromRunIds = (runIds: string[]): JobPlatform[] => {
   const found = new Set<JobPlatform>();
   for (const id of runIds) {
     const p = String(id).split('_')[1] as JobPlatform;
-    if (KNOWN_PLATFORMS.includes(p)) found.add(p);
+    if (PLATFORM_IDS.includes(p)) found.add(p);
   }
   return [...found];
 };
@@ -131,7 +141,7 @@ const NO_KEYWORD_SETUP_REMINDER =
 const BOSS_RESUME_URL = 'https://www.zhipin.com/web/geek/resume';
 
 const LogStream = memo(function LogStream() {
-  const logs = useDataStore((s) => s.logs);
+  const logs = useRuntimeLogsStore((s) => s.logs);
   const formattedLogs = useMemo(() => {
     return logs.slice(-80).map((l, i) => ({
       id: `${l.time}-${i}`,
@@ -150,6 +160,59 @@ const LogStream = memo(function LogStream() {
     />
   );
 });
+
+// ===== 福利标签正则常量（P5-03）=====
+// computeWelfareTag 渲染期逐卡执行，原 51 条正则字面量内联在函数体内（每卡多次编译）；
+// 提到模块级一次编译，行为完全不变。
+const WF_WORK_GOOD: Array<readonly [string, RegExp]> = [
+  ['双休', /双休|周末双休|做五休二|朝九晚五|周末休息|8小时工作制|五天制/],
+];
+const WF_WORK_MID: Array<readonly [string, RegExp]> = [
+  ['大小周', /大小周|双单休/],
+  ['轮休', /轮休/],
+];
+const WF_WORK_BAD: Array<readonly [string, RegExp]> = [
+  ['单休', /单休|做六休一|六天制/],
+];
+const WF_INSURE: Array<readonly [string, RegExp]> = [
+  ['六险二金', /六险二金|九险二金/],
+  ['六险一金', /六险一金/],
+  ['五险一金', /五险一金/],
+  ['三险一金', /三险一金/],
+  ['住房公积金', /住房公积金/],
+  ['公积金', /公积金/],
+  ['补充医疗', /补充医疗|补充商业保险/],
+  ['补充养老', /补充养老|企业年金/],
+  ['五险', /[五5]险/],
+];
+const WF_FULL_INS = /六险二金|六险一金|五险一金|三险一金/;
+const WF_FUND = /住房公积金|公积金/;
+const WF_BENEFIT: Array<readonly [string, RegExp]> = [
+  ['多薪', /(?:13|14|15|16)薪|年底双薪|十三薪/],
+  ['年终奖', /年终奖/],
+];
+const WF_TRAP: Array<readonly [string, RegExp]> = [
+  ['弹性工作', /弹性工作|弹性工时|弹性上下班|不定时工作制|不固定工时/],
+  ['高提成', /高提成|上不封顶/],
+  ['底薪加提成', /底薪\s*[加和]?\s*提成|底薪提成/],
+  ['有责底薪', /有责底薪/],
+  ['无责底薪', /无责底薪/],
+  ['期权', /期权|股权激励/],
+  ['分红', /项目分红|事业合伙人|分红/],
+  ['收费/押金', /押金|培训费|岗前培训|服装费|保证金|实训|先交|先付费/],
+  ['试岗', /无薪试岗|试岗/],
+  ['管培生', /管培生/],
+  ['储备干部', /储备干部/],
+  ['保录/直签', /保录|直签/],
+  ['抗压/吃苦', /抗压能力强|能吃苦耐劳/],
+  ['无偿加班', /无偿加班|加班文化|强制加班|经常加班|加班较多|加班严重|加班多/],
+  ['狼性/末位淘汰', /狼性文化|末位淘汰|末尾淘汰/],
+  ['试用期不缴社保', /试用期不缴|试用期无社保|不缴社保|转正才缴/],
+  ['长期试用期', /试用期\s*(?:[6-9]\d*|1[0-9]|一年|1年|半年)\s*个?月?/],
+  ['长期出差/驻场', /长期出差|频繁出差|出差频繁|驻场/],
+  ['无薪实习', /无薪实习|无工资实习|不给实习工资/],
+  ['就业歧视', /限男性|限女性|限35岁|已婚已育优先|未婚未育优先/],
+];
 
 // 从简历中心招呼语中挑一条与岗位最匹配的
 function pickGreetingForJob(job: JobMeta | undefined | null, greetings: string[]): { greeting: string; index: number; score: number } {
@@ -176,7 +239,7 @@ export default function Workbench() {
   const addPendingItem = useDataStore((s) => s.addPendingItem);
   const updatePending = useDataStore((s) => s.updatePending);
   const setPending = useDataStore((s) => s.setPending);
-  const addLog = useDataStore((s) => s.addLog);
+  const addLog = useRuntimeLogsStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   // 采集任务联动：与「任务进度」页共用 taskRuns（采集时写入，任务进度页实时出现卡片）
   const taskRuns = useDataStore((s) => s.taskRuns);
@@ -195,7 +258,6 @@ export default function Workbench() {
   const [running, setRunning] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [applyStage, setApplyStage] = useState<TaskStage | null>(null);
-  const [, setNav] = useState<NavInfo>({ url: '', title: '' });
   const [filter, setFilter] = useState('all');
   const [showIgnored, setShowIgnored] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -1675,182 +1737,155 @@ export default function Workbench() {
     })();
   }
 
-  const runNext = async () => {
-    // 多平台适配：投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
-    // 分别新建对应平台标签页做 DOM 投递（见下方平台分派分支）。
-    // 投递顺序完全由 rerankPending 决定（状态组 → 平台优先级 → priorityScore → AI 分 → 入队时间），
-    // 不再记忆「最近点击批准的那个」：原 preferIdRef 是单值 ref，连点多个批准只会记最后一个，
-    // 反而让先批准的被无理由后置，属于伪优先级，已移除。
-    const ranked = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
-    const candidate = ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform));
-    if (!candidate) {
-      if (visualActiveRef.current || cfxActiveRef.current) return;
-      if (useSettingsStore.getState().config.executionMode === 'auto' && !searchTriggered.current) {
-        searchTriggered.current = true;
-        addLog('info', '没有待投递的岗位，先自动采集一批岗位');
-        startCollect();
-        return;
-      }
-      addLog('info', '队列已空，投递结束');
-      setRunning(false);
-      setAutoAssist(false);
+  // ---- 投递通道拆分（P4-02）：runNext 只保留「选岗位 + 预检 + 分派」。
+  // 三条互异通道（非 BOSS DOM / Camoufox 隐身 / BOSS DOM）各自成函数，锁的 claim/release
+  // 收进各自的 try/finally，把原先单函数 340 行 / 31 个 return 分散到函数边界（H8）。----
+
+  /** 通道 A：非 BOSS 平台 DOM 投递（猎聘/智联/51Job；新建对应平台标签页） */
+  const deliverNonBoss = async (candidate: PendingItem, url: string): Promise<void> => {
+    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
+    if (!claimDelivery(candidate.id, pf)) {
+      addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
+      // 不降级状态：该岗位是 approved_queue（「投递中」），只是本轮投递权被后台占用。
+      // 历史 bug：此处曾写 status:'approved' 把它打回「待投递」，造成状态机倒流
+      // （approved_queue → approved）——用户看到的就是「按钮从已批准状态撤回」。
+      // 正确做法：保持队列态，本轮让给后台；后台跑完（sent/failed）后状态自有其归属，
+      // 若仍未投递则后续 runNext 会重新参与竞争，无需在此改写状态。
+      setApplyStage(null);
+      recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
-    setActiveId(candidate.id);
-    lastApplyStageRef.current = '';
-    setApplyStage('queued');
-    addLog('info', `按匹配优先级投递：${candidate.job?.title || '岗位'}（AI ${candidate.analysis?.score || 0} 分）`);
-    const url = String(candidate.job?.url || '').trim();
-    if (!url) { pauseAssist('岗位缺少详情链接，无法投递'); return; }
-
-    // 预检（冷却/每日上限）：不通过就别白开页面。
-    // 岗位间隔节流不在这里等 —— 已挪到打开标签页之后，与页面加载并行（见下方 Promise.all）。
-    if (!precheckDelivery()) return;
-
-    const sendCfg = useSettingsStore.getState().config;
-    const cfx0 = sendCfg.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
-
-    // ===== 非 BOSS 平台投递：不同平台新建标签页做 DOM 投递（猎聘/智联/51Job）=====
-    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
-    if (pf && pf !== 'boss') {
-      if (!claimDelivery(candidate.id, pf)) {
-        addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
-        // 不降级状态：该岗位是 approved_queue（「投递中」），只是本轮投递权被后台占用。
-        // 历史 bug：此处曾写 status:'approved' 把它打回「待投递」，造成状态机倒流
-        // （approved_queue → approved）——用户看到的就是「按钮从已批准状态撤回」。
-        // 正确做法：保持队列态，本轮让给后台；后台跑完（sent/failed）后状态自有其归属，
-        // 若仍未投递则后续 runNext 会重新参与竞争，无需在此改写状态。
-        setApplyStage(null);
-        recomputeStats();
-        if (useAppStore.getState().autoAssist) requestRunNext();
-        return;
-      }
-      setApplyStage('open_job');
-      addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
-      let r: any;
-      try {
-        // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
-        // 因此与串行版本保持一致：先等满岗位间隔再执行（安全语义优先于观感）。
-        await awaitDeliveryGap();
-        r = await webviewApi.current?.platformApply(url, pf, candidate.job);
-      } catch (e) {
-        r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
-      } finally {
-        releaseDelivery(candidate.id, pf); // 锁绝不泄漏
-      }
-      const res = r || {};
-      const nTitle = candidate.job?.title || '岗位';
-      if (res.ok && res.stage === 'success') {
-        handleDelivered(candidate.id, res.tabId);
-        return;
-      }
-      if (res.external) {
-        updatePending(candidate.id, { status: 'skipped', error: res.message || '外部网申岗位，跳过' });
-        addLog('warn', `已跳过外部网申岗位：${nTitle}`);
-        if (res.tabId) webviewApi.current?.closeTab(res.tabId);
-        setApplyStage(null); recomputeStats();
-        if (useAppStore.getState().autoAssist) requestRunNext();
-        return;
-      }
-      if (res.stage === 'stop') {
-        updatePending(candidate.id, { status: 'skipped', error: res.message || '该平台今日投递已达上限' });
-        addLog('warn', `跳过：${nTitle}（${res.message || '该平台今日投递已达上限'}）`);
-        if (res.tabId) webviewApi.current?.closeTab(res.tabId);
-        setApplyStage(null); recomputeStats();
-        if (useAppStore.getState().autoAssist) requestRunNext();
-        return;
-      }
-      if (res.stage === 'risk') {
-        handleRisk(res.code, res.message || ''); // 保留标签供人工核对
-        return;
-      }
-      const errMsg = res.error || res.message || '投递失败';
-      updatePending(candidate.id, { status: 'failed', error: errMsg });
-      addLog('error', `投递失败：${nTitle}（${errMsg}）`);
+    setApplyStage('open_job');
+    addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
+    let r: any;
+    try {
+      // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
+      // 因此与串行版本保持一致：先等满岗位间隔再执行（安全语义优先于观感）。
+      await awaitDeliveryGap();
+      r = await webviewApi.current?.platformApply(url, pf, candidate.job);
+    } catch (e) {
+      r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
+    } finally {
+      releaseDelivery(candidate.id, pf); // 锁绝不泄漏
+    }
+    const res = r || {};
+    const nTitle = candidate.job?.title || '岗位';
+    if (res.ok && res.stage === 'success') {
+      handleDelivered(candidate.id, res.tabId);
+      return;
+    }
+    if (res.external) {
+      updatePending(candidate.id, { status: 'skipped', error: res.message || '外部网申岗位，跳过' });
+      addLog('warn', `已跳过外部网申岗位：${nTitle}`);
       if (res.tabId) webviewApi.current?.closeTab(res.tabId);
       setApplyStage(null); recomputeStats();
-      if (useAppStore.getState().autoAssist) {
-        addLog('warn', '继续投递下一个岗位');
-        requestRunNext();
-      } else {
-        addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
-      }
+      if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
+    if (res.stage === 'stop') {
+      updatePending(candidate.id, { status: 'skipped', error: res.message || '该平台今日投递已达上限' });
+      addLog('warn', `跳过：${nTitle}（${res.message || '该平台今日投递已达上限'}）`);
+      if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+      setApplyStage(null); recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    if (res.stage === 'risk') {
+      handleRisk(res.code, res.message || ''); // 保留标签供人工核对
+      return;
+    }
+    const errMsg = res.error || res.message || '投递失败';
+    updatePending(candidate.id, { status: 'failed', error: errMsg });
+    addLog('error', `投递失败：${nTitle}（${errMsg}）`);
+    if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+    setApplyStage(null); recomputeStats();
+    if (useAppStore.getState().autoAssist) {
+      addLog('warn', '继续投递下一个岗位');
+      requestRunNext();
+    } else {
+      addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
+    }
+  };
 
-    // ===== 通道 1：Camoufox 隐身投递（可选，设置「优先走隐身通道」时；仅 BOSS）=====
-    if (cfx0.enabled && cfx0.prefer) {
-      const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
-      const greeting = String(liveCandidate?.deliveryGreeting || liveCandidate?.analysis?.greeting || candidate.deliveryGreeting || candidate.analysis?.greeting || '').trim();
-      if (!greeting) { pauseAssist('招呼语为空，无法通过 Camoufox 投递，请补充后再试'); return; }
-      const jobId = extractEncryptJobId(candidate.job);
-      if (!jobId) { pauseAssist('岗位缺少 jobId，无法通过 Camoufox 投递'); return; }
-      try {
-        setApplyStage('open_job');
-        addLog('info', `通过 Camoufox 隐身通道投递：${candidate.job?.title || '岗位'}`);
-        const st = await camoufoxStatus();
-        if (!st.ready) { pauseAssist('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测')); return; }
-        setApplyStage('send_message');
-        // 共享占位锁：若该岗位正被后台「自动沟通」投递，则工作台跳过（交给认领方）
-        if (!claimDelivery(candidate.id)) {
-          addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
-          setApplyStage(null);
-          recomputeStats();
-          if (useAppStore.getState().autoAssist) requestRunNext();
-          return;
-        }
-        let cfxResult: any;
-        try {
-          // Camoufox 路径没有可并行的页面加载（发送在独立进程内完成），
-          // 因此与串行版本一致：先等满岗位间隔再发送。
-          await awaitDeliveryGap();
-          cfxResult = await camoufoxSend(jobId, greeting, cfx0.os);
-        } finally {
-          releaseDelivery(candidate.id);
-        }
-        const result = cfxResult;
-        if (result.ok && result.sent) {
-          handleDelivered(candidate.id);
-          return;
-        }
-        const code = result.code ?? null;
-        const msg = result.message || result.error || '投递失败';
-        // 「已建立会话」= 该岗位已与 HR 沟通过（继续沟通入口）：不再按新投递判失败，
-        // 移入「自动沟通」队列（status=opened，AutoChat 接管），不占用今日投递名额。
-        if (/已建立会话|已沟通|继续沟通/.test(msg)) {
-          updatePending(candidate.id, { status: 'opened', error: '已建立会话，移入自动沟通队列' });
-          addLog('warn', `检测到「继续沟通」（已建立会话），已移入自动沟通队列：${candidate.job?.title || '岗位'}`);
-          setApplyStage(null);
-          recomputeStats();
-          if (useAppStore.getState().autoAssist) requestRunNext();
-          return;
-        }
-        if (isCamoufoxStopCode(code)) {
-          updatePending(candidate.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
-          addLog('error', `Camoufox 投递命中风控码 ${code}：${msg}。立即暂停并进入冷却，请人工处理，切勿重复重试。`);
-          useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
-          setApplyStage(null);
-          recomputeStats();
-          pauseAssist(`${msg}。已强制暂停并进入冷却，请人工核对处理。`);
-          return;
-        }
-        updatePending(candidate.id, { status: 'failed', error: msg });
-        addLog('error', `Camoufox 投递失败：${candidate.job?.title || ''}（${msg}）`);
+  /** 通道 B：Camoufox 隐身投递（可选，设置「优先走隐身通道」时；仅 BOSS） */
+  const deliverCamoufox = async (candidate: PendingItem): Promise<void> => {
+    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
+    const cfx0 = useSettingsStore.getState().config.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
+    if (!(cfx0.enabled && cfx0.prefer)) return;
+    const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
+    const greeting = String(liveCandidate?.deliveryGreeting || liveCandidate?.analysis?.greeting || candidate.deliveryGreeting || candidate.analysis?.greeting || '').trim();
+    if (!greeting) { pauseAssist('招呼语为空，无法通过 Camoufox 投递，请补充后再试'); return; }
+    const jobId = extractEncryptJobId(candidate.job);
+    if (!jobId) { pauseAssist('岗位缺少 jobId，无法通过 Camoufox 投递'); return; }
+    try {
+      setApplyStage('open_job');
+      addLog('info', `通过 Camoufox 隐身通道投递：${candidate.job?.title || '岗位'}`);
+      const st = await camoufoxStatus();
+      if (!st.ready) { pauseAssist('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测')); return; }
+      setApplyStage('send_message');
+      // 共享占位锁：若该岗位正被后台「自动沟通」投递，则工作台跳过（交给认领方）
+      if (!claimDelivery(candidate.id, pf)) {
+        addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
         setApplyStage(null);
         recomputeStats();
-        pauseAssist('投递已暂停：Camoufox 投递失败，请人工核对后重试');
-        return;
-      } catch (e: any) {
-        updatePending(candidate.id, { status: 'failed', error: String(e?.message || e) });
-        addLog('error', `Camoufox 投递异常：${e?.message || e}`);
-        setApplyStage(null);
-        recomputeStats();
-        pauseAssist('投递已暂停：Camoufox 投递异常，请人工核对后重试');
+        if (useAppStore.getState().autoAssist) requestRunNext();
         return;
       }
+      let cfxResult: any;
+      try {
+        // Camoufox 路径没有可并行的页面加载（发送在独立进程内完成），
+        // 因此与串行版本一致：先等满岗位间隔再发送。
+        await awaitDeliveryGap();
+        cfxResult = await camoufoxSend(jobId, greeting, cfx0.os);
+      } finally {
+        releaseDelivery(candidate.id, pf);
+      }
+      const result = cfxResult;
+      if (result.ok && result.sent) {
+        handleDelivered(candidate.id);
+        return;
+      }
+      const code = result.code ?? null;
+      const msg = result.message || result.error || '投递失败';
+      // 「已建立会话」= 该岗位已与 HR 沟通过（继续沟通入口）：不再按新投递判失败，
+      // 移入「自动沟通」队列（status=opened，AutoChat 接管），不占用今日投递名额。
+      if (/已建立会话|已沟通|继续沟通/.test(msg)) {
+        updatePending(candidate.id, { status: 'opened', error: '已建立会话，移入自动沟通队列' });
+        addLog('warn', `检测到「继续沟通」（已建立会话），已移入自动沟通队列：${candidate.job?.title || '岗位'}`);
+        setApplyStage(null);
+        recomputeStats();
+        if (useAppStore.getState().autoAssist) requestRunNext();
+        return;
+      }
+      if (isCamoufoxStopCode(code)) {
+        updatePending(candidate.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
+        addLog('error', `Camoufox 投递命中风控码 ${code}：${msg}。立即暂停并进入冷却，请人工处理，切勿重复重试。`);
+        useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+        setApplyStage(null);
+        recomputeStats();
+        pauseAssist(`${msg}。已强制暂停并进入冷却，请人工核对处理。`);
+        return;
+      }
+      updatePending(candidate.id, { status: 'failed', error: msg });
+      addLog('error', `Camoufox 投递失败：${candidate.job?.title || ''}（${msg}）`);
+      setApplyStage(null);
+      recomputeStats();
+      pauseAssist('投递已暂停：Camoufox 投递失败，请人工核对后重试');
+      return;
+    } catch (e: any) {
+      updatePending(candidate.id, { status: 'failed', error: String(e?.message || e) });
+      addLog('error', `Camoufox 投递异常：${e?.message || e}`);
+      setApplyStage(null);
+      recomputeStats();
+      pauseAssist('投递已暂停：Camoufox 投递异常，请人工核对后重试');
+      return;
     }
+  };
 
-    // ===== BOSS 投递：直接走内置浏览器真实 DOM 沟通投递（对齐 job-claw-main）=====
+  /** 通道 C：BOSS 内置浏览器真实 DOM 沟通投递（对齐 job-claw-main） */
+  const deliverBossDom = async (candidate: PendingItem, url: string): Promise<void> => {
+    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
     // 不先调 /friend/add.json 官方接口——该接口常因缺少必要参数返回 code 1；DOM 沟通投递自带
     // 文字气泡确认 / 外部网申跳过 / 风控即停，安全性与人工操作口径都更贴合。
     const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
@@ -1863,7 +1898,7 @@ export default function Workbench() {
     if (!finalGreeting) { pauseAssist('招呼语为空，无法投递，请补充后再试'); return; }
 
     // 共享占位锁：与后台「自动沟通」互斥，避免对同一岗位重复投递
-    if (!claimDelivery(candidate.id)) {
+    if (!claimDelivery(candidate.id, pf)) {
       addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
       // 同前一处：不把它降级回 approved（approved_queue → approved 是状态机倒流，
       // 界面上表现为「已批准被撤回」）。保持队列态，本轮让给后台即可。
@@ -1875,7 +1910,7 @@ export default function Workbench() {
 
     const domTab = webviewApi.current?.openInNewTab(url, candidate.job?.title || '岗位', 'detail');
     if (!domTab) {
-      releaseDelivery(candidate.id);
+      releaseDelivery(candidate.id, pf);
       updatePending(candidate.id, { status: 'failed', error: '无法打开新标签页做 DOM 投递', retryable: true });
       addLog('error', `投递失败：${candidate.job?.title || ''}（无法打开新标签页做 DOM 投递）`);
       setApplyStage(null);
@@ -1965,7 +2000,7 @@ export default function Workbench() {
       });
     } finally {
       domWaitRef.current = null;
-      releaseDelivery(candidate.id);
+      releaseDelivery(candidate.id, pf);
     }
 
     if (domResult.mode === 'success') {
@@ -2012,6 +2047,48 @@ export default function Workbench() {
     } else {
       addLog('warn', '投递引擎未运行，已暂停。请人工核对后启动投递。');
     }
+  };
+
+  const runNext = async () => {
+    // 多平台适配：投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
+    // 分别新建对应平台标签页做 DOM 投递（见下方平台分派分支）。
+    // 投递顺序完全由 rerankPending 决定（状态组 → 平台优先级 → priorityScore → AI 分 → 入队时间），
+    // 不再记忆「最近点击批准的那个」：原 preferIdRef 是单值 ref，连点多个批准只会记最后一个，
+    // 反而让先批准的被无理由后置，属于伪优先级，已移除。
+    const ranked = rerankPending(useDataStore.getState().pending, useSettingsStore.getState().config);
+    const candidate = ranked.find((p) => p.status === 'approved_queue' && !isDeliveryClaimed(p.id, p.job?.platform));
+    if (!candidate) {
+      if (visualActiveRef.current || cfxActiveRef.current) return;
+      if (useSettingsStore.getState().config.executionMode === 'auto' && !searchTriggered.current) {
+        searchTriggered.current = true;
+        addLog('info', '没有待投递的岗位，先自动采集一批岗位');
+        startCollect();
+        return;
+      }
+      addLog('info', '队列已空，投递结束');
+      setRunning(false);
+      setAutoAssist(false);
+      return;
+    }
+    setActiveId(candidate.id);
+    lastApplyStageRef.current = '';
+    setApplyStage('queued');
+    addLog('info', `按匹配优先级投递：${candidate.job?.title || '岗位'}（AI ${candidate.analysis?.score || 0} 分）`);
+    const url = String(candidate.job?.url || '').trim();
+    if (!url) { pauseAssist('岗位缺少详情链接，无法投递'); return; }
+
+    // 预检（冷却/每日上限）：不通过就别白开页面。
+    // 岗位间隔节流不在这里等 —— 已挪到打开标签页之后，与页面加载并行（见各通道函数内）。
+    if (!precheckDelivery()) return;
+
+    // 通道分派：非 BOSS → DOM 投递；BOSS 且优先隐身 → Camoufox；其余 → BOSS DOM。
+    // 各通道内部自行 claim/release 投递锁（try/finally 保证配对），runNext 不再持有锁语义。
+    const sendCfg = useSettingsStore.getState().config;
+    const cfx0 = sendCfg.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
+    const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
+    if (pf && pf !== 'boss') { await deliverNonBoss(candidate, url); return; }
+    if (cfx0.enabled && cfx0.prefer) { await deliverCamoufox(candidate); return; }
+    await deliverBossDom(candidate, url);
   };
 
   useEffect(() => { runNextRef.current = runNext; });
@@ -2246,7 +2323,13 @@ export default function Workbench() {
     { key: 'failed', label: `失败 ${pending.filter((p) => p.status === 'failed').length}` },
   ];
 
-  const welfareTag = (p: PendingItem) => {
+  // ===== 岗位福利标签（welfareTag）=====
+  // P5-03：原实现是渲染期逐卡执行的纯函数（含 51 条正则），Workbench 任何 state 变化
+  // （采集期 visualItem rAF 节流 / 投递期 applyStage 高频变化）都会重跑全部可见卡片 × 全部正则。
+  // 拆分：computeWelfareTag = 纯逻辑；welfareTag = 按「岗位 id + 输入语料指纹」的结果缓存。
+  // 缓存键必须含语料指纹（welfare/cardText/description/title 长度），否则采集期
+  // enrichCollectedWelfare 补全福利后标签不会刷新。
+  const computeWelfareTag = (p: PendingItem) => {
     // 候选文本 = 已存的福利标签 + JD 描述 + 卡片文本 + 标题。
     // 即使 welfare 因旧数据/采集缺失为空，也能据持久化的 description 现场推导蓝绿黄标签。
     const corpus = [
@@ -2262,16 +2345,9 @@ export default function Workbench() {
     const hit = (pairs: Array<readonly [string, RegExp]>) =>
       Array.from(new Set(pairs.filter(([, re]) => re.test(corpus)).map(([label]) => label)));
     // 工作时间按性质分色：双休=绿（好）、大小周/轮休=蓝（中性）、单休=黄（警示）。
-    const workGood = hit([
-      ['双休', /双休|周末双休|做五休二|朝九晚五|周末休息|8小时工作制|五天制/],
-    ]);
-    const workMid = hit([
-      ['大小周', /大小周|双单休/],
-      ['轮休', /轮休/],
-    ]);
-    const workBad = hit([
-      ['单休', /单休|做六休一|六天制/],
-    ]);
+    const workGood = hit(WF_WORK_GOOD);
+    const workMid = hit(WF_WORK_MID);
+    const workBad = hit(WF_WORK_BAD);
     // 双休等工作制度再叠加 detectWorkSchedule 权威识别（词表覆盖 做五休二/大小休/单双休/每周N天 等
     // 更广措辞），保证只要有工作制度信号就展示、绝不因去重/截断被删掉（与「任务进度」页同口径）。
     const wSchedule = detectWorkSchedule(p.job);
@@ -2283,54 +2359,20 @@ export default function Workbench() {
     // 社保保障与薪酬：细致区分「五险一金」与「五险」——五险一金 = 社保 + 公积金（绿标、强保障）；
     // 仅有「五险」（无公积金）保障弱一档，单独用警示色展示并注明，绝不与五险一金混淆。
     // 同时避免「五险一金」因 /[五5]险/ 被误标成两个标签（五险一金 已含五险，不并列展示）。
-    const insRaw = hit([
-      ['六险二金', /六险二金|九险二金/],
-      ['六险一金', /六险一金/],
-      ['五险一金', /五险一金/],
-      ['三险一金', /三险一金/],
-      ['住房公积金', /住房公积金/],
-      ['公积金', /公积金/],
-      ['补充医疗', /补充医疗|补充商业保险/],
-      ['补充养老', /补充养老|企业年金/],
-      ['五险', /[五5]险/],
-    ]);
-    const hasFullIns = insRaw.some((l) => /六险二金|六险一金|五险一金|三险一金/.test(l));
+    const insRaw = hit(WF_INSURE);
+    const hasFullIns = insRaw.some((l) => WF_FULL_INS.test(l));
     const hasFullFund = insRaw.includes('住房公积金');
-    const hasAnyFund = insRaw.some((l) => /住房公积金|公积金/.test(l));
+    const hasAnyFund = insRaw.some((l) => WF_FUND.test(l));
     const benefit = [
       // 五险单独走 insuranceOnly 警示；「公积金」仅在出现完整「住房公积金」时不再并列
       ...insRaw.filter((l) => l !== '五险').filter((l) => !(hasFullFund && l === '公积金')),
-      ...hit([
-        ['多薪', /(?:13|14|15|16)薪|年底双薪|十三薪/],
-        ['年终奖', /年终奖/],
-      ]),
+      ...hit(WF_BENEFIT),
     ].slice(0, 3);
     // 仅有「五险」（未含一金/公积金项）→ 独立警示：与五险一金作细致区分
     const insuranceOnly = !hasFullIns && !hasAnyFund && insRaw.includes('五险') ? ['五险'] : [];
     // 警示项（潜在陷阱关键字，黄标）：弹性工作/工时、高提成、有责无责底薪、期权画饼、收费、岗位包装、
     // 以及加班文化 / 末位淘汰 / 试用期不缴社保 / 长期出差驻场 / 无薪实习 / 就业歧视等（发散覆盖常见用工风险）。
-    const trap = hit([
-      ['弹性工作', /弹性工作|弹性工时|弹性上下班|不定时工作制|不固定工时/],
-      ['高提成', /高提成|上不封顶/],
-      ['底薪加提成', /底薪\s*[加和]?\s*提成|底薪提成/],
-      ['有责底薪', /有责底薪/],
-      ['无责底薪', /无责底薪/],
-      ['期权', /期权|股权激励/],
-      ['分红', /项目分红|事业合伙人|分红/],
-      ['收费/押金', /押金|培训费|岗前培训|服装费|保证金|实训|先交|先付费/],
-      ['试岗', /无薪试岗|试岗/],
-      ['管培生', /管培生/],
-      ['储备干部', /储备干部/],
-      ['保录/直签', /保录|直签/],
-      ['抗压/吃苦', /抗压能力强|能吃苦耐劳/],
-      ['无偿加班', /无偿加班|加班文化|强制加班|经常加班|加班较多|加班严重|加班多/],
-      ['狼性/末位淘汰', /狼性文化|末位淘汰|末尾淘汰/],
-      ['试用期不缴社保', /试用期不缴|试用期无社保|不缴社保|转正才缴/],
-      ['长期试用期', /试用期\s*(?:[6-9]\d*|1[0-9]|一年|1年|半年)\s*个?月?/],
-      ['长期出差/驻场', /长期出差|频繁出差|出差频繁|驻场/],
-      ['无薪实习', /无薪实习|无工资实习|不给实习工资/],
-      ['就业歧视', /限男性|限女性|限35岁|已婚已育优先|未婚未育优先/],
-    ]);
+    const trap = hit(WF_TRAP);
     if (!workGood.length && !workMid.length && !workBad.length && !benefit.length && !trap.length && !insuranceOnly.length) return null;
     return (
       <>
@@ -2367,6 +2409,22 @@ export default function Workbench() {
       </>
     );
   };
+
+  // P5-03：结果级缓存——语料指纹一致则直接复用上次的 ReactNode（返回 null 也缓存）
+  const welfareCacheRef = useRef(new Map<string, React.ReactNode>());
+  const welfareTag = useCallback((p: PendingItem) => {
+    const corpusKey =
+      (Array.isArray(p.job?.welfare) ? p.job.welfare.join(',') : '') + '|' +
+      String(p.job?.description || '').length + '|' +
+      String(p.job?.cardText || '').length + '|' +
+      String(p.job?.title || '').length;
+    const key = p.id + '|' + corpusKey;
+    const cached = welfareCacheRef.current.get(key);
+    if (cached !== undefined) return cached;
+    const node = computeWelfareTag(p);
+    welfareCacheRef.current.set(key, node);
+    return node;
+  }, []);
 
   const interviewModeTag = (p: PendingItem) => {
     const mode = p.job?.interviewMode;
@@ -2589,6 +2647,7 @@ export default function Workbench() {
           )}
         </Card>
 
+        {/* 子模块：岗位筛选区（Segmented 过滤器 + 显示已忽略/跳过） */}
         <div className="wb-filter-section">
           <Segmented
             block
@@ -2681,6 +2740,12 @@ export default function Workbench() {
                                   {p.analysis.decision === 'recommend' ? '推荐' : p.analysis.decision === 'cautious' ? '谨慎' : '不推荐'}
                                 </span>
                               )}
+                              {/* P3-07 产品口径：匹配档低于用户设置的推荐岗位分时加信息标签（decision/排序/入队语义不变） */}
+                              {p.analysis.fitLevel === 'match' && Number(p.analysis.score) < (Number(config.minScore) || 75) ? (
+                                <Tooltip title={`岗位分析分 ${p.analysis.score} 低于你设置的推荐岗位分（≥ ${Number(config.minScore) || 75} 分才显示「推荐」）。匹配但未达推荐线，是否投递由你决定。`}>
+                                  <span className="task-flag-badge task-flag-badge--neutral">未达推荐线（{Number(config.minScore) || 75} 分）</span>
+                                </Tooltip>
+                              ) : null}
                             </>
                           )}
                           {welfareTag(p)}
@@ -2696,12 +2761,9 @@ export default function Workbench() {
                         {p.deliveryGreeting || p.analysis?.greeting ? (
                           <div className="job-greeting-editor">
                             <div className="job-greeting-label">{isPending ? '将以求职者身份发送，可直接修改' : '已生成的招呼语，可编辑后重新使用'}</div>
-                            <Input.TextArea
+                            <GreetingEditor
                               value={p.deliveryGreeting || p.analysis?.greeting || ''}
-                              onChange={(e) => updatePending(p.id, { deliveryGreeting: e.target.value })}
-                              autoSize={{ minRows: 3, maxRows: 8 }}
-                              placeholder="请输入你希望发送给招聘方的求职招呼语"
-                              style={{ fontSize: 12, lineHeight: 1.65 }}
+                              onCommit={(v) => updatePending(p.id, { deliveryGreeting: v })}
                             />
                           </div>
                         ) : (
@@ -2776,7 +2838,6 @@ export default function Workbench() {
 
       <div className="workbench-right">
         <BrowserView
-          onNavigate={setNav}
           onJoinTask={onJoinTask}
           onJobExtracted={handleJobExtracted}
           onApplyStage={handleApplyStage}

@@ -8,6 +8,7 @@
 // 职责：analyzeJob 的本地兜底 / AI 分数校准 / UI 可解释维度；绝不生成任何简历事实（诚实规则）。
 import type { AppConfig, JobMeta, Profile } from './types';
 import { normalizeStringList, findDirectionRule } from './helpers';
+import { HARD_BLOCK_SCORE_CAP } from './fitLevel';
 import { keywordHit, extractJdKeywords } from './resumeMatch';
 import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInText, extractEnglishTokens, zhAliasCoversTerm } from './skillTaxonomy';
 import { isCompanyExcluded } from './companyFilter';
@@ -22,9 +23,10 @@ import {
   hourlyToMonthlyK,
   scheduleBasisText,
 } from './workSchedule';
+import type { WorkSchedule } from './workSchedule';
 
-// ===== 薪资区间解析（统一折算到「千元/月」）=====
-// 与 priority.ts salaryPriority 的解析口径一致，但返回区间 [low, high] 供匹配分计算。
+// ===== 薪资区间解析（统一折算到「千元/月」，唯一实现；priority.salaryPriority 与本文件共用）=====
+// 单位必须与数字「成对」解析（审查 P3-02/P3-04：曾把「8千-1.2万」错算成 12~80 K/月，真实 8~12K）。
 // 日薪/时薪折算的月工作日基数由调用方按工作制度传入（双休 22 / 大小周 24 / 单休 26，见 workSchedule.ts）。
 export interface SalaryRange {
   low: number; // 千元/月
@@ -32,6 +34,32 @@ export interface SalaryRange {
   daily: boolean; // 是否日薪口径
   hourly: boolean; // 是否时薪口径
   valid: boolean; // 是否解析出有效区间
+}
+
+type SalarySeg = { value: number; unit: '万' | '千' | 'k' | '' };
+const SEGMENT_RE = /(\d+(?:\.\d+)?)\s*(万|千|[Kk])?/g;
+// 年薪口径：串里出现「年薪/年包/每年/万/年」等（「13薪」已在上游清洗，不会误伤）
+const ANNUAL_RE = /年薪|年包|每年|万\s*[-\/]\s*年|[-\/]\s*年/;
+
+/** 把「数字 + 可选单位」逐段解析；单位缺失的段继承最近的显式单位（前向优先）：「1.5-2万」→ 1.5 继承 万。 */
+function parseSalarySegments(cleaned: string): SalarySeg[] | null {
+  const segs: SalarySeg[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = SEGMENT_RE.exec(cleaned))) {
+    const value = Number(m[1]);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    segs.push({ value, unit: (m[2] || '') as SalarySeg['unit'] });
+  }
+  if (!segs.length) return null;
+  const n = segs.length;
+  for (let i = 0; i < n; i++) {
+    if (segs[i].unit !== '') continue;
+    let unit: SalarySeg['unit'] = '';
+    for (let j = i + 1; j < n; j++) if (segs[j].unit !== '') { unit = segs[j].unit; break; }
+    if (!unit) for (let j = i - 1; j >= 0; j--) if (segs[j].unit !== '') { unit = segs[j].unit; break; }
+    segs[i].unit = unit;
+  }
+  return segs;
 }
 
 export function parseSalaryRange(
@@ -46,28 +74,37 @@ export function parseSalaryRange(
   const cleaned = raw.replace(/[·*＊xX×\s]*1[2-8]\s*薪/g, '').trim();
   const hourly = /\/\s*(?:小时|时)|每\s*(?:小时|时)|时薪/.test(cleaned);
   const daily = !hourly && /\/\s*天|每\s*天|每天|\/\s*日|每\s*日|日薪|按天结算/.test(cleaned);
-  const nums = [...cleaned.matchAll(/(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1])).filter((n) => Number.isFinite(n) && n > 0);
-  if (!nums.length) return invalid;
-  let low = nums[0];
-  let high = nums.length >= 2 ? nums[1] : nums[0];
-  if (low > high) [low, high] = [high, low];
+  const segs = parseSalarySegments(cleaned);
+  if (!segs) return invalid;
+  // 日薪/时薪：数字不做「万/千」缩放（段值即元/小时、元/天）
+  const values = segs.map((s) => s.value);
+  let low: number;
+  let high: number;
   if (hourly) {
-    low = hourlyToMonthlyK(low, monthlyWorkDays); // 元/小时 → 千元/月（8 小时/天 × 月工作日）
-    high = hourlyToMonthlyK(high, monthlyWorkDays);
-  } else if (daily) {
-    low = dailyToMonthlyK(low, monthlyWorkDays); // 元/天 → 千元/月（月工作日按工作制度取 22/24/26…）
-    high = dailyToMonthlyK(high, monthlyWorkDays);
-  } else if (/万/.test(cleaned)) {
-    low *= 10;
-    high *= 10;
-  } else if (/元\s*\/\s*月|元\s*每\s*月/.test(cleaned)) {
+    low = hourlyToMonthlyK(values[0], monthlyWorkDays); // 元/小时 → 千元/月（8 小时/天 × 月工作日）
+    high = hourlyToMonthlyK(values.length >= 2 ? values[1] : values[0], monthlyWorkDays);
+    return { low, high, daily: false, hourly: true, valid: true };
+  }
+  if (daily) {
+    low = dailyToMonthlyK(values[0], monthlyWorkDays); // 元/天 → 千元/月（月工作日按工作制度取 22/24/26…）
+    high = dailyToMonthlyK(values.length >= 2 ? values[1] : values[0], monthlyWorkDays);
+    return { low, high, daily: true, hourly: false, valid: true };
+  }
+  // 月薪/年薪口径：单位随数字走（万 → ×10 千元；千/K → ×1；无单位段已继承最近单位）；年薪 ÷12
+  const yearly = ANNUAL_RE.test(cleaned);
+  const ks = segs.map((s) => (s.unit === '万' ? s.value * 10 : s.value));
+  if (yearly) for (let i = 0; i < ks.length; i++) ks[i] /= 12;
+  low = ks[0];
+  high = ks.length >= 2 ? ks[1] : ks[0];
+  if (low > high) [low, high] = [high, low];
+  if (/元\s*\/\s*月|元\s*每\s*月/.test(cleaned)) {
     low /= 1000;
     high /= 1000;
-  } else if (!/[Kk]/.test(cleaned) && high > 200) {
+  } else if (!/[Kk万千]/.test(cleaned) && high > 200) {
     low /= 1000;
     high /= 1000; // 纯数字且偏大（如 15000-20000 元）→ 千元
   }
-  return { low, high, daily, hourly, valid: true };
+  return { low, high, daily: false, hourly: false, valid: true };
 }
 
 /** 解析期望薪资（画像 hardConstraints.salary，形如「15-25K」「1-2万」「不限」） */
@@ -194,6 +231,27 @@ export interface LocalMatchResult {
   gaps: string[];
 }
 
+// ===== 维度权重单一来源（P3-05；P1-08 已加语义注释）=====
+// 「本地可计算维度」与「AI 五维」是两组刻意不同的集合（共同维度权重数值一致）：
+//  - LOCAL_DIM_WEIGHTS：含 location、不含 experience（经验本地恒 null，Σ=0.94）；
+//  - AI_DIM_WEIGHTS：含 experience、不含 location（location 恒取本地值，Σ=0.90）。
+// 差异是设计意图，勿「补齐」成同名同集合；matching.ts::mergeAiDimensions 引用本表，勿再自建第二份。
+export type AIDimKey = 'skill' | 'direction' | 'salary' | 'education' | 'experience';
+export const LOCAL_DIM_WEIGHTS: ReadonlyArray<readonly [keyof LocalMatchDimensions, number]> = [
+  ['skill', 0.34],
+  ['direction', 0.28],
+  ['location', 0.1],
+  ['salary', 0.14],
+  ['education', 0.08],
+] as const;
+export const AI_DIM_WEIGHTS: ReadonlyArray<readonly [AIDimKey, number]> = [
+  ['skill', 0.34],
+  ['direction', 0.28],
+  ['salary', 0.14],
+  ['education', 0.08],
+  ['experience', 0.06],
+] as const;
+
 // ===== 核心：本地多维匹配 =====
 
 /**
@@ -256,18 +314,50 @@ export function cleanGapList(gaps: unknown[], profile: Profile | null, resumeTex
   return cleaned;
 }
 
-export function computeLocalMatch(
+// ===== 本地匹配上下文（一次解析、多处复用，避免子步骤重复计算）=====
+// P3-08 拆分依据：原 computeLocalMatch 约 320 行、9 个内联硬约束 + 5 个维度混在一个函数里，
+// 无法对单个约束写粒度化单测，新增约束也容易插错位置。拆分后：
+//   - 共享事实解析一次进 ctx，硬约束与维度子函数各自消费、互不重复计算；
+//   - collectHardBlocks 独立导出，可对单个约束扩展断言（scripts/score-regression.mjs）；
+//   - 全部保持纯函数、零新依赖。
+interface LocalMatchContext {
+  job: JobMeta;
+  profile: Profile | null;
+  config: Partial<AppConfig>;
+  title: string;
+  desc: string;
+  /** 标题 + 描述 + 卡片文本（技能命中的宽松口径；卡片文本含「急聘/高薪」等噪声，只用于命中判定不用于缺口） */
+  jdText: string;
+  /** 标题 + 描述（缺口 / 学历要求的保守口径，排除卡片噪声） */
+  jdReqText: string;
+  profileBlob: string;
+  profileKeys: Set<string>;
+  /** JD 明确要求、画像词表未具备的关键词（技能分惩罚与 gaps 展示共用） */
+  missingJdTerms: string[];
+  targetLocations: string[];
+  /** JD 要求学历等级；未明确要求为 null */
+  requiredDegree: number | null;
+  profileDegreeText: string;
+  profileDegreeLevel: number;
+  directions: string[];
+  keywords: string[];
+  /** 去重后的核心技能池与方向目录技能池（技能分与置信度共用） */
+  corePool: string[];
+  directionPool: string[];
+  /** 薪资口径三件套（薪资维度 / 置信度 / 展示共用） */
+  schedule: WorkSchedule;
+  expected: SalaryRange;
+  jdRange: SalaryRange;
+}
+
+function buildLocalMatchContext(
   job: JobMeta,
   profile: Profile | null,
-  config: Partial<AppConfig> = {},
+  config: Partial<AppConfig>,
   resumeText = ''
-): LocalMatchResult {
-  const hardBlocks: string[] = [];
-  const evidence: string[] = [];
+): LocalMatchContext {
   const title = String(job.title || '');
   const desc = String(job.description || '');
-  const jdText = `${title} ${desc} ${String(job.cardText || '')}`;
-  // JD 要求口径（不含整页文本，避免导航/其他广告词污染「要求缺口」判定）
   const jdReqText = `${title} ${desc}`;
   // JD 关键缺口词（提取一次，技能分惩罚与 gaps 展示共用）：
   // extractJdKeywords 产出「JD 里出现的英文技术词 + 画像词命中」，画像词表未具备的即真实缺口。
@@ -283,105 +373,29 @@ export function computeLocalMatch(
     return true;
   });
 
-  // ---- 硬约束（deal-breaker，信息充分才拦截，避免误杀）----
-  // 1. 城市反选（设置 → 求职偏好）
-  if (isLocationExcluded(job.location, config as AppConfig)) {
-    hardBlocks.push(`岗位地点「${String(job.location || '').trim()}」命中城市排除名单`);
-  }
-  // 2. 公司/招聘方黑名单
-  const blacklist = isCompanyExcluded(job, config as AppConfig);
-  if (blacklist.excluded) hardBlocks.push(blacklist.reason);
-  // 3. 猎头岗位
-  if (config.excludeHeadhunters && job.isHeadhunter) {
-    hardBlocks.push('岗位为猎头代招，已按「排除猎头」设置拦截');
-  }
-  // 4. 目标城市不符（画像硬约束 locations 非空且可判定）
   const targetLocations = normalizeStringList(profile?.hardConstraints?.locations, 20);
-  if (targetLocations.length && isLocationDecidable(job.location)) {
-    const locText = String(job.location || '');
-    const hit = targetLocations.some((city) => city && locText.includes(city));
-    if (!hit) {
-      hardBlocks.push(`岗位地点「${locText.trim()}」不在目标城市（${targetLocations.slice(0, 4).join('、')}）`);
-    }
-  }
-  // 5. 求职类型冲突（实习/全职，仅明确信号且冲突才拦）
-  const empTypes = normalizeStringList(profile?.hardConstraints?.employmentTypes, 10);
-  const wantIntern = empTypes.some((t) => t === '实习' || t === '校招');
-  const wantFulltime = empTypes.some((t) => t === '全职' || t === '社招');
-  const jobType = jobEmploymentType(job);
-  if (jobType === 'fulltime' && wantIntern && !wantFulltime) {
-    hardBlocks.push('岗位为全职/社招，与画像「仅实习/校招」的求职类型冲突');
-  }
-  if (jobType === 'intern' && wantFulltime && !wantIntern) {
-    hardBlocks.push('岗位为实习，与画像「全职」的求职类型冲突');
-  }
-  // 6. 学历不足（JD 明确要求更高学历）
-  //    画像学历口径：只认「画像硬约束里显式填写的学历」与「教育经历行的学历词」。
-  //    旧实现把整个 facts JSON 交给 extractDegree 并取最高学历，两条错都由此而来：
-  //      ① 漏拦——项目/经历行出现「协助博士生调研」→ 画像被判为博士 → 岗位要求硕士也不拦；
-  //      ② 误拦——技能/项目行出现「本科及以上优先」→ 大专求职者被判为本科。
-  //    学历是用户硬设置，判错任一方向都会让设置失效，故收窄到真正承载学历的字段。
+
+  // 学历：JD 明确要求 + 画像显式学历/教育经历行（口径注释见 collectHardBlocksFromCtx 规则 6）
   const requiredDegree = jdRequiredDegreeLevel(job);
   const profileDegreeText =
     String(profile?.hardConstraints?.degree || '').trim() ||
     normalizeStringList(profile?.facts?.education, 8).join(' ');
   const profileDegreeLevel = degreeLevel(profileDegreeText);
-  if (requiredDegree != null && profileDegreeLevel > 0 && requiredDegree > profileDegreeLevel) {
-    hardBlocks.push(`岗位要求学历不低于「${levelName(requiredDegree)}」，画像学历为「${profile?.hardConstraints?.degree || levelName(profileDegreeLevel)}」`);
-  }
-  // 7. 外部网申（对齐 job-priority 的 -6000 口径，提升为硬拦截）
-  if (/外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)) {
-    hardBlocks.push('岗位为外部网申，需跳转第三方系统，不纳入投递队列');
-  }
-  // 8. 面试方式冲突（设置 → 仅线上/仅线下）
-  //    以本地关键字实时判定为准（单一来源），未在说明中明确披露的岗位一律判为「合格」，不据以拦截。
-  const imFilter = config?.interviewModeFilter || 'any';
-  if (imFilter !== 'any') {
-    const mode = detectInterviewMode(job);
-    if (mode !== 'unknown' && mode !== imFilter) {
-      const required = mode === 'offline' ? '线下' : '线上';
-      const wanted = imFilter === 'online' ? '线上' : '线下';
-      hardBlocks.push(`岗位要求${required}面试，与设定的「仅${wanted}」冲突`);
-    }
-  }
-  // 9. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
-  //     将岗位任意薪资口径折算为「元/天」或「元/月」后低于阈值即硬拦截，确保不合理低薪岗位不进入投递队列。
-  //     面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
-  const isMonthlySalary = config?.minSalaryMode === 'month';
-  if (isMonthlySalary) {
-    const minSalaryPerMonth = Number(config?.minSalaryPerMonth ?? 0);
-    if (minSalaryPerMonth > 0) {
-      const monthlyFloor = jobMonthlySalaryFloor(job);
-      if (monthlyFloor != null && monthlyFloor < minSalaryPerMonth) {
-        hardBlocks.push(`岗位月薪约 ${monthlyFloor} K元/月，低于设定的最低月薪 ${minSalaryPerMonth} K元/月`);
-      }
-    }
-  } else {
-    const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
-    if (minSalaryPerDay > 0) {
-      const dailyFloor = jobDailySalaryFloor(job);
-      if (dailyFloor != null && dailyFloor < minSalaryPerDay) {
-        hardBlocks.push(`岗位日薪约 ${dailyFloor} 元/天，低于设定的最低日薪 ${minSalaryPerDay} 元/天`);
-      }
-    }
-  }
 
-  // ---- 技能匹配 ----
-  // 命中口径从「全量加权占比」改为「核心技能命中数映射 + 方向词加成」：
-  // 画像技能常达 10-30 个、JD 描述又短，全量占比会被大量未命中词稀释（强匹配也只算 20-50%），
-  // 把分数整体压扁。改为按「命中核心技能的个数」映射（0/1/2/3/4+ → 0/35/70/88/98）——
-  // 3 个核心技能命中即达推荐档（对齐 AI 提示词「大部分命中 = recommend」口径）；
-  // 方向规则相关技能按命中占比小额加成（最多 +10），只加分、不进分母稀释。
-  const coreSkills = normalizeStringList(profile?.facts?.skills, 30).map((s) => String(s).trim());
+  // 技能池（去重、去短词）：画像核心技能 + 方向目录相关技能，技能分与置信度共用
+  const directionNames = normalizeStringList(
+    profile?.primaryDirections?.map((d) => (typeof d === 'string' ? d : d?.name)),
+    8
+  );
   const directionSkills: string[] = [];
-  for (const dir of normalizeStringList(profile?.primaryDirections?.map((d) => (typeof d === 'string' ? d : d?.name)), 8)) {
+  for (const dir of directionNames) {
     const rule = findDirectionRule(String(dir));
     if (rule?.relevantSkills) directionSkills.push(...rule.relevantSkills);
   }
   const seenSkill = new Set<string>();
   const corePool: string[] = [];
   const directionPool: string[] = [];
-  for (const s of coreSkills) {
+  for (const s of normalizeStringList(profile?.facts?.skills, 30).map((s) => String(s).trim())) {
     if (s.length >= 2 && !seenSkill.has(s.toLowerCase())) {
       seenSkill.add(s.toLowerCase());
       corePool.push(s);
@@ -393,157 +407,305 @@ export function computeLocalMatch(
       directionPool.push(s);
     }
   }
-  let skillScore: number | null = null;
-  if (corePool.length || directionPool.length) {
-    const hitTerms: string[] = [];
-    let coreHits = 0;
-    let dirHits = 0;
-    for (const s of corePool) {
-      if (keywordHit(s, jdText)) {
-        coreHits += 1;
-        hitTerms.push(s);
-      }
-    }
-    for (const s of directionPool) {
-      if (keywordHit(s, jdText)) {
-        dirHits += 1;
-        hitTerms.push(s);
-      }
-    }
-    const coreBase = coreHits >= 4 ? 98 : [0, 35, 70, 88][coreHits] ?? 0;
-    const dirBonus = directionPool.length ? Math.round((dirHits / directionPool.length) * 10) : 0;
-    skillScore = Math.max(0, Math.min(100, coreBase + dirBonus));
-    // JD 明确要求但画像未具备的关键词 → 技能分如实扣减（每个 +4、上限 12 分；仅计 ≥4 字符的实质技术词，
-    // 避免 Web/API/UI 等通用短词与整页噪声误伤——与 gaps 展示共用同一缺口集合）
-    const missingPenalty = Math.min(12, missingJdTerms.filter((t) => t.length >= 4).length * 4);
-    if (missingPenalty) skillScore = Math.max(0, skillScore - missingPenalty);
-    if (hitTerms.length) evidence.push(`技能命中：${hitTerms.slice(0, 8).join('、')}`);
-    if (skillScore >= 60) evidence.push(`技能匹配度 ${skillScore}%`);
-  }
 
-  // ---- 方向匹配（标题/描述 vs 画像方向 + 方向目录 + 搜索词）----
-  // 与技能维度同口径：改用「方向命中数映射 + 关键词加成」，避免关键词把方向命中稀释掉。
-  // 标题命中 1 个主方向即为强信号（+55），描述/规则近似命中为弱信号（+20），
-  // 关键词按标题/描述命中数小额加成（每个 +5，最多 +15，不随关键词总量稀释）；2 个方向全标题命中即满分。
-  const directions = normalizeStringList(profile?.primaryDirections?.map((d) => (typeof d === 'string' ? d : d?.name)), 8).map((d) => String(d));
-  const keywords = (profile?.searchKeywords || []).map((k) => String(k));
-  let directionScore: number | null = null;
-  if (directions.length || keywords.length) {
-    let titleHits = 0;
-    let weakHits = 0;
-    let kwHits = 0;
-    // 标题标准化键（C2：剥噪后用于方向比对；如「数据开发实习生（杭州）」→「数据开发实习生」）
-    const titleKey = normalizeJobTitleKey(title);
-    for (const dir of directions) {
-      const dirKey = normalizeDirectionKeyForMatch(dir);
-      if (!dirKey) continue;
-      // ① 强信号：标题命中（双向子串 / 方向目录规则 test 命中标题 / 目录 keywords 命中标题）
-      const rule = findDirectionRule(dir);
-      const dirKeywordKeys = (rule?.keywords || []).map((kw) => normalizeDirectionKeyForMatch(String(kw))).filter((k) => k && k.length >= 2);
-      const titleHitByDir = dirKey.length >= 2 && titleKey && (titleKey.includes(dirKey) || dirKey.includes(titleKey));
-      const titleHitByRule = Boolean(rule && rule.test.test(titleKey));
-      const titleHitByKw = dirKeywordKeys.some((k) => titleKey.includes(k) || k.includes(titleKey));
-      if (titleHitByDir || titleHitByRule || titleHitByKw) {
-        titleHits += 1;
-        evidence.push(`方向命中：岗位「${title.trim() || '未知'}」匹配方向「${dir}」`);
-      } else if (dirKey.length >= 2 && desc.includes(dirKey)) {
-        weakHits += 1;
-      } else {
-        // 方向目录规则兜底：规则 test 正则命中岗位文本（如「AI 应用开发」方向命中「大模型应用工程师」）
-        if (rule && rule.test.test(jdText)) {
-          weakHits += 1;
-          evidence.push(`方向近似：岗位内容符合「${dir}」方向`);
-        }
-      }
-    }
-    // 搜索词：标题命中强、描述命中弱
-    for (const kw of keywords) {
-      const k = String(kw).trim();
-      if (!k || k.length < 2) continue;
-      if (keywordHit(k, title)) {
-        kwHits += 1;
-        evidence.push(`关键词命中：岗位标题包含「${k}」`);
-      } else if (keywordHit(k, desc)) {
-        kwHits += 0.5;
-      }
-    }
-    const kwBonus = Math.min(15, Math.round(kwHits * 5));
-    directionScore = Math.max(0, Math.min(100, Math.round(titleHits * 55 + weakHits * 20 + kwBonus)));
-  }
-
-  // ---- 地点匹配 ----
-  let locationScore: number | null = null;
-  if (isLocationDecidable(job.location) && targetLocations.length) {
-    const locText = String(job.location || '');
-    const hit = targetLocations.some((city) => city && locText.includes(city));
-    locationScore = hit ? 100 : 0;
-    if (hit) evidence.push(`地点命中：${locText.trim()} 在目标城市内`);
-  } else if (targetLocations.length) {
-    locationScore = 55; // 远程/未识别：中性
-  }
-
-  // ---- 薪资匹配（不对称：明显低于期望必扣分，达到/高于期望给高分）----
-  // 日薪/时薪的折算基数按岗位工作制度取月工作日（双休 22 / 大小周 24 / 单休 26），
-  // 避免把单休岗位的日薪按双休基数折算，导致等效月薪被显著低估、薪资匹配度误判。
-  let salaryScore: number | null = null;
+  // 薪资口径三件套（薪资维度与置信度共用；日薪/时薪折算基数按岗位工作制度取月工作日）
   const schedule = detectWorkSchedule(job);
   const expected = parseExpectedSalary(profile);
   const jdRange = parseSalaryRange(job.salary, schedule.monthlyWorkDays);
+
+  return {
+    job,
+    profile,
+    config,
+    title,
+    desc,
+    jdText: `${title} ${desc} ${String(job.cardText || '')}`,
+    jdReqText,
+    profileBlob,
+    profileKeys,
+    missingJdTerms,
+    targetLocations,
+    requiredDegree,
+    profileDegreeText,
+    profileDegreeLevel,
+    directions: directionNames.map((d) => String(d)),
+    keywords: (profile?.searchKeywords || []).map((k) => String(k)),
+    corePool,
+    directionPool,
+    schedule,
+    expected,
+    jdRange,
+  };
+}
+
+// ===== 硬约束收集（P3-08：每个约束一条规则，顺序即展示顺序）=====
+// 注意：matching.ts 用 `local.hardBlocks.slice(0, 2).join('；')` 生成拦截文案，
+// 新增约束必须追加在数组末尾、不要插到中间——顺序改变会连带改变展示文案。
+function collectHardBlocksFromCtx(ctx: LocalMatchContext): string[] {
+  const { job, profile, config } = ctx;
+  const rules: Array<() => string | null> = [
+    // 1. 城市反选（设置 → 求职偏好）
+    () => {
+      if (isLocationExcluded(job.location, config as AppConfig)) {
+        return `岗位地点「${String(job.location || '').trim()}」命中城市排除名单`;
+      }
+      return null;
+    },
+    // 2. 公司/招聘方黑名单
+    () => {
+      const blacklist = isCompanyExcluded(job, config as AppConfig);
+      return blacklist.excluded ? blacklist.reason : null;
+    },
+    // 3. 猎头岗位
+    () => (config.excludeHeadhunters && job.isHeadhunter ? '岗位为猎头代招，已按「排除猎头」设置拦截' : null),
+    // 4. 目标城市不符（画像硬约束 locations 非空且可判定）
+    () => {
+      if (!ctx.targetLocations.length || !isLocationDecidable(job.location)) return null;
+      const locText = String(job.location || '');
+      const hit = ctx.targetLocations.some((city) => city && locText.includes(city));
+      return hit
+        ? null
+        : `岗位地点「${locText.trim()}」不在目标城市（${ctx.targetLocations.slice(0, 4).join('、')}）`;
+    },
+    // 5. 求职类型冲突（实习/全职，仅明确信号且冲突才拦）
+    () => {
+      const empTypes = normalizeStringList(profile?.hardConstraints?.employmentTypes, 10);
+      const wantIntern = empTypes.some((t) => t === '实习' || t === '校招');
+      const wantFulltime = empTypes.some((t) => t === '全职' || t === '社招');
+      const jobType = jobEmploymentType(job);
+      if (jobType === 'fulltime' && wantIntern && !wantFulltime) {
+        return '岗位为全职/社招，与画像「仅实习/校招」的求职类型冲突';
+      }
+      if (jobType === 'intern' && wantFulltime && !wantIntern) {
+        return '岗位为实习，与画像「全职」的求职类型冲突';
+      }
+      return null;
+    },
+    // 6. 学历不足（JD 明确要求更高学历）
+    //    画像学历口径：只认「画像硬约束里显式填写的学历」与「教育经历行的学历词」。
+    //    旧实现把整个 facts JSON 交给 extractDegree 并取最高学历，两条错都由此而来：
+    //      ① 漏拦——项目/经历行出现「协助博士生调研」→ 画像被判为博士 → 岗位要求硕士也不拦；
+    //      ② 误拦——技能/项目行出现「本科及以上优先」→ 大专求职者被判为本科。
+    //    学历是用户硬设置，判错任一方向都会让设置失效，故收窄到真正承载学历的字段。
+    () => {
+      if (ctx.requiredDegree == null || ctx.profileDegreeLevel <= 0 || ctx.requiredDegree <= ctx.profileDegreeLevel) return null;
+      return `岗位要求学历不低于「${levelName(ctx.requiredDegree)}」，画像学历为「${profile?.hardConstraints?.degree || levelName(ctx.profileDegreeLevel)}」`;
+    },
+    // 7. 外部网申（对齐 job-priority 的 -6000 口径，提升为硬拦截）
+    () =>
+      /外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)
+        ? '岗位为外部网申，需跳转第三方系统，不纳入投递队列'
+        : null,
+    // 8. 面试方式冲突（设置 → 仅线上/仅线下）
+    //    以本地关键字实时判定为准（单一来源），未在说明中明确披露的岗位一律判为「合格」，不据以拦截。
+    () => {
+      const imFilter = config?.interviewModeFilter || 'any';
+      if (imFilter === 'any') return null;
+      const mode = detectInterviewMode(job);
+      if (mode === 'unknown' || mode === imFilter) return null;
+      const required = mode === 'offline' ? '线下' : '线上';
+      const wanted = imFilter === 'online' ? '线上' : '线下';
+      return `岗位要求${required}面试，与设定的「仅${wanted}」冲突`;
+    },
+    // 9. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
+    //    将岗位任意薪资口径折算为「元/天」或「元/月」后低于阈值即硬拦截，确保不合理低薪岗位不进入投递队列。
+    //    面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
+    () => {
+      if (config?.minSalaryMode === 'month') {
+        const minSalaryPerMonth = Number(config?.minSalaryPerMonth ?? 0);
+        if (minSalaryPerMonth > 0) {
+          const monthlyFloor = jobMonthlySalaryFloor(job);
+          if (monthlyFloor != null && monthlyFloor < minSalaryPerMonth) {
+            return `岗位月薪约 ${monthlyFloor} K元/月，低于设定的最低月薪 ${minSalaryPerMonth} K元/月`;
+          }
+        }
+      } else {
+        const minSalaryPerDay = Number(config?.minSalaryPerDay ?? 0);
+        if (minSalaryPerDay > 0) {
+          const dailyFloor = jobDailySalaryFloor(job);
+          if (dailyFloor != null && dailyFloor < minSalaryPerDay) {
+            return `岗位日薪约 ${dailyFloor} 元/天，低于设定的最低日薪 ${minSalaryPerDay} 元/天`;
+          }
+        }
+      }
+      return null;
+    },
+  ];
+  const hardBlocks: string[] = [];
+  for (const rule of rules) {
+    const hit = rule();
+    if (hit) hardBlocks.push(hit);
+  }
+  return hardBlocks;
+}
+
+/** 硬约束收集对外入口（P3-08）：可对单个约束做粒度化单测（scripts/score-regression.mjs 扩展断言用） */
+export function collectHardBlocks(
+  job: JobMeta,
+  profile: Profile | null,
+  config: Partial<AppConfig> = {}
+): string[] {
+  return collectHardBlocksFromCtx(buildLocalMatchContext(job, profile, config));
+}
+
+// ===== 技能匹配 =====
+// 命中口径从「全量加权占比」改为「核心技能命中数映射 + 方向词加成」：
+// 画像技能常达 10-30 个、JD 描述又短，全量占比会被大量未命中词稀释（强匹配也只算 20-50%），
+// 把分数整体压扁。改为按「命中核心技能的个数」映射（0/1/2/3/4+ → 0/35/70/88/98）——
+// 3 个核心技能命中即达推荐档（对齐 AI 提示词「大部分命中 = recommend」口径）；
+// 方向规则相关技能按命中占比小额加成（最多 +10），只加分、不进分母稀释。
+function computeSkillScore(ctx: LocalMatchContext, evidence: string[]): number | null {
+  if (!ctx.corePool.length && !ctx.directionPool.length) return null;
+  const hitTerms: string[] = [];
+  let coreHits = 0;
+  let dirHits = 0;
+  for (const s of ctx.corePool) {
+    if (keywordHit(s, ctx.jdText)) {
+      coreHits += 1;
+      hitTerms.push(s);
+    }
+  }
+  for (const s of ctx.directionPool) {
+    if (keywordHit(s, ctx.jdText)) {
+      dirHits += 1;
+      hitTerms.push(s);
+    }
+  }
+  const coreBase = coreHits >= 4 ? 98 : [0, 35, 70, 88][coreHits] ?? 0;
+  const dirBonus = ctx.directionPool.length ? Math.round((dirHits / ctx.directionPool.length) * 10) : 0;
+  let score = Math.max(0, Math.min(100, coreBase + dirBonus));
+  // JD 明确要求但画像未具备的关键词 → 技能分如实扣减（每个 +4、上限 12 分；仅计 ≥4 字符的实质技术词，
+  // 避免 Web/API/UI 等通用短词与整页噪声误伤——与 gaps 展示共用同一缺口集合）
+  const missingPenalty = Math.min(12, ctx.missingJdTerms.filter((t) => t.length >= 4).length * 4);
+  if (missingPenalty) score = Math.max(0, score - missingPenalty);
+  if (hitTerms.length) evidence.push(`技能命中：${hitTerms.slice(0, 8).join('、')}`);
+  if (score >= 60) evidence.push(`技能匹配度 ${score}%`);
+  return score;
+}
+
+// ===== 方向匹配（标题/描述 vs 画像方向 + 方向目录 + 搜索词）=====
+// 与技能维度同口径：改用「方向命中数映射 + 关键词加成」，避免关键词把方向命中稀释掉。
+// 标题命中 1 个主方向即为强信号（+55），描述/规则近似命中为弱信号（+20），
+// 关键词按标题/描述命中数小额加成（每个 +5，最多 +15，不随关键词总量稀释）；2 个方向全标题命中即满分。
+function computeDirectionScore(ctx: LocalMatchContext, evidence: string[]): number | null {
+  const { directions, keywords } = ctx;
+  if (!directions.length && !keywords.length) return null;
+  let titleHits = 0;
+  let weakHits = 0;
+  let kwHits = 0;
+  // 标题标准化键（C2：剥噪后用于方向比对；如「数据开发实习生（杭州）」→「数据开发实习生」）
+  const titleKey = normalizeJobTitleKey(ctx.title);
+  for (const dir of directions) {
+    const dirKey = normalizeDirectionKeyForMatch(dir);
+    if (!dirKey) continue;
+    // ① 强信号：标题命中（双向子串 / 方向目录规则 test 命中标题 / 目录 keywords 命中标题）
+    const rule = findDirectionRule(dir);
+    const dirKeywordKeys = (rule?.keywords || []).map((kw) => normalizeDirectionKeyForMatch(String(kw))).filter((k) => k && k.length >= 2);
+    const titleHitByDir = dirKey.length >= 2 && titleKey && (titleKey.includes(dirKey) || dirKey.includes(titleKey));
+    const titleHitByRule = Boolean(rule && rule.test.test(titleKey));
+    const titleHitByKw = dirKeywordKeys.some((k) => titleKey.includes(k) || k.includes(titleKey));
+    if (titleHitByDir || titleHitByRule || titleHitByKw) {
+      titleHits += 1;
+      evidence.push(`方向命中：岗位「${ctx.title.trim() || '未知'}」匹配方向「${dir}」`);
+    } else if (dirKey.length >= 2 && ctx.desc.includes(dirKey)) {
+      weakHits += 1;
+    } else {
+      // 方向目录规则兜底：规则 test 正则命中岗位文本（如「AI 应用开发」方向命中「大模型应用工程师」）
+      if (rule && rule.test.test(ctx.jdText)) {
+        weakHits += 1;
+        evidence.push(`方向近似：岗位内容符合「${dir}」方向`);
+      }
+    }
+  }
+  // 搜索词：标题命中强、描述命中弱
+  for (const kw of keywords) {
+    const k = String(kw).trim();
+    if (!k || k.length < 2) continue;
+    if (keywordHit(k, ctx.title)) {
+      kwHits += 1;
+      evidence.push(`关键词命中：岗位标题包含「${k}」`);
+    } else if (keywordHit(k, ctx.desc)) {
+      kwHits += 0.5;
+    }
+  }
+  const kwBonus = Math.min(15, Math.round(kwHits * 5));
+  return Math.max(0, Math.min(100, Math.round(titleHits * 55 + weakHits * 20 + kwBonus)));
+}
+
+// ===== 地点匹配 =====
+function computeLocationScore(ctx: LocalMatchContext, evidence: string[]): number | null {
+  if (isLocationDecidable(ctx.job.location) && ctx.targetLocations.length) {
+    const locText = String(ctx.job.location || '');
+    const hit = ctx.targetLocations.some((city) => city && locText.includes(city));
+    if (hit) evidence.push(`地点命中：${locText.trim()} 在目标城市内`);
+    return hit ? 100 : 0;
+  }
+  if (ctx.targetLocations.length) return 55; // 远程/未识别：中性
+  return null;
+}
+
+// ===== 薪资匹配（不对称：明显低于期望必扣分，达到/高于期望给高分）=====
+// 日薪/时薪的折算基数按岗位工作制度取月工作日（双休 22 / 大小周 24 / 单休 26），
+// 避免把单休岗位的日薪按双休基数折算，导致等效月薪被显著低估、薪资匹配度误判。
+function computeSalaryScore(ctx: LocalMatchContext, evidence: string[]): number | null {
+  const { jdRange, expected, schedule } = ctx;
+  let score: number | null;
   if (jdRange.valid && expected.valid) {
     // JD 上限低于期望下限 → 明显低于预期，低分惩罚（薪资可谈但不应假装达标）
     if (jdRange.high < expected.low) {
-      salaryScore = 30;
-      evidence.push(`薪资偏低：岗位「${decodeSalaryDigits(String(job.salary || '')).trim()}」低于期望下限 ${expected.low}K/月`);
+      score = 30;
+      evidence.push(`薪资偏低：岗位「${decodeSalaryDigits(String(ctx.job.salary || '')).trim()}」低于期望下限 ${expected.low}K/月`);
     } else if (jdRange.low >= expected.high) {
-      salaryScore = 100; // 起点已不低于期望上限：显著高于预期
+      score = 100; // 起点已不低于期望上限：显著高于预期
     } else {
       // 部分/完全覆盖：重叠占比 + 60 基线（完全覆盖即 100）
       const overlap = Math.max(0, Math.min(jdRange.high, expected.high) - Math.max(jdRange.low, expected.low));
       const expSpan = Math.max(1, expected.high - expected.low);
-      salaryScore = Math.round(Math.min(100, (overlap / expSpan) * 100 + 60));
+      score = Math.round(Math.min(100, (overlap / expSpan) * 100 + 60));
     }
   } else if (jdRange.valid && !expected.valid) {
-    salaryScore = 65; // 画像未设定期望薪资：中性偏正
+    score = 65; // 画像未设定期望薪资：中性偏正
   } else {
-    salaryScore = 55; // JD 面议/未识别：中性
+    score = 55; // JD 面议/未识别：中性
   }
   // 口径透明化：日薪/时薪的折算依据（工作制度 + 月工作日基数）写入证据，UI 与 AI 校准锚点共用
   if (jdRange.valid && (jdRange.daily || jdRange.hourly)) {
     const unit = jdRange.hourly ? '时薪' : '日薪';
     evidence.push(
-      `薪资口径：岗位${unit}「${decodeSalaryDigits(String(job.salary || '')).trim()}」≈ ${jdRange.low.toFixed(1)}-${jdRange.high.toFixed(1)}K/月（${scheduleBasisText(schedule)}）`
+      `薪资口径：岗位${unit}「${decodeSalaryDigits(String(ctx.job.salary || '')).trim()}」≈ ${jdRange.low.toFixed(1)}-${jdRange.high.toFixed(1)}K/月（${scheduleBasisText(schedule)}）`
     );
   }
+  return score;
+}
 
-  // ---- 学历匹配（正好达标满分；高于要求略降——部分公司会卡「学历过度匹配」；画像学历未知按 30 保守）----
-  let educationScore: number | null = null;
-  if (requiredDegree != null) {
-    educationScore = profileDegreeLevel >= requiredDegree ? (profileDegreeLevel === requiredDegree ? 100 : 88) : 30;
-  } else {
-    educationScore = 60; // JD 未明确要求学历：中性
+// ===== 学历匹配（正好达标满分；高于要求略降——部分公司会卡「学历过度匹配」；画像学历未知按 30 保守）=====
+function computeEducationScore(ctx: LocalMatchContext): number | null {
+  if (ctx.requiredDegree != null) {
+    return ctx.profileDegreeLevel >= ctx.requiredDegree ? (ctx.profileDegreeLevel === ctx.requiredDegree ? 100 : 88) : 30;
   }
+  return 60; // JD 未明确要求学历：中性
+}
 
-  // ---- 经验匹配：本地不计算（见文件上方「经验：本地不再计算」口径）----
-  // 经验由 AI 五维评估判定，本地恒为 null（不参与加权综合分，UI 自动过滤该维度）。
-  const experienceScore: number | null = null;
+// ===== 加权综合分 + 置信度（null 维度剔除后重归一化）=====
+// 权重说明：技能/方向是匹配核心；薪资在不对称评分后区分度提升，权重上调；
+// 地点命中恒为 100（区分度低）降权；**经验已交给 AI，不参与本地加权**。
+// 语义注意（P1-08/P3-05）：本表是「本地可计算维度」（含 location、无 experience，Σ=0.94）；
+// matching.ts::mergeAiDimensions 引用上方导出的 AI_DIM_WEIGHTS（Σ=0.90，含 experience、无 location），
+// 两侧共同维度权重数值刻意一致 —— 差异是设计意图，勿"补齐"成同名同集合。
+interface LocalScores {
+  skill: number | null;
+  direction: number | null;
+  location: number | null;
+  salary: number | null;
+  education: number | null;
+}
 
-  // ---- 加权综合分（null 维度剔除后重归一化）----
-  // 权重说明：技能/方向是匹配核心；薪资在不对称评分后区分度提升，权重上调；
-  // 地点命中恒为 100（区分度低）降权；**经验已交给 AI，不参与本地加权**。
-  const WEIGHTS: [keyof LocalMatchDimensions, number][] = [
-    ['skill', 0.34],
-    ['direction', 0.28],
-    ['location', 0.1],
-    ['salary', 0.14],
-    ['education', 0.08],
-  ];
+function computeOverallAndConfidence(ctx: LocalMatchContext, scores: LocalScores): { overall: number | null; confidence: number } {
+  const WEIGHTS = LOCAL_DIM_WEIGHTS;
   let weightedSum = 0;
   let weightTotal = 0;
   for (const [key, w] of WEIGHTS) {
-    const v = (() => {
-      const dim = key as keyof LocalMatchDimensions;
-      return dim === 'skill' ? skillScore : dim === 'direction' ? directionScore : dim === 'location' ? locationScore : dim === 'salary' ? salaryScore : educationScore;
-    })();
+    const v = scores[key as keyof LocalScores];
     if (v != null) {
       weightedSum += v * w;
       weightTotal += w;
@@ -555,28 +717,56 @@ export function computeLocalMatch(
   // 恒偏大、confidence 只可能落在少数几档，等于没有区分度。现在只有「画像与 JD 都提供了可比对信息」
   // 的维度才计信，信息不足时置信度会如实下降。（当前仅作为可解释性字段输出，无消费方依赖。）
   const informed = [
-    corePool.length > 0 || directionPool.length > 0, // 技能：画像有技能词可比对
-    directions.length > 0 || keywords.length > 0, // 方向：画像有方向/搜索词可比对
-    targetLocations.length > 0 && isLocationDecidable(job.location), // 地点：JD 地点可判定且画像有目标城市
-    jdRange.valid && expected.valid, // 薪资：JD 薪资与期望薪资都能解析
-    requiredDegree != null, // 学历：JD 明确要求了学历
+    ctx.corePool.length > 0 || ctx.directionPool.length > 0, // 技能：画像有技能词可比对
+    ctx.directions.length > 0 || ctx.keywords.length > 0, // 方向：画像有方向/搜索词可比对
+    ctx.targetLocations.length > 0 && isLocationDecidable(ctx.job.location), // 地点：JD 地点可判定且画像有目标城市
+    ctx.jdRange.valid && ctx.expected.valid, // 薪资：JD 薪资与期望薪资都能解析
+    ctx.requiredDegree != null, // 学历：JD 明确要求了学历
   ].filter(Boolean).length;
   const confidence = Math.max(0.15, Math.round((informed / WEIGHTS.length) * 100) / 100);
+  return { overall, confidence };
+}
 
-  // ---- 缺口（复用上方 missingJdTerms：JD 明确要求、画像词表未具备的关键词，如实标注不灌水）----
-  // 逐条独立成项（每条 = 单个技能/技术栈，含「岗位要求」上下文），供任务卡片逐个展示、
-  // AI 兜底与优先级扣分（priority.ts gaps × 45）共用；不再合并成一条长句，便于 UI 精细展示。
+// ===== 缺口（复用 missingJdTerms：JD 明确要求、画像词表未具备的关键词，如实标注不灌水）=====
+// 逐条独立成项（每条 = 单个技能/技术栈，含「岗位要求」上下文），供任务卡片逐个展示、
+// AI 兜底与优先级扣分（priority.ts gaps × 45）共用；不再合并成一条长句，便于 UI 精细展示。
+function buildGapList(ctx: LocalMatchContext): string[] {
   const gaps: string[] = [];
-  for (const term of missingJdTerms.slice(0, 8)) {
+  for (const term of ctx.missingJdTerms.slice(0, 8)) {
     const item = `岗位要求「${term}」画像未体现`;
     if (!gaps.includes(item)) gaps.push(item);
   }
+  return gaps;
+}
+
+export function computeLocalMatch(
+  job: JobMeta,
+  profile: Profile | null,
+  config: Partial<AppConfig> = {},
+  resumeText = ''
+): LocalMatchResult {
+  // 一次性解析共享事实（JD 文本 / 缺口词 / 学历 / 技能池 / 薪资口径），供各子步骤复用，避免重复计算
+  const ctx = buildLocalMatchContext(job, profile, config, resumeText);
+  // 硬约束（deal-breaker，信息充分才拦截，避免误杀）：9 条规则按顺序收集，任一项存在即应拦下
+  const hardBlocks = collectHardBlocksFromCtx(ctx);
+  // 证据数组由各维度子函数按「技能 → 方向 → 地点 → 薪资」顺序追加（顺序 = 展示顺序）
+  const evidence: string[] = [];
+  const skill = computeSkillScore(ctx, evidence);
+  const direction = computeDirectionScore(ctx, evidence);
+  const location = computeLocationScore(ctx, evidence);
+  const salary = computeSalaryScore(ctx, evidence);
+  const education = computeEducationScore(ctx);
+  const { overall, confidence } = computeOverallAndConfidence(ctx, { skill, direction, location, salary, education });
+
+  // ---- 经验匹配：本地不计算（见文件上方「经验：本地不再计算」口径）----
+  // 经验由 AI 五维评估判定，本地恒为 null（不参与加权综合分，UI 自动过滤该维度）。
+  const experience: number | null = null;
 
   return {
-    dimensions: { skill: skillScore, direction: directionScore, location: locationScore, salary: salaryScore, education: educationScore, experience: experienceScore, overall, confidence },
+    dimensions: { skill, direction, location, salary, education, experience, overall, confidence },
     hardBlocks,
     evidence,
-    gaps,
+    gaps: buildGapList(ctx),
   };
 }
 
@@ -622,11 +812,11 @@ function normalizeJobTitleKey(title: string): string {
   return normalizeDirectionKeyForMatch(t);
 }
 
-// ===== 旧本地兜底兼容：在 localMatchScore 之上的增强版（供 AI 分缺失时使用）=====
-// 保留 matching.ts 的 localMatchScore 入口语义：profile 缺失时返回 null（调用方按 0 处理）
+// ===== 本地兜底分（仅在 AI 分缺失 / AI 不可用时出场）=====
+// 硬约束命中 → 统一封顶 HARD_BLOCK_SCORE_CAP（35，unfit 档内低端，见 fitLevel.ts）
 export function enhancedLocalScore(job: JobMeta, profile: Profile | null, config: Partial<AppConfig> = {}): number | null {
   if (!profile) return null;
   const local = computeLocalMatch(job, profile, config);
-  if (local.hardBlocks.length) return Math.min(local.dimensions.overall ?? 0, 35);
+  if (local.hardBlocks.length) return Math.min(local.dimensions.overall ?? 0, HARD_BLOCK_SCORE_CAP);
   return local.dimensions.overall;
 }

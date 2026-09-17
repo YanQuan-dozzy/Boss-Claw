@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '..', 'bin', 'bossclaw-mcp.mjs');
+import { runWhitelistParity } from './whitelist-parity.mjs';
 
 const spawnEnv = process.env.BOSSCLAW_REPO
   ? { ...process.env }
@@ -73,6 +74,10 @@ function record(name, pass, detail) {
 }
 
 try {
+  // 0) 白名单双源一致性（H10 / P6-08）：MCP RENDERER_ACTIONS ⊆ controlRuntime.ts::handlers
+  const parityExit = runWhitelistParity();
+  record('白名单双源一致性', parityExit === 0, parityExit === 0 ? 'MCP ⊆ TS（差集仅豁免项 state）' : '发现 TS 侧不存在的幽灵动作');
+
   // 1) initialize
   const init = await rpc('initialize', {
     protocolVersion: '2025-06-18',

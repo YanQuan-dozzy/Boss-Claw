@@ -1,0 +1,662 @@
+/* ═════════════════════════════════════════════════════════════════════
+   UI 精修层（2026-09-09 · 视觉统一 / 排版 / 响应式补强）
+   约束：仅做观感与层级优化，不改变任何 DOM/交互逻辑；
+   不触碰 .browser-pane / webview 等布局不变量。
+   若与上方历史规则冲突，以本层为准（同特异性、文件靠后覆盖）。
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* P5-06：本文件由 index.css 末尾的「UI 精修层」独立拆出（H2 拆分），
+   必须由 main.tsx 在 index.css 之后按序 import，以保持「文件靠后覆盖」的既有语义；
+   修改本层内容请在下方规则区进行，勿回填进 index.css 历史区。 */
+
+/* ---------- 1. 文本选择与基础排版 ---------- */
+::selection {
+  background: rgba(13, 148, 136, 0.22);
+  color: var(--fg);
+}
+h1, h2, h3, h4, h5, p { text-wrap: balance; }
+
+.page-head h1.page-title {
+  font-size: 24px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+}
+.page-sub {
+  font-size: 13px;
+  line-height: 1.65;
+  max-width: 900px;
+}
+.page-head-extra { flex: 0 0 auto; }
+
+/* 区块内小节标题的通用视觉节奏（15px 标题 + 14px 间距）由页面内联实现，
+   这里统一它们在窄屏下的可换行与行高 */
+.soft-block .ant-divider-vertical { border-color: var(--border-strong); }
+
+.hero-title { letter-spacing: -0.005em; }
+.hero-sub { font-size: 13px; }
+
+/* ---------- 2. 交互状态一致性（位移/按压/过渡统一） ---------- */
+.ant-btn,
+.nav-btn,
+.quick-entry,
+.step-item,
+.status-cell,
+.direction-card,
+.metric-card {
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+.ant-btn:not(:disabled):active,
+.nav-btn:active,
+.quick-entry:active,
+.step-item:active,
+.status-cell:active,
+.direction-card:active,
+.metric-card:active { transform: scale(0.985); }
+
+/* 主操作按钮光晕克制化：只在 hover 透出轻微品牌色 */
+.btn-start-batch,
+.ctrl-btn--start,
+.ant-btn-primary:not(:disabled) { box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }
+.btn-start-batch:hover:not(:disabled),
+.ctrl-btn--start:hover:not(:disabled),
+.ant-btn-primary:not(:disabled):hover { box-shadow: 0 4px 16px var(--brand-glow); }
+
+/* antd Progress 圆角一致（与 .hbar / .top-track 同族）；
+   注意：颜色由组件内联控制（含 success/error 语义），此处不得覆盖 background */
+.ant-progress .ant-progress-inner,
+.ant-progress .ant-progress-bg,
+.ant-progress .ant-progress-success-bg { border-radius: 999px !important; }
+
+/* ---------- 3. 数据数字排版：统一 tabular / 等宽族 ---------- */
+.ant-statistic-content,
+.stat-value,
+.wb-stat-num,
+.ss-value,
+.metric-card__value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- 4. 弹层与标签一致性微调 ---------- */
+.ant-modal .ant-modal-content { box-shadow: var(--shadow-lg); }
+.ant-tag { border-radius: 6px; }
+.ant-tag,
+.ant-badge .ant-badge-count { font-variant-numeric: tabular-nums; }
+
+/* 空态：加一点呼吸留白，文案层级分明 */
+.ant-empty { margin-block: 8px; }
+
+/* ---------- 5. 响应式补强（桌面窗口缩放 / 窄视口） ---------- */
+/* 主内容留白随窗口分级收缩，缓解 1440 → 960 压缩感 */
+@media (max-width: 1360px) {
+  .main-stage { padding: 20px; }
+}
+@media (max-width: 1160px) {
+  .main-stage { padding: 16px; }
+  .page-head { margin-bottom: 16px; }
+  .metric-card { min-height: 96px; padding: 14px 16px; }
+  .metric-card__value { font-size: 25px; }
+}
+@media (max-width: 1024px) {
+  /* 工作台中栏在窄窗口下收窄，让内置浏览器保有可视宽度 */
+  .workbench-center {
+    width: 360px !important;
+    flex: 0 0 360px !important;
+  }
+  .page-head { flex-wrap: wrap; row-gap: 10px; }
+  .page-head h1.page-title { font-size: 22px; }
+  .hero { padding: 20px 22px; }
+  .hero-actions { flex-wrap: wrap; }
+  .ctrl-panel { padding: 16px 18px; }
+}
+@media (max-width: 860px) {
+  .workbench-center {
+    width: min(340px, 48vw) !important;
+    flex: 0 0 min(340px, 48vw) !important;
+  }
+  .title-bar-status { max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .settings-section-card { padding: 16px; }
+  .directions-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  /* toolbar 默认已为 column（胶囊开关 + 按钮组两行），不再需要断点强制 */
+  /* 极窄视口下让按钮组在内部仍可换行，避免单个按钮被切碎 */
+  .wb-filter-toolbar__right { row-gap: 6px; }
+}
+@media (max-width: 700px) {
+  .hero-title { font-size: 19px; }
+  .hero-sub { font-size: 12px; }
+  .ctrl-toolbar { align-items: flex-start; }
+  .autochat-control-bar { flex-direction: column; align-items: flex-start; }
+  .statusbar { padding: 0 12px; }
+  .stat-cards-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
+@media (max-width: 600px) {
+  /* 极端窄视口：功能网格全面降级为单列，保证可读性 */
+  .short-grid.cols-2,
+  .short-grid.cols-3,
+  .settings-grid,
+  .safety-grid { grid-template-columns: 1fr !important; }
+  .settings-grid .sg-item.wide { grid-column: span 1; }
+  .hero-actions .ant-btn { flex: 1; justify-content: center; }
+  .page-head h1.page-title { font-size: 20px; }
+  .title-bar-status, .title-bar-sep { display: none; }
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   简历中心排布（2026-09-12）
+   · 顶部双栏「简历原文 | 职业画像」两卡等高、底边对齐（不再一长一短）
+   · 「AI 打招呼语提示词（工作台定制）」独立成整宽区块 → 窄屏（xs 单列堆叠）
+     时必然排在「职业画像」之后，即页面最下方
+   · 提示词编辑 / 招呼语预览在整宽区块内左右并排，窄屏再纵向堆叠
+   · 补齐 .greeting-item / .greeting-index（此前仅有类名、无样式）
+   ═════════════════════════════════════════════════════════════════════ */
+.resume-page .resume-warn-alert { margin-bottom: 16px; }
+
+/* 顶部双栏等高：Col 转 flex 容器，卡片撑满整行高度 */
+.resume-page .resume-row > .ant-col { display: flex; }
+.resume-page .resume-row > .ant-col > .ant-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.resume-page .resume-row > .ant-col > .ant-card > .ant-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 原文输入框吃掉卡片剩余高度（两卡等高时底部不再留白）；固定行高由卡片高度决定 */
+.resume-page .resume-src-input {
+  flex: 1 1 auto;
+  min-height: 300px;
+  resize: none;
+}
+.resume-page .resume-src-input--empty {
+  flex: 0 0 auto;
+  min-height: 0;
+  margin-top: 12px;
+}
+
+/* 底部整宽区块（窄屏落到最下方） */
+.resume-page .resume-prompt-card { margin-top: 16px; }
+
+/* 区块内小节：标题 + 右侧操作按钮 + 说明文字
+   高度撑满所在栏 —— 宽屏下「提示词正文 | 打招呼语预览」两栏底边对齐 */
+.resume-page .resume-block { display: flex; flex-direction: column; min-width: 0; height: 100%; }
+.resume-page .resume-prompt-card .ant-row > .ant-col { display: flex; }
+.resume-page .resume-prompt-card .ant-row > .ant-col > .resume-block { flex: 1 1 auto; }
+.resume-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 24px;
+  margin-bottom: 10px;
+}
+.resume-block__title {
+  position: relative;
+  padding-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.resume-block__title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  background: var(--brand);
+}
+.resume-block__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  /* 全局 `p { text-wrap: balance }`（见文件上方 h1..p 规则）会把两行折行拉成
+     等宽，视觉上右侧空一大片 —— 说明文字一律回到普通折行、铺满容器宽度 */
+  text-wrap: initial;
+}
+
+/* 「提示词正文」下方说明：单行排布（左文案 + 右侧生效条件），左右两端与
+   输入框对齐（space-between）；窄屏放不下才换行，不会出现「两行都短一半」的留白 */
+.resume-page .resume-block__hint.resume-hint-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  width: 100%;
+}
+.resume-hint-row__skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  border-bottom: 1px dashed var(--border-strong);
+  cursor: help;
+}
+.resume-hint-row__skill .anticon {
+  color: var(--status-warning);
+  font-size: 12px;
+}
+
+/* 提示词编辑区吃掉整栏剩余高度：宽屏下不再「左栏短、右栏长」留出大片空白 */
+.resume-page .resume-prompt-ta {
+  flex: 1 1 auto;
+  min-height: 220px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  resize: none;
+}
+.resume-preview-form { display: flex; flex-direction: column; gap: 8px; }
+.resume-preview-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.resume-preview-warn { display: block; margin-top: 6px; font-size: 12px; }
+
+/* 预览结果区：吃掉右栏剩余高度；空态卡片内容居中布局与视觉美化 */
+.resume-preview-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.resume-preview-result .ant-empty {
+  flex: 1 1 auto;
+  margin: 12px 0 0;
+  padding: 24px 20px;
+  border: 1px dashed var(--border-brand);
+  border-radius: var(--radius-card);
+  background: var(--hover-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  transition: all 0.25s ease;
+}
+.resume-preview-result .ant-empty:hover {
+  border-color: var(--brand);
+  background: var(--card-bg, #fff);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
+}
+.resume-preview-result .ant-empty .ant-empty-image {
+  height: auto;
+  margin-bottom: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.resume-preview-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-brand);
+  color: var(--brand);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+}
+.resume-preview-result .ant-empty:hover .resume-preview-empty-icon {
+  transform: translateY(-2px) scale(1.06);
+  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.2);
+}
+.resume-preview-result .ant-empty .empty-state-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.2px;
+}
+.resume-preview-result .ant-empty .empty-state-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  max-width: 440px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 招呼语预览结果（此前无样式）：编号圆点 + 品牌色浅底气泡 */
+.greeting-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-brand);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.greeting-index {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--brand);
+}
+
+/* 字段标签统一为块级：与下方控件保持 6px 稳定间距（旧版行内 span 贴得太紧） */
+.resume-page .field-label { display: block; margin-bottom: 6px; }
+
+/* 卡片头在窄列下可换行：flex-basis auto + wrap，标题（含解析方式/文件名标签）
+   不再被 overflow:hidden 裁掉，操作按钮整组换到第二行 */
+.resume-page .ant-card-head-wrapper { flex-wrap: wrap; row-gap: 6px; }
+.resume-page .ant-card-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  padding-block: 10px;
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   简历中心 · 职业画像多选字段（2026-09-12）
+   口径：多选字段整体对齐「投递方向」的搜索词字段 ——
+     1) 标签外观 = .direction-tag（白底 + 1px 中性描边 + 6px 圆角 + 右侧 ×
+        删除，文字 12px）；
+     2) 可见高度收敛为「3 行」（≈ 用户所说的两到三行），超出在控件内滚动，
+        避免「技能」这类长列表把表单撑到 8 行高；
+     3) 下拉面板 = .direction-suggest 候选词面板（白底 + 1px 描边 + 10px 圆角，
+        选项行无青绿选中底、无 ✓，行右侧为 ＋/× 小方按钮，点整行即切换）。
+   1)、2) 覆盖 .resume-page 作用域；3) 的弹层挂在 body 上，只能用弹层类名限定。
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* 1) 标签本体：与 .direction-tag 同款（antd 原样式为灰底 14px 无描边） */
+.resume-page .ant-select-multiple .ant-select-selection-item {
+  display: flex;
+  align-items: center;
+  height: 22px;              /* = .direction-tag：20px 行高 + 上下 1px 描边 */
+  line-height: 20px;
+  padding-inline: 8px 4px;
+  border-color: var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+.resume-page .ant-select-multiple .ant-select-selection-item-content {
+  min-width: 0;
+  line-height: 20px;
+}
+
+/* 2) × 删除按钮：与 .direction-tag__close 同款（灰 → 红 hover） */
+.resume-page .ant-select-multiple .ant-select-selection-item-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  color: var(--fg-subtle);
+  font-size: 9px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.resume-page .ant-select-multiple .ant-select-selection-item-remove:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--status-danger);
+}
+
+/* 3) 可见高度收敛为 3 行：标签 22px + 上下 margin 2px ×2 = 26px/行，
+   再加控件上下内边距各 1px；超出部分控件内滚动（不是撑高整张卡片） */
+.resume-page .ant-select-multiple {
+  --resume-tag-row-h: 26px;
+}
+.resume-page .ant-select-multiple .ant-select-selector {
+  /* 默认 align-items:center 会让溢出内容向上溢出，滚不到第一行 → 顶端对齐 */
+  align-items: flex-start;
+  max-height: calc(var(--resume-tag-row-h) * 3 + 2px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* 4) 下拉面板：对齐「投递方向」的候选词面板（.direction-suggest）
+   白底 + 1px 中性描边 + 10px 圆角 + shadow-md，选项行无彩色选中底、无 ✓，
+   行右侧为 ＋/× 小方按钮（已加入 = ×，未加入 = ＋），点整行即切换。
+   面板挂在 body 上（antd 弹层），故用双类提高优先级、不挂 .resume-page 作用域。 */
+.ant-select-dropdown.profile-kw-dropdown {
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: var(--shadow-md);
+}
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 20px;
+}
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item-option-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  overflow: visible;
+  white-space: normal;
+}
+.profile-kw-opt__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 已加入的关键词弱化（与 .direction-suggest__row.is-added 同口径） */
+.profile-kw-opt__label.is-added {
+  color: var(--fg-muted);
+}
+/* 选中行不再有青绿底 / 加粗 / ✓ */
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: transparent;
+  color: var(--fg);
+  font-weight: 400;
+}
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background: var(--hover-bg);
+}
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item-option-state {
+  display: none;
+}
+/* 空态：交给 .direction-suggest__empty 自己撑，去掉 antd item 的默认内边距 */
+.ant-select-dropdown.profile-kw-dropdown .ant-select-item-empty {
+  min-height: 0;
+  padding: 0;
+}
+
+@media (max-width: 860px) {
+  .resume-page .resume-src-input { min-height: 220px; }
+  .resume-page .resume-block__head { align-items: flex-start; }
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   设置页宽/中屏排版精修（2026-09-12）
+   档位口径（按窗口 CSS 宽度；本机 125% 缩放，物理宽 ÷ 1.25）
+     · 宽屏 ≥1280px（最大化 = 1536px）：
+         - 顶部 tab：6 个 tab 原来全挤在左侧（右侧大片空白，右边缘与下方
+           整宽卡片对不齐）→ 改为等宽铺满整行，两侧与卡片边缘对齐；
+         - 顶部状态胶囊：保持「一行四个」横排（不得变成两行）。
+     · 中屏 1025–1279px（截图档 ≈1150px）：
+         - 顶部状态胶囊：原来换行成 3+1（第二行只剩一个，参差不齐）→
+           改为固定「上下各两个」2×2 等宽网格；
+         - tab 保持左对齐流式排列（不改）。
+     · 窄屏 ≤1024px：完全不改动 —— 仍走 .page-head 换行 + 胶囊自然流式换行。
+   仅视觉排布，不动任何 DOM / 交互逻辑。
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ---------- 1. 宽屏：tab 等宽铺满，与页面宽度对齐 ---------- */
+@media (min-width: 1280px) {
+  .settings-tabs .ant-tabs-nav-list {
+    width: 100%;
+  }
+  .settings-tabs .ant-tabs-tab {
+    /* flex-basis:0 + 自动最小尺寸（内容宽）→ 各 tab 等宽且不会溢出 */
+    flex: 1 1 0;
+    justify-content: center;
+    margin: 0 !important;
+  }
+  .settings-tabs .ant-tabs-tab + .ant-tabs-tab {
+    margin-left: 0 !important;
+  }
+}
+
+/* ---------- 2. 中屏：状态胶囊 2×2 等宽对齐 ---------- */
+@media (min-width: 1025px) and (max-width: 1279px) {
+  .settings-header-chips {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px 10px;
+    /* 允许随窗口收缩，但基准宽度固定 → 两行四个胶囊始终等宽 */
+    flex: 0 1 420px;
+    max-width: 420px;
+  }
+  .settings-header-chips .setting-chip {
+    justify-content: center;
+  }
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   现代高质感下拉符号与展开箭头规范 (Select / Dropdown / Cascader / TreeSelect)
+   将 Ant Design 默认生硬细尖的 V 字形替换为微圆角、平缓舒展的现代 Chevron
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* 1. Ant Design 原生 Select / Cascader / TreeSelect 下拉箭头优化 */
+.ant-select-arrow,
+.ant-cascader-picker-arrow,
+.ant-tree-select-arrow {
+  color: var(--fg-muted, #94a3b8) !important;
+  font-size: 11px !important;
+  transition: color 0.2s ease, opacity 0.2s ease !important;
+}
+
+.ant-select:not(.ant-select-disabled):hover .ant-select-arrow {
+  color: var(--fg, #0f172a) !important;
+}
+
+.ant-select-open .ant-select-arrow {
+  color: var(--brand, #0d9488) !important;
+}
+
+/* 隐藏 Select 默认生硬锐利的 DownOutlined 内部 svg */
+.ant-select-arrow .anticon-down svg,
+.ant-cascader-picker-arrow .anticon-down svg,
+.ant-tree-select-arrow .anticon-down svg {
+  display: none !important;
+}
+
+/* 用基于 currentColor 的几何平滑圆润 Chevron 呈现 */
+.ant-select-arrow .anticon-down,
+.ant-cascader-picker-arrow .anticon-down,
+.ant-tree-select-arrow .anticon-down {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  position: relative;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.ant-select-arrow .anticon-down::after,
+.ant-cascader-picker-arrow .anticon-down::after,
+.ant-tree-select-arrow .anticon-down::after {
+  content: '';
+  display: block;
+  width: 11px;
+  height: 11px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  opacity: 0.85;
+}
+
+/* Select 展开时平滑翻转 180 度 */
+.ant-select-open .ant-select-arrow .anticon-down,
+.ant-cascader-picker-open .ant-cascader-picker-arrow .anticon-down,
+.ant-tree-select-open .ant-tree-select-arrow .anticon-down {
+  transform: rotate(180deg) !important;
+}
+
+/* 2. 按钮与操作组件内部的下拉箭头美化（如 Dropdown 触发按钮） */
+.ant-btn > .anticon-down,
+.ant-btn > span > .anticon-down {
+  font-size: 11px !important;
+  margin-left: 4px;
+  vertical-align: -0.1em;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+.ant-btn > .anticon-down svg,
+.ant-btn > span > .anticon-down svg {
+  display: none !important;
+}
+
+.ant-btn > .anticon-down::after,
+.ant-btn > span > .anticon-down::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.5L10 13L15.5 7.5'/%3E%3C/svg%3E") no-repeat center / contain;
+  vertical-align: middle;
+}
+
+/* 按钮绑定的 Dropdown 打开时，箭头自动联动 180 度翻转 */
+.ant-dropdown-open.ant-btn > .anticon-down,
+.ant-dropdown-open.ant-btn > span > .anticon-down,
+.ant-dropdown-trigger[aria-expanded="true"] .anticon-down {
+  transform: rotate(180deg);
+}
+
+/* 3. 独立 ChevronDown 组件基础样式 */
+.chevron-down {
+  display: inline-block;
+  vertical-align: -0.125em;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+
+.chevron-down--open {
+  transform: rotate(180deg) !important;
+}
+
+
+
+
+
+

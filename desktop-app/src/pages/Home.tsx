@@ -1,3 +1,11 @@
+/**
+ * 【主模块：首页】导航 key = 'home'（App.tsx 按 key 渲染本页）
+ * 子模块：
+ * - 欢迎区（hero：欢迎语 + 快捷入口按钮）
+ * - 数据概览指标卡（今日投递 / 成功率 / 待处理岗位 / 剩余次数，MetricCard）
+ * - 任务控制中心（开始/暂停/停止、批量确认、失败恢复、目标进度）
+ * - 辅助信息区（运行状态 / 配置进度 / 快速入口 / 最近动态）
+ */
 import { useEffect, useState } from 'react';
 import { Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin } from 'antd';
 import {
@@ -26,6 +34,7 @@ import {
 } from '@ant-design/icons';
 import { useAppStore } from '@/store/useAppStore';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { profileHasCore } from '@/lib/bossclaw/profile';
 import { selectedDirectionItems } from '@/lib/bossclaw/directions';
@@ -59,9 +68,9 @@ export default function Home() {
   const directionPlan = useDataStore((s) => s.directionPlan);
   const pending = useDataStore((s) => s.pending);
   const stats = useDataStore((s) => s.stats);
-  const logs = useDataStore((s) => s.logs);
+  const logs = useRuntimeLogsStore((s) => s.logs);
   const setPending = useDataStore((s) => s.setPending);
-  const addLog = useDataStore((s) => s.addLog);
+  const addLog = useRuntimeLogsStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   const setTaskRuns = useDataStore((s) => s.setTaskRuns);
   const setRoute = useAppStore((s) => s.setRoute);
@@ -199,6 +208,7 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 子模块：欢迎区（hero） */}
       <div className="hero">
         <h2 className="hero-title">欢迎回来，开始今天的投递</h2>
         <p className="hero-sub">
@@ -217,6 +227,7 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 子模块：数据概览指标卡（今日投递/成功率/待处理岗位/剩余次数） */}
       <div className="short-grid cols-4" style={{ marginBottom: 20 }}>
         <MetricCard
           title="今日投递"

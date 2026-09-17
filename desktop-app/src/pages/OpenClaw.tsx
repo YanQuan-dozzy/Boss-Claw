@@ -1,3 +1,12 @@
+/**
+ * 【主模块：OpenClaw】导航 key = 'openclaw'（本地 Python 服务桥接 / 状态控制面板）
+ * 子模块：
+ * - 操作栏（刷新状态 / 启动 / 暂停 / 停止 / 查看日报 / 查看日志）
+ * - 桥接状态卡（版本 / 运行中 / 解析器 pdftotext / 数据库路径等）
+ * - 扫描版 PDF / 特殊字体 OCR（选择 PDF → 解析出文本）
+ * - 求职日报（report 文本卡）
+ * - 桥接日志（logs 卡，可刷新）
+ */
 import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Space, Tag, Typography, message, Spin, Tooltip } from 'antd';
 import { ApiOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, FileTextOutlined, UploadOutlined, CloseCircleFilled } from '@ant-design/icons';

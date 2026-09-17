@@ -13,7 +13,7 @@ import {
 } from '@ant-design/icons';
 import { ChevronDown } from '@/components/ChevronDown';
 import { ChatLogItem } from './ChatLogItem';
-import type { ChatLogEntry } from '@/store/useDataStore';
+import type { ChatLogEntry } from '@/store/useRuntimeLogsStore';
 
 interface ChatLogPanelProps {
   logs: ChatLogEntry[];
@@ -43,13 +43,22 @@ export const ChatLogPanel = memo<ChatLogPanelProps>(function ChatLogPanel({
     return distanceToBottom <= 20;
   };
 
+  // P5-04：程序性滚动标记（与 LogConsole 同构）——smooth 动画中间帧的 scroll 事件
+  // 会误把「回到最新」按钮重新置回，标记期间静默忽略，到底后解除。
+  const programmaticScrollRef = useRef(false);
+
   const handleScroll = () => {
+    if (programmaticScrollRef.current) {
+      if (checkIfAtBottom()) programmaticScrollRef.current = false;
+      return;
+    }
     setUserScrolled(!checkIfAtBottom());
   };
 
   const scrollToBottom = () => {
     const el = streamRef.current;
     if (el) {
+      programmaticScrollRef.current = true;
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       setUserScrolled(false);
     }

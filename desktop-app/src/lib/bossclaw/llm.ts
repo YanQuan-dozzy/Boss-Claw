@@ -5,6 +5,7 @@ import type { AppConfig } from './types';
 import { electronApi } from '@/lib/electronApi';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
+import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
 
 export class AIError extends Error {
   code: string;
@@ -172,15 +173,34 @@ export function extractJson(text: string): any {
       }
     }
 
-    // 3) 渐进截尾兜底：补齐括号 + 去尾逗号/控制字符后，从末尾逐字符截掉 0..N，
-    //    覆盖「完整值后残留垃圾」场景
-    const probe = closeBrackets(stripTrailingCommas(escapeControlCharsInStrings(raw)));
-    const maxTail = 48;
-    for (let n = 0; n <= maxTail; n++) {
-      try { return JSON.parse(probe.slice(0, probe.length - n)); } catch { /* 继续截断 */ }
+    // 3) 渐进截尾兜底：先从「未补括号」的原文取真实结构边界（} / ]，最多 8 个从后往前），
+    //    截断后补括号再解析 —— 注意 closeBrackets 会把缺失括号全补到串尾，若在其结果上找边界
+    //    边界会全部汇聚在末尾导致截尾失效（P1-05）
+    const base2 = stripTrailingCommas(escapeControlCharsInStrings(raw));
+    const tryClosed = (s: string) => {
+      try { return JSON.parse(closeBrackets(s)); } catch { return undefined; }
+    };
+    const whole = tryClosed(closeBrackets(base2));
+    if (whole !== undefined) return whole;
+    const positions: number[] = [];
+    const boundary = /[}\]]/g;
+    let bm: RegExpExecArray | null;
+    while ((bm = boundary.exec(base2))) positions.push(bm.index + 1);
+    for (const end of positions.slice(-8).reverse()) {
+      const v = tryClosed(base2.slice(0, end));
+      if (v !== undefined) return v;
     }
   }
   throw new Error('无法解析 JSON');
+}
+
+/** 在结果对象上挂非枚举 _repaired 标记（供消费方区分「AI 修复过」与「原生输出」）；失败不影响主流程 */
+function markRepaired(obj: unknown): void {
+  try {
+    Object.defineProperty(obj as object, '_repaired', { value: true, enumerable: false, writable: true, configurable: true });
+  } catch {
+    /* 附加失败不影响主流程 */
+  }
 }
 
 export interface ChatMessage {
@@ -394,12 +414,15 @@ function modelNameHint(status: number, bodyText: string): string {
 export async function callModel(messages: ChatMessage[], config: AppConfig['model'], options: CallOptions = {}): Promise<any> {
   const jsonMode = options.jsonMode ?? true;
   const baseMaxTokens = effectiveMaxTokens(options.maxTokens, jsonMode);
+  // P1-11：apiKey 去空白——粘贴进设置时经常带首尾空格，「  sk-xxx  」会被当成有效 Key 发送
+  // 并拿到含糊的鉴权报错；统一 trim 后再判定「未配置 → agent 代答」
+  const apiKey = String(config?.apiKey || '').trim();
   // 官方要求②兜底：JSON 模式 prompt 必须含 json 字样，并统一注入 JSON 输出契约（幂等）。
   // 已合规时原样透传，不改动 messages（保住服务端 prompt cache 前缀）。
   const effectiveMessages = jsonMode ? ensureJsonPromptContract(messages) : messages;
   // 未配置 API Key：优先交给外部 agent 代答（agent 在线时把任务挂进本地队列，等 agent 用自有模型回填，
   // 结果形态与真实模型调用完全一致）；agent 不在线 / 超时未答 / 主动放弃 → 抛 AIError 由上层走本地规则兜底。
-  if (!config.apiKey) {
+  if (!apiKey) {
     return await answerViaAgent(effectiveMessages, {
       jsonMode,
       purpose: options.purpose,
@@ -441,7 +464,7 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   /** 单次往返：发请求 → 网关不支持 response_format 时降级重发 → 取出 content / finish_reason。 */
   const requestOnce = async (over: { maxTokens?: number; nudge?: string } = {}) => {
     const payload: any = {
-      model: config.model || 'deepseek-flash',
+      model: config.model || DEFAULT_MODEL_NAME, // P1-10：兜底模型名引用 providerPresets 单源
       messages: over.nudge ? withNudge(effectiveMessages, over.nudge) : effectiveMessages,
       temperature,
       max_tokens: over.maxTokens ?? baseMaxTokens,
@@ -461,12 +484,12 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
       }
     }
 
-    let response = await requestModel(url, payload, config.apiKey, timeoutMs);
+    let response = await requestModel(url, payload, apiKey, timeoutMs);
     let bodyText = await response.text();
     if (!response.ok && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
       const retryPayload = { ...payload };
       delete retryPayload.response_format;
-      response = await requestModel(url, retryPayload, config.apiKey, timeoutMs);
+      response = await requestModel(url, retryPayload, apiKey, timeoutMs);
       bodyText = await response.text();
     }
     if (!response.ok) {
@@ -548,7 +571,7 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
     }
   }
   if (parsed === undefined) {
-    const viaModel = await repairJsonViaModel(url, content, payload, config.apiKey, timeoutMs, {
+    const viaModel = await repairJsonViaModel(url, content, payload, apiKey, timeoutMs, {
       maxTokens: truncatedFinal ? Math.min(baseMaxTokens * 2, MODEL_MAX_OUTPUT_TOKENS) : baseMaxTokens,
       systemPrompt: effectiveMessages
         .filter((m) => m.role === 'system')
@@ -564,14 +587,10 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
     parsed = viaModel;
     repaired = true;
   }
-  // 非枚举标记：调用方可据此区分「修复成功（仍属 AI 结果）」与「整体降级本地」，
-  // 不落入 JSON.stringify、不污染缓存语义。
+  // 非枚举标记：调用方可据此区分「修复成功（仍属 AI 结果）」与「整体降级本地」。
+  // 不落入 JSON.stringify、不污染缓存语义；缓存往返由 P1-06 的 entry.repaired 字段承载。
   if (repaired) {
-    try {
-      Object.defineProperty(parsed, '_repaired', { value: true, enumerable: false, writable: true, configurable: true });
-    } catch {
-      /* 附加失败不影响主流程 */
-    }
+    markRepaired(parsed);
   }
   // 服务端提示词缓存用量附加：统一在 parsed 确定后执行（覆盖正常与修复两条路径）
   if (usageSeen) {
@@ -600,8 +619,12 @@ async function answerViaAgent(
   messages: ChatMessage[],
   ctx: { jsonMode: boolean; purpose?: string; maxTokens: number; timeoutMs: number }
 ): Promise<any> {
-  // 代答需要 agent 侧一次完整的模型往返，等待窗口比直连模型宽（下限 30s、上限由 agentAnswer 夹定）。
-  const waitMs = Math.max(ctx.timeoutMs * 2, AGENT_ANSWER_MIN_WAIT_MS);
+  // P1-07：代答等待上限与「请求模型的网络超时」解耦——此前 analyzeJob 等未传 timeoutMs 的调用
+  // 默认 90s 网络超时被 ×2 成 180s 白等（每岗位静默等 3 分钟才回落本地规则，批量分析累计可达数十分钟）；
+  // 代答是「人在环外」的异步队列，取调用方超时与 60s 上限的较小者，超时即回落本地规则。
+  // 注：agentAnswer.ts 内部仍有 30s~240s 的防御 clamp（AGENT_ANSWER_MIN/MAX_WAIT_MS），本值只是上层志愿的上限。
+  const AGENT_ANSWER_WAIT_MS = 60_000;
+  const waitMs = Math.min(Math.max(ctx.timeoutMs, AGENT_ANSWER_MIN_WAIT_MS), AGENT_ANSWER_WAIT_MS);
   const ask = async (attempt: number, nudge?: string): Promise<string> => {
     try {
       const text = await requestAgentAnswer({
@@ -653,13 +676,23 @@ export interface LLMUsageStats {
 }
 
 let llmUsageSession: LLMUsageStats = { requests: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
+// P1-04：「本会话」语义的锚点——跨天自动归零，面板展示的是当天累计而非长期漂移
+let llmUsageDay = new Date().toDateString();
+
+function dayChanged(): boolean {
+  const today = new Date().toDateString();
+  return today !== llmUsageDay;
+}
 
 export function getLLMUsageStats(): LLMUsageStats {
+  // P1-04：读时惰性日切——用户开着应用跨天，下一次读取即按新一天统计
+  if (dayChanged()) resetLLMUsageStats();
   return { ...llmUsageSession };
 }
 
 export function resetLLMUsageStats(): void {
   llmUsageSession = { requests: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
+  llmUsageDay = new Date().toDateString();
 }
 
 // ===== AI 结果缓存（降低重复调用费用）=====
@@ -683,6 +716,12 @@ interface AICacheEntry {
   ttlMs: number;
   hits: number;
   scope: string;
+  /** 该结果是否经二次 AI 补齐修复（P1-06：提升为 entry 显式字段，命中缓存时挂回 _repaired） */
+  repaired?: boolean;
+  /** 生成时的 provider（P1-03：供「换模型后清旧模型缓存」的定向清理与诊断） */
+  provider?: string;
+  /** 生成时的模型名（P1-03） */
+  model?: string;
 }
 
 const AI_CACHE_KEY = 'bossclaw-ai-cache-v1';
@@ -754,43 +793,113 @@ function saveAICache(map: Record<string, AICacheEntry>): void {
 function trimAICache(map: Record<string, AICacheEntry>): void {
   const keys = Object.keys(map);
   if (keys.length <= AI_CACHE_MAX_ENTRIES) return;
-  // 超条数上限：删除最旧的差额（保守一点，多删 10% 减少反复裁剪）
-  const entries = keys
-    .map((key) => map[key])
-    .sort((a, b) => a.ts - b.ts);
+  // P1-03：与 saveAICache 的字节淘汰是「同一 LRU（按 ts 升序）」的两个硬上限——
+  // 字节上限在写盘前兜底（超 2.5MB 丢最旧一半），条数上限在写入时兜底（超 300 条丢最旧 10%）；
+  // 两者方向一致、互补不互斥，勿再加第三套淘汰逻辑。
+  // P1-03：直接按键排序删除最旧，去掉对 entry.key 的隐式依赖——
+  // （entry.key 与 map 键名恒等，拆开会让淘汰静默失效）
   const dropCount = keys.length - Math.floor(AI_CACHE_MAX_ENTRIES * 0.9);
-  const dropKeys = new Set(entries.slice(0, Math.max(1, dropCount)).map((e) => e.key));
-  for (const key of keys) {
-    if (dropKeys.has(key)) delete map[key];
-  }
+  const sortedKeys = keys.sort((a, b) => map[a].ts - map[b].ts);
+  for (const k of sortedKeys.slice(0, Math.max(1, dropCount))) delete map[k];
 }
+
+// ===== 进程内一级缓存（P1-01）=====
+// 背景：cachedCallModel 是每次 AI 调用的必经路径，批量分析时每次都会对整份 localStorage
+// （上限 2.5MB）做全量 JSON.parse / stringify，主线程反复阻塞数十毫秒（P30 只优化了
+// 展示侧 getAICacheStats，没动调用主路径）。此处引入「内存 map 为一级缓存，localStorage
+// 仅作持久化后备」：读取只 parse 一次，写入经防抖合批落盘，热路径零 I/O。
+let memCache: Record<string, AICacheEntry> | null = null;
+let memCacheFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 进程内缓存视图：惰性从 localStorage 加载一次，之后全走内存（与磁盘保持最终一致）。 */
+function getCache(): Record<string, AICacheEntry> {
+  if (memCache === null) memCache = loadAICache();
+  return memCache;
+}
+
+/** 写入防抖合批：500ms 窗口内的多次 set 只落一次盘（批量分析时写盘次数从 N 降到 ~1）。 */
+function scheduleCacheFlush(): void {
+  if (memCacheFlushTimer) return;
+  memCacheFlushTimer = setTimeout(() => {
+    memCacheFlushTimer = null;
+    if (memCache) saveAICache(memCache);
+  }, 500);
+}
+
+/** 立即落盘（清空缓存等用户显式操作路径用，保证下一次读取即为清空后的状态）。 */
+function flushCacheNow(): void {
+  if (memCacheFlushTimer) {
+    clearTimeout(memCacheFlushTimer);
+    memCacheFlushTimer = null;
+  }
+  if (memCache) saveAICache(memCache);
+}
+
+// 命中统计内存累加 + 定期落盘：hits/misses 不再每次 bump 都同步读写 stats key
+let statsAccum: {
+  hits: number;
+  misses: number;
+  loaded: boolean;
+  base: { hits: number; misses: number; since: number } | null;
+} = { hits: 0, misses: 0, loaded: false, base: null };
+let statsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function bumpCacheStats(hits: number, misses: number): void {
-  try {
-    const raw = localStorage.getItem(AI_CACHE_STATS_KEY);
-    const stats = raw
-      ? JSON.parse(raw)
-      : { hits: 0, misses: 0, since: Date.now() };
-    stats.hits = Number(stats.hits || 0) + hits;
-    stats.misses = Number(stats.misses || 0) + misses;
-    if (!stats.since) stats.since = Date.now();
-    localStorage.setItem(AI_CACHE_STATS_KEY, JSON.stringify(stats));
-  } catch {
-    /* 统计失败不影响主流程 */
-  }
+  statsAccum.hits += Math.max(0, hits);
+  statsAccum.misses += Math.max(0, misses);
+  if (statsFlushTimer) return;
+  statsFlushTimer = setTimeout(() => {
+    statsFlushTimer = null;
+    if (statsAccum.hits === 0 && statsAccum.misses === 0) return;
+    try {
+      const prev: { hits: number; misses: number; since: number } | null = statsAccum.loaded
+        ? statsAccum.base
+        : null;
+      const next = prev ?? (() => {
+        const raw = localStorage.getItem(AI_CACHE_STATS_KEY);
+        if (raw) {
+          try {
+            const s = JSON.parse(raw) as { hits?: number; misses?: number; since?: number };
+            if (s && typeof s === 'object') return { hits: Number(s.hits || 0), misses: Number(s.misses || 0), since: Number(s.since || Date.now()) };
+          } catch {
+            /* 损坏则重建 */
+          }
+        }
+        return { hits: 0, misses: 0, since: Date.now() };
+      })();
+      next.hits += statsAccum.hits;
+      next.misses += statsAccum.misses;
+      localStorage.setItem(AI_CACHE_STATS_KEY, JSON.stringify(next));
+      statsAccum.base = next;
+      statsAccum.loaded = true;
+    } catch {
+      /* 统计失败不影响主流程 */
+    }
+    statsAccum.hits = 0;
+    statsAccum.misses = 0;
+  }, 2000);
 }
 
-/** 清空 AI 结果缓存；scope 省略时清空全部。返回清除的条目数。 */
-export function clearAICache(scope?: AICacheScope): number {
-  const map = loadAICache();
+/** 已累计但尚未落盘的统计（给 getAICacheStats 展示用，保证页面读到最新值）。 */
+function pendingCacheStats(): { hits: number; misses: number } {
+  return { hits: statsAccum.hits, misses: statsAccum.misses };
+}
+
+/** 清空 AI 结果缓存。
+ *  scope 省略时清空全部；可按 provider / model 定向过滤（P1-03：换模型后清理旧模型缓存）
+ *  —— 兼容旧调用（原仅 scope 参数），过滤条件与 scope 是「与」关系。 */
+export function clearAICache(scope?: AICacheScope, filter?: { provider?: string; model?: string }): number {
+  const map = getCache();
   let count = 0;
   for (const key of Object.keys(map)) {
-    if (!scope || map[key].scope === scope) {
-      delete map[key];
-      count += 1;
-    }
+    const e = map[key];
+    if (scope && e.scope !== scope) continue;
+    if (filter?.provider && e.provider !== filter.provider) continue;
+    if (filter?.model && e.model !== filter.model) continue;
+    delete map[key];
+    count += 1;
   }
-  saveAICache(map);
+  flushCacheNow();
   return count;
 }
 
@@ -826,6 +935,11 @@ export function getAICacheStats(): { entries: number; totalBytes: number; hits: 
   } catch {
     /* 忽略 */
   }
+  // P1-01：统计改为内存累加 + 定期落盘后，页面读统计时把「已累计未落盘」部分合并进来，
+  // 保证设置页展示的是最新值（落盘延迟 ≤2s，不影响准确性）。
+  const pending = pendingCacheStats();
+  hits += pending.hits;
+  misses += pending.misses;
   return { entries, totalBytes, hits, misses, since };
 }
 
@@ -856,13 +970,16 @@ export async function cachedCallModel(
   );
 
   const now = Date.now();
-  const map = loadAICache();
+  // P1-01：进程内一级缓存——首次调用才 parse 一次 localStorage，之后全部内存查表
+  const map = getCache();
   const hit = map[key];
   if (hit && hit.ts + hit.ttlMs > now) {
     // P30：命中不写盘——命中计数（hits）仅作内存统计，避免「读缓存」触发对整份缓存
     // （上限 2.5MB）的全量 JSON.stringify + localStorage 写盘（网络慢/批量重复分析时
     // 高频命中会造成渲染主线程阻塞、卡顿）。实际缓存条目仍在其写入时持久化，不受影响。
     bumpCacheStats(1, 0);
+    // P1-06：命中时把「曾修复」标记挂回结果（非枚举 _repaired 过不了 JSON.stringify，须由 entry 字段承载）
+    if (hit.repaired) markRepaired(hit.value);
     return hit.value;
   }
   if (map[key]) delete map[key]; // 已过期：清理
@@ -872,17 +989,36 @@ export async function cachedCallModel(
 
   const task = (async () => {
     const result = await callModel(messages, config, { ...options, purpose: options.purpose ?? AI_SCOPE_LABELS[scope] });
-    map[key] = { key, value: result, ts: Date.now(), ttlMs, hits: 0, scope };
+    // P1-06：把「是否经二次补齐修复」落进缓存 entry（_repaired 非枚举属性会丢，须显式字段）
+    map[key] = {
+      key,
+      value: result,
+      ts: Date.now(),
+      ttlMs,
+      hits: 0,
+      scope,
+      repaired: Boolean((result as { _repaired?: boolean })?._repaired),
+      // P1-03：生成侧记录 provider/model，供「换模型后定向清理旧缓存」与诊断
+      provider: config.provider,
+      model: config.model,
+    };
     trimAICache(map);
-    saveAICache(map);
+    // P1-01：写盘防抖合批（内存已更新，磁盘 500ms 内落一次）
+    scheduleCacheFlush();
     bumpCacheStats(0, 1);
     return result;
   })();
 
-  aiCacheInFlight.set(key, task);
-  try {
-    return await task;
-  } finally {
+  // P1-02：失败立即让位重试——并发窗口内不共享瞬时失败（网络抖动不扩散成整批降级）；
+  // finally 里的身份校验（=== guarded）防止任务完成后新写同 key 时误删新条目。
+  const guarded = task.catch((e) => {
     aiCacheInFlight.delete(key);
+    throw e;
+  });
+  aiCacheInFlight.set(key, guarded);
+  try {
+    return await guarded;
+  } finally {
+    if (aiCacheInFlight.get(key) === guarded) aiCacheInFlight.delete(key);
   }
 }

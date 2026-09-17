@@ -10,7 +10,7 @@ import {
   SettingOutlined,
   ExclamationCircleOutlined,
 } from '@ant-design/icons';
-import type { ChatLogEntry, ChatLogStage } from '@/store/useDataStore';
+import type { ChatLogEntry, ChatLogStage } from '@/store/useRuntimeLogsStore';
 
 const { Text } = Typography;
 

@@ -4,37 +4,15 @@
 // 实现「完成 P1 平台全部任务再切 P2」的串行消费语义。
 import type { AppConfig, JobAnalysis, JobMeta, PendingItem, JobPlatform } from './types';
 import { platformPriority } from './platforms';
-import { decodeSalaryDigits } from './jobDisplay';
-import { detectWorkSchedule, dailyToMonthlyK, hourlyToMonthlyK } from './workSchedule';
+import { parseSalaryRange } from './jobMatch';
+import { detectWorkSchedule } from './workSchedule';
 
 function salaryPriority(job: JobMeta = {}): number {
-  const raw = decodeSalaryDigits(String(job.salary || '')).trim();
-  // 面议/无薪资：不产生薪资信号（0 分，既不抬升也不压低排序）
-  if (!raw || /面议/.test(raw)) return 0;
-  // 去掉「13薪/14薪/15薪」等年终奖月数，避免「13」被误当作薪资区间上限
-  const cleaned = raw.replace(/[·*＊xX×\s]*1[2-8]\s*薪/g, '').trim();
-  // 日薪/时薪口径（如 200元/天、300/天、30元/小时、时薪 200）
-  const hourly = /\/\s*(?:小时|时)|每\s*(?:小时|时)|时薪/.test(cleaned);
-  const daily = !hourly && /\/\s*天|每\s*天|每天|\/\s*日|每\s*日|日薪|按天结算/.test(cleaned);
-  const nums = [...cleaned.matchAll(/(\d+(?:\.\d+)?)/g)]
-    .map((m) => Number(m[1]))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (!nums.length) return 0;
-  const low = nums[0];
-  const high = nums.length >= 2 ? nums[1] : nums[0];
-  // 统一折算到「千元/月」：日薪/时薪按岗位工作制度的月工作日基数（双休 22 / 大小周 24 / 单休 26），
-  // 与 jobMatch.parseSalaryRange 同口径，保证排序与匹配度不会出现两套折算结果。
+  // 统一走 jobMatch.parseSalaryRange（唯一薪资解析实现，审查 P3-04：两处解析曾实测分歧）
   const schedule = detectWorkSchedule(job);
-  const days = schedule.monthlyWorkDays;
-  let midpoint: number;
-  if (hourly) midpoint = (hourlyToMonthlyK(low, days) + hourlyToMonthlyK(high, days)) / 2;
-  else if (daily) midpoint = (dailyToMonthlyK(low, days) + dailyToMonthlyK(high, days)) / 2;
-  else {
-    midpoint = (low + high) / 2;
-    if (/万/.test(cleaned)) midpoint *= 10; // 万 → 千元
-    else if (/元\s*\/\s*月|元\s*每\s*月/.test(cleaned)) midpoint /= 1000; // 元/月 → 千元
-    else if (!/[Kk]/.test(cleaned) && midpoint > 200) midpoint /= 1000; // 纯数字且偏大（如 15000-20000 元）→ 千元
-  }
+  const range = parseSalaryRange(job.salary, schedule.monthlyWorkDays);
+  if (!range.valid) return 0; // 面议/无薪资：不产生薪资信号（0 分，既不抬升也不压低排序）
+  const midpoint = (range.low + range.high) / 2; // 千元/月
   return Math.max(0, Math.min(180, Math.round(midpoint * 6)));
 }
 

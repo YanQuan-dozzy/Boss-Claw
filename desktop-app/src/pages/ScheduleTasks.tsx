@@ -1,3 +1,11 @@
+/**
+ * 【主模块：定时任务】导航 key = 'schedule'
+ * 子模块：
+ * - 任务列表（定时任务卡：开启/时段/周期/平台/每轮上限/上次触发，编辑与删除）
+ * - 动作类型三选：定时投递（deliver）/ 定时采集（collect）/ 定时备份（backup）——见 ACTION_META
+ * - 一键生成分批模板（BATCH_TEMPLATES：早/午/晚三条「限量投递」；上限 BATCH_TEMPLATE_LIMIT=40）
+ * - 新建/编辑任务弹窗（DraftTask 表单：名称/动作/时间/周几/平台/每轮上限）
+ */
 import { useState } from 'react';
 import {
   Button, Card, Input, InputNumber, Modal, Select, Space, Switch, Tag, TimePicker, Typography, message,

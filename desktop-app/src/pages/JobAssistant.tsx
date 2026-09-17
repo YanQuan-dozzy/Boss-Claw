@@ -1,3 +1,11 @@
+/**
+ * 【主模块：定制简历】导航 key = 'assistant'
+ * 子模块：
+ * - 岗位信息卡（导入已批准岗位 / 岗位名称 / 岗位要求 + 「AI 生成定制简历」）
+ * - 经历补充材料卡（tailor-materials-card：PDF/DOCX/MD/TXT 导入真实经历，仅参与定制与要点判定）
+ * - 定制结果（TailorResultView：七模块 doc + 匹配评分 + 要点对照 + 求职信，可导出 PDF / 存打招呼语）
+ * - 历史定制记录（本地最近 HISTORY_MAX 条，可载入/删除）
+ */
 import { useMemo, useState } from 'react';
 import {
   Alert, Avatar, Button, Card, Checkbox, Divider, Form, Input, List, Modal, Radio, Select, Space, Tag, Typography, Upload, message,

@@ -1,3 +1,13 @@
+/**
+ * 【主模块：自动沟通】导航 key = 'autochat'（浏览器自动化批量代投，模块级单例跨页持久运行）
+ * 子模块：
+ * - 页头状态栏（执行模式 / 隐身引擎就绪 / 风控冷却 三个 status-pill）
+ * - 隐身引擎投递控制卡（开始批量沟通 / 停止 / 检测状态 + 待沟通/已沟通/失败指标 + 各平台登录态与扫码登录 autochat-platform-grid）
+ * - 待沟通岗位队列卡（job-card 列表：平台/岗位/优先级/状态，招呼语可编辑，选中进行沟通）
+ * - 沟通与附件设置卡（打招呼语非空红线、附件开关与水印、图片简历上传）
+ * - 沟通信息卡（AI 跟聊引用：薪资期望/面试时间/到岗时间等人工填写）
+ * - 防封号节奏限制卡（岗位间隔 / 每分动作 / 冷却 / 每日上限等 Rate Limit）
+ */
 import { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import {
   Alert, Button, Card, Input, InputNumber, Space, Switch, Tag, Typography, Upload, message, Progress,
@@ -12,8 +22,10 @@ import {
   RobotOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import { ChevronDown } from '@/components/ChevronDown';
+import GreetingEditor from '@/components/GreetingEditor';
 import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAutoChatStore } from '@/store/useAutoChatStore';
 import {
@@ -53,8 +65,8 @@ export default function AutoChat() {
   // ===== Store 订阅（按字段选择并使用 useShallow 避免全量重渲染） =====
   const pending = useDataStore(useShallow((s) => s.pending));
   const updatePending = useDataStore((s) => s.updatePending);
-  const chatLogs = useDataStore(useShallow((s) => s.chatLogs));
-  const clearChatLogs = useDataStore((s) => s.clearChatLogs);
+  const chatLogs = useRuntimeLogsStore(useShallow((s) => s.chatLogs));
+  const clearChatLogs = useRuntimeLogsStore((s) => s.clearChatLogs);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   const imageResumes = useDataStore(useShallow((s) => s.imageResumes));
   const addImageResume = useDataStore((s) => s.addImageResume);
@@ -459,13 +471,12 @@ export default function AutoChat() {
                               {(p.deliveryGreeting || p.analysis?.greeting || '').length} 字
                             </span>
                           </div>
-                          <Input.TextArea
+                          <GreetingEditor
                             value={p.deliveryGreeting || p.analysis?.greeting || ''}
-                            onChange={(e) => updatePending(p.id, { deliveryGreeting: e.target.value })}
-                            autoSize={{ minRows: 2, maxRows: 5 }}
-                            placeholder="请输入你希望发送给招聘方的求职招呼语"
+                            onCommit={(v) => updatePending(p.id, { deliveryGreeting: v })}
+                            minRows={2}
+                            maxRows={5}
                             disabled={p.status === 'sent'}
-                            style={{ fontSize: 12, lineHeight: 1.65, borderRadius: 8 }}
                           />
                         </div>
                         {p.error && <div className="job-error">⚠ {p.error}</div>}

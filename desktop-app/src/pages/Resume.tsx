@@ -1,3 +1,10 @@
+/**
+ * 【主模块：简历中心】导航 key = 'resume'
+ * 子模块：
+ * - 解析提示（resume-warn-alert：导入/解析告警，可关闭）
+ * - 顶部双栏（等高对齐）：简历原文（resume-card：导入/拖拽/粘贴、保存原文、脱敏转图片）｜职业画像（可编辑草稿，AI 生成、失败回退本地规则）
+ * - 底部整宽区块：AI 打招呼语提示词（工作台定制：提示词正文 + 打招呼语预览）
+ */
 import { useRef, useState, useEffect } from 'react';
 import {
   Alert,
