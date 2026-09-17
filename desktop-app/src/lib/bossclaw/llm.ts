@@ -4,6 +4,7 @@
 import type { AppConfig } from './types';
 import { electronApi } from '@/lib/electronApi';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
+import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
 
 export class AIError extends Error {
   code: string;
@@ -359,6 +360,22 @@ async function repairJsonViaModel(
 }
 
 /**
+ * 模型名配错时的可操作提示。
+ * 多数 OpenAI 兼容网关（含 DeepSeek 官方）在 model 参数不被支持时返回 400，并在 body 里
+ * 列出合法模型名（形如 `The supported API model names are a, b, but you passed c.`）。
+ * 只把原始 body 透给用户时，界面只剩一句「AI 请求失败 HTTP 400」，很难看出是模型名问题。
+ * 这里把合法名提取出来附在报错末尾，直接指向设置页的「模型名称」输入框。
+ */
+function modelNameHint(status: number, bodyText: string): string {
+  if (status !== 400) return '';
+  const matched = bodyText.match(/supported API model names are\s*([^."]+)/i);
+  if (!matched) return '';
+  const supported = matched[1].replace(/\s+/g, ' ').trim();
+  if (!supported) return '';
+  return `\n提示：当前端点只支持模型 ${supported}。请在「设置 → 大模型服务商与 API 接入」把「模型名称」改成上述之一（也可点「服务商预设」重新套用官方默认模型名）。`;
+}
+
+/**
  * 发起模型调用。
  * 未配置 API Key 时的可能路径（见下方 answerViaAgent 与 agentAnswer.ts）：
  *   ① 有 agent 在线（外部 agent 最近调用过 bossclaw_agent_tasks）→ 交给 agent 代答：
@@ -391,11 +408,16 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
     });
   }
   const url = `${String(config.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
-  // DeepSeek V4 默认开启思考模式（官方文档：thinking 默认 enabled，effort 默认 high），
+  // DeepSeek V4 系列默认开启思考模式（官方文档：thinking 默认 enabled，effort 默认 high），
   // 思维链放在 reasoning_content、最终答案放 content；max_tokens 偏小时 content 会为空。
-  // 本项目需要模型直接输出结构化 JSON，无需思维链，故对 DeepSeek 端点显式关闭思考，
-  // 确保答案落在 content 字段（同时避免温度等参数在思考模式下被忽略）。
-  const isDeepSeek = config.provider === 'deepseek' || /deepseek/i.test(String(config.baseUrl || ''));
+  // 本项目默认需要模型直接输出结构化 JSON，故默认显式关闭思考，确保答案落在 content 字段。
+  // 是否附加思考参数、以及用什么字段附加，**唯一判据见 thinkingCapability.ts**：
+  //   · unsupported（未验证支持的模型）→ 不发送任何思考参数（用户开着开关也不发，fail-safe）；
+  //   · toggleable → 按 config.thinking.enabled 发开启/关闭片段；
+  //   · always-on（如 glm-5.3 / GPT-6 Astra）→ 只发开启片段，且不发关闭片段（传 disabled 会 400）。
+  const thinkingProfile = resolveThinkingProfile(config.provider, config.model, config.baseUrl);
+  const thinkingActive = isThinkingActive(thinkingProfile, config.thinking);
+  const thinkingEffort = String(config.thinking?.effort || thinkingProfile.defaultEffort || '');
   const timeoutMs = Number(options.timeoutMs || 90000);
   const temperature = Number(options.temperature ?? config.temperature ?? 0.1);
 
@@ -419,13 +441,25 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   /** 单次往返：发请求 → 网关不支持 response_format 时降级重发 → 取出 content / finish_reason。 */
   const requestOnce = async (over: { maxTokens?: number; nudge?: string } = {}) => {
     const payload: any = {
-      model: config.model || 'deepseek-v4-flash',
+      model: config.model || 'deepseek-flash',
       messages: over.nudge ? withNudge(effectiveMessages, over.nudge) : effectiveMessages,
       temperature,
       max_tokens: over.maxTokens ?? baseMaxTokens,
     };
-    if (isDeepSeek) payload.thinking = { type: 'disabled' };
     if (jsonMode) payload.response_format = { type: 'json_object' };
+    // 思考参数：仅当模型被判定为支持思考时才附加；开启思考时同时带上强度档位。
+    if (thinkingProfile.mode !== 'unsupported') {
+      const fragment = thinkingActive ? thinkingProfile.on : thinkingProfile.off;
+      if (fragment) Object.assign(payload, fragment);
+      if (
+        thinkingActive &&
+        thinkingProfile.effortField &&
+        thinkingProfile.efforts.length > 0 &&
+        thinkingProfile.efforts.includes(thinkingEffort)
+      ) {
+        payload[thinkingProfile.effortField] = thinkingEffort;
+      }
+    }
 
     let response = await requestModel(url, payload, config.apiKey, timeoutMs);
     let bodyText = await response.text();
@@ -436,7 +470,11 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
       bodyText = await response.text();
     }
     if (!response.ok) {
-      throw new AIError('AI_HTTP', `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}`, { status: response.status });
+      throw new AIError(
+        'AI_HTTP',
+        `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}${modelNameHint(response.status, bodyText)}`,
+        { status: response.status },
+      );
     }
 
     let result: any;

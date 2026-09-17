@@ -1113,14 +1113,14 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
             加入任务
           </Button>
         </Tooltip>
-        <Tooltip title="投递引擎开关">
+        <Tooltip title={autoAssist ? '点击暂停投递引擎' : '启动投递引擎，开始投递队列中的岗位'}>
           <Button
             size="small"
             type={autoAssist ? 'primary' : 'default'}
             icon={<ThunderboltOutlined />}
             onClick={() => setAutoAssist(!autoAssist)}
           >
-            {autoAssist ? '投递中' : '开始投递'}
+            {autoAssist ? '暂停投递' : '开始投递'}
           </Button>
         </Tooltip>
       </div>

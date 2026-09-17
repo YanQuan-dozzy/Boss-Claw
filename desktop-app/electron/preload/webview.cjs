@@ -770,7 +770,7 @@ async function extractJob() {
 // ===== 可信输入通道（Electron 版 CDP 真实输入）=====
 // BOSS 聊天框是 React/Slate/Lexical 受控 contenteditable，只认真实输入（isTrusted:true），
 // dispatchEvent 合成事件会被丢弃。等价实现：main.cjs 的 webContents.insertText/selectAll/delete/sendInputEvent。
-function trustedInput(action, text) {
+function trustedInput(action, text, extra) {
   return new Promise((resolve) => {
     const seq = Date.now() + '_' + Math.floor(Math.random() * 1e6);
     let settled = false;
@@ -778,7 +778,7 @@ function trustedInput(action, text) {
     // 关键：按 seq 匹配回执——并发调用时避免收到别的请求的回执而串包
     const onDone = (_e, data) => { if (String(data?.seq || '') === seq) { ipcRenderer.removeListener('jc:webview-input-done', onDone); done(data); } };
     try { ipcRenderer.on('jc:webview-input-done', onDone); } catch { done({ ok: false, error: 'listener failed' }); }
-    try { ipcRenderer.send('jc:webview-input', { seq, action, text }); } catch { ipcRenderer.removeListener('jc:webview-input-done', onDone); done({ ok: false, error: 'send failed' }); }
+    try { ipcRenderer.send('jc:webview-input', { seq, action, text, ...(extra || {}) }); } catch { ipcRenderer.removeListener('jc:webview-input-done', onDone); done({ ok: false, error: 'send failed' }); }
     setTimeout(() => { ipcRenderer.removeListener('jc:webview-input-done', onDone); done({ ok: false, error: 'timeout' }); }, 4000);
   });
 }
@@ -821,38 +821,98 @@ const CHAT_LABEL_PATTERN = /立即\s*沟通|继续\s*沟通|立\s*刻\s*沟通|�
 // 外部网申按钮文本（对齐 job-claw-main externalApplicationInfo：精确匹配，命中即跳过）
 const EXTERNAL_LABEL_PATTERN = /^(立即网申|去网申|前往网申|立即申请|去申请|申请职位|立即投递|投递简历|前往申请)$/;
 
-function buttonScore(el) {
-  const label = textOf(el);
+// 廉价文本读取（不触发重排）：textContent 不做布局计算。
+// 对比 textOf() 用 innerText——每调用一次都会强制一次 layout flush。BOSS 岗位详情页 DOM 极大
+// （实测 HTML 460KB+），历史实现在「候选筛选」阶段对全量 div/span 逐个调 innerText（每个元素还调两次），
+// 会把 preload 长时间占满，表现为「点了投递没反应、日志停在『打开沟通窗口』之后就不动了」。
+// 故筛选阶段一律用本函数，innerText 只留给最终少量候选。
+function textRaw(el) { return String(el?.textContent || '').replace(/\s+/g, ' ').trim(); }
+
+// 真实可点击元素判定（a / button / [role=button]）。
+// 容器 div/span 不算：click 事件只向上冒泡、不会向下传给子节点，点容器不会触发页面绑在
+// 内部 <a>/<button> 上的处理器。
+function isClickableEl(el) {
+  if (!el || el.nodeType !== 1) return false;
+  const tag = String(el.tagName || '').toLowerCase();
+  return tag === 'a' || tag === 'button' || el.getAttribute?.('role') === 'button';
+}
+
+// 把候选解析为「真正可点击」的元素。
+// BOSS 详情页「立即沟通」的真实结构（取自线上源码）：
+//   <div class="btn btn-startchat-wrap">
+//     <a class="btn btn-startchat" ka="go_chat_done_532836075" href="javascript:;"
+//        redirect-url="/web/geek/chat?id=...&jobId=..." data-url="/wapi/zpgeek/friend/add.json?...">立即沟通</a>
+//   </div>
+// 两层文本都是「立即沟通」→ 打分相同。若因数组顺序选中外层容器，resolveClickTarget 只会向上找
+// （绝不向下），最终点到容器上 → 页面毫无反应。这里强制下沉到内部可点击元素，容器一律不返回。
+function resolveChatClickable(el) {
+  if (!el) return null;
+  if (isClickableEl(el)) return el;
+  const inner = el.querySelector?.('a, button, [role="button"]');
+  return isClickableEl(inner) ? inner : null;
+}
+
+function buttonScore(el, label) {
+  const text = label == null ? textOf(el) : label;
   let score = 0;
-  if (label === '立即沟通') score += 40;
-  else if (label === '继续沟通') score += 30;
-  else if (CHAT_LABEL_PATTERN.test(label)) score += 10;
+  if (text === '立即沟通') score += 40;
+  else if (text === '继续沟通') score += 30;
+  else if (CHAT_LABEL_PATTERN.test(text)) score += 10;
   // 详情区内的按钮优先（job-claw-main: 在详情内 +100）
   const detail = el.closest('[class*="job-detail"], .job-banner, .job-detail-box, .detail-content');
   if (detail) score += 100;
+  // 真实可点击元素优先于纯容器：杜绝「容器与内部按钮同分、被数组顺序选中容器」而点空
+  if (isClickableEl(el)) score += 60;
   // 靠右的操作按钮优先（BOSS 详情页主操作按钮在右侧）
   try { if (el.getBoundingClientRect().left > innerWidth * 0.5) score += 20; } catch {}
   return score;
 }
 
-// 在候选集中选最佳沟通按钮（打分取最高，对齐 job-claw-main communicateButton）
-function pickChatButton(candidates) {
+// 沟通按钮定位（性能 + 正确性双修）：
+//   1) 先用精确选择器（.btn-startchat 等）——命中即返回，绝不再做全量 DOM 扫描；
+//   2) 未命中才退化为「仅遍历可点击元素」（button/a/[role=button]，不含 span/div 全量）并使用廉价文本；
+//   3) 择优前剔除隐藏/禁用元素，并强制下沉到真实可点击元素（见 resolveChatClickable）。
+function communicateButton() {
+  const seen = new Set();
+  const gather = (list, useInnerText) => {
+    const out = [];
+    for (const raw of list) {
+      const el = resolveChatClickable(raw);
+      if (!el || seen.has(el)) continue;
+      if (!visible(el) || el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
+      const label = useInnerText ? textOf(el) : textRaw(el);
+      if (!CHAT_LABEL_PATTERN.test(label)) continue;
+      seen.add(el);
+      out.push({ el, label });
+    }
+    return out;
+  };
+  // 阶段 1：精确选择器直命中（候选极少，可用 innerText 保证文本准确）
+  let ranked = gather(all(BOSS_SELECTORS.chatButton), true);
+  // 阶段 2：退化扫描（只遍历可点击标签 + 廉价文本）
+  if (!ranked.length) ranked = gather(all('button, a, [role="button"]'), false);
   let best = null;
   let bestScore = -1;
-  for (const el of candidates) {
-    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
-    const label = textOf(el);
-    if (!CHAT_LABEL_PATTERN.test(label)) continue;
-    const score = buttonScore(el);
+  for (const { el, label } of ranked) {
+    const score = buttonScore(el, label);
     if (score > bestScore) { bestScore = score; best = el; }
   }
   return best;
 }
 
-function communicateButton() {
-  const selectorCandidates = all(BOSS_SELECTORS.chatButton);
-  const labelCandidates = all('button, a, [role="button"], span, div').filter((el) => CHAT_LABEL_PATTERN.test(textOf(el)) && textOf(el).length <= 12);
-  return pickChatButton([...selectorCandidates, ...labelCandidates]);
+// 沟通入口跳转地址（仅用于判断 href 是否已是可导航的同站地址）。
+// ⚠️ 严禁改成「直接跳 redirect-url」：BOSS 的「立即沟通」是**两步**语义——
+//   data-url="/wapi/zpgeek/friend/add.json?…"  先建立会话（friend 关系）
+//   redirect-url="/web/geek/chat?id=…"         会话建好后才去的聊天页
+// 绕过按钮、只跳 redirect-url 会导致会话未建立：聊天页加载后 BOSS 前端把地址退化成裸
+// /web/geek/chat（id 掉了）→ 没有会话可发消息 → 表现为「只能打开聊天页面，不能真正投递」。
+// 正确做法：必须让 BOSS 自己的点击处理器跑完整条链（见 enterChat 的注释）。
+function isNavigableChatHref(u) {
+  if (!u) return false;
+  try {
+    const p = new URL(u, location.href);
+    return /^https?:$/i.test(p.protocol) && /(^|\.)zhipin\.com$/i.test(p.hostname);
+  } catch { return false; }
 }
 
 // 「继续沟通」入口判定：主沟通按钮文本为「继续沟通」（而非「立即沟通」）——
@@ -989,6 +1049,26 @@ function confirmOwnMessage(greeting) {
   return normalizeChatText(document.body?.innerText).includes(needle);
 }
 
+// 真实鼠标点击（isTrusted:true，经主进程 sendInputEvent 产生）。
+// 为什么必须有它：BOSS「立即沟通」是 <a href="javascript:;">，页面处理器**只认可信输入**——
+// dispatchEvent 的合成点击会被完全忽略（线上实测：点击后按钮仍在、无弹窗、无输入框、无导航、无风控），
+// 这与 BOSS 聊天输入框「只认真实输入」是同一套加固。坐标用视口坐标（getBoundingClientRect 即视口系）。
+async function trustedClickElement(el) {
+  if (!el) return false;
+  try { el.scrollIntoView?.({ block: 'center', behavior: 'instant' }); } catch {}
+  await jitterDelay(200);
+  let rect = null;
+  try { rect = el.getBoundingClientRect(); } catch {}
+  if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+  const x = Math.round(rect.left + rect.width / 2);
+  const y = Math.round(rect.top + rect.height / 2);
+  // 视口外坐标不会命中目标（也会误伤页面其它元素）→ 直接放弃，交上层按失败处理
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+  const r = await trustedInput('clickAt', '', { x, y });
+  await jitterDelay(160);
+  return Boolean(r && r.ok);
+}
+
 async function enterChat() {
   const existing = chatInput();
   if (existing) return existing;
@@ -996,16 +1076,131 @@ async function enterChat() {
   if (!button) return null;
   const anchor = button.matches('a') ? button : button.closest('a');
   const href = button.href || anchor?.href || '';
-  if (href && /zhipin\.com/i.test(href)) {
+  // 必须让 BOSS 自己的点击处理器跑完整条链（先 friend/add.json 建会话，再跳聊天页）。
+  // 这里的 href 在 BOSS 新版是空操作 `javascript:;`，属于「就地开窗/由处理器决定跳转」的情形，
+  // 一律走点击；只有 href 本身就是同站地址（老版详情页）时才直接导航。
+  // 禁止改成直接跳 redirect-url：那会跳过建会话，聊天页拿不到 id，投递必然失败。
+  if (isNavigableChatHref(href)) {
     anchor?.removeAttribute?.('target');
     location.href = href; // 跨域导航到 app.zhipin.com，preload 会重新注入
     return null;
   }
   await clickElement(button);
-  return await waitFor(() => chatInput(), 12000, '聊天输入框');
+  // 先用合成点击（与参考实现一致）；3s 内没出现输入框就判定合成点击未被页面接受，
+  // 改用**真实鼠标点击**重试——BOSS 的交互按钮只认 isTrusted 事件（实测合成点击零反应）。
+  let input = await waitFor(() => chatInput(), 3000, '聊天输入框(合成点击)');
+  if (!input) {
+    const clicked = await trustedClickElement(button);
+    notify('apply-stage', {
+      stage: 'log',
+      message: clicked
+        ? '合成点击未生效，已改用真实鼠标点击（isTrusted）重试：' + diagChatButton(button)
+        : '合成点击未生效，且真实点击不可用（元素不在视口内），现场诊断：' + diagChatButton(button),
+    });
+  }
+  // 点击后 BOSS 对新会话岗位常弹确认框（「继续沟通 / 确认沟通 / 留在此页 / 我知道了」等），
+  // 弹窗挡在前面时聊天输入框永远不会出现。openChatOnly 一直有这个处理，而 domApply（工作台真正
+  // 走的路径）曾经缺失 —— 表现为：已有会话的岗位能投递成功（ka=go_chat_done_*，不弹窗），
+  // 新会话岗位（data-isfriend="false"）点完毫无反应、静默等到兜底超时。
+  // 这里对齐 openChatOnly：轮询等待期间顺带点掉确认弹窗，再判断输入框。
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const dlg = dialogConfirmButton();
+    if (dlg) { try { dlg.click(); } catch {} }
+    input = chatInput();
+    if (input) break;
+    await jitterDelay(300);
+  }
+  return input;
 }
 
-async function domApply({ job = {}, greeting = '' } = {}) {
+// 「立即沟通」失败现场诊断：点击后既没出现输入框、也不报 failed（走静默的 navigating 分支）时，
+// 现场事实全部丢失，只能靠猜。这里在有界范围内采集关键事实，经 apply-stage{stage:'log'} 打到工作台日志，
+// 用于区分「按钮没找到 / 点击没生效 / 弹窗出现但选择器没匹配上 / 命中风控」这几种截然不同的失败。
+function diagChatButton(button) {
+  try {
+    const pick = (el) => (el
+      ? `${String(el.tagName || '').toLowerCase()}.${String(el.className || '').slice(0, 36)}「${textRaw(el).slice(0, 18)}」`
+      : '无');
+    // 弹窗容器选择器：绝不能含 [class*="startchat"] —— BOSS 的沟通按钮 class 就是
+    // `btn btn-startchat`/`btn-startchat-wrap`，那种写法会把按钮自己误报成「可见弹窗」
+    // （实际排障时就踩过：诊断显示「可见弹窗=btn btn-startchat」而页面上根本没有弹窗）。
+    // 真正的弹窗容器用 dialog/modal/popup/popover + BOSS 自家的 dialog 类名。
+    const btn = button || communicateButton();
+    const dlgSel = '[class*="dialog"],[class*="modal"],[class*="popup"],[class*="popover"],[class*="layer"],[class*="confirm"]';
+    const btnIsSelf = (d) => Boolean(btn && (d === btn || d.contains(btn) || btn.contains(d)));
+    const dlgs = all(dlgSel)
+      .filter((d) => visible(d) && !isClickableEl(d) && !btnIsSelf(d))
+      .slice(0, 3)
+      .map((d) => `${String(d.className || '').slice(0, 28)}「${textRaw(d).slice(0, 50)}」`);
+    const ext = externalApplicationButton();
+    const body = textRaw(document.body).slice(0, 4000);
+    const risk = /安全验证|请完成验证|访问过于频繁|异常请求|验证码/.test(body) ? '命中风控文案' : '无';
+    const parts = [
+      `URL=${location.href.slice(0, 80)}`,
+      `沟通按钮=${pick(btn)}`,
+    ];
+    if (btn) {
+      parts.push(`href=${String(btn.getAttribute?.('href') || '').slice(0, 24)}`
+        + ` dataUrl=${btn.getAttribute?.('data-url') ? '有' : '无'}`
+        + ` redirect=${btn.getAttribute?.('redirect-url') ? '有' : '无'}`
+        + ` isfriend=${btn.getAttribute?.('data-isfriend') || '-'}`
+        + ` 禁用=${isDisabledish(btn) ? 'Y' : 'N'}`
+        + ` 可见=${visible(btn) ? 'Y' : 'N'}`);
+    }
+    parts.push(`外部网申=${pick(ext)}`);
+    parts.push(`可见弹窗=${dlgs.length ? dlgs.join(' | ') : '无'}`);
+    parts.push(`输入框数量=#chat-input:${all('#chat-input').length}/contenteditable:${all('[contenteditable="true"]').length}/textarea:${all('textarea').length}`);
+    parts.push(`发送按钮=${all('.send-message,[class*="send-message"],[class*="send-btn"]').length}`);
+    parts.push(`风控=${risk}`);
+    return parts.join('；');
+  } catch (e) { return '诊断自身异常：' + String(e?.message || e); }
+}
+// 把诊断打到工作台日志（stage:'log' 由 handleApplyStage 直接 addLog，不影响投递状态机）。
+// 去重：同一现场（诊断文本逐字相同）在窗口内只打一条 —— 排障时曾出现同一条诊断在同一秒刷 12 次
+// （上游重复投递 / 重复 start-apply 的表现），直接把日志淹掉。首次照常打全量；命中重复只打一条
+// 「已折叠」提示并附累计次数，既保住现场，又能从次数看出上游重复的严重程度。
+let lastDiagSig = '';
+let lastDiagAt = 0;
+let lastDiagCount = 0;
+function notifyDiag(prefix) {
+  const detail = diagChatButton();
+  const now = Date.now();
+  if (detail === lastDiagSig && now - lastDiagAt < 8000) {
+    lastDiagCount += 1;
+    lastDiagAt = now;
+    if (lastDiagCount === 2) {
+      notify('apply-stage', { stage: 'log', message: `${prefix}同一现场已在 8s 内重复出现，后续相同诊断自动折叠（次数会累计在前一条）` });
+    }
+    return;
+  }
+  const repeatNote = lastDiagCount > 2 ? `（此前同一现场共重复 ${lastDiagCount} 次）` : '';
+  lastDiagSig = detail;
+  lastDiagAt = now;
+  lastDiagCount = 1;
+  notify('apply-stage', { stage: 'log', message: `${prefix}${detail}${repeatNote}` });
+}
+
+// 投递流程并发去重（同一文档内）。start-apply 可能被上层重复下发（重发 / 重试 / 事件风暴），
+// 若并发执行，同一岗位会被重复填字并发送 —— 直接违反「未确认不计成功 / 不重复投递同一 HR」的不变量，
+// 也会让日志成倍刷屏。这里只允许同一文档内有一个投递流程在跑。
+// 注意：整页跳转（job_detail → 聊天页）会换文档、preload 重新注入，标志自然复位，
+// 因此上层「检测到聊天页后重发 start-apply 补写招呼语」的既定链路不受影响。
+let domApplyInFlight = false;
+async function domApply(arg) {
+  if (domApplyInFlight) {
+    notify('apply-stage', { stage: 'log', message: '已有投递流程进行中，忽略本次重复下发的 start-apply' });
+    return;
+  }
+  domApplyInFlight = true;
+  try {
+    await domApplyOnce(arg || {});
+  } finally {
+    domApplyInFlight = false;
+  }
+}
+
+async function domApplyOnce({ job = {}, greeting = '' } = {}) {
   const safeGreeting = String(greeting || '').replace(/\s+/g, ' ').trim();
   try {
     if (safeGreeting.length < 8) {
@@ -1028,6 +1223,9 @@ async function domApply({ job = {}, greeting = '' } = {}) {
     if (!input) {
       // 仍有沟通按钮 → 属「立即沟通/继续沟通」整页跳聊天页（preload 将重注入、原 domApply 中断）：
       // 不在此立即判失败，交由上层检测到聊天页后重发 start-apply 续跑补写 AI 招呼语。
+      // 注意：这条分支历史上是**静默**的（'navigating' 不在上层 TRACKED_STAGES 里、不产生日志），
+      // 因此「点击没生效」时表现为长时间无任何输出、直到 55s 兜底超时才报错 —— 先打诊断日志。
+      notifyDiag('「立即沟通」未打开聊天窗口，现场诊断：');
       if (communicateButton()) { notify('apply-stage', { stage: 'navigating', message: '沟通入口需要跳转聊天页，等待聊天窗口就绪…' }); return; }
       notify('apply-stage', { stage: 'failed', error: '未找到真实可编辑的聊天输入框，已暂停' });
       return;
@@ -1256,6 +1454,9 @@ async function clickElement(element) {
   await jitterDelay(180);
   const sanitized = sanitizeUnsafeActivation(target);
   try {
+    // 保持与参考实现一致的单一合成 click：不额外派发 pointerdown/mousedown。
+    // （曾试过派发完整鼠标序列，实测对 BOSS「立即沟通」无增益，且多派发的 pointer/mouse 事件
+    //   可能触发页面上其它监听器造成副作用 —— 已回退，勿再加回。）
     if (sanitized.unsafe && typeof target.dispatchEvent === 'function') {
       const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 0 });
       const preventUnsafeDefault = (event) => event.preventDefault?.();
