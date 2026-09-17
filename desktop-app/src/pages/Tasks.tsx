@@ -1,3 +1,11 @@
+/**
+ * 【主模块：任务进度】导航 key = 'tasks'
+ * 子模块：
+ * - 执行任务列表（执行任务列表卡：采集任务/投递任务，进度条、开始/继续/删除）
+ * - 岗位筛选工具栏（Segmented 状态筛选 + 显示已忽略/已跳过 + 计数）
+ * - 岗位记录列表（taskJobs 记录：优先序、目标 HR、附件水印、已投递/失败处理等）
+ * - 岗位详情预览（选中岗位的目标 HR/附件/打招呼语编辑等，视文件内实现）
+ */
 import { useMemo, useState } from 'react';
 import { Button, Card, Checkbox, Modal, Popconfirm, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import {
@@ -16,6 +24,7 @@ import {
   UndoOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
@@ -120,7 +129,7 @@ export default function Tasks() {
   const setPending = useDataStore((s) => s.setPending);
   const updateTaskRun = useDataStore((s) => s.updateTaskRun);
   const removeTaskRun = useDataStore((s) => s.removeTaskRun);
-  const addLog = useDataStore((s) => s.addLog);
+  const addLog = useRuntimeLogsStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   const setRoute = useAppStore((s) => s.setRoute);
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
@@ -446,6 +455,14 @@ export default function Tasks() {
                         )}
                         {renderDecisionBadge(p.analysis.decision)}
                         {renderFitLevelTag(p.analysis.fitLevel)}
+                        {/* P3-07 产品口径：recommend(匹配档) 分数低于用户设置的推荐岗位分时，加信息标签说明，
+                            不改变 decision/排序/入队语义——「推荐线」口径落在 fitLevel=strong 或 score ≥ minScore。
+                            注：任务进度页岗位来自已入队（≥ 最低入队分），低于推荐线仍可自行决定投递。 */}
+                        {p.analysis.fitLevel === 'match' && Number(p.analysis.score) < (Number(config.minScore) || 75) ? (
+                          <Tooltip title={`岗位分析分 ${p.analysis.score} 低于你设置的推荐岗位分（≥ ${Number(config.minScore) || 75} 分才显示「推荐」）。匹配但未达推荐线，是否投递由你决定（本地兜底场景 AI 分数不可用时尤其如此）。`}>
+                            <span className="task-flag-badge task-flag-badge--neutral">未达推荐线（{Number(config.minScore) || 75} 分）</span>
+                          </Tooltip>
+                        ) : null}
                         {p.analysis.hardBlocks?.length ? (
                           <Tooltip
                             title={

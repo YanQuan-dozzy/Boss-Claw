@@ -187,15 +187,19 @@ function platformExtractJob() {
 }
 
 
-// ===== 横向滚动兜底（修复智联等 PC 招聘站页面被截断、无法左右滑动）=====
-// 根因：智联等站点 html/body 设了 overflow-x:hidden + 固定宽度布局，当内置 webview 视口
-// 宽度小于其设计最小宽度时，右侧内容被裁剪且无横向滚动条，用户无法左右拖动。
-// BOSS 直聘为响应式布局、已知可正常横向滚动，跳过避免回归。
-// 修复：强制 html/body 允许横向滚动并显示滚动条；部分站点用 JS 反复重置 overflow，
-// 用 MutationObserver 兜底覆盖。外部容器 .browser-viewport/.browser-pane 的 overflow:hidden
-// 不影响 webview 内部 OOPIF 自身滚动，故此处从页面上下文修复。
+// ===== 横向滚动兜底（修复 PC 站页面被截断、无法左右滑动）=====
+// 根因1：智联等固定宽度站点 html/body 设了 overflow-x:hidden + 固定宽度布局，当内置
+// webview 视口宽度小于其设计最小宽度时，右侧内容被裁剪且无横向滚动条，无法左右拖动。
+// 根因2：BOSS 直聘为响应式布局，窄视口下内容被压缩填满视口（无横向溢出），同样不会
+// 出现横向滚动条（2026-09-17 实测确认）。
+// 修复：1) 强制 html/body 允许横向滚动并显示滚动条（全平台）；
+//      2) BOSS 额外强制根元素保持桌面设计宽度 min-width:1200px —— 视口更窄时产生
+//         横向溢出 → 出现横向滚动条，与固定宽度平台行为一致；视口 ≥ 1200px 时
+//         无溢出、不产生滚动条，无副作用。
+// 部分站点用 JS 反复重置 overflow，用 MutationObserver 兜底覆盖。外部容器
+// .browser-viewport/.browser-pane 的 overflow:hidden 不影响 webview 内部 OOPIF
+// 自身滚动，故此处从页面上下文修复。
 function injectHorizontalScrollFix() {
-  if (PLATFORM === 'boss') return; // BOSS 响应式，已知正常，跳过避免回归
   const CSS = [
     // 把 html 锁成视口高度的滚动容器：横向滚动条因此固定在 webview 视口底边（与纵向一致常驻），
     // 而非随文档流出现在整页底部（须拉到最底才出现）。body 的 overflow 设为 visible，
@@ -207,6 +211,7 @@ function injectHorizontalScrollFix() {
     '  overflow-y: auto !important;',
     '  -ms-overflow-style: auto !important;',
     '  scrollbar-width: auto !important;',
+    PLATFORM === 'boss' ? '  min-width: 1200px !important;' : '',
     '}',
     'body {',
     '  min-height: 100% !important;',
@@ -214,6 +219,7 @@ function injectHorizontalScrollFix() {
     '  width: auto !important;',
     '  overflow-x: visible !important;',
     '  overflow-y: visible !important;',
+    PLATFORM === 'boss' ? '  min-width: 1200px !important;' : '',
     '}',
     '::-webkit-scrollbar { width: 11px !important; height: 11px !important; display: block !important; }',
     '::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.28) !important; border-radius: 6px !important; }',
@@ -1909,10 +1915,11 @@ async function visualCollect(opts = {}) {
   notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, status: '准备中' });
 
   // 一次性 DOM 诊断：把每个选择器命中数和前若干节点 className 发给 React（只发一次）
+  // P4-04：诊断口径统一读适配表（与 :2325 非 BOSS 分支同源），不在此处硬编码选择器
   try {
-    const diagSelectors = ['.job-list-box .job-card-wrapper', 'li.job-card-wrapper', '.search-job-result .job-card-wrapper', '.job-list-box li', 'a[href*="/job_detail/"]'];
+    const diagSelectors = PLATFORM_LIST_SELECTORS[PLATFORM] || PLATFORM_LIST_SELECTORS.boss;
     const diagLines = diagSelectors.map((s) => `${s}=${all(s).length}`);
-    const diagRoot = $('.job-list-box, .search-job-result, .job-list, [class*="job-list"]');
+    const diagRoot = $(LIST_ROOT_SELECTORS.join(', '));
     const diagUrl = location.href;
     notify('collect-progress', { phase: 'dom-diag', index: 0, total: 0, processed: 0, maxJobs, status: `[DOM] ${diagLines.join(' | ')} | root=${diagRoot ? diagRoot.className : 'none'} | url=${diagUrl.slice(0, 80)}` });
   } catch {}
@@ -2037,7 +2044,6 @@ async function visualCollect(opts = {}) {
     if (index % 10 === 0) {
       notify('collect-progress', { phase: 'heartbeat', index, total: cards.length, processedCount, maxJobs });
     }
-    notify('collect-progress', { phase: 'card-found', index, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: `命中卡片 key=${String(key).slice(0, 60)}` });
     // 1) 平滑滚动到卡片并高亮（可视化动画）
     await smoothScrollIntoView(card);
     highlightElement(card, settleMs);
@@ -2698,7 +2704,7 @@ function safeReport(kind) {
 spaRecord(); // 种子：把初始页面加入历史栈
 reportNav();
 reportLogin();
-// 横向滚动兜底：修复智联等 PC 站页面被截断、无法左右滑动（非 BOSS 平台生效）
+// 横向滚动兜底：修复 PC 站页面被截断、无法左右滑动（全平台生效，含 BOSS）
 injectHorizontalScrollFix();
 // 节流：连续 mutation 合并到节流窗口（150ms）。相比 rAF 逐帧执行——
 // BOSS 直聘首页 DOM 高频变动（骨架屏/懒加载/动画）时每帧都会触发上报，
@@ -2717,10 +2723,12 @@ setTimeout(() => { safeReport('nav'); safeReport('login'); }, 4000);
 
 // 自身 IPC 监听兜底：底层事件回调抛错会污染 ipcRenderer 的事件循环，把每个 listener 包一层
 const ipcChannels = PLATFORM === 'boss'
-  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval']
+  ? ['boss-api', 'extract-job', 'start-apply', 'open-chat', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval',
+     'spa-back', 'spa-forward', 'force-resize']
   // 非 BOSS 平台自 2026-09-15 起也支持「可视化采集（列表级）」→ 这两个通道必须注册，
   // 否则宿主 sendInTab('visual-collect') 无监听器、collect-done 永不回传，界面会静默卡到兜底超时（最长 15min）。
-  : ['extract-job', 'platform-apply', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval'];
+  : ['extract-job', 'platform-apply', 'visual-collect', 'collect-control', 'webview-command', 'page-read', 'page-status', 'prefill-greeting', 'ui-eval',
+     'spa-back', 'spa-forward', 'force-resize'];
 ipcChannels.forEach((channel) => {
   const orig = ipcRenderer.listeners(channel).slice();
   ipcRenderer.removeAllListeners(channel);

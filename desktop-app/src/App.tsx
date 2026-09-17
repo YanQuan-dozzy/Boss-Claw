@@ -254,6 +254,13 @@ export default function App() {
                 <div key={key} className={'page page-route' + (activeRoute === key ? ' is-show' : '')}>
                   <ErrorBoundary label={key}>
                     <Suspense fallback={<div className="route-loading" style={{ padding: 24 }}><SkeletonCard rows={4} /></div>}>
+                      {/* 侧边栏各导航模块 → 页面组件映射（key 定义见 store/useAppStore.ts 的 NAV_ITEMS）：
+                          home(首页)→Home / resume(简历中心)→Resume /
+                          directions(投递方向)→Directions / tasks(任务进度)→Tasks /
+                          schedule(定时任务)→ScheduleTasks / stats(数据统计)→Stats /
+                          openclaw(OpenClaw)→OpenClaw / autochat(自动沟通)→AutoChat /
+                          assistant(定制简历)→JobAssistant / settings(设置)→Settings；
+                          workbench(工作台) 在「工作台常驻宿主」处单独挂载。新增模块需同步此处分支。 */}
                       {key === 'home' && <Home />}
                       {key === 'resume' && <Resume />}
                       {key === 'directions' && <Directions />}
@@ -263,7 +270,7 @@ export default function App() {
                       {key === 'openclaw' && <OpenClaw />}
                       {key === 'autochat' && <AutoChat />}
                       {key === 'assistant' && <JobAssistant />}
-                      {key === 'settings' && <Settings />}
+                      {key === 'settings' && <Settings isVisible={activeRoute === 'settings'} />}
                     </Suspense>
                   </ErrorBoundary>
                 </div>

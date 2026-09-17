@@ -35,15 +35,6 @@ function pruneQualifiedCache(records: Record<string, QualifiedJobExport[]>, maxD
   return pruned;
 }
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'success';
-export interface LogEntry {
-  time: number;
-  level: LogLevel;
-  msg: string;
-}
-
-export type ChatLogStage = 'open_chat' | 'greeting' | 'confirm' | 'resume' | 'ai_reply' | 'risk' | 'system' | 'verify_chat_target' | 'skip';
-
 /** 经历补充材料（用户导入的补充经历**文件引用**，会话内存态，不持久化） */
 export interface ExperienceMaterial {
   id: string;
@@ -52,20 +43,6 @@ export interface ExperienceMaterial {
   /** 文件绝对路径：正文不缓存，每次调用 AI 前经主进程现读 */
   path: string;
   addedAt: number;
-}
-
-export interface ChatLogEntry {
-  id: string;
-  time: number;
-  level: LogLevel | 'stage';
-  stage?: ChatLogStage;
-  jobId?: string;
-  jobTitle?: string;
-  company?: string;
-  msg: string;
-  greetingPreview?: string;
-  errorDetail?: string;
-  method?: string;
 }
 
 interface DataState {
@@ -94,8 +71,6 @@ interface DataState {
   pending: PendingItem[];
   taskRuns: TaskRun[];
   stats: Stats;
-  logs: LogEntry[];
-  chatLogs: ChatLogEntry[];
   /** 达标岗位导出记录（持久化）：按「日期 → 该日已导出的达标岗位」累积，用于当天内去重 */
   qualifiedExports: Record<string, QualifiedJobExport[]>;
 
@@ -127,10 +102,6 @@ interface DataState {
   /** 追加某日的达标岗位导出记录（用于当天内去重累积） */
   mergeQualifiedExports: (date: string, items: QualifiedJobExport[]) => void;
 
-  addLog: (level: LogLevel, msg: string) => void;
-  clearLogs: () => void;
-  addChatLog: (entry: Omit<ChatLogEntry, 'id' | 'time'> & { id?: string; time?: number }) => void;
-  clearChatLogs: () => void;
   recomputeStats: () => void;
   resetDailyStats: () => void;
 }
@@ -152,8 +123,6 @@ export const useDataStore = create<DataState>()(
       pending: [],
       taskRuns: [],
       stats: DEFAULT_STATS,
-      logs: [],
-      chatLogs: [],
       qualifiedExports: {},
 
       setResumeText: (text, fileName) =>
@@ -230,28 +199,6 @@ export const useDataStore = create<DataState>()(
           return { qualifiedExports: pruneQualifiedCache(next, MAX_QUALIFIED_CACHE_DAYS) };
         }),
 
-      addLog: (level, msg) => set((s) => ({ logs: [...s.logs, { time: Date.now(), level, msg }].slice(-500) })),
-      clearLogs: () => set({ logs: [] }),
-      addChatLog: (entry) =>
-        set((s) => ({
-          chatLogs: [
-            ...s.chatLogs,
-            {
-              id: entry.id || `clog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-              time: entry.time || Date.now(),
-              level: entry.level || 'info',
-              stage: entry.stage || 'system',
-              jobId: entry.jobId,
-              jobTitle: entry.jobTitle,
-              company: entry.company,
-              msg: entry.msg,
-              greetingPreview: entry.greetingPreview,
-              errorDetail: entry.errorDetail,
-              method: entry.method,
-            },
-          ].slice(-500),
-        })),
-      clearChatLogs: () => set({ chatLogs: [] }),
       recomputeStats: () => {
         const { pending, stats } = get();
         // 单次遍历聚合，替代原先 6 次 filter
@@ -293,10 +240,9 @@ export const useDataStore = create<DataState>()(
     }),
     {
       name: 'bossclaw-data',
-      // P30：防抖 + 容错持久化。批量引擎/网络卡顿时 addChatLog 高频触发全量 set，
-      // 原 persist 每次都会同步序列化整个 store（含 base64 图片简历/双 500 条日志/160K 简历文本），
-      // 大对象 stringify + localStorage 写盘会把渲染进程主线程卡死（点击无反应/应用退出）。
-      // 改用防抖合批（短窗口内多次 set 只写一次）+ 配额超限降级（丢运行时日志不丢业务状态）。
+      // P30：防抖 + 容错持久化。日志（logs/chatLogs）已拆至独立键 bossclaw-runtime-logs（P2-05），
+      // 本键不再承载高频写入的日志与运行时产物，序列化体积与写盘频率大幅下降；
+      // 仍保留防抖合批（短窗口内多次 set 只写一次）+ 配额超限兜底（仅丢弃该次持久化，绝不抛进业务代码）。
       storage: createSafePersistStorage(),
       // 版本迁移：v1 起对存量 pending 清洗公司名（剔除采集误把地名当公司名写入的脏数据，
       // 如「深圳·南山区·科技园」），修复「数据统计 · 公司 Top」把地名当公司名展示的 bug。

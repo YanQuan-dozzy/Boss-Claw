@@ -17,11 +17,9 @@
 //   4) 心跳触发重收集前让出主线程（requestIdleCallback / setTimeout 兜底），不与用户交互撞车。
 import { electronApi } from './electronApi';
 import { persistDirtyEpoch, discardPendingPersistWrites } from './persistSafe';
+import { BACKUP_KEYS } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
 
 export const BACKUP_INTERVAL_MS = 300_000; // 5 分钟
-
-// 需要纳入本地备份的 persist 键（与各 store 的 persist name 一致）
-export const BACKUP_KEYS = ['bossclaw-app', 'bossclaw-settings-v2', 'bossclaw-data', 'bossclaw-schedule'] as const;
 
 /** 快路径连续跳过多少次后，强制做一次全量复核（兜底 persist 之外对 localStorage 的直写） */
 const FULL_CHECK_EVERY = 4;
@@ -85,6 +83,10 @@ export async function writeLocalBackup(force = false): Promise<{ wrote: boolean;
       }
     }
     skipChecks = 0;
+    // P2-07：采集 bundle 的**同一时刻**快照各 key 写代数——基线必须锚定「采集时」而非「写盘后」。
+    // 旧实现：写盘返回后才读 epoch，而写盘期间（T2→T4）可能已有新变更，导致该变更被误标为
+    // 「已备份」（实际落盘的是旧值 V），下一轮快路径判定 clean 跳过 → 漏备份最多 4 个心跳周期。
+    const epochSnapshot = new Map(BACKUP_KEYS.map((k) => [k, persistDirtyEpoch(k)]));
     const bundle = gatherBundle();
     // 脏检查以 keys 内容为准（updatedAt 每次变化，不能纳入比对，否则会每分钟重写文件）
     const keysJson = JSON.stringify(bundle.keys);
@@ -97,7 +99,8 @@ export async function writeLocalBackup(force = false): Promise<{ wrote: boolean;
     const r = await electronApi.backup.write(text);
     if (!r.ok && !r.file) return { wrote: false, error: r.error || '写盘失败' };
     lastBackupJson = keysJson;
-    baselineEpochs = new Map(BACKUP_KEYS.map((k) => [k, persistDirtyEpoch(k)]));
+    // 采集时快照（写盘期间若有新变更，其 epoch > 快照 → 下一轮 clean=false → 正确触发重备份）
+    baselineEpochs = epochSnapshot;
     return { wrote: true };
   } catch (e) {
     return { wrote: false, error: (e as Error).message };

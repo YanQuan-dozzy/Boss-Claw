@@ -10,43 +10,17 @@ import {
 import { cachedCallModel, callModel } from './llm';
 import { reloadSkills, skillInstructionsFor } from './skills';
 import { buildAnalyzeSystemPrompt, DEFAULT_ANALYZE_GREETING_INSTRUCTIONS, DEFAULT_JOB_ANALYSIS_INSTRUCTIONS } from './prompts';
-import { computeLocalMatch, enhancedLocalScore, parseExpectedSalary, parseSalaryRange, cleanGapList, type LocalMatchResult } from './jobMatch';
+import { computeLocalMatch, enhancedLocalScore, parseExpectedSalary, parseSalaryRange, cleanGapList, AI_DIM_WEIGHTS, type LocalMatchResult, type AIDimKey } from './jobMatch';
 import { decodeSalaryDigits } from './jobDisplay';
 import { detectWorkSchedule } from './workSchedule';
 import { collectMismatchedSalaryMentions, stripMismatchedSalarySentences } from './salaryCalibration';
-import { FIT_LEVEL_META, fitLevelFromScore, normalizeFitLevel, scoreForFitLevel, decisionForFitLevel } from './fitLevel';
+import { FIT_LEVEL_META, fitLevelFromScore, normalizeFitLevel, scoreForFitLevel, decisionForFitLevel, HARD_BLOCK_SCORE_CAP } from './fitLevel';
 import { buildSchoolDisclosureRule, hasSchoolMention, resolveSchoolTier } from './schoolTier';
 import type { Decision } from './types';
 
-// 本地确定性匹配分（0-100）：基于岗位标题+描述的文本与画像技能/搜索词/方向的命中。
-// 标题命中是强信号（岗位方向核心在标题），描述命中是弱信号；映射到 0-100，供 AI 分轻微平滑兜底。
-export function localMatchScore(job: JobMeta, profile: Profile | null): number | null {
-  if (!profile) return null;
-  const title = String(job.title || '').toLowerCase();
-  const desc = String(job.description || '').toLowerCase();
-  const skills = normalizeStringList(profile.facts?.skills, 30).map((s) => s.toLowerCase());
-  const keywords = (profile.searchKeywords || []).map((k) => String(k).toLowerCase());
-  const directions = normalizeStringList(
-    profile.primaryDirections?.map((d) => (typeof d === 'string' ? d : d?.name)),
-    8
-  ).map((s) => String(s || '').toLowerCase());
-  const terms = [...new Set([...skills, ...keywords, ...directions].filter((t) => t.length >= 2))];
-  if (!terms.length) return null;
-  const hit = (term: string, text: string): boolean => {
-    // 纯英文/数字词用词边界匹配（避免 Java 误命中 JavaScript），中文用子串匹配
-    if (/^[\x00-\x7F]+$/.test(term)) {
-      return new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
-    }
-    return text.includes(term);
-  };
-  const titleHits = terms.filter((t) => hit(t, title)).length;
-  const descHits = terms.filter((t) => hit(t, desc)).length;
-  if (!titleHits && !descHits) return 0;
-  // 标题命中权重 ×3，描述命中 ×1；以「前 8 个核心词全部命中标题」为满分基准，映射到 0-100
-  const weighted = titleHits * 3 + descHits;
-  const full = Math.max(1, Math.min(terms.length, 8) * 3);
-  return Math.max(0, Math.min(100, Math.round((weighted / full) * 100)));
-}
+// P3-06：旧版本地匹配 localMatchScore 已删除——它基于「标题命中×3/描述命中×1」的旧口径，
+// 与现口径（computeLocalMatch 按维度命中映射 + 缺口惩罚）分叉，且「供 AI 分轻微平滑兜底」
+// 的用途已不存在（本地分仅 AI 不可用时出场）。现无任何调用方，直接移除。
 
 // 从教育事实行里抽取出真实身份：学校 + 专业 + 学历，跳过「教育经历」这类纯小标题。
 // 仅引用简历里真实存在的院校/专业/学历，缺哪个就不写哪个，绝不臆造。专业识别不限定技术类，
@@ -91,17 +65,25 @@ function identityFromEducation(education: string[], degree: string, student: boo
 }
 
 // 技能与岗位的相关性排序：优先命中岗位描述、其次命中标题的技能，其余按画像顺序兜底。
-// 与 localMatchScore 的口径一致：英文/数字词按词边界匹配，中文走子串匹配。
+// 与本地匹配口径一致：英文/数字词按词边界匹配（避免 Java 误命中 JavaScript），中文走子串匹配。
 function pickRelevantSkills(skills: string[], job: JobMeta | null, take = 3): string[] {
   const list = skills.slice();
   if (!list.length) return [];
   const title = String(job?.title || '').toLowerCase();
   const desc = String(job?.description || '').toLowerCase();
+  // P3-09：正则按词预编译一次——纯英文/数字词用词边界匹配（避免 Java 误命中 JavaScript），中文走子串匹配
+  const compiled = new Map<string, RegExp>();
+  for (const s of list) {
+    const k = String(s || '').toLowerCase();
+    if (k && /^[\x00-\x7F]+$/.test(k)) {
+      compiled.set(k, new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
+    }
+  }
   const hit = (term: string, text: string): boolean => {
     if (!text || !term) return false;
     const s = term.toLowerCase();
-    if (/^[\x00-\x7F]+$/.test(s)) return new RegExp(`\\b${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text);
-    return text.includes(s);
+    const re = compiled.get(s);
+    return re ? re.test(text) : text.includes(s);
   };
   const descHits = list.filter((s) => hit(s, desc));
   const titleHits = list.filter((s) => hit(s, title) && !descHits.includes(s));
@@ -354,7 +336,7 @@ export async function analyzeJob(
   // 「加入任务」与「采集」两条入口：硬拦岗位最终都是 reject（手动路径照样入队、采集路径照样跳过），
   // 行为不变；输出形态与下方「AI 不可用 → 本地兜底」分支完全一致，不引入新语义。
   if (local.hardBlocks.length) {
-    const fallbackScore = Math.min(local.dimensions.overall ?? 0, 35);
+    const fallbackScore = Math.min(local.dimensions.overall ?? 0, HARD_BLOCK_SCORE_CAP);
     const fallbackGaps = cleanGapList(local.gaps, profile, resumeText);
     const hardReason = `本地硬条件拦截：${local.hardBlocks.slice(0, 2).join('；')}${
       fallbackGaps.length ? `。岗位要求${fallbackGaps.slice(0, 2).join('；')}` : ''
@@ -378,12 +360,7 @@ export async function analyzeJob(
   // 前缀稳定性（服务端 prompt cache 命中的关键）：system 提示词 + 稳定画像 + 简历 恒定在前，
   // 岗位信息在最后——同一份简历连续分析多个岗位时，只有岗位片段变化，前缀逐 token 一致，
   // 命中的输入按缓存价（约为未命中价 1/10）计费。
-  // 本地硬条件拦截（deal-breaker）已经确定该岗位不可能达到最低分：这类岗位绝不会投递，
-  // greeting 属纯浪费输出 token。在「逐岗不同」的序列末尾追加一句条件提示让模型跳过 greeting，
-  // 不加进 system（system 必须恒定以保住 画像+简历 共享前缀缓存，system 尾部一变跨岗位缓存即失效）。
-  const skipGreetingNote = local.hardBlocks.length
-    ? `\n\n（提示：本岗位经本地硬条件检查存在不满足项【${local.hardBlocks.slice(0, 2).join('；')}】，已判定为不推荐投递，无需为它生成打招呼语，greeting 字段直接输出空字符串即可。）`
-    : '';
+  // 注：硬条件拦截岗位在 :356 已早退（不发 AI），此处 hardBlocks 恒为空，不再需要「跳过 greeting」提示（P3-03 死代码已删）。
   // 本地确定性六维初筛（系统生成、可信）：作为 AI 打分基线校准（见 system 提示词「本地校准信息」一节）。
   // 放在岗位数据之后、序列末尾，保持 system + 画像 + 简历 前缀恒定以命中服务端 prompt cache。
   const localAnchorSection = `\n<<<本地校准信息（系统基于画像关键词与简历事实的确定性规则生成，可信；仅作打分基线参考）>>>\n${JSON.stringify({
@@ -404,7 +381,7 @@ export async function analyzeJob(
           role: 'user',
           content: `职业画像：${JSON.stringify(stableProfileView(profile))}
 简历：${String(resumeText || '').slice(0, 6000)}
-${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
+${untrustedJobSection(job)}${localAnchorSection}`,
         },
       ],
       model,
@@ -427,7 +404,7 @@ ${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
     // 复用上方已算好的 local 多维匹配（含硬约束/证据/缺口），打分口径与 AI 融合路径一致：
     // 硬约束存在 → score ≤35 / reject；否则按四档区间（不推荐 <50 / 谨慎 50-64 / 匹配 65-80 / 推荐 >80）落档。
     const localOverall = local.dimensions.overall ?? 0;
-    let localScore = local.hardBlocks.length ? Math.min(localOverall, 35) : localOverall;
+    let localScore = local.hardBlocks.length ? Math.min(localOverall, HARD_BLOCK_SCORE_CAP) : localOverall;
     // 本地兜底同样产出档位（AI 未参与时，档位由本地确定性分反推，保证 UI 与分数一致）
     const fallbackLevel = fitLevelFromScore(localScore);
     const decision: Decision = fallbackLevel === 'unfit' ? 'reject' : fallbackLevel === 'cautious' ? 'cautious' : 'recommend';
@@ -539,7 +516,7 @@ ${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
   //     当 AI 自己给出的技能维 ≤25（根本性技术栈错位，如岗位要求 C++ 而简历以 Java 为主），
   //     即使 AI 误判为 match/strong，也强制降为谨慎——用 AI 自己的维度分修正 AI 自身的档位矛盾，
   //     而不是用本地逐词弱证据干预。hardBlocks 的 unfit 优先级更高（见第 5 步）。
-  if ((level === 'match' || level === 'strong') && Number(fusedDimensions.skill) <= 25) {
+  if ((level === 'match' || level === 'strong') && fusedDimensions.skill != null && fusedDimensions.skill <= 25) {
     const prevLabel = FIT_LEVEL_META[level].label;
     level = 'cautious';
     result.reason = `${String(result.reason || '').trim()}【技能栈错位】岗位核心技能与简历技术栈存在根本性错位（技能维度评分 ≤25，如岗位要求 C++ 而简历以 Java 为主），档位已由「${prevLabel}」下调至「谨慎」。`;
@@ -571,7 +548,7 @@ ${untrustedJobSection(job)}${localAnchorSection}${skipGreetingNote}`,
   //    避免「存在硬伤却仍是推荐档」的矛盾。这是用户硬性设置不可突破的唯一闸门。
   if (mergedBlocks.length) {
     level = 'unfit';
-    score = Math.min(score, 35);
+    score = Math.min(score, HARD_BLOCK_SCORE_CAP);
   }
   const ms = Math.max(0, Number(config?.minScore) || 75);
   // 6. 决策档由档位映射，保证 fitLevel / decision / score 三者自洽（不依赖 AI 自报的 decision）。
@@ -616,13 +593,10 @@ export function mergeAiDimensions(aiRaw: unknown, local: LocalMatchResult): {
   evidence: MatchDimensionEvidence;
   aiDimUsed: boolean;
 } {
-  const DIM_META: { key: 'skill' | 'direction' | 'salary' | 'education' | 'experience'; weight: number }[] = [
-    { key: 'skill', weight: 0.34 },
-    { key: 'direction', weight: 0.28 },
-    { key: 'salary', weight: 0.14 },
-    { key: 'education', weight: 0.08 },
-    { key: 'experience', weight: 0.06 },
-  ];
+  // AI 五维权重（Σ=0.90）：由 jobMatch.ts 单一来源 AI_DIM_WEIGHTS 派生（含 experience、无 location，
+  // location 恒取本地值）——与本地 LOCAL_DIM_WEIGHTS（Σ=0.94，含 location、无 experience）是
+  // 两组刻意不同的集合，共同维度权重数值一致，差异是设计意图（P1-08/P3-05），勿再手写第二份。
+  const DIM_META: { key: AIDimKey; weight: number }[] = AI_DIM_WEIGHTS.map(([key, weight]) => ({ key, weight }));
   const src = (aiRaw && typeof aiRaw === 'object' ? aiRaw : {}) as Record<string, unknown>;
   const dims: MatchDimensions = { ...local.dimensions };
   const evidence: MatchDimensionEvidence = {};

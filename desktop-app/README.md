@@ -208,9 +208,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.5.3-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.5.3-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.5.3-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-2.5.4-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.5.4-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.5.4-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
 
@@ -321,11 +321,12 @@ release/
 
 ## 变更记录
 
-* **main（v2.5.3 之后，尚未随安装包发布）** — 多平台采集层重构与外部 Agent 代答：
-  * **多平台采集层**：新增 `camoufox/platforms/`（`models` / `capabilities` 能力矩阵 / `base` 三段骨架唯一实现 / `registry` 注册表 / `progress` 词级断点续采），liepin · zhaopin · job51 收敛为**差异声明**；断点续采只做词级（TTL 24h），命中风控 `clear_combo` 后重头采（宁重复不遗漏）。
-  * **内置浏览器多平台打通**：新增 `electron/preload/platform-adapters.cjs`（纯数据 + 纯函数，可 require 单测），`webview.cjs` 移除内联平台选择器；`visual-collect` / `collect-control` 全平台注册；非 BOSS 列表级采集 + 页内 `loginWallDetected()` 判定登录态；BOSS 专属副作用（`card.json` / `zhipin.com` 拼 URL / `enrichCollectedWelfare`）按平台短路。**未安装 Camoufox 内核也能采集非 BOSS 平台。**
-  * **agent 代答**：新增 `agentAnswer.ts`（待答队列 / 心跳 / 超时 / 取消 / 统计），`llm.ts` 在无 API Key 时走 `answerViaAgent`；MCP 新增 `tools/agent.mjs`（`agent_tasks` 领取即心跳 / `agent_submit` / `agent_cancel`），白名单同步 `agentTasks` / `agentSubmit` / `agentCancel`。心跳 90s、等待 30~240s，超时回落本地规则。
-  * **面试方式筛选**：新增 `interviewMode.ts`，设置页指定线上 / 线下 / 不限，「加入任务」时确定性识别（未披露 = 合格，不误杀）。
+* **v2.5.4（2026-09-17 发布）** — 全面优化审查落地 + 多平台采集 / agent 代答 / 面试方式筛选正式发布：
+  * **全面优化审查落地**（`docs/code-review-2026-09-17/`，6 批 70 条）：AI 层（进程内一级缓存、换模型定向清理、JSON 修复链加固、apiKey 去空白）· 状态持久化（存储键单一登记表修复「导出漏定时任务」、运行时日志拆独立键 `bossclaw-runtime-logs`、备份写代数锚定）· 匹配评分（薪资解析唯一实现修复「8千-1.2万」误算、硬约束收集可单测）· Electron 层（投递通道拆分、素材白名单双端同源、webview 输入频率兜底）· 渲染层（`index.polish.css` 拆分、打招呼语本地态编辑、福利标签缓存、滚动状态机、设置页后台停轮询）· Python / MCP（未知风控码 fail-safe、兜底链崩溃修复、MCP 白名单断言 `test/whitelist-parity.mjs`、主题变量守卫 `scripts/theme-vars-regression.mjs`）· 自动沟通引擎运行态整合（P2-04）。
+  * **多平台采集层（正式发布）**：新增 `camoufox/platforms/`（`models` / `capabilities` 能力矩阵 / `base` 三段骨架唯一实现 / `registry` 注册表 / `progress` 词级断点续采），liepin · zhaopin · job51 收敛为**差异声明**；断点续采只做词级（TTL 24h），命中风控 `clear_combo` 后重头采（宁重复不遗漏）。
+  * **内置浏览器多平台打通（正式发布）**：新增 `electron/preload/platform-adapters.cjs`（纯数据 + 纯函数，可 require 单测），`webview.cjs` 移除内联平台选择器；`visual-collect` / `collect-control` 全平台注册；非 BOSS 列表级采集 + 页内 `loginWallDetected()` 判定登录态；BOSS 专属副作用按平台短路。**未安装 Camoufox 内核也能采集非 BOSS 平台。**
+  * **agent 代答（正式发布）**：新增 `agentAnswer.ts`（待答队列 / 心跳 / 超时 / 取消 / 统计），`llm.ts` 在无 API Key 时走 `answerViaAgent`；MCP 新增 `tools/agent.mjs`（`agent_tasks` 领取即心跳 / `agent_submit` / `agent_cancel`），白名单同步 `agentTasks` / `agentSubmit` / `agentCancel`。心跳 90s、等待 30~240s，超时回落本地规则。
+  * **面试方式筛选（正式发布）**：新增 `interviewMode.ts`，设置页指定线上 / 线下 / 不限，「加入任务」时确定性识别（未披露 = 合格，不误杀）。
   * 统计看板与 `statsAggregate.ts` 聚合；Workbench / Settings / Home / Stats UI 迭代；新增 `ChevronDown` 组件；移除跨平台源码打包脚本（`build-mac.sh` / `package:source`）。
 
 * v2.5.3 — 评分裁决与简历定制收口：岗位匹配改为 AI 四层整体裁决（`fitLevel` 档位制，分随档走、AI 分即最终分），五维语义锚点与反通胀口径统一，入队门槛可配 `minQueueScore`；投递链路改走内置浏览器真实 DOM 沟通（单线性等终态、气泡级文字确认），自动沟通卡片新增「跳过」、附件按聊天页源码重构；定制简历保留能力描述语红线 + 七模块结构化文档 + 校名披露规则（仅 985/211 写校名）与目标城市同源；新增统计导出（CSV / PDF）、有界分析队列与新标签页管理。

@@ -13,6 +13,14 @@ export const GREETING_MAX_CHARS = 200;
 export const GREETING_MIN_CHARS = 120;
 /** 打招呼语「长度不符合 → 再生成」的最大重试次数（到达后仅做最终安全兜底）。 */
 export const GREETING_MAX_RETRY = 3;
+/** 归一化截断上限（比常规硬上限更紧）：用于多来源文本合并等需要更保守的场景（normalizeGreetingText）。 */
+export const GREETING_NORMALIZE_MAX_CHARS = 160;
+/**
+ * 提示词统一引用口径（P6-06）：供各提示词插值，避免「提示词手写 250 与校验 200 互相拆台」——
+ * AI 按提示词写 210~250 字是合规的，但 isGreetingLengthOk 判不合规 → 触发再生成 → 截断。
+ * 需要同步的位置：prompts.ts / skills.ts / jobAssistant.ts / 5 个 SKILL.md。
+ */
+export const GREETING_LENGTH_RULE = `全文 ${GREETING_MIN_CHARS}-${GREETING_MAX_CHARS} 字（含标点，建议约 ${GREETING_TARGET_CHARS} 字），单行不换行`;
 
 /** 长度判定：打招呼语是否落在合格区间（≥下限 且 ≤上限，含目标 150 字）。不在这里硬截断。 */
 export function isGreetingLengthOk(len: number): boolean {
@@ -47,7 +55,8 @@ export function clampGreetingText(text: string, maxChars: number = GREETING_MAX_
 }
 
 export function normalizeGreetingText(text: string): string {
-  return clampGreetingText(text, 160);
+  // P6-06：具名归一化上限（比常规截断更紧，语义见 GREETING_NORMALIZE_MAX_CHARS）
+  return clampGreetingText(text, GREETING_NORMALIZE_MAX_CHARS);
 }
 
 // =====「AI 跟聊」回复 =====

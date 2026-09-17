@@ -16,6 +16,16 @@
 //   - 数值统一 tabular-nums（等宽对齐），等宽字体走主题变量 `--font-mono`；
 //   - 趋势图独占整行（30 日桶需要宽度），打破「全是等宽两栏」的呆板节奏；
 //   - 空态从「暂无数据」升级为三步上手引导 + 主操作。
+//
+// 子模块（自上而下）：
+//   【主模块：数据统计】导航 key = 'stats'
+//   - 页头：时间范围 Segmented（STATS_RANGES）+ 导出（CSV/PDF/报表）
+//   - 空态（无数据时的三步上手引导）
+//   - 总览指标卡（overviewCards：今日已投递 / 成功率 / 待处理等）
+//   - 投递趋势（30 日桶，独占整行）
+//   - 匹配分数趋势 + 投递质量与目标（今日目标达成环形进度）
+//   - 交叉视图（按平台 / 按方向 CrossTable）
+//   - 公司 Top / 城市 Top / 任务概览 / 状态汇总
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Dropdown, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
@@ -38,6 +48,7 @@ import {
 } from '@ant-design/icons';
 import { ChevronDown } from '@/components/ChevronDown';
 import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/lib/electronApi';
@@ -283,7 +294,7 @@ export default function Stats() {
   const pending = useDataStore((s) => s.pending);
   const taskRuns = useDataStore((s) => s.taskRuns);
   const directionPlan = useDataStore((s) => s.directionPlan);
-  const addLog = useDataStore((s) => s.addLog);
+  const addLog = useRuntimeLogsStore((s) => s.addLog);
   const config = useSettingsStore((s) => s.config);
   const setRoute = useAppStore((s) => s.setRoute);
 

@@ -92,6 +92,7 @@ export const cssVars = (mode: ThemeMode) => {
         '--fg-muted': '#9CA3AF',
         '--fg-subtle': '#6B7280',
         '--border': 'rgba(255, 255, 255, 0.09)',
+        '--border-strong': 'rgba(255, 255, 255, 0.18)',
         '--border-brand': 'rgba(13, 148, 136, 0.35)',
         '--glass-bg': 'rgba(20, 26, 36, 0.72)',
         '--glass-border': 'rgba(255, 255, 255, 0.10)',

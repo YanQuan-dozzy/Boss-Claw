@@ -271,7 +271,7 @@ export function platformSupports(platform: JobPlatform, capability: PlatformCapa
  *
  * Boss-claw 的码值归类（与 `camoufox.ts` 的 isCamoufoxStopCode / isCamoufoxEnvCode 对齐）：
  *   31 未登录                     → platform（登录墙属该平台）
- *   400/404/500/501/600 单次动作失败 → platform（参数/下架/未确认/外部网申）
+ *   400/403/404/500/501/600 单次动作失败 → platform（403 禁止访问与 400/404 同族，属该平台拦截）
  *   32/35/36 风控·平台侧受限        → queue（账号级，必须立即停并交人工）
  *   37/38 环境·引擎异常             → queue（引擎级，后续平台同样会失败）
  *   未知码                          → queue（fail-safe：未分类阻断按队列级处理）
@@ -279,7 +279,7 @@ export function platformSupports(platform: JobPlatform, capability: PlatformCapa
 export type CollectFaultScope = 'platform' | 'queue';
 
 const QUEUE_FAULT_CODES = new Set([32, 35, 36, 37, 38]);
-const PLATFORM_FAULT_CODES = new Set([31, 400, 404, 500, 501, 600]);
+const PLATFORM_FAULT_CODES = new Set([31, 400, 403, 404, 500, 501, 600]);
 
 /** 采集失败码 → 影响范围（无码/0 视为无故障，返回 'platform' 不影响后续平台） */
 export function collectFaultScope(code?: number | null): CollectFaultScope {

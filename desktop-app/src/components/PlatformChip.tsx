@@ -1,6 +1,7 @@
 // 岗位卡片平台来源 chip —— 统一展示「来自哪个招聘平台」。
 // 风格对齐 score-chip / dim-chip / score-rank：等高 monospace、4px 圆角、12% 透明背景 + 深色文本。
 // 所有平台都展示（不再仅非 BOSS 显示），让用户一眼看清岗位来源。
+import { memo } from 'react';
 import type { JobPlatform } from '@/lib/bossclaw/platforms';
 import { PLATFORM_META, PLATFORM_CHIP_PALETTE, platformLabel } from '@/lib/bossclaw/platforms';
 
@@ -21,7 +22,9 @@ function chipText(label: string, compact?: boolean): string {
   return label.slice(0, 2);
 }
 
-export default function PlatformChip({ platform, compact, className }: PlatformChipProps) {
+// P5-11：入参为原始字符串/布尔，memo 零成本——岗位列表每卡渲染 2 次（Workbench / AutoChat），
+// 采集/投递期状态高频变化时避免整卡重复计算 chip
+const PlatformChip = memo(function PlatformChip({ platform, compact, className }: PlatformChipProps) {
   const pf = (platform && PLATFORM_META[platform as JobPlatform] ? platform : 'boss') as JobPlatform;
   const meta = PLATFORM_META[pf];
   const palette = PLATFORM_CHIP_PALETTE[meta.chipKey];
@@ -37,4 +40,6 @@ export default function PlatformChip({ platform, compact, className }: PlatformC
       {chipText(meta.label, compact)}
     </span>
   );
-}
+});
+
+export default PlatformChip;

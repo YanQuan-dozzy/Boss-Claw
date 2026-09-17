@@ -1,3 +1,14 @@
+/**
+ * 【主模块：设置】导航 key = 'settings'（isVisible 由 App.tsx 传入，控制可见性）
+ * 子模块（settings-tabs 六个 Tab，label 见 tabItems）：
+ * - 常规与外观（appearance：执行模式/主题/开机自启/内置浏览器标签页管理）
+ * - 招聘平台（platforms：平台开关/每日目标/登录态等）
+ * - 求职偏好（criteria：基础筛选条件与偏好）
+ * - AI / LLM 配置（llm：模型/API Key/AI 技能 Skills 层——技能开关、导入 SKILL.md、新建技能）
+ * - 隐身引擎与桥接（engine：Camoufox/CloakBrowser 隐身引擎与本地桥接）
+ * - 数据管理（data：备份/清空本地数据等）
+ * - 弹窗：新建自定义技能（createSkillOpen，触发入口在 AI / LLM 配置 tab）
+ */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Alert,
@@ -147,7 +158,13 @@ function notifyNoKeywordCollectEnabled() {
   });
 }
 
-export default function Settings() {
+export default function Settings({ isVisible = true }: { isVisible?: boolean }) {
+  // P5-08：设置页在 App「首进常驻」架构下切走不卸载，5s 轮询若不停会在后台持续打 IPC；
+  // 用 ref 缓存可见性，interval 不必随 prop 重建，隐藏在后台时静默跳过轮询。
+  const visibleRef = useRef(isVisible);
+  useEffect(() => {
+    visibleRef.current = isVisible;
+  }, [isVisible]);
   const { config, setConfig, setModel, applyProviderDefaults, isLLMConfigured } = useSettingsStore();
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -317,7 +334,11 @@ export default function Settings() {
     if (cloakE.cloakStatus) {
       cloakE.cloakStatus().then((st: any) => setCloakReady(Boolean(st?.ready))).catch(() => {});
     }
-    const wvTimer = setInterval(() => refreshWebviewStatus(), 5000);
+    const wvTimer = setInterval(() => {
+      // P5-08：页面隐藏（切到其它页 / 应用最小化）时跳过轮询，避免后台持续打 IPC
+      if (!visibleRef.current || document.hidden) return;
+      refreshWebviewStatus();
+    }, 5000);
     return () => clearInterval(wvTimer);
   }, []);
 
@@ -355,12 +376,13 @@ export default function Settings() {
     if (!silent) setCfxLoading(false);
   };
 
-  // ===== 多平台适配：刷新各平台 Camoufox 登录态 =====
+  // ===== 多平台适配：刷新各平台 Camoufox 登录态（并行探活，避免 4 平台串行 await 阻塞）=====
   const refreshAllPlatformStatus = async () => {
+    const results = await Promise.allSettled(PLATFORM_IDS.map((p) => camoufoxStatus(p)));
     const out: Record<string, CamoufoxStatus | null> = {};
-    for (const p of PLATFORM_IDS) {
-      try { out[p] = await camoufoxStatus(p); } catch { out[p] = null; }
-    }
+    PLATFORM_IDS.forEach((p, i) => {
+      out[p] = results[i].status === 'fulfilled' ? results[i].value : null;
+    });
     setCfxPlatforms(out);
   };
 

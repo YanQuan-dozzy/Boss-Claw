@@ -37,6 +37,10 @@ export const FIT_LEVEL_META: Record<FitLevel, FitLevelMeta> = {
   unfit: { label: '不推荐', min: 0, max: 49, decision: 'reject' },
 };
 
+/** 硬约束（hardBlocks）命中后的统一分数封顶（unfit 档内的低端，P3-10 唯一常量）。
+ *  注意不要改成 unfit 档上界（49）——那会让所有不推荐岗位都变成 49，丧失排序区分度。 */
+export const HARD_BLOCK_SCORE_CAP = 35;
+
 /** 档位取值（从强到弱），供识别、UI 与测试复用 */
 const FIT_LEVELS: FitLevel[] = ['strong', 'match', 'cautious', 'unfit'];
 
@@ -86,7 +90,10 @@ export function scoreForFitLevel(level: FitLevel, aiScore?: unknown): number {
   return Math.min(meta.max, Math.max(meta.min, Math.round(s)));
 }
 
-/** 档位对应的决策档（保证 decision 不与档位矛盾） */
+/** 档位对应的决策档（保证 decision 不与档位矛盾）。
+ *  P3-07 产品口径：decision 是「引擎决策档」——recommend = strong ∪ match（排序/入队/统计用），
+ *  它**不承诺**「达到推荐线」；「推荐线」口径 = fitLevel === 'strong' 或 score ≥ config.minScore，
+ *  由 UI 以档位/分数直接表达（match 但低于 minScore 时展示「未达推荐线」信息标签）。勿把两者混为一谈。 */
 export function decisionForFitLevel(level: FitLevel): Decision {
   return FIT_LEVEL_META[level].decision;
 }

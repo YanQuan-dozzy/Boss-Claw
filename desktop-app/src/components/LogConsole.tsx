@@ -3,7 +3,7 @@ import { ClearOutlined } from '@ant-design/icons';
 import { Tooltip, Button } from 'antd';
 import { ChevronDown } from '@/components/ChevronDown';
 import { LogItem, type LogEntry } from './LogItem';
-import { useDataStore } from '@/store/useDataStore';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 
 interface LogConsoleProps {
   logs: LogEntry[];
@@ -25,7 +25,7 @@ export const LogConsole = memo<LogConsoleProps>(function LogConsole({
   const streamRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterLevel>('all');
-  const clearLogs = useDataStore((s) => s.clearLogs);
+  const clearLogs = useRuntimeLogsStore((s) => s.clearLogs);
 
   // 按日志级别过滤
   const filteredLogs = useMemo(() => {
@@ -41,14 +41,23 @@ export const LogConsole = memo<LogConsoleProps>(function LogConsole({
     return distanceToBottom <= 15;
   };
 
+  // P5-04：程序性滚动标记——smooth 动画会产生中间帧 scroll 事件，
+  // 若只按「距离底部」判定会把刚点下的「回到最新」重新置回 userScrolled=true（按钮闪烁 2~3 次）；
+  // 标记期间静默忽略滚动事件，到底后才解除。
+  const programmaticScrollRef = useRef(false);
+
   const handleScroll = () => {
-    const atBottom = checkIfAtBottom();
-    setUserScrolled(!atBottom);
+    if (programmaticScrollRef.current) {
+      if (checkIfAtBottom()) programmaticScrollRef.current = false;
+      return;
+    }
+    setUserScrolled(!checkIfAtBottom());
   };
 
   const scrollToBottom = () => {
     const el = streamRef.current;
     if (el) {
+      programmaticScrollRef.current = true;
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       setUserScrolled(false);
     }
