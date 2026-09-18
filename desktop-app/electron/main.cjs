@@ -339,12 +339,20 @@ const CAMOUFOX_TOKEN = 'bossclaw-camoufox';
 // 本次「内置浏览器 + 收集投递沟通模块」从零重建，旧登录态与缓存需清空（用户需重新扫码登录）。
 // 通过 userData 下的标记文件保证只清一次，之后正常启动不再重复清理。
 const DATA_VERSION = 'v3-rebuild-20260815';
-function resetDataForVersion() {
+async function resetDataForVersion() {
   try {
     const marker = path.join(app.getPath('userData'), '.bossclaw-data-version');
     if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === DATA_VERSION) return;
     // 1) 清空 BOSS 登录态会话（persist:bossclaw 的 wt2 等 cookie）
-    try { session.fromPartition('persist:bossclaw').clearStorageData().catch((e) => dlog('warn', 'clear boss session storage failed', { message: e?.message })); } catch (e) { dlog('warn', 'clear boss session partition failed', { message: e?.message }); }
+    //    **必须 await**：clearStorageData 是异步的，旧实现「发起即返回」会让它与 createMainWindow 并发——
+    //    用户在新装的 exe 首次启动后立刻在内置浏览器登录时，刚写入的 wt2 会被这次清理一并删掉，
+    //    表现为「明明登录了却一直显示未登录、采集被登录墙拦下」。加上限兜底：清理异常缓慢时也不阻塞启动。
+    try {
+      await Promise.race([
+        session.fromPartition('persist:bossclaw').clearStorageData(),
+        new Promise((r) => setTimeout(r, 5000)),
+      ]);
+    } catch (e) { dlog('warn', 'clear boss session storage failed', { message: e?.message }); }
     // 2) 清空 Camoufox 隐身引擎 cookie
     try {
       const camCookie = path.join(app.getPath('home'), '.bossclaw', 'camoufox-cookies.json');
@@ -1635,9 +1643,10 @@ ipcMain.on('jc:bridge-control', (_event, type) => {
 // 说明：不启用 app.requestSingleInstanceLock()——该 API 在部分受限/沙箱环境下
 // 无其他实例时也会返回 false 导致主进程直接退出（实测 WorkBuddy 沙箱复现）。
 // 进程去重由启动脚本 start-bossclaw.cmd 在启动前统一清理旧进程完成。
-app.whenReady().then(() => {
-  // 数据版本重置：v3 重建后首次启动清空旧登录态/缓存（一次性，见 resetDataForVersion）
-  resetDataForVersion();
+app.whenReady().then(async () => {
+  // 数据版本重置：v3 重建后首次启动清空旧登录态/缓存（一次性，见 resetDataForVersion）。
+  // 必须 await 完成后再创建窗口——否则清理会与用户「首次启动后立即登录」的写入竞态。
+  await resetDataForVersion();
   // 移除默认应用菜单栏（File / Edit / View / Window / Help）
   Menu.setApplicationMenu(null);
 
