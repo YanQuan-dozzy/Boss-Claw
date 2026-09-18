@@ -1945,6 +1945,19 @@ async function visualCollect(opts = {}) {
       notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: 0, maxJobs, status: `列表查询异常：${String(e?.message || e).slice(0, 80)}` });
       await sleep(settleMs);
     }
+    // 登录墙优先于「选择器失效」判定：页面已加载完、等了足够久仍一张岗位卡都没有，
+    // 且命中登录特征（URL 命中登录页 或「页面无任何岗位链接 + 正文命中登录文案」）
+    // → 属未登录 / 登录态失效，不是选择器问题。
+    // 回传 login-required 让宿主立即收口本平台（**不重试、不换组合**），避免两个误判：
+    //   ① 被下游报成「列表选择器可能失效」——把用户引向排查选择器；
+    //   ② 用户以为「真的没有岗位」——实际是登录态掉了。
+    // 口径与 visualCollectListOnly 的 login-required 完全一致（全平台统一）。
+    if (Date.now() - listWaitStartedAt > earlyBreakAfterMs
+      && String(document.readyState) === 'complete'
+      && loginWallDetected()) {
+      notify('collect-progress', { phase: 'login-required', index: 0, total: 0, processed: 0, maxJobs, status: `${PLATFORM} 未登录或登录态已失效：请先在该平台标签页扫码登录后再采集` });
+      break;
+    }
     // 页面自身已加载完（readyState=complete）且 DOM 已有内容，却仍然一张卡都命中不到 →
     // 判定为选择器不匹配，提前结束等待并回传诊断（避免日志长时间停在「等待列表渲染」）。
     if (Date.now() - listWaitStartedAt > earlyBreakAfterMs && String(document.readyState) === 'complete' && all('li').length > 5) {

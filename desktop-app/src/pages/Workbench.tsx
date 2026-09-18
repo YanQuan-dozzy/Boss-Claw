@@ -1277,27 +1277,60 @@ export default function Workbench() {
       ? `readyState=${st.readyState}，卡片 ${st.cards}，正文 ${st.bodyLen} 字`
       : '页面探测无响应';
 
-    const waitTabReady = async (tabId: string, timeoutMs: number, keyword: string): Promise<boolean> => {
+    // ===== 页面就绪等待：返回「是否就绪」+「未就绪的原因」=====
+    // 未登录（命中登录墙）与加载超时是两种完全不同的故障：前者应立即收口本平台并提示用户去登录，
+    // 只有后者才该重载重试。旧实现只回 boolean，两者都被归成「搜索页加载超时」，
+    // 用户拿到的建议是「把等待上限调大」——而真正的原因是没登录，越调越白等。
+    type PageReadyResult = {
+      ready: boolean;
+      reason: 'ok' | 'login' | 'timeout' | 'stopped';
+      /** 最近一次**有响应**的页面事实；全程无响应时为 null ⇒ preload 未注入 / 页面未加载 */
+      st: any | null;
+      probes: number;
+      okProbes: number;
+    };
+    // 登录墙判定：命中登录特征 **且** 一张岗位卡都没有。
+    // 双条件是必须的守卫——正常搜索页的顶部登录按钮 / 弹窗残留也会让 loginWall 为 true，
+    // 但那种页面一定有岗位卡片，不能据此把平台判成未登录而中断采集。
+    const loginWallHit = (st: any): boolean =>
+      Boolean(st && st.loginWall && !(Number(st.cards) > 0));
+    const describeProbe = (r: PageReadyResult): string => {
+      const base = `页面探测 ${r.okProbes}/${r.probes} 次有响应`;
+      if (!r.st) return `${base}，末次仍无响应（preload 未注入或页面未加载）`;
+      return `${base}，末次 ${describePage(r.st)}${r.st.url ? `，URL=${String(r.st.url).slice(0, 120)}` : ''}${loginWallHit(r.st) ? '，命中登录特征' : ''}`;
+    };
+
+    const waitTabReady = async (tabId: string, timeoutMs: number, keyword: string): Promise<PageReadyResult> => {
       const startedAt = Date.now();
       const deadline = startedAt + timeoutMs;
       let lastNotice = 0;
       let st: any | null = null;
+      let probes = 0;
+      let okProbes = 0;
       while (Date.now() < deadline) {
-        if (!visualActiveRef.current) return false;
+        if (!visualActiveRef.current) return { ready: false, reason: 'stopped', st, probes, okProbes };
         const preloadFlag = Boolean(webviewApi.current?.isPreloadReady?.(tabId));
         const overlay = Boolean(webviewApi.current?.isLoading?.(tabId));
-        st = (await probePage(tabId)) || st;
+        probes += 1;
+        const probed = await probePage(tabId);
+        if (probed) okProbes += 1;
+        st = probed || st;
+        // 登录墙即时收口：页面自身已明确是登录页 → 不再等满两轮超时（省掉 60s 白等，并给出真实原因）
+        if (probed && loginWallHit(probed)) {
+          addLog('warn', `「${keyword}」页面命中登录墙（${describePage(probed)}）→ 判定为未登录，本平台立即收口`);
+          return { ready: false, reason: 'login', st: probed, probes, okProbes };
+        }
         // 探测有响应 ⇒ preload 已就绪（比宿主的标记更可靠）
         const preloadOk = preloadFlag || Boolean(st);
         if (preloadOk && pageUsable(st)) {
           if (!overlay) {
             addLog('info', `「${keyword}」页面就绪（${describePage(st)}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s）`);
-            return true;
+            return { ready: true, reason: 'ok', st, probes, okProbes };
           }
           // 页面已可用但遮罩状态未收敛：宽限 2s 后以页面事实为准放行
           if (Date.now() - startedAt > 2000) {
             addLog('info', `「${keyword}」页面就绪（${describePage(st)}）——加载遮罩状态未收敛，已按页面状态放行，不影响采集`);
-            return true;
+            return { ready: true, reason: 'ok', st, probes, okProbes };
           }
         }
         if (Date.now() - lastNotice > 5000) {
@@ -1307,7 +1340,7 @@ export default function Workbench() {
         }
         await sleep(300);
       }
-      return false;
+      return { ready: false, reason: 'timeout', st, probes, okProbes };
     };
 
     addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${platform === 'boss' ? '逐岗位平滑滚动 + 高亮 + 点击展开详情' : '列表级滚动 + 高亮（不点开详情，详情 JD 由隐身采集补齐）'}${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
@@ -1350,21 +1383,36 @@ export default function Workbench() {
       // 先跳转到搜索页链接，等 preload 就绪 + 加载遮罩消失（页面真正可注入）
       webviewApi.current?.loadURLInTab(tabId, item.url);
       const kwLabel = keywordLabel(item.keyword);
-      let ready = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
-      if (!ready && visualActiveRef.current) {
-        // 首次等待超时：重载一次再等一轮（BOSS 偶发首屏挂起 / 重定向吞掉导航事件导致标记不翻转）
-        addLog('warn', `「${kwLabel}」页面首次加载超时（${Math.round(pageTimeoutMs / 1000)}s），自动重载重试一次…`);
-        webviewApi.current?.loadURLInTab(tabId, item.url);
-        ready = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
+      let waitRes = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
+      // 未登录 / 登录态失效属「平台级」故障：**不重试**（重试只会再白等一整轮），
+      // 记录原因后由主循环收口本平台剩余搜索组合（与 collectFaultScope 的平台级口径一致）。
+      if (!waitRes.ready && waitRes.reason === 'login') {
+        visualLoginBlockedRef.current = `${kwLabel} 未登录或登录态已失效（页面命中登录墙）`;
+        markCollectRun(runId, baseRun, {
+          status: 'failed',
+          stage: 'failed',
+          stageLabel: '未登录，无法采集',
+          error: '未登录或登录态已失效：请先在内置浏览器登录该平台后再采集',
+          progress: Math.round(((qi + 1) / queue.length) * 100),
+        });
+        continue;
       }
-      if (!ready) {
+      if (!waitRes.ready && waitRes.reason === 'timeout' && visualActiveRef.current) {
+        // 首次等待超时：重载一次再等一轮（BOSS 偶发首屏挂起 / 重定向吞掉导航事件导致标记不翻转）
+        addLog('warn', `「${kwLabel}」页面首次加载超时（${Math.round(pageTimeoutMs / 1000)}s；${describeProbe(waitRes)}），自动重载重试一次…`);
+        webviewApi.current?.loadURLInTab(tabId, item.url);
+        waitRes = await waitTabReady(tabId, pageTimeoutMs, kwLabel);
+      }
+      if (!waitRes.ready) {
         if (!visualActiveRef.current) break;
-        addLog('warn', `「${kwLabel}」搜索页加载超时（已重试；单次上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。可在「设置 → 搜索采集范围控制 → 搜索页加载等待上限」继续调大`);
+        // 超时诊断随日志一起给出：区分「页面根本没加载出来」与「preload 未注入」（后者探测 0 次响应）
+        const probeDiag = describeProbe(waitRes);
+        addLog('warn', `「${kwLabel}」搜索页加载超时（已重试；单次上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。诊断：${probeDiag}。可在「设置 → 搜索采集范围控制 → 搜索页加载等待上限」继续调大`);
         markCollectRun(runId, baseRun, {
           status: 'failed',
           stage: 'failed',
           stageLabel: '搜索页加载超时',
-          error: `搜索页加载超时（${Math.round(pageTimeoutMs / 1000)}s × 2 次）`,
+          error: `搜索页加载超时（${Math.round(pageTimeoutMs / 1000)}s × 2 次）；${probeDiag}`,
           progress: Math.round(((qi + 1) / queue.length) * 100),
         });
         continue;
