@@ -66,6 +66,7 @@ import {
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
+import type { SettingsTabKey } from '@/store/useAppStore';
 import { callModel, clearAICache, getAICacheStats, getLLMUsageStats, resetLLMUsageStats } from '@/lib/bossclaw/llm';
 import {
   allSkillsWithState,
@@ -169,6 +170,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
   const setRoute = useAppStore((s) => s.setRoute);
+  // Tabs 受控：分区由 store 持有，外部（如首页「配置 AI 模型」步骤卡 / 顶部通知）可直达 llm 分区
+  const settingsTab = useAppStore((s) => s.settingsTab);
+  const setSettingsTab = useAppStore((s) => s.setSettingsTab);
   const requestBrowserLogin = useAppStore((s) => s.requestBrowserLogin);
 
   const [testing, setTesting] = useState(false);
@@ -2166,7 +2170,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
       <Tabs
         className="settings-tabs"
-        defaultActiveKey="appearance"
+        activeKey={settingsTab}
+        onChange={(k) => setSettingsTab(k as SettingsTabKey)}
         items={tabItems}
         type="line"
       />

@@ -7,7 +7,8 @@
  * - 辅助信息区（运行状态 / 配置进度 / 快速入口 / 最近动态）
  */
 import { useEffect, useState } from 'react';
-import { Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin } from 'antd';
+import type { ReactNode } from 'react';
+import { Button, Progress, Tag, Typography, Space, message, Divider, Drawer, Spin, Modal, notification } from 'antd';
 import {
   FileTextOutlined,
   AimOutlined,
@@ -33,6 +34,7 @@ import {
   BookOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store/useAppStore';
+import type { SettingsTabKey } from '@/store/useAppStore';
 import { useDataStore } from '@/store/useDataStore';
 import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
@@ -47,12 +49,30 @@ import MarkdownView from '@/components/MarkdownView';
 
 const { Paragraph, Text } = Typography;
 
-const STEPS = [
+/** 首页配置进度步骤。带 tab 的步骤点击直达设置页对应分区（key='settings' + tab='llm'） */
+interface HomeStep {
+  key: string;
+  /** 设置页分区（仅「配置 AI 模型」使用） */
+  tab?: SettingsTabKey;
+  icon: ReactNode;
+  label: string;
+  desc: string;
+}
+
+const STEPS: HomeStep[] = [
+  { key: 'settings', tab: 'llm', icon: <ApiOutlined />, label: '配置 AI 模型', desc: 'API Key / 模型名' },
   { key: 'resume', icon: <FileTextOutlined />, label: '导入简历', desc: 'PDF / DOCX / MD / TXT' },
   { key: 'resume', icon: <ProfileOutlined />, label: '生成职业画像', desc: 'AI 生成，可编辑' },
   { key: 'directions', icon: <AimOutlined />, label: '选择投递方向', desc: '勾选并确认' },
   { key: 'workbench', icon: <ThunderboltOutlined />, label: '工作台投递', desc: '浏览器 + 人工确认/全自动' },
 ];
+
+// 「未配置大模型」的顶部一次性通知：固定 key + 只弹一次（与设置页的同类提醒同一套写法：
+// placement:'top' + duration 9s + 进度条 + 点击直达）。说明类文案不常驻页面，是项目既有口径。
+const LLM_NOTICE_KEY = 'llm-not-configured-notice';
+const LLM_NOTICE_DURATION = 9;
+/** 本次会话是否已提示过（模块级：跨页面切换不重复弹；重启应用后重新评估） */
+let llmNoticeShown = false;
 
 const QUICK_ENTRIES = [
   { key: 'workbench', icon: <ThunderboltOutlined />, title: '打开工作台', desc: '浏览器为主，中栏看进度与岗位' },
@@ -80,6 +100,9 @@ export default function Home() {
   const bridgeStatus = useAppStore((s) => s.bridgeStatus);
   const isLLMConfigured = useSettingsStore((s) => s.isLLMConfigured);
   const config = useSettingsStore((s) => s.config);
+  const openSettings = useAppStore((s) => s.openSettings);
+  // 大模型是否已配置（Base URL / API Key / 模型名三者齐备）——配置进度的第 1 步判定依据
+  const llmReady = isLLMConfigured();
   // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
   const dailyGoal = effectiveDailyCap(config);
   // 「今日投递」必须按 sentAt 过滤当天，与每日上限（dailySentCountFor / paceDelivery）同口径。
@@ -106,13 +129,17 @@ export default function Home() {
   };
 
   useEffect(() => {
+    // 配置进度 = 五个必做步骤各 20%。
+    // 第 1 步「配置 AI 模型」是业务必需前置（岗位评分 / 打招呼语 / 职业画像 / 定制简历都以 AI 为准），
+    // 此前只作为「运行状态」里的一格展示，用户看不到它对整体进度的影响。
     let p = 0;
-    if (resumeText) p += 25;
-    if (profileHasCore(profile)) p += 25;
-    if (directionPlan?.confirmed) p += 25;
-    if (pending.some((x) => x.status === 'approved_queue' || x.status === 'sent')) p += 25;
+    if (llmReady) p += 20;
+    if (resumeText) p += 20;
+    if (profileHasCore(profile)) p += 20;
+    if (directionPlan?.confirmed) p += 20;
+    if (pending.some((x) => x.status === 'approved_queue' || x.status === 'sent')) p += 20;
     setProgress(p);
-  }, [profile, resumeText, directionPlan, pending]);
+  }, [profile, resumeText, directionPlan, pending, llmReady]);
 
   const selectedCount = selectedDirectionItems(directionPlan).length;
 
@@ -120,17 +147,26 @@ export default function Home() {
     { icon: <ThunderboltOutlined />, label: '投递引擎', value: autoAssist ? '运行中' : '已停止', on: autoAssist },
     { icon: <GlobalOutlined />, label: 'BOSS 登录', value: bossLoggedIn === true ? '已登录' : bossLoggedIn === false ? '未登录' : '检测中', on: bossLoggedIn === true },
     { icon: <ApiOutlined />, label: '本地桥接', value: bridgeStatus === 'connected' ? '已连接' : '未连接', on: bridgeStatus === 'connected' },
-    { icon: <RocketOutlined />, label: 'LLM', value: isLLMConfigured() ? '已配置' : '未配置', on: isLLMConfigured() },
+    { icon: <RocketOutlined />, label: 'LLM', value: llmReady ? '已配置' : '未配置', on: llmReady },
     { icon: <AimOutlined />, label: '投递方向', value: directionPlan?.confirmed ? '已确认' : '未确认', on: Boolean(directionPlan?.confirmed) },
   ];
 
   const stepStates = [
+    llmReady ? 'done' : 'todo',
     resumeText ? 'done' : 'todo',
     profileHasCore(profile) ? 'done' : 'todo',
     directionPlan?.confirmed ? 'done' : 'todo',
     pending.some((x) => x.status === 'approved_queue' || x.status === 'sent') ? 'done' : 'todo',
   ];
   const currentStep = stepStates.findIndex((s) => s !== 'done');
+
+  /** 真正启动投递引擎（通过前置校验之后） */
+  const startAssistNow = () => {
+    setRoute('workbench');
+    const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
+    if (count) setPending(next);
+    if (!useAppStore.getState().autoAssist) setAutoAssist(true);
+  };
 
   const handleStartAssist = () => {
     if (bossLoggedIn === false) {
@@ -144,10 +180,21 @@ export default function Home() {
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); setRoute('resume'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); setRoute('directions'); return; }
-    setRoute('workbench');
-    const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
-    if (count) setPending(next);
-    if (!useAppStore.getState().autoAssist) setAutoAssist(true);
+    // 未配置大模型：**不硬拦**（本地规则仍能评分并生成招呼语，功能可用），但必须让用户知情后再继续。
+    // 此前无任何提示，用户会在不知道「AI 没参与」的情况下拿本地分数投递，事后才从日志里找原因。
+    if (!llmReady) {
+      Modal.confirm({
+        title: '未配置大模型 API Key，AI 分析当前不可用',
+        content:
+          '岗位评分与打招呼语将改用本地规则生成，可用但与 AI 相比偏粗；采集与投递流程不受影响。建议先配置 API Key。',
+        okText: '去配置',
+        cancelText: '继续（本地规则）',
+        onOk: () => openSettings('llm'),
+        onCancel: () => startAssistNow(),
+      });
+      return;
+    }
+    startAssistNow();
   };
 
   const handlePauseAssist = () => setAutoAssist(false);
@@ -189,6 +236,32 @@ export default function Home() {
   };
 
   useEffect(() => { recomputeStats(); }, []);
+
+  // 「状态事实」提醒：首页挂载时若大模型未配置 → 写一条 WARN + 弹一次顶部通知（各只一次）。
+  // 与 llm.ts 里「AI 真回落本地时」的那条（行为事实）分工不同：这条在用户还没用任何 AI 功能时
+  // 就能看到归因，不至于等到采集/投递跑完才去日志里猜「为什么没有 AI 结果」。
+  useEffect(() => {
+    if (llmReady || llmNoticeShown) return;
+    llmNoticeShown = true;
+    addLog(
+      'warn',
+      '未配置大模型 API Key：AI 分析 / 生成（岗位评分、打招呼语、职业画像、定制简历）将使用本地规则。可在「设置 → AI / LLM 配置」填写 API Key 后启用。'
+    );
+    notification.warning({
+      key: LLM_NOTICE_KEY,
+      placement: 'top',
+      duration: LLM_NOTICE_DURATION,
+      showProgress: true,
+      message: '未配置大模型 API Key，AI 能力当前不可用',
+      description: (
+        <div style={{ fontSize: 13, lineHeight: '20px' }}>
+          <div>岗位评分、打招呼语、职业画像、定制简历将改用本地规则生成；采集与投递流程不受影响。</div>
+          <div style={{ marginTop: 6 }}>点击本通知前往「设置 → AI / LLM 配置」填写 API Key 即可启用 AI。</div>
+        </div>
+      ),
+      onClick: () => openSettings('llm'),
+    });
+  }, [llmReady, addLog, openSettings]);
 
   return (
     <div className="page">
@@ -356,27 +429,29 @@ export default function Home() {
         </div>
       </div>
 
-      {/* 配置进度 (4 个步骤独占整行 4 列网格) */}
+      {/* 配置进度 (5 个步骤独占整行 5 列网格；第 1 步为配置 AI 模型) */}
       <div className="soft-block" style={{ padding: '16px 18px', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <span style={{ fontSize: 15, fontWeight: 600 }}>配置进度</span>
           <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{progress}%</span>
         </div>
         <Progress percent={progress} showInfo={false} strokeColor={{ from: '#14B8A6', to: '#0D9488' }} />
-        <div className="short-grid cols-4" style={{ marginTop: 14 }}>
+        <div className="short-grid cols-5" style={{ marginTop: 14 }}>
           {STEPS.map((s, i) => {
             const st = currentStep === -1 || i < currentStep ? 'done' : i === currentStep ? 'current' : 'todo';
+            // 带 tab 的步骤（配置 AI 模型）直达设置页对应分区；其余按 key 切页
+            const go = () => (s.tab ? openSettings(s.tab as SettingsTabKey) : setRoute(s.key as any));
             return (
               <div
                 key={i}
                 className={'step-item is-' + st}
                 role="button"
                 tabIndex={0}
-                onClick={() => setRoute(s.key as any)}
+                onClick={go}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    setRoute(s.key as any);
+                    go();
                   }
                 }}
               >

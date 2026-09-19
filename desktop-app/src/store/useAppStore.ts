@@ -67,9 +67,17 @@ export const ACTION_SOURCE_PRIORITY: Record<string, number> = {
   workbench: 1,
 };
 
+/** 设置页分区 key（与 Settings.tsx 的 Tabs items 一一对应，唯一权威） */
+export type SettingsTabKey = 'appearance' | 'platforms' | 'criteria' | 'llm' | 'engine' | 'data';
+
 interface AppState {
   theme: ThemeMode;
   activeRoute: RouteKey;
+  /**
+   * 设置页当前分区。Settings 的 Tabs 以此**受控**，
+   * 使「首页 → 配置 AI 模型」等跳转能直达指定分区（此前 Tabs 非受控，跳过去只能落在默认分区）。
+   */
+  settingsTab: SettingsTabKey;
   autoAssist: boolean;
   bridgeStatus: 'connected' | 'disconnected';
   bossLoggedIn: boolean | null;
@@ -79,6 +87,10 @@ interface AppState {
   setTheme: (t: ThemeMode) => void;
   toggleTheme: () => void;
   setRoute: (r: RouteKey) => void;
+  /** 切换设置页分区（不会自动跳转设置页；调用方按需再 setRoute('settings')） */
+  setSettingsTab: (t: SettingsTabKey) => void;
+  /** 一步到位：定位到设置页某分区（首页步骤卡 / 通知点击用） */
+  openSettings: (t: SettingsTabKey) => void;
   setAutoAssist: (v: boolean) => void;
   setBridgeStatus: (s: 'connected' | 'disconnected') => void;
   setBossLoggedIn: (v: boolean | null) => void;
@@ -113,6 +125,7 @@ export const useAppStore = create<AppState>()(
       return {
         theme: 'light',
         activeRoute: 'home',
+        settingsTab: 'appearance',
         autoAssist: false,
         bridgeStatus: 'disconnected',
         bossLoggedIn: null,
@@ -125,6 +138,8 @@ export const useAppStore = create<AppState>()(
         setTheme: (t) => set({ theme: t }),
         toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
         setRoute: (r) => set({ activeRoute: r }),
+        setSettingsTab: (t) => set({ settingsTab: t }),
+        openSettings: (t) => set({ settingsTab: t, activeRoute: 'settings' }),
         setAutoAssist: (v) => set({ autoAssist: v, engineStatus: deriveEngineStatus(v) }),
         setBridgeStatus: (s) =>
           set((state) => ({
