@@ -125,7 +125,8 @@ function sweepExpired(now = Date.now()): void {
     if (entry.timer) clearTimeout(entry.timer);
     timeoutCount += 1;
     pushEvent(`代答超时（${entry.task.purpose}）：${id}`);
-    entry.reject(new AgentAnswerError('AI_AGENT_TIMEOUT', `agent 代答超时（${entry.task.purpose}），已回落本地规则`, { id }));
+    // 用户可见文案同上方口径：不提代答通道，只说「等待超时 + 已回落本地规则」
+    entry.reject(new AgentAnswerError('AI_AGENT_TIMEOUT', `AI 生成等待超时（${entry.task.purpose}），已回落本地规则`, { id }));
   }
 }
 
@@ -147,10 +148,12 @@ export function requestAgentAnswer(input: {
   if (!isAgentOnline(now)) {
     unavailableCount += 1;
     pushEvent('无 agent 在线，直接回落本地规则');
+    // 用户可见文案：只说明「未配置大模型 + 已用本地规则 + 去哪里配置」。
+    // 不带任何 MCP / 代答通道字样 —— 普通用户不需要知道代答协议的存在。
     return Promise.reject(
       new AgentAnswerError(
         'AI_AGENT_UNAVAILABLE',
-        '未配置 API Key，且当前没有 agent 在线代答（外部 agent 调用 bossclaw_agent_tasks 即可接管）；已使用本地规则生成。',
+        '未配置大模型 API Key：本次已使用本地规则生成，AI 分析与生成未参与。可在「设置 → AI / LLM 配置」填写 API Key 后启用。',
       )
     );
   }
@@ -258,7 +261,7 @@ export function cancelAgentAnswer(id: string, reason?: string): { applied: boole
   const why = String(reason || '').trim();
   pushEvent(`agent 放弃代答 ${taskId}${why ? `（${why}）` : ''}`);
   entry.reject(
-    new AgentAnswerError('AI_AGENT_CANCELLED', `agent 放弃代答（${entry.task.purpose}）${why ? `：${why}` : ''}；已使用本地规则生成。`, {
+    new AgentAnswerError('AI_AGENT_CANCELLED', `AI 生成已取消（${entry.task.purpose}）${why ? `：${why}` : ''}；已使用本地规则生成。`, {
       id: taskId,
     })
   );

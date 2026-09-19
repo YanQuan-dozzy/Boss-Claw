@@ -1407,7 +1407,16 @@ export default function Workbench() {
         if (!visualActiveRef.current) break;
         // 超时诊断随日志一起给出：区分「页面根本没加载出来」与「preload 未注入」（后者探测 0 次响应）
         const probeDiag = describeProbe(waitRes);
-        addLog('warn', `「${kwLabel}」搜索页加载超时（已重试；单次上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。诊断：${probeDiag}。可在「设置 → 搜索采集范围控制 → 搜索页加载等待上限」继续调大`);
+        // 归因顺序对齐真实故障分布：本地实测中「页面加载慢」远少于「手动打开就打不开（网络/代理/平台慢）」
+        // 与「登录态失效被重定向」。旧文案只教「调大等待上限」，会把用户引向无效方向（越调越白等）——
+        // 只有确认页面本身慢时，调大上限才有意义，故降为末选并注明前提。
+        addLog(
+          'warn',
+          `「${kwLabel}」搜索页加载超时（已重载重试 1 次；单次等待上限 ${Math.round(pageTimeoutMs / 1000)}s），跳过该组合。诊断：${probeDiag}。` +
+            `请先排查：① 在右侧浏览器手动打开该搜索页，能否看到岗位列表（打不开 → 多为网络 / 代理 / 平台响应慢）；` +
+            `② BOSS 登录是否仍有效（必要时重新登录）；③ 页面是否被验证 / 中转页挡住。` +
+            `确认只是页面本身加载慢，再到「设置 → 搜索采集范围控制 → 搜索页加载等待上限」调大——前三种情况调大上限无效。`
+        );
         markCollectRun(runId, baseRun, {
           status: 'failed',
           stage: 'failed',

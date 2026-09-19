@@ -3,6 +3,7 @@
 // P05：LLM 主进程代理（AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定），不再渲染层直连 fetch 规避 CORS。
 import type { AppConfig } from './types';
 import { electronApi } from '@/lib/electronApi';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
 import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
@@ -238,6 +239,13 @@ const JSON_MODE_MIN_MAX_TOKENS = 2000;
 const JSON_MODE_MAX_RETRY = 1;
 
 /**
+ * 「未配置 API Key」的 WARN 是否已记过（**本会话内只记一次**）。
+ * 批量分析时每个岗位都会走到 `!apiKey` 分支，不去重会把日志面板刷满同一条提醒，
+ * 反而淹没真正的岗位信息；这里只保证「用户至少能看到一次归因」。
+ */
+let aiMissingKeyLogged = false;
+
+/**
  * 计算实际下发给模型的 max_tokens：JSON 模式下不低于安全下限，且不超过模型输出上限。
  * 纯函数（幂等）——cachedCallModel 的缓存 key 与真实请求使用同一口径，保证 key 反映真实请求。
  */
@@ -423,6 +431,17 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   // 未配置 API Key：优先交给外部 agent 代答（agent 在线时把任务挂进本地队列，等 agent 用自有模型回填，
   // 结果形态与真实模型调用完全一致）；agent 不在线 / 超时未答 / 主动放弃 → 抛 AIError 由上层走本地规则兜底。
   if (!apiKey) {
+    // 「AI 未用上」的行为事实：只在**首次**发生时记一条 WARN（本会话内去重），避免批量分析时刷屏。
+    // 归因说清楚是「未配置 API Key」，不是网络超时；引导去设置页配置，不暴露代答通道 / MCP 工具名。
+    if (!aiMissingKeyLogged) {
+      aiMissingKeyLogged = true;
+      useRuntimeLogsStore
+        .getState()
+        .addLog(
+          'warn',
+          '未配置大模型 API Key：AI 分析 / 生成（岗位评分、打招呼语、职业画像、定制简历）本次全部使用本地规则，日志里不会再重复提醒。可在「设置 → AI / LLM 配置」填写 API Key 后启用。'
+        );
+    }
     return await answerViaAgent(effectiveMessages, {
       jsonMode,
       purpose: options.purpose,
