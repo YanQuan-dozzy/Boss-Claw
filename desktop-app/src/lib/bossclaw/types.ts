@@ -182,6 +182,18 @@ export interface AppConfig {
      * `effort` 为强度档位的 API 原始取值（如 low / high / max）。
      */
     thinking: { enabled: boolean; effort: string };
+    /**
+     * 模型上下文窗口上限（token 数，如 1M=1000000 / 252K=252000）。
+     * **用途 = 决定单次请求能投喂多少上下文**（简历 / 画像 / 岗位描述等长文本的裁剪预算），
+     * 由用户按所用模型的实际窗口填写；唯一消费方 `contextBudget.ts`。
+     * 缺省 / 非法值由 contextBudget.ts fail-safe 回落到 DEFAULT_CONTEXT_WINDOW（128K），不会算出无界预算。
+     */
+    contextWindow: number;
+    /**
+     * 上下文用量档位（默认 'full'）：'full' 吃满窗口上限；'compact' 只用 40%（省 token / 提速，
+     * 长简历可能丢尾部细节）。实际预算计算见 contextBudget.ts（扣除输出预留与安全边际）。
+     */
+    contextUsage: 'full' | 'compact';
   };
 }
 

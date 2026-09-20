@@ -6,7 +6,9 @@
 // 注意：敏感信息在整理后进行统一脱敏（resumeDesensitize），因此这里保留原文事实即可。
 
 import type { AppConfig } from './types';
-import { cachedCallModel, type ChatMessage } from './llm';
+import { cachedCallModel } from './llm';
+import { resolveContextBudget } from './contextBudget';
+import { prepareContextText } from './oversizedContext';
 
 const SYSTEM_PROMPT = `你是求职者的简历整理助手。请把用户提供的、从简历或 PDF 提取出的原始文字，整理成一份工整、通顺、结构清晰的中文简历正文。
 
@@ -23,11 +25,30 @@ const SYSTEM_PROMPT = `你是求职者的简历整理助手。请把用户提供
  * 失败/未配置时抛错，由调用方回退本地原文。
  */
 export async function polishResumeWithAI(rawText: string, config: AppConfig['model']): Promise<string> {
-  const messages: ChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `请整理下面这份简历原始文字：\n\n${String(rawText || '').slice(0, 12000)}` },
-  ];
-  const raw = await cachedCallModel(messages, config, { jsonMode: false, temperature: 0.3, maxTokens: 3200 }, { scope: 'assistant' });
+  // 原文投入量按「模型窗口 × 用量档位」计算（旧实现固定截 12000 字，大窗口模型被白白浪费）：
+  // 整理要求**保真不删内容**，故占满可用输入预算（输出预留 3200）。
+  // 超预算时走 transform 分片：逐片各自整理后按原文顺序拼接 ——
+  // 这里**不能**用「提炼要点」（会把简历压成摘要、丢失原文），也不能按预算截断（会丢后半段）。
+  const prepared = await prepareContextText(String(rawText || ''), config, {
+    tokenBudget: resolveContextBudget(config, { outputTokens: 3200 }).inputBudgetTokens,
+    focus: '简历全部内容（整理任务要求保真，不压缩、不摘要）',
+    cacheScope: 'assistant',
+    purpose: '简历整理',
+    mode: 'transform',
+    instruction: SYSTEM_PROMPT,
+  });
+  // 超窗时各片已分别整理完成、按序拼接即为最终正文 → 不再重复整理一次
+  const raw = prepared.condensed
+    ? prepared.text
+    : await cachedCallModel(
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: `请整理下面这份简历原始文字：\n\n${prepared.text}` },
+        ],
+        config,
+        { jsonMode: false, temperature: 0.3, maxTokens: 3200 },
+        { scope: 'assistant' },
+      );
   const text = String(raw || '').trim();
   if (text.replace(/[\s\s]/g, '').length < 40) {
     throw new Error('AI 整理结果过短，已回退本地原文');

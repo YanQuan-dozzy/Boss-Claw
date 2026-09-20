@@ -7,6 +7,7 @@ import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
 import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
+import { contextBudgetSignature } from './contextBudget'; // 缓存 key 需含上下文预算口径（见 cachedCallModel）
 
 export class AIError extends Error {
   code: string;
@@ -984,8 +985,20 @@ export async function cachedCallModel(
   // 与 callModel 用同一口径计算真实下发的 max_tokens（JSON 模式下有下限保护），
   // 保证缓存 key 反映「实际请求参数」而非调用方传入的原始值。
   const maxTokens = effectiveMaxTokens(options.maxTokens, jsonMode);
+  // 上下文预算口径（窗口大小 + 用量档位）必须进 key：短文本（如几百字的简历片段）在任何档位下
+  // 都不会被裁到，messages 完全一致；若不带档位，用户从「40%」切到「全满」后会命中旧档位的缓存，
+  // 看起来像开关没生效（详见 contextBudget.ts::contextBudgetSignature）。
   const key = hashText(
-    JSON.stringify([scope, config.provider, config.model, temperature, maxTokens, jsonMode, messages])
+    JSON.stringify([
+      scope,
+      config.provider,
+      config.model,
+      temperature,
+      maxTokens,
+      jsonMode,
+      contextBudgetSignature(config),
+      messages,
+    ])
   );
 
   const now = Date.now();

@@ -106,6 +106,17 @@ import {
   isThinkingActive,
   thinkingEffortLabel,
 } from '@/lib/bossclaw/thinkingCapability';
+import {
+  CONTEXT_USAGE_LABELS,
+  CONTEXT_WINDOW_MIN,
+  CONTEXT_WINDOW_MAX,
+  CONTEXT_WINDOW_PRESETS,
+  DEFAULT_CONTEXT_WINDOW,
+  resolveContextWindow,
+  resolveContextBudget,
+  formatTokenCount,
+  type ContextUsage,
+} from '@/lib/bossclaw/contextBudget';
 
 const { Paragraph, Text } = Typography;
 
@@ -667,6 +678,32 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const thinkingCanAdjustEffort = thinkingOn && thinkingProfile.efforts.length > 0;
   const setThinking = (patch: { enabled?: boolean; effort?: string }) =>
     setModel({ thinking: { ...config.model.thinking, ...patch } });
+
+  // ===== 上下文预算（唯一口径见 lib/bossclaw/contextBudget.ts）=====
+  // 决定「每次 AI 调用能投喂多少上下文」（简历原文 / 岗位描述 / 职业画像 / 补充材料的裁剪预算）。
+  // 旧实现是一堆散落各处的硬编码字数上限（简历固定 6000 字等）：配 1M 窗口的模型只吃到 6000 字简历，
+  // 而 16K 窗口的模型仍可能被长 JD 顶穿。现在改为「按用户声明的窗口大小 × 用量档位」统一计算。
+  // 读**实际生效值**（经权威口径 clamp）：旧配置里低于下限的窗口会被抬到 CONTEXT_WINDOW_MIN，
+  // 界面必须显示生效值，否则用户看到的数字与实际投喂量对不上。
+  const ctxWindow = resolveContextWindow(config.model);
+  const ctxUsage: ContextUsage = config.model.contextUsage === 'compact' ? 'compact' : 'full';
+  const ctxBudget = resolveContextBudget(config.model);
+  const ctxIsPreset = CONTEXT_WINDOW_PRESETS.some((p) => p.value === ctxWindow);
+  // 自定义态：用户显式点了「自定义」，或持久化里的值本就不落在任何预设档上
+  const [ctxCustom, setCtxCustom] = useState(!ctxIsPreset);
+  const ctxCustomMode = ctxCustom || !ctxIsPreset;
+  const setContextWindowValue = (v: number) => {
+    setModel({ contextWindow: v });
+    setTestResult(null);
+  };
+  const setContextUsage = (v: ContextUsage) => {
+    setModel({ contextUsage: v });
+    setTestResult(null);
+    // 档位已纳入 AI 缓存 key（见 llm.ts::cachedCallModel），旧档位结果不会复用，无需手动清缓存
+    message.success(
+      `上下文用量已切换为「${CONTEXT_USAGE_LABELS[v]}」，AI 结果将按新口径重新生成（不会复用旧档位缓存）`,
+    );
+  };
 
   // ===== 开机自启动 & 本地备份目录 =====
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -1502,6 +1539,83 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                       </span>
                     )}
                   </div>
+                </Tooltip>
+              </div>
+              {/* 上下文长度：按所用模型的**实际窗口**填写（1M / 252K / 128K…）。
+                  它决定每次 AI 调用能投喂多少简历与 JD —— 填小了长简历只剩前半段被读到，
+                  填大了超过模型实际窗口会直接 400。字段级解释走 Tooltip（不常驻页面文案）。 */}
+              <div className="sg-item">
+                <span className="field-label">上下文长度</span>
+                <Tooltip
+                  title={
+                    <span>
+                      按所用模型的**实际**上下文窗口填写（如 1M=1000K、252K、128K）。
+                      <br />
+                      它决定每次 AI 调用能投喂多少简历与岗位描述：填小了长简历只剩前半段进入模型，
+                      填大了超出模型实际窗口会请求失败。
+                      <br />
+                      <br />
+                      当前口径：{ctxBudget.note}
+                    </span>
+                  }
+                >
+                  <div className="llm-thinkingrow">
+                    <Select
+                      style={ctxCustomMode ? undefined : { width: '100%' }}
+                      popupMatchSelectWidth={false}
+                      value={ctxCustomMode ? 'custom' : ctxWindow}
+                      onChange={(v) => {
+                        if (v === 'custom') {
+                          setCtxCustom(true);
+                          return;
+                        }
+                        setCtxCustom(false);
+                        setContextWindowValue(Number(v));
+                      }}
+                      options={[
+                        ...CONTEXT_WINDOW_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+                        { value: 'custom', label: '自定义…' },
+                      ]}
+                    />
+                    {ctxCustomMode ? (
+                      <InputNumber
+                        style={{ flex: 1, minWidth: 96 }}
+                        min={CONTEXT_WINDOW_MIN}
+                        max={CONTEXT_WINDOW_MAX}
+                        step={1000}
+                        value={ctxWindow}
+                        onChange={(v) => setContextWindowValue(Number(v) || DEFAULT_CONTEXT_WINDOW)}
+                        addonAfter="tokens"
+                      />
+                    ) : null}
+                  </div>
+                </Tooltip>
+              </div>
+              {/* 上下文用量：全满（吃满窗口） / 40%（省 token、提速）。
+                  预算的实际扣减口径（输出预留 + 安全边际）由 contextBudget.ts 统一决定，UI 不重复计算。 */}
+              <div className="sg-item">
+                <span className="field-label">上下文用量</span>
+                <Tooltip
+                  title={
+                    <span>
+                      决定每次 AI 调用用掉窗口的多少：<b>全满</b>按窗口上限投喂（信息最全、token 最多）；
+                      <b>40%</b>只投喂四成（更省 token、响应更快，长简历可能只进入前半段）。
+                      <br />
+                      <br />
+                      当前可投喂上下文约 {formatTokenCount(ctxBudget.inputBudgetTokens)} tokens
+                      （≈同量汉字）；已扣除输出预留 {formatTokenCount(ctxBudget.outputReserveTokens)} 与安全边际。
+                    </span>
+                  }
+                >
+                  <Segmented
+                    block
+                    value={ctxUsage}
+                    onChange={(v) => setContextUsage(v as ContextUsage)}
+                    options={[
+                      { value: 'full', label: CONTEXT_USAGE_LABELS.full },
+                      { value: 'compact', label: CONTEXT_USAGE_LABELS.compact },
+                    ]}
+                  />
                 </Tooltip>
               </div>
             </div>
