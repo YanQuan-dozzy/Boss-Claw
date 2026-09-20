@@ -256,6 +256,7 @@ try {
   const agentTasks = (args = {}) => tool(agentTools, 'bossclaw_agent_tasks').handler(args);
   const agentSubmit = (args) => tool(agentTools, 'bossclaw_agent_submit').handler(args);
   const agentCancel = (args) => tool(agentTools, 'bossclaw_agent_cancel').handler(args);
+  const agentSend = (args = {}) => tool(agentTools, 'bossclaw_agent_send').handler(args);
 
   const keyState = await tool(controlTools, 'bossclaw_app_state').handler({ path: 'settings.config.model.apiKey' });
   record(
@@ -269,6 +270,14 @@ try {
     '代答心跳：agent_tasks 首次调用即被判为在线',
     hb.data?.online === true && typeof hb.data?.stats?.pending === 'number',
     (hb.text || '').split('\n')[0]
+  );
+
+  // bossclaw_agent_send 透传 deliverySendNow：隔离实例默认 review 模式 → 必须被安全闸拒绝
+  const agentSendGate = await agentSend({ greeting: '您好，我对贵司岗位很感兴趣。' });
+  record(
+    'review 模式下 bossclaw_agent_send 被安全闸拒绝',
+    agentSendGate.data?.applied === false && /全自动未开启/.test(agentSendGate.text || ''),
+    (agentSendGate.text || '').split('\n')[1]?.slice(0, 90)
   );
 
   // aiAnalyzeJob 前置要求「已有职业画像」（matching.ts 无画像直接抛错），先播种一份最小可用画像

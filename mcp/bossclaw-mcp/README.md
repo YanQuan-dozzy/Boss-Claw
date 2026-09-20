@@ -5,7 +5,7 @@
 
 - **零依赖**：只用 Node 内置模块实现 JSON-RPC / stdio 协议，不需要 `npm install`，不会因依赖问题启动失败。
 - **传输**：stdio（标准 MCP 传输）。
-- **8 个工具**，分 3 组：运行控制（3）/ 应用控制（2）/ agent 代答（3）。只面向「控制已安装应用」，不提供任何测试/开发类能力。
+- **9 个工具**，分 3 组：运行控制（3）/ 应用控制（2）/ agent 代答（4）。只面向「控制已安装应用」，不提供任何测试/开发类能力。
 - **单向链路**：仅外部 agent → MCP → 应用（启动 / 状态 / 白名单动作）。应用内 AI 在未配置 API Key 时，若 agent 在线则交 **agent 代答**（见 §4），否则走**本地规则**兜底。
 
 ---
@@ -107,8 +107,9 @@ node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会�
 | `bossclaw_agent_tasks` | 领取待代答任务（含完整提示词与期望输出格式）。**该调用同时是心跳**——应用只在最近 90s 内有过本调用时才把 AI 任务交给 agent。建议 `waitMs: 30000` 长轮询 |
 | `bossclaw_agent_submit` | `{ id, content }` 回填回答：`jsonMode` 任务必须是合法 JSON 字符串，否则为纯文本；应用按与真实模型调用相同的口径解析并继续它自己的校验链 |
 | `bossclaw_agent_cancel` | `{ id, reason? }` 放弃某任务，让应用**立刻**回落本地规则（不必等满超时） |
+| `bossclaw_agent_send` | `{ greeting? }` 代答组内**唯一发送类能力**：仅当用户已在应用内开启「全自动」（`executionMode==='auto'`）时可用，走 webview 链路并复用应用自带安全投递引擎（`deliverySendNow`，招呼语非空 / 外部网申跳过 / 气泡确认 / 风控即停等不变量由应用强制）；review 模式一律拒绝，只能 `deliveryDraft` 草拟 + 人工发送 |
 
-这三个动作同样存在于渲染层白名单里（`agentTasks` / `agentSubmit` / `agentCancel`），必要时也能通过 `bossclaw_app_action` 直接调用；常规用法请走上面的专用工具。
+这三个动作同样存在于渲染层白名单里（`agentTasks` / `agentSubmit` / `agentCancel`），必要时也能通过 `bossclaw_app_action` 直接调用；常规用法请走上面的专用工具。`bossclaw_agent_send` 透传渲染层白名单的 `deliverySendNow`（门控与实现以 `controlRuntime.ts` 为唯一权威）。
 
 ---
 
@@ -221,7 +222,8 @@ MCP 不提供「应用未运行时」的离线文件 / 快照诊断——安装�
 
 ### 4.3 边界（硬约束不变）
 
-- **只搬运「提示词 ↔ 生成文本」**：不提供投递 / 发送 / 验证码 / 速率限制 / `SAFETY_LIMITS` 相关能力。
+- **代答本身只搬运「提示词 ↔ 生成文本」**：不提供验证码 / 速率限制 / `SAFETY_LIMITS` 相关能力。
+- **发送例外**：代答组唯一的发送工具 `bossclaw_agent_send` **仅当用户已在应用内开启「全自动」（`executionMode==='auto'`）时**对 agent 开放，走 webview 链路并**复用应用自带安全投递引擎**（`deliverySendNow`：招呼语非空 / 外部网申跳过 / 文字气泡确认 / 风控码立即停止交人工），不绕过任何平台安全措施；`review`（人工确认）模式下一律拒绝，agent 只能 `deliveryDraft` 草拟 + 人工发送。
 - 回填内容仍要过应用既有校验链（事实与口吻、校名披露、招呼语长度截断等），不合规照样被本地规则替换 —— 这是**预期行为**。
 - 代答结果同样进入应用本地 AI 缓存（`cachedCallModel`），相同输入不会反复占用 agent。
 - 用户**配置了 API Key** 就直连真模型，不会走代答（此时 `bossclaw_agent_tasks` 一直是空队列）。

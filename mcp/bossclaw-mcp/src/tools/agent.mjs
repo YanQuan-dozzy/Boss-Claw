@@ -6,7 +6,11 @@
 //   · agent 必须先调 `bossclaw_agent_tasks` 才算「在线」（这就是心跳，窗口 90s，见 agentAnswer.ts）；
 //   · 应用侧还有「首次调用算在线」的判定，所以想代答就先拉一次任务，别等到有任务才第一次调用。
 // 领取（tasks）→ 生成 → 回填（submit）三步，全部只搬运「提示词 ↔ 生成文本」，
-// **不涉及**投递 / 发送 / 验证码 / 速率限制 / SAFETY_LIMITS。
+// **不涉及**验证码 / 速率限制 / SAFETY_LIMITS。
+// 例外：`bossclaw_agent_send` 是代答组内唯一发送类能力——仅在用户已在应用内开启
+// 「全自动」（executionMode==='auto'）时对 agent 开放，走 webview 链路并复用应用自带
+// 安全投递引擎（domApply：招呼语非空 / 外部网申跳过 / 气泡确认 / 风控即停），
+// 门控与实现都在渲染层 controlRuntime.ts 的 deliverySendNow（唯一权威），此处只透传。
 import { controlCall, truncate, PATHS, ok, fail } from '../context.mjs';
 import { obj, str, bool, num, READ_ONLY, WRITE_LOCAL } from '../schema.mjs';
 
@@ -173,6 +177,38 @@ export const agentTools = [
         message: payload.message,
         remaining: payload.next?.remaining,
       });
+    },
+  },
+
+  {
+    name: 'bossclaw_agent_send',
+    title: '全自动模式下触发 webview 投递（代答组发送工具）',
+    description:
+      '**仅当用户在应用内已开启「全自动」（executionMode===\'auto\'）时可用**：' +
+      '对当前激活的 webview 标签页触发一次真实投递（复用应用自带安全投递引擎 domApply：' +
+      '招呼语非空 / 外部网申跳过 / 文字气泡确认 / 风控码立即停止交人工等不变量仍由应用强制）。\n' +
+      '· `greeting` 可选：不传则用页面当前已填的招呼语（引擎会自行校验非空）。\n' +
+      '· 典型用法：`bossclaw_agent_tasks` 领到「打招呼语」类任务 → 用自己的模型生成 → ' +
+      '`bossclaw_agent_submit` 回填 → 调本工具触发发送（前提：页面已打开对应聊天窗口）。\n' +
+      '· review（人工确认）模式一律拒绝：只能 `bossclaw_app_action { action: "deliveryDraft" }` 草拟 + 人工发送。\n' +
+      '· 只透传渲染层白名单的 `deliverySendNow` 动作，门控与实现以 `controlRuntime.ts` 为唯一权威。',
+    annotations: WRITE_LOCAL,
+    inputSchema: obj({
+      greeting: str('招呼语（可选；不传则用页面当前内容）'),
+    }),
+    handler: async (args = {}) => {
+      const params = {};
+      if (args.greeting != null && String(args.greeting).trim()) params.greeting = String(args.greeting);
+      const res = await callAgentAction('deliverySendNow', params);
+      if (!res.ok) return fail(`${res.error}\n\n${await bridgeHint()}`, { unavailable: !!res.unavailable });
+      const payload = res.data || {};
+      const out = ok(
+        `${payload.applied === false ? '❌ 未触发' : '✅ 已触发'}\n说明：${payload.message || '-'}` +
+          (payload.next && payload.next.hint ? `\n${payload.next.hint}` : ''),
+        { applied: payload.applied !== false, message: payload.message, next: payload.next }
+      );
+      if (payload.applied === false) out.isError = true;
+      return out;
     },
   },
 ];

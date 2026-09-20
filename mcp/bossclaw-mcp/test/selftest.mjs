@@ -99,8 +99,8 @@ try {
   record('tools/list', tools.length > 0, `${tools.length} 个工具`);
   const badSchema = tools.filter((t) => !t.name || !t.description || !t.inputSchema || t.inputSchema.type !== 'object');
   record('工具 schema 完整', badSchema.length === 0, badSchema.map((t) => t.name).join(', ') || '全部合法');
-  // agent 代答组必须在册（应用未配置 API Key 时靠这三个工具接管 AI 生成）
-  const agentNames = ['bossclaw_agent_tasks', 'bossclaw_agent_submit', 'bossclaw_agent_cancel'];
+  // agent 代答组必须在册（应用未配置 API Key 时靠这四个工具接管 AI 生成与全自动发送）
+  const agentNames = ['bossclaw_agent_tasks', 'bossclaw_agent_submit', 'bossclaw_agent_cancel', 'bossclaw_agent_send'];
   const missingAgent = agentNames.filter((n) => !tools.some((t) => t.name === n));
   record('agent 代答工具已注册', missingAgent.length === 0, missingAgent.length ? `缺：${missingAgent.join(', ')}` : agentNames.join(', '));
   const groups = tools.reduce((acc, t) => {
