@@ -24,7 +24,8 @@
     "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
     "verify": "npm run typecheck && npm run build",
-    "test:theme-vars": "node scripts/theme-vars-regression.mjs"
+    "test:theme-vars": "node scripts/theme-vars-regression.mjs",
+    "test:context-budget": "node scripts/context-budget-regression.mjs"
   },
   "build": {
     "appId": "com.bossclaw.desktop",

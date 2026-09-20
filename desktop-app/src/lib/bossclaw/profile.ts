@@ -21,6 +21,8 @@ import {
 } from './prompts';
 import { cachedCallModel, AIError, aiFailureKind, isRetryableAiOutputError } from './llm';
 import { skillInstructionsFor } from './skills';
+import { resolveContextBudget } from './contextBudget';
+import { prepareContextText } from './oversizedContext';
 
 function explainProfileFallbackReason(reason = '', kind = ''): string {
   const message = String(reason || '').trim();
@@ -346,18 +348,40 @@ function profileToAnchor(profile: Profile) {
   };
 }
 
+/**
+ * 画像输入的简历上下文：占满可用输入预算；**超预算则分片提炼**（≤3 片）后合并，
+ * 避免长简历的后半段（往往是最近一段实习/项目）从未进入画像分析（见 oversizedContext.ts）。
+ */
+async function prepareProfileResume(
+  text: string,
+  model: AppConfig['model'],
+  outputTokens: number,
+): Promise<string> {
+  const prepared = await prepareContextText(String(text || ''), model, {
+    tokenBudget: resolveContextBudget(model, { outputTokens }).inputBudgetTokens,
+    focus:
+      '职业画像所需的简历真实事实：教育背景与专业学历、实习/工作经历、项目经历、技能栈、证书荣誉' +
+      '（保留具体学校/公司/项目/技术名称与时间数字）',
+    cacheScope: 'profile',
+    purpose: '画像简历上下文',
+  });
+  return prepared.text;
+}
+
 export async function buildProfile(resumeText: string, model: AppConfig['model']): Promise<Profile> {
   const text = cleanResumeText(resumeText);
   const fallback = buildLocalProfile(text);
   const anchor = profileToAnchor(fallback);
   let firstError: Error | null = null;
   try {
-    // 缓存：key 含简历全文与锚点，简历未改动时重复生成画像直接命中，避免 22K 输入重复计费
+    // 缓存：key 含简历全文（含上下文预算口径）与锚点，简历未改动时重复生成画像直接命中，避免重复计费。
+    // 简历投入量按「模型窗口 × 用量档位」计算（旧实现固定截 22000 字，见 contextBudget.ts）；
+    // 输出上限 4200 参与预算扣除，保证「输入 + 输出」不顶穿窗口。
     const profile = validateGeneratedProfile(
       await cachedCallModel(
         [
           { role: 'system', content: buildProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
-          { role: 'user', content: text.slice(0, 22000) },
+          { role: 'user', content: await prepareProfileResume(text, model, 4200) },
         ],
         model,
         { maxTokens: 4200, temperature: 0.05 },
@@ -385,7 +409,8 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
         await cachedCallModel(
           [
             { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
-            { role: 'user', content: text.slice(0, 18000) },
+            // 精简重试：输出上限收到 2200 → 可用输入预算相应放宽（同口径见 contextBudget.ts）
+            { role: 'user', content: await prepareProfileResume(text, model, 2200) },
           ],
           model,
           { maxTokens: 2200, temperature: 0.05 },

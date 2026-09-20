@@ -4,6 +4,8 @@
 // 仅引用真实简历事实；禁止承诺薪资、到岗时间、面试时间或不存在的能力/经历。
 import type { AppConfig, Profile } from './types';
 import { callModel } from './llm';
+import { resolveContextBudget } from './contextBudget';
+import { prepareContextText } from './oversizedContext';
 
 /** 打招呼语目标字数（字符数，含标点）：生成目标约 150 字。 */
 export const GREETING_TARGET_CHARS = 150;
@@ -130,9 +132,18 @@ export async function generateReply(opts: {
       : null;
     const commBlock = comm ? `\n\n我的沟通信息（可在回复中引用其中的真实内容，如薪资期望、面试/到岗时间等，仅限填写的内容）：\n${comm}` : '';
     const sysPrompt = comm ? REPLY_SYSTEM_PROMPT_WITH_TIME : REPLY_SYSTEM_PROMPT;
-    const user = `HR 的最新消息："${hr}"\n\n应聘岗位：${String(opts.jobTitle || '未知岗位')}\n\n简历信息：\n${String(
-      opts.resumeText || ''
-    ).slice(0, 3000)}\n\n职业画像：\n${JSON.stringify(profileBrief || {})}${commBlock}\n\n请直接给出你作为求职者的回复内容：`;
+    // 简历投入量按「模型窗口 × 用量档位」计算（旧实现固定截 3000 字；口径见 contextBudget.ts）。
+    // 超预算时分片提炼为事实要点后合并（见 oversizedContext.ts）：自动沟通是高频链路，
+    // 截断会让回复漏掉与 HR 问题最相关的经历，而分片只在真的超窗时才产生额外调用。
+    const resumeCtx = (
+      await prepareContextText(String(opts.resumeText || ''), opts.model, {
+        tokenBudget: resolveContextBudget(opts.model, { outputTokens: 400 }).inputBudgetTokens,
+        focus: '与 HR 沟通回复相关的简历真实事实：身份学历、相关实习/项目经历、技能（保留具体名称与数字）',
+        cacheScope: 'greetings',
+        purpose: '自动沟通-简历上下文',
+      })
+    ).text;
+    const user = `HR 的最新消息："${hr}"\n\n应聘岗位：${String(opts.jobTitle || '未知岗位')}\n\n简历信息：\n${resumeCtx}\n\n职业画像：\n${JSON.stringify(profileBrief || {})}${commBlock}\n\n请直接给出你作为求职者的回复内容：`;
     const content = await callModel(
       [
         { role: 'system', content: sysPrompt },

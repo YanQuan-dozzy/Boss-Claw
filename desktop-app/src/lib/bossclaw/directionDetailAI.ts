@@ -9,6 +9,8 @@
 import type { AppConfig, DirectionItem, Profile } from './types';
 import type { ChatMessage } from './llm';
 import { callModel, extractJson } from './llm';
+import { resolveContextBudget } from './contextBudget';
+import { prepareContextText } from './oversizedContext';
 import { normalizeDirectionKey, normalizeStringList } from './helpers';
 import { uniq } from './defaults';
 
@@ -93,7 +95,17 @@ export async function refineDirectionCapabilities(
     画像细粒度能力: capabilities.length ? capabilities : skills,
     画像技能: skills,
     经历与项目: [...experiences, ...projects],
-    简历原文摘录: String(input.resumeText || '').trim().slice(0, 4000),
+    // 简历摘录量按「模型窗口 × 用量档位」计算（旧实现固定截 4000 字；口径见 contextBudget.ts）。
+    // 超预算时分片提炼为事实要点后合并（见 oversizedContext.ts）；拼接结果落在 JSON 的**值**内部，
+    // 序列化后仍是合法 JSON。
+    简历原文摘录: (
+      await prepareContextText(String(input.resumeText || '').trim(), config, {
+        tokenBudget: Math.floor(resolveContextBudget(config, { outputTokens: 1600 }).inputBudgetTokens * 0.6),
+        focus: '与求职方向匹配判断相关的技能、能力与经历事实（保留具体技术名称、项目名与数字）',
+        cacheScope: 'assistant',
+        purpose: '方向细化-简历摘录',
+      })
+    ).text,
   };
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },

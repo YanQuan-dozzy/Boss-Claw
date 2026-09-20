@@ -25,6 +25,8 @@ import type { AppConfig, JobMeta, Profile } from './types';
 import { cachedCallModel, aiFailureKind } from './llm';
 import { reloadSkills, skillInstructionsFor } from './skills';
 import { stableProfileView, fallbackApplicantGreeting, settleGreetingLength } from './matching';
+import { allocateContextBudget, fitContextToTokens } from './contextBudget';
+import { prepareContextText } from './oversizedContext';
 import { DEFAULT_ANALYZE_GREETING_INSTRUCTIONS } from './prompts';
 import { buildSchoolDisclosureRule, hasSchoolMention, resolveSchoolTier } from './schoolTier';
 import { normalizeStringList } from './helpers';
@@ -630,12 +632,45 @@ export async function tailorForJob(
   if (!profile) return localFallback('尚未生成职业画像，当前为本地规则生成的定制内容。');
   if (!model?.apiKey) return localFallback('AI 尚未配置，当前为本地规则生成的定制内容。');
 
+  // ===== 上下文预算（唯一口径见 contextBudget.ts）=====
+  // 「简历 / 经历补充材料 / 职业画像 / 岗位描述」四段共享一次请求的输入预算：
+  // 旧实现是各自硬编码字面量（简历 6000 字、补充材料 4000 字、岗位描述不裁），
+  // 结果是「1M 窗口的模型只吃 6000 字简历」，而小窗口模型仍可能被长 JD 顶穿。
+  // 现改为由用户在设置页声明的窗口大小与用量档位（全满 / 40%）统一决定。
+  // 第一轮（草稿）与第二轮（复检）共用同一份裁剪结果：口径一致，也保证两轮看到的上下文相同。
+  const ctxBudget = allocateContextBudget(
+    model,
+    { resume: 0.45, extra: 0.2, profile: 0.15, job: 0.2 },
+    { outputTokens: 4096 },
+  );
+  // 简历与经历补充材料是「定制内容的事实来源」：超预算时分片提炼（≤3 片）后合并，
+  // 不静默丢弃后半段经历（见 oversizedContext.ts）——定制简历的每条内容都必须能溯源到真实原文。
+  const resumeCtx = (
+    await prepareContextText(String(resumeText || ''), model, {
+      tokenBudget: ctxBudget.resume,
+      focus: '与目标岗位定制相关的简历真实事实：教育背景、实习/工作经历、项目经历、技能栈、证书荣誉（保留具体名称与数字）',
+      cacheScope: 'assistant',
+      purpose: '定制简历-简历上下文',
+    })
+  ).text;
+  const extraCtx = extra
+    ? (
+        await prepareContextText(extra, model, {
+          tokenBudget: ctxBudget.extra,
+          focus: '求职者补充提供的真实经历材料（项目细节、成果、职责），与简历原文同为事实来源',
+          cacheScope: 'assistant',
+          purpose: '定制简历-补充材料',
+        })
+      ).text
+    : '';
+  const profileCtx = fitContextToTokens(JSON.stringify(stableProfileView(profile)), ctxBudget.profile);
   const jobView = {
     title: job.title,
     company: job.company,
     salary: decodeSalaryDigits(job.salary),
     location: job.location,
-    description: job.description,
+    // 只裁 description 值（直接裁 stringify 后的整段 JSON 会把结构切坏）
+    description: fitContextToTokens(String(job.description || ''), ctxBudget.job),
   };
   try {
     // 求职信/打招呼语提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 简历中心输入框内容 → ③ 都不满足则回退本地规则。
@@ -654,8 +689,8 @@ export async function tailorForJob(
         { role: 'system', content: buildTailorSystemPrompt(greetingInstructions, schoolRule) + skillInstructionsFor('assistant') },
         {
           role: 'user',
-          content: `职业画像：${JSON.stringify(stableProfileView(profile))}
-简历：${String(resumeText || '').slice(0, 6000)}${extra ? `\n\n经历补充材料（求职者本人提供，与简历原文同为真实事实来源）：\n${extra.slice(0, 4000)}` : ''}
+          content: `职业画像：${profileCtx}
+简历：${resumeCtx}${extraCtx ? `\n\n经历补充材料（求职者本人提供，与简历原文同为真实事实来源）：\n${extraCtx}` : ''}
 岗位：${JSON.stringify(jobView)}`,
         },
       ],
@@ -696,7 +731,7 @@ export async function tailorForJob(
           { role: 'system', content: buildReviewSystemPrompt(schoolRule) + skillInstructionsFor('assistant') },
           {
             role: 'user',
-            content: `职业画像：${JSON.stringify(stableProfileView(profile))}${extra ? `\n经历补充材料：\n${extra.slice(0, 3000)}` : ''}
+            content: `职业画像：${profileCtx}${extraCtx ? `\n经历补充材料：\n${extraCtx}` : ''}
 岗位：${JSON.stringify(jobView)}
 草稿：${JSON.stringify({
               tailoredSummary: draft.tailoredSummary,

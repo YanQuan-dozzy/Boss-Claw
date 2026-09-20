@@ -1,6 +1,7 @@
 import type { AppConfig, Profile, ProfileDraft, DirectionPlan, Stats, Workflow } from './types';
 import { PLATFORM_DEFAULT_DAILY_TARGET } from './platforms';
 import { PROVIDER_DEFAULTS, DEFAULT_PROVIDER, DEFAULT_MODEL_NAME } from './providerPresets';
+import { DEFAULT_CONTEXT_WINDOW } from './contextBudget';
 
 // 对齐 job-claw-main\source\src\common.js 的 DEFAULTS
 export const DEFAULT_CONFIG: AppConfig = {
@@ -114,6 +115,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     // 思考强度默认关闭：保持原有「直接产出结构化 JSON」的行为不变（思考模式下 temperature 失效、
     // 且思维链会额外消耗输出 token）。用户可在设置页显式开启，能力判定见 thinkingCapability.ts。
     thinking: { enabled: false, effort: 'high' },
+    // 上下文窗口上限（tokens）：决定单次请求能投喂多少上下文，唯一消费方 contextBudget.ts。
+    // 默认 128K —— 当前主流模型窗口均 ≥128K，是「配置缺失也不会超窗」的安全水位；
+    // 老用户持久化数据缺该字段时，contextBudget.ts 会 fail-safe 到同一默认值。
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    // 上下文用量档位默认「全满」（用户可见默认档，保持模型能力不被无谓阉割；想省 token 可切 40%）。
+    contextUsage: 'full',
   },
 };
 
