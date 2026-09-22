@@ -121,6 +121,7 @@ const ZHAOPIN_CRITERIA_SCALE: Record<string, string> = {
 };
 const ZHAOPIN_CRITERIA_COMPANY_TYPE: Record<string, string> = {
   国企: '1', 外企: '2', 民营: '5',
+  中外合资: '4', 港澳台企业: '16', '机关/事业单位': '6;10', 其他: '7;14;15',
 };
 const ZHAOPIN_CRITERIA_FINANCING: Record<string, string> = {
   不需要融资: '8', 未融资: '1', 有融资: '2;3;4;5;6',

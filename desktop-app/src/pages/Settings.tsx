@@ -1137,7 +1137,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="sg-item">
                 <span className="field-label">
                   公司性质
-                  <Tooltip title="智联招聘已接通（国企 / 外企 / 民营）；猎聘 / 前程无忧暂不支持该项，选择后不会附加筛选。">
+                  <Tooltip title="智联招聘已接通（国企 / 外企 / 民营 / 中外合资 / 港澳台企业 / 机关/事业单位 / 其他）；猎聘 / 前程无忧暂不支持该项，选择后不会附加筛选。">
                     <InfoCircleOutlined className="field-label__hint" />
                   </Tooltip>
                 </span>
@@ -1145,7 +1145,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                   value={config.companyType || '不限'}
                   onChange={(v) => setConfig({ companyType: v })}
-                  options={['不限', '国企', '外企', '民营'].map((x) => ({ label: x, value: x }))}
+                  options={['不限', '国企', '外企', '民营', '中外合资', '港澳台企业', '机关/事业单位', '其他'].map((x) => ({ label: x, value: x }))}
                 />
               </div>
               <div className="sg-item">

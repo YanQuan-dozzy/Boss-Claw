@@ -87,6 +87,10 @@ try {
   has('100-499人 → cs=3,8（聚合）', u({ companyScale: '100-499人' }), 'cs=3,8');
   has('20-99人 → cs=2', u({ companyScale: '20-99人' }), 'cs=2');
   has('国企 → ct=1', u({ companyType: '国企' }), 'ct=1');
+  has('中外合资 → ct=4', u({ companyType: '中外合资' }), 'ct=4');
+  has('港澳台企业 → ct=16', u({ companyType: '港澳台企业' }), 'ct=16');
+  has('机关/事业单位 → ct=6;10', u({ companyType: '机关/事业单位' }), 'ct=6;10');
+  has('其他 → ct=7;14;15', u({ companyType: '其他' }), 'ct=7;14;15');
 
   // 全量组合（对齐 filters.py 摘要口径）
   const full = u({
