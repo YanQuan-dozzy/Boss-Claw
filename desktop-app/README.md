@@ -208,9 +208,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.5.4-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.5.4-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.5.4-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-2.5.5-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-2.5.5-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-2.5.5-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
 
@@ -320,6 +320,14 @@ release/
 ***
 
 ## 变更记录
+
+* **v2.5.5（2026-09-22 发布）** — 智联招聘全链路接入 + 多平台基础求职条件扩展 + MCP 全自动投递：
+  * **智联招聘全链路接入（筛选 / 搜索 / 投递）**：`camoufox/platforms/zhaopin.py` 按差异声明补齐筛选参数拼接与投递链路；递送 `filters.py` ↔ `platformUrls.ts` 双源同步，六大筛选维度（职位类型 et / 学历 el / 经验 we / 公司性质 ct / 融资阶段 fs / 规模 cs）码值**按实测链接逐档校准**（公司性质：中外合资=4 / 港澳台=16 / 机关事业单位=6;10 / 其他=7;14;15；多值拼接规则 = 同类型 `;` 分隔、跨类型 `,` 分隔）；新增 `companyType` / `financing` 求职条件配置项并接入智联；新增 `scripts/zhaopin-url-regression.mjs`（32 项断言）守护拼接口径。
+  * **多平台基础求职条件扩展**：设置页新增公司性质 / 融资阶段字段（含 Tooltip 释码），投递方向 / 搜索词校验同步放宽。
+  * **MCP 新增 `bossclaw_agent_send` 全自动投递工具**：代答组唯一发送能力，复用应用自带安全投递引擎，白名单与主进程 `MAIN_ACTIONS` 同步（`mcp/bossclaw-mcp`）。
+  * **上下文预算统一口径**：`contextBudget.ts` 改为「模型窗口 × 用量档位」动态测定（下限 32K），替换各处理位置硬编码字数截断；新增 `scripts/context-budget-regression.mjs` 回归脚本。
+  * **非 BOSS 一键投递就绪判定修复**：身份稳定 `ref` + 页面事实探测取代宿主标记；`target=_blank` 弹窗改主进程 `setWindowOpenHandler` 处理（http(s) → 当前标签 loadURL，其余 deny）；各平台登录态探测 `platformLogins` 与状态栏短标签。
+  * 首页「配置 AI 模型」步骤判定纳入当前 LLM 配置，并修正「未配置 API Key」的日志归因。
 
 * **v2.5.4（2026-09-17 发布）** — 全面优化审查落地 + 多平台采集 / agent 代答 / 面试方式筛选正式发布：
   * **全面优化审查落地**（`docs/code-review-2026-09-17/`，6 批 70 条）：AI 层（进程内一级缓存、换模型定向清理、JSON 修复链加固、apiKey 去空白）· 状态持久化（存储键单一登记表修复「导出漏定时任务」、运行时日志拆独立键 `bossclaw-runtime-logs`、备份写代数锚定）· 匹配评分（薪资解析唯一实现修复「8千-1.2万」误算、硬约束收集可单测）· Electron 层（投递通道拆分、素材白名单双端同源、webview 输入频率兜底）· 渲染层（`index.polish.css` 拆分、打招呼语本地态编辑、福利标签缓存、滚动状态机、设置页后台停轮询）· Python / MCP（未知风控码 fail-safe、兜底链崩溃修复、MCP 白名单断言 `test/whitelist-parity.mjs`、主题变量守卫 `scripts/theme-vars-regression.mjs`）· 自动沟通引擎运行态整合（P2-04）。

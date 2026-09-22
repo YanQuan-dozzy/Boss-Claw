@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.4-078A83)
+![Version](https://img.shields.io/badge/version-v2.5.5-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.4**（2026-09-17 发布）。后续功能更新在下方功能表直接以当前实现标注。
+> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.5**（2026-09-22 发布）。后续功能更新在下方功能表直接以当前实现标注。
 
 ## 下载安装
 
@@ -28,8 +28,8 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.4-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.4-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.5-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.5-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.5-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.5-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 ### Linux（x86_64）
 
@@ -53,7 +53,8 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.4（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.5（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.4 | Windows x64 安装版 + 便携版 |
 | v2.5.3 | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
 | v2.4.0 | Windows x64 安装版 + 便携版 |
@@ -338,7 +339,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.4）
+├── desktop-app/               当前主应用（Electron + React，v2.5.5）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs（外部 Agent 控制桥）
 │   │   ├── preload/           app.cjs / webview.cjs / platform-adapters.cjs（多平台 DOM 适配表）
 │   │   └── cloakbrowser/      CloakBrowser 隐身浏览器生命周期
@@ -389,7 +390,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，x64 + arm64 双架构，需
 
 遇到问题时，建议先查看 [`desktop-app/README.md`](desktop-app/README.md) 的「功能闭环」「常见问题」两节（开发与故障排查口径最全）。提交 Issue 时请包含：
 
-- BossClaw 版本（桌面版 v2.5.4）
+- BossClaw 版本（桌面版 v2.5.5）
 - 操作系统与 Electron 版本
 - 出错步骤
 - 已隐藏隐私信息的截图
