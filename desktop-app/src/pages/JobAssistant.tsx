@@ -1,7 +1,7 @@
 /**
  * 【主模块：定制简历】导航 key = 'assistant'
  * 子模块：
- * - 岗位信息卡（导入已批准岗位 / 岗位名称 / 岗位要求 + 「AI 生成定制简历」）
+ * - 岗位信息卡（导入已批准岗位 / 已投递岗位 / 岗位名称 / 岗位要求 + 「AI 生成定制简历」）
  * - 经历补充材料卡（tailor-materials-card：PDF/DOCX/MD/TXT 导入真实经历，仅参与定制与要点判定）
  * - 定制结果（TailorResultView：七模块 doc + 匹配评分 + 要点对照 + 求职信，可导出 PDF / 存打招呼语）
  * - 历史定制记录（本地最近 HISTORY_MAX 条，可载入/删除）
@@ -118,9 +118,19 @@ const formatTime = (ts: number) => {
 
 export default function JobAssistant() {
   const pending = useDataStore(useShallow((s) => s.pending));
-  // 导入入口只展示用户已批准通过的岗位（approved=待投递 / approved_queue=投递中）
-  const approvedJobs = useMemo(
-    () => pending.filter((p) => p.status === 'approved' || p.status === 'approved_queue'),
+  // 导入入口：用户已批准通过的岗位（approved=待投递 / approved_queue=投递中）+ 已完成投递的岗位（sent=已投递）。
+  // 已投递岗位排在最后（组内按最近时间倒序），避免与待投递队列混排后难找。
+  const importableJobs = useMemo(
+    () =>
+      pending
+        .filter((p) => p.status === 'approved' || p.status === 'approved_queue' || p.status === 'sent')
+        .sort((a, b) => {
+          const ra = (a.status === 'sent' ? 1 : 0) - (b.status === 'sent' ? 1 : 0);
+          if (ra !== 0) return ra;
+          const ta = (a.status === 'sent' ? a.sentAt : a.approvedAt) || a.createdAt || 0;
+          const tb = (b.status === 'sent' ? b.sentAt : b.approvedAt) || b.createdAt || 0;
+          return tb - ta;
+        }),
     [pending]
   );
   const profile = useDataStore((s) => s.profile);
@@ -362,7 +372,7 @@ export default function JobAssistant() {
       setImportedScore(null);
       return;
     }
-    const p = approvedJobs.find((x) => x.id === id);
+    const p = importableJobs.find((x) => x.id === id);
     if (!p) return;
     // 工作台分析分（AI 优先）：导入时记录，AI 已配置则作为匹配分数主来源
     setImportedScore(p.analysis?.score ?? null);
@@ -452,20 +462,20 @@ export default function JobAssistant() {
       <Card size="small" className="mb-16" title={<Space><FileTextOutlined style={{ color: 'var(--brand)' }} />岗位信息</Space>}>
         <Space size={12} style={{ marginBottom: 12 }}>
           <Select
-            placeholder={approvedJobs.length ? '（可选）从已批准岗位导入' : '暂无已批准岗位，请先在工作台批准'}
+            placeholder={importableJobs.length ? '（可选）从已批准 / 已投递岗位导入' : '暂无已批准 / 已投递岗位，请先在工作台批准'}
             style={{ width: 300 }}
             value={importId}
             onChange={onImport}
             allowClear
             showSearch
             optionFilterProp="label"
-            notFoundContent="暂无已批准通过的岗位"
-            options={approvedJobs.map((p) => ({
+            notFoundContent="暂无已批准或已投递的岗位"
+            options={importableJobs.map((p) => ({
               value: p.id,
-              label: `${String(p.job?.title || '').replace(/\s*\d+-\d+K.*$/, '')} · ${p.job?.company || '未知公司'}`,
+              label: `${String(p.job?.title || '').replace(/\s*\d+-\d+K.*$/, '')} · ${p.job?.company || '未知公司'}${p.status === 'sent' ? '（已投递）' : ''}`,
             }))}
           />
-          <Text type="secondary" style={{ fontSize: 12 }}><ImportOutlined /> 仅展示你已批准通过的岗位（工作台「批准」后即在此可见），导入后自动填充岗位名称与岗位要求，可直接修改</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}><ImportOutlined /> 展示你已批准或已完成投递的岗位（工作台「批准」后即在此可见，投递完成仍保留），导入后自动填充岗位名称与岗位要求，可直接修改</Text>
         </Space>
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <div>

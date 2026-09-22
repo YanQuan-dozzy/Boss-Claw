@@ -896,13 +896,20 @@ async function createMainWindow() {
   //      （实测 20 卡 20 岗内容完全两套），此时索引/selectedJobId 均不可信，绝不盲标。
   //      以「激活卡标题 === selectedJobId 岗位名」判定新鲜，仅新鲜时才启用
   //      激活卡锚定与顺序对齐两个盲标兜底，否则只做逐卡文本精确匹配，未命中的
-  //      岗位留空 URL（preload 用文本 key 去重，详情由 Camoufox 链路补齐）；
+  //      岗位留空 URL（preload 用文本 key 去重；这类卡也拿不到岗位号 → 列表级采集的
+  //      详情 JD 补齐（webview.cjs::enrichZhaopinJobDetail，按 number 查详情）同样跳过，
+  //      按卡片文本入库，不丢岗位）；
   //   3. click 捕获：用户点岗位卡 → 命中索引 → preventDefault + 整页导航到独立详情页
   //      （当前标签跳转、可后退回列表）；匹配不到不做接管，退回站点原生内联。
   const ZP_DETAIL_NAV_SCRIPT = `(function () {
     if (window.__bossclawZpNavDone) return; window.__bossclawZpNavDone = true;
     var inc = window.__INITIAL_STATE__;
-    if (!inc || !document.querySelector('.job-card')) return;
+    if (!inc) return;
+    // 不再因「此刻还没有 .job-card」就整体退出：应用自身搜索 URL 是 /sou/（服务端渲染的
+    // 旧版 .joblist-box__item 列表，带 jobdetail 锚点），而智联客户端随后可能把它换成新版
+    // 拆分布局（.job-card，卡片无锚点）——若在 did-finish-load 时就退出，换版后新出现的
+    // .job-card 永远拿不到岗位号/详情 URL，后续「列表级采集」的 JD 补齐也随之中断
+    // （没有 number 就查不到详情）。保持脚本存活由后续 MutationObserver 覆盖换版 / 懒加载。
     var norm = function (s) { return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim(); };
     // ===== 岗位索引（兼容新版 name/number 与旧版 positionName/positionNumber）=====
     var jobs = [];
@@ -927,7 +934,9 @@ async function createMainWindow() {
         if (Array.isArray(v) && v.length && v[0] && (v[0].positionName || v[0].name) && (v[0].positionNumber || v[0].number)) collectArray(v);
       });
     }
-    if (!jobs.length) return;
+    if (!jobs.length && !document.querySelector('.job-card') && !document.querySelector('[class*="joblist-box"]')) return;
+    // 注：SSR 无岗位索引但页面有列表 DOM 时**继续安装**（下方列表接口旁路监听会把滚动加载出来的
+    // 岗位并入索引）；两者都没有 = 与岗位列表无关的智联页面（首页 / 公司页等）→ 不注入任何钩子。
     var detailBase = 'https://www.zhaopin.com/jobdetail/';
     // ===== 新鲜度闸门：激活卡（页面 boot 选中）标题与 selectedJobId 岗位名一致才算「索引可信」=====
     // 智联客户端刷新 / 交互后 __INITIAL_STATE__ 可能与当前卡片不同步（实测 20 卡 20 岗两套数据），
@@ -992,6 +1001,79 @@ async function createMainWindow() {
       setTimeout(function () { annotatePending = false; annotate(); }, 300);
     });
     mo.observe(document.body, { childList: true, subtree: true });
+
+    // ===== 列表接口旁路监听：把「滚动 / 翻页加载出来的岗位」并入索引 =====
+    // SSR 的 positionList 只有首屏那批，后续岗位由页面自己 POST /c/i/search/positions 取回并渲染
+    // → 这些卡既没有 jobdetail 锚点、也不在索引里，于是拿不到岗位号（列表级采集的 JD 补齐
+    // 靠 number 查详情，没 number 就补不了）。
+    // 该接口**无法由我们直接调用**（2026-09 实测：匿名 POST 返回 code 200 但 count=0 /
+    // isVerification=1，需浏览器自身的校验），所以改为在主世界包一层 XHR / fetch，
+    // 只**读**页面自己的响应，把里面「有 number + 岗位名」的对象并入 jobs 索引 → 再 annotate()。
+    // 安全：包装是纯透传（不改参数、不改返回值）；解不出结构时天然 no-op；索引增长只影响标注，
+    // 而标注仍需「岗位名 + 公司名」精确匹配，不会误标。
+    var absorbed = {};
+    var ABSORB_KEYS = ['positionList', 'list', 'results', 'positions', 'data'];
+    var absorbOne = function (o) {
+      var name = norm(o.positionName) || norm(o.name);
+      var pn = norm(o.positionNumber) || norm(o.number);
+      if (!name || !pn || absorbed[pn]) return;
+      absorbed[pn] = 1;
+      var jobId = String(o.jobId != null ? o.jobId : pn);
+      jobs.push({ name: name, company: norm(o.companyName), pn: pn, jobId: jobId });
+      if (jobId && !byJobId[jobId]) byJobId[jobId] = jobs[jobs.length - 1];
+    };
+    var absorbPayload = function (root, depth) {
+      if (!root || typeof root !== 'object' || depth > 4) return;
+      if (Array.isArray(root)) {
+        for (var i = 0; i < root.length; i++) {
+          var it = root[i];
+          if (it && typeof it === 'object' && (it.number || it.positionNumber) && (it.name || it.positionName)) absorbOne(it);
+          else if (it && typeof it === 'object') absorbPayload(it, depth + 1);
+        }
+        return;
+      }
+      for (var k = 0; k < ABSORB_KEYS.length; k++) { if (root[ABSORB_KEYS[k]]) absorbPayload(root[ABSORB_KEYS[k]], depth + 1); }
+    };
+    var isListApi = function (u) { return String(u == null ? '' : u).indexOf('/c/i/search/positions') >= 0; };
+    var absorbText = function (text) {
+      if (!text || String(text).length > 4000000) return; // 防御：异常大响应不解析
+      try {
+        var before = jobs.length;
+        absorbPayload(JSON.parse(text), 0);
+        if (jobs.length > before) annotate();
+      } catch (e) {}
+    };
+    try {
+      var XO = XMLHttpRequest.prototype.open;
+      var XS = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) { try { this.__bcUrl = u; } catch (e) {} return XO.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function () {
+        var self = this;
+        try {
+          self.addEventListener('load', function () {
+            try { if (isListApi(self.__bcUrl) && self.responseType !== 'json') absorbText(self.responseText); } catch (e) {}
+          });
+        } catch (e) {}
+        return XS.apply(this, arguments);
+      };
+      if (window.fetch) {
+        var OF = window.fetch;
+        window.fetch = function (input, init) {
+          var u = (input && input.url) ? input.url : input;
+          var p = OF.apply(this, arguments);
+          try {
+            if (isListApi(u) && p && p.then) {
+              p.then(function (res) {
+                try { if (res && res.clone) res.clone().text().then(absorbText).catch(function () {}); } catch (e) {}
+                return res;
+              }).catch(function () {});
+            }
+          } catch (e) {}
+          return p;
+        };
+      }
+    } catch (e) {}
+
     document.addEventListener('click', function (e) {
       var t = e.target;
       var card = t && t.closest ? t.closest('.job-card') : null;

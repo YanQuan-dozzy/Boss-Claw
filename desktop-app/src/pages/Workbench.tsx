@@ -1098,6 +1098,12 @@ export default function Workbench() {
     } else if (data?.phase === 'platform-mismatch') {
       // 仅诊断：preload 以页面 hostname 为权威，不一致说明标签选错了（不会静默采错平台）
       addLog('warn', `采集平台自检：${String(data?.status || '').slice(0, 200)}`);
+    } else if (data?.phase === 'jd-enrich-warn') {
+      // 详情 JD 补齐提前停止（连续失败 / 达上限）：岗位仍按列表卡片文本入库，但需让用户知道
+      // 「这批岗位缺 JD 是接口侧问题」，否则会误认为是采集选择器坏了。
+      addLog('warn', String(data?.status || '详情 JD 补齐已停止'));
+    } else if (data?.phase === 'jd-enrich-summary') {
+      addLog('info', String(data?.status || '详情 JD 补齐完成'));
     }
   }, [ingestJob, addLog]);
 
@@ -1194,8 +1200,9 @@ export default function Workbench() {
    * 可视化采集（内置浏览器 webview 链路，**已多平台化**）：
    *   BOSS    ：逐卡片滚动 + 高亮 + 点击展开内联详情 + 提取完整信息（原链路不变）
    *   其余平台：列表级采集（滚动 + 高亮，**不点击卡片**）—— 猎聘/智联/前程无忧的搜索页没有
-   *             内联详情面板，点卡片会导航走；详情 JD 由 Camoufox 隐身采集链路补齐
-   *             （见 webview.cjs::visualCollectListOnly 头注释）。
+   *             可直接复用的内联详情面板，点卡片会导航走；因此只采卡片字段，详情 JD 按平台
+   *             能力补齐（智联：webview.cjs::enrichZhaopinJobDetail 调平台职位详情接口；
+   *             猎聘/前程无忧：暂无，只有列表字段。见 webview.cjs::visualCollectListOnly 头注释）。
    * runIds 非空 = 「任务进度」页定向重新采集（仍按平台各自队列过滤）。
    */
   const runVisualCollect = async (platform: JobPlatform = 'boss', runIds?: string[]): Promise<CollectOutcome> => {
@@ -1374,7 +1381,7 @@ export default function Workbench() {
       return { ready: false, reason: 'timeout', st, probes, okProbes };
     };
 
-    addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${platform === 'boss' ? '逐岗位平滑滚动 + 高亮 + 点击展开详情' : '列表级滚动 + 高亮（不点开详情，详情 JD 由隐身采集补齐）'}${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+    addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${platform === 'boss' ? '逐岗位平滑滚动 + 高亮 + 点击展开详情' : '列表级滚动 + 高亮（不点开详情，详情 JD 按平台详情接口补齐）'}${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
     // 本批采集任务的 runId（用于结束时把未收尾的卡片统一收口）
     const batchRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
@@ -1707,8 +1714,10 @@ export default function Workbench() {
   /** 按指定平台执行一次采集（等待完成），返回本平台对整批队列的续行信号。
    *
    * 引擎选择（**全平台统一语义**）：
-   *   camoufox.enabled → Camoufox 隐身引擎通道（列表 + 详情 JD + 词级断点续采）
-   *   否则             → 内置浏览器 webview 可视化采集（BOSS 详情级 / 其余平台列表级）
+   *   camoufox.enabled → Camoufox 隐身引擎通道（词级断点续采；BOSS 逐岗取详情，
+   *                      非 BOSS 平台骨架 `camoufox/platforms/base.py` 目前只有列表级）
+   *   否则             → 内置浏览器 webview 可视化采集（BOSS 详情级 / 其余平台列表级，
+   *                      智联的列表卡 JD 由 webview 侧按平台详情接口补齐）
    * 历史行为是「非 BOSS 只能走 Camoufox」（当时 webview 链路只有 BOSS 选择器）；2026-09-15
    * webview 多平台化后放开闸门 —— 未安装 Camoufox 内核也能采集非 BOSS 平台（列表级）。
    * runIds 非空时只重跑这些搜索组合（「任务进度」页「开始/继续」的定向采集，忽略断点续采）。 */

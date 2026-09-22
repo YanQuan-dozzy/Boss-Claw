@@ -46,9 +46,12 @@ const PLATFORM_LINK_SELECTOR = Object.freeze({
 /**
  * 详情链接形态：
  *   'inline' = 列表页内联详情面板（master-detail，点卡片在同页展开）→ 可「点击展开 + 提取详情」
- *   'page'   = 独立详情页（点卡片会导航/开新页）→ **禁止点击**，只采列表字段
- * BOSS 是唯一 inline 形态；其余三个平台的详情 JD 由 Camoufox 隐身采集链路补齐
- * （`camoufox/platforms/{liepin,zhaopin,job51}.py` 已实现「列表 + 详情」两段采集）。
+ *   'page'   = 独立详情页（点卡片会导航/开新页）→ **禁止点击**，只采列表字段 + 接口补齐详情
+ * BOSS 是唯一 inline 形态（点卡在同页展开）；猎聘 / 前程无忧 / 智联都存在「点卡离开列表页或整页跳转」
+ * 的行为，故一律不点击，只采列表字段。
+ * ⚠️ 2026-09 更正（原注释不准确）：`camoufox/platforms/{liepin,zhaopin,job51}.py` **只实现列表级采集**
+ * （搜索骨架 `base.py` 无详情段）——非 BOSS 的 JD 不来自 Camoufox。现由本通道按平台接口补齐：
+ *   智联 → `zhaopinJobDetailUrl()` 的同源职位详情接口（见下方 ZHAOPIN_* 段）。
  */
 const PLATFORM_LINK_KIND = Object.freeze({
   boss: 'inline',
@@ -159,16 +162,32 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
     title: [
       '[class*="job-card__title-main"]',
       '[class*="vue-clamp__text"]',
+      // 旧版 /sou/ 列表（应用自身搜索 URL 服务端渲染的形态）：`a.jobinfo__name` 即标题锚点
+      '.jobinfo__name',
       '[class*="job-name"]',
       '[class*="job-title"]',
       '[class*="jobname"]',
       'h3',
       '.job_title',
     ],
-    company: ['[class*="company-name"]', '[class*="companyname"]', '[class*="company"] .name', '.cname'],
-    salary: ['[class*="salary"]', '[class*="em"]'],
-    location: ['[class*="job-area"]', '[class*="area"]', '[class*="address"]', '[class*="location"]'],
-    recruiterTitle: ['[class*="hr-name"]', '[class*="recruiter"]'],
+    company: [
+      '[class*="company-name"]',
+      '[class*="companyname"]',
+      // 旧版 /sou/：`a.companyinfo__name`（勿用 [class*="company"]，会先命中 .companyinfo 容器 → 整块文本）
+      '.companyinfo__name',
+      '[class*="company"] .name',
+      '.cname',
+    ],
+    salary: ['[class*="salary"]', '.jobinfo__salary', '[class*="em"]'],
+    location: [
+      // 旧版 /sou/：第一个 other-info 项即「城市·区·街道」
+      '.jobinfo__other-info-item',
+      '[class*="job-area"]',
+      '[class*="area"]',
+      '[class*="address"]',
+      '[class*="location"]',
+    ],
+    recruiterTitle: ['[class*="hr-name"]', '[class*="recruiter"]', '.companyinfo__staff-name'],
   },
   job51: {
     title: ['.jname', '[class*="job-title"]', '[class*="jobName"]', 'h3', '.job_name'],
@@ -205,6 +224,131 @@ const LOGIN_WALL_URL_RE = /\/login|passport|signin|sign-in|verify/i;
 
 /** 登录墙正文文案（仅在「列表无任何岗位链接」时才作为判据，避免页脚「登录」字样误判） */
 const LOGIN_WALL_TEXT_RE = /登录后查看|请先登录|扫码登录|立即登录|账号登录|登录\/注册|请登录后/;
+
+// ============================================================================
+// 智联「列表卡无 JD」补齐 —— 同源职位详情接口（列表页点卡渲染右侧详情面板用的同一接口）
+// ============================================================================
+// 为什么要它（2026-09 实测）：智联改写后搜索页卡片**不再内联 JD**——旧版 /sou/ 卡的 DOM
+// 只有「标题 / 薪资 / 技能标签 / 公司 / 地点」，新版 /jobs/ 卡的 DOM 还额外没有 jobdetail 锚点。
+// 内置浏览器「列表级采集」于是只能把整卡文本当描述（实测入库岗位「没有 JD」，description =
+// 「数仓后端开发（实习生） 130-150元/天 本科 数据开发 立邦投资有限公司 上海 浦东 花木」），
+// AI 评分输入与工作制度 / 福利标签推导全部失真。
+//
+// 口径来源（非猜测）：sou 前端包 `_first_._second_.web.*.js` 中
+//   `k.get(apiDomain + '/c/i/jobs/position-detail-new', { params: { at, rt, number } })`
+//   —— `apiDomain = https://fe-api.zhaopin.com`；`number` 即卡片链接
+//   `https://www.zhaopin.com/jobdetail/CC000100540J41023445004.htm` 的那一段。
+// 2026-09 实测：**不带 at/rt 亦返回完整数据**（10KB JSON，含 jobDesc 完整 JD、skillLabel、
+// welfareLabel、staff 的 HR 姓名/职位），响应带 `access-control-allow-origin: https://www.zhaopin.com`
+// → preload 隔离世界从页面 origin 直接 fetch 可用（与页面自身调用同源同权限）。
+// **只读岗位公开信息**：只 GET 详情、不投递、不改岗位状态、不带任何写操作。
+const ZHAOPIN_JOB_DETAIL_API = 'https://fe-api.zhaopin.com/c/i/jobs/position-detail-new';
+
+/**
+ * 取接口需要的 number：`.../jobdetail/CC000100540J41023445004.htm` → `CC000100540J41023445004`。
+ * 兼容调用方传入 jobId（可能带 `.htm`）或整条 URL；取不到返回 ''（调用方按「无 JD 数据」处理）。
+ * @param {string} raw
+ * @returns {string}
+ */
+function zhaopinJobNumber(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const m = s.match(/jobdetail\/([^/?#]+)/i);
+  const token = (m ? m[1] : s).replace(/\.html?$/i, '').trim();
+  // 只接受平台岗位编号形态（CC…J… / CCL…），避免把哈希兜底 id（f…）当 number 去打接口
+  return /^[A-Za-z]{2,4}\d+J\d+$/.test(token) ? token : '';
+}
+
+/** 详情接口 URL（按 number 取） */
+function zhaopinJobDetailUrl(number) {
+  return `${ZHAOPIN_JOB_DETAIL_API}?number=${encodeURIComponent(String(number || '').trim())}`;
+}
+
+/** 实体解码（仅平台 JD 里会出现的几种；先解 &amp; 之外的要按 &lt; 顺序——标签已先剥） */
+function decodeJdEntities(s) {
+  return String(s || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&');
+}
+
+/**
+ * 智联 JD（HTML 片段）→ 纯文本，**保留换行**（JD 的分段是可用信息，别压成一行）。
+ * 规则：`<br>` 与块级**闭合**标签 → `\n`（块级开标签直接剥除，避免 `<div>a</div><div>b</div>`
+ * 这类逐段包裹的 JD 被双换行撑出满屏空行）；其余标签直接剥除；实体解码后收口空白。
+ * @param {string} html
+ * @returns {string}
+ */
+function jdHtmlToText(html) {
+  let s = String(html == null ? '' : html).trim();
+  if (!s) return '';
+  const BLOCK = 'div|p|li|ul|ol|tr|table|h[1-6]|section|article|blockquote';
+  s = s
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(new RegExp(`<\\s*\\/\\s*(?:${BLOCK})\\s*>`, 'gi'), '\n')
+    .replace(/<[^>]*>/g, '');
+  s = decodeJdEntities(s);
+  s = s
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t\u00a0\u3000]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
+/**
+ * 标签字段 → 字符串数组（接口形态不稳定：`[{value}]` / `[{name}]` / `['x']` / `'x'` 都收）。
+ * @param {*} raw
+ * @returns {string[]}
+ */
+function toStringTags(raw) {
+  const pick = (o) => {
+    if (typeof o === 'string') return o;
+    if (!o || typeof o !== 'object') return '';
+    for (const k of ['value', 'name', 'label', 'tagName', 'text']) {
+      if (typeof o[k] === 'string' && o[k].trim()) return o[k];
+    }
+    return '';
+  };
+  const list = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : [raw]);
+  const out = [];
+  for (const item of list) {
+    const t = pick(item).trim();
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 智联职位详情接口响应 → 采集补齐字段（**纯函数**，离线回归直接喂样例 JSON）。
+ * 载荷异常 / 无职位数据 → null（调用方保持「卡片文本」兜底，绝不让岗位丢掉）。
+ *
+ * @param {any} payload 接口响应 JSON
+ * @returns {{description: string, skills: string[], welfare: string[], recruiterName: string, recruiterTitle: string} | null}
+ */
+function parseZhaopinJobDetail(payload) {
+  const dp = payload && payload.data && payload.data.detailedPosition;
+  if (!dp || typeof dp !== 'object') return null;
+  const staff = (dp.staff && typeof dp.staff === 'object') ? dp.staff : {};
+  return {
+    description: jdHtmlToText(dp.jobDesc || dp.jobDescPC || dp.description || ''),
+    skills: toStringTags(dp.skillLabel),
+    welfare: toStringTags(dp.welfareLabel),
+    recruiterName: String(staff.staffName || '').trim(),
+    recruiterTitle: String(staff.hrJob || '').trim(),
+  };
+}
+
+/**
+ * 该平台是否走「详情接口补齐 JD」通道（能力表，勿在各调用点硬编码平台名）。
+ * 智联：可行（详情接口匿名可取 + 列表卡有 number）；猎聘 / 前程无忧：暂无同源接口，仍只有列表字段。
+ */
+const PLATFORM_DETAIL_API_FILL = Object.freeze({
+  zhaopin: true,
+});
 
 /** 该平台是否为「列表页内联详情」形态（仅 BOSS） */
 function supportsInlineDetail(platform) {
@@ -398,6 +542,13 @@ module.exports = {
   LOGIN_WALL_URL_RE,
   LOGIN_WALL_TEXT_RE,
   PLATFORM_APPLY_SPEC,
+  ZHAOPIN_JOB_DETAIL_API,
+  PLATFORM_DETAIL_API_FILL,
+  zhaopinJobNumber,
+  zhaopinJobDetailUrl,
+  jdHtmlToText,
+  toStringTags,
+  parseZhaopinJobDetail,
   normLabelText,
   labelHit,
   labelExactHit,

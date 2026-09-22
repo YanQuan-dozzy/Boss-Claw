@@ -2352,14 +2352,20 @@ async function prefillGreetingText(rawText) {
 }
 
 // ===== 非 BOSS 平台「列表级」可视化采集 =====
-// 为什么只做列表级（重要设计口径，勿「顺手」加成详情级）：
-//   猎聘 / 智联 / 前程无忧 的搜索页**没有内联详情面板**（BOSS 独有的 master-detail 形态），
+// 为什么只做列表级（重要设计口径，勿「顺手」加成详情级「逐卡点开」）：
+//   猎聘 / 智联 / 前程无忧 的搜索页**没有可用的内联详情面板**（BOSS 独有的 master-detail 形态），
 //   点卡片会导航到独立详情页或开新标签页。在内置浏览器里逐卡点开会把「可视化采集」变成
 //   「逐页跳转」：既慢（每次导航都要重新等页面），又会把标签页带离搜索页（跨搜索组合串台）。
-//   因此本通道只做**列表卡片级**采集——标题 / 公司 / 薪资 / 地点 / 经验 / 学历 / 链接 +
-//   卡片文本作为描述（AI 评分对缺 JD 的岗位按列表信息评估）。
-//   **详情 JD 由 Camoufox 隐身采集链路补齐**：camoufox/platforms/{liepin,zhaopin,job51}.py
-//   已实现「列表 + 详情」两段采集并带词级断点续采。两条通道职责清晰、互不重复。
+//   因此本通道采集**卡片 DOM 字段**（标题 / 公司 / 薪资 / 地点 / 标签 / 链接）——但不再用
+//   「整卡文本」冒充 JD。
+//
+// 详情 JD 的来源（2026-09 更正，原注释称「由 Camoufox 补齐」不准确：camoufox/platforms/
+// {liepin,zhaopin,job51}.py 只做列表级，无详情段）：
+//   · 智联 zhaopin → **本文件 `enrichZhaopinJobDetail()`**：按卡片链接里的 number 调平台自己的
+//     职位详情接口（`platform-adapters.cjs` 的 zhaopinJobDetailUrl，口径与出处见该处注释），
+//     取回完整 JD / 技能 / 福利 / HR → 覆盖「整卡文本」兜底。接口不可用或熔断时保留卡片文本兜底，
+//     **绝不因为补 JD 失败而丢岗位**。
+//   · 猎聘 / 前程无忧 → 目前只有列表字段（各自详情接口需另行实测，勿照抄智联参数）。
 // 复用件：collectCtl（暂停/继续/停止/调速）/ smoothScrollIntoView / highlightElement /
 //         scrollJobListLoadMore / collectCards / cardIdentity / cardFields / collectCardKey。
 
@@ -2411,18 +2417,139 @@ function extractJobFromCardOnly(card) {
     location: fields.location || '',
     hrActive: fields.hrActive || '',
     isHeadhunter: Boolean(fields.isHeadhunter),
-    // 列表级采集拿不到详情 JD：用卡片文本兜底（详情 JD 由 Camoufox 采集链路补齐）
+    // 列表级采集拿不到详情 JD：先用卡片文本占位（AI 评分至少不吃空），
+    // 随后由 enrichZhaopinJobDetail() 按平台详情接口覆盖为真实 JD（智联）。
     description: textOf(card).slice(0, 800),
     // 列表级采集拿不到真实详情 URL 时（智联无 jobdetail 锚点变体且主进程注解未命中），
     // 落空字符串、不回退搜索页 URL：搜索页 URL 会让同批不同岗位折叠成同一链接
     // （入库 dedupe 抽稀 + 队列链接指向错误页面，即「队列卡片的链接不是单个岗位详情」）。
-    // 详情 JD / 权威信息由 Camoufox 隐身采集链路补齐；锚点型平台（猎聘/51job）anchor 恒有值，不受影响。
+    // 锚点型平台（猎聘/51job）anchor 恒有值，不受影响。
     url: url || '',
     jobId,
     labels: [],
     skills: [],
     welfare: [],
   };
+}
+
+// ===== 智联 JD 补齐：列表卡不带 JD，按 number 调平台自身职位详情接口（口径见 platform-adapters.cjs）=====
+// 三档护栏（缺一不可）：
+//   ① 单次采集总量上限 —— 防 maxJobsPerRun=1000 时打出上千请求；
+//   ② 连续失败熔断 —— 接口变更 / 需登录 / 被限流时立即停手并回传诊断，避免「每卡等满超时」把采集拖成假死；
+//   ③ 单请求超时 + 请求间隔抖动 —— 不并发打接口、不瞬间连发。
+// 失败一律**不改 job**：保留卡片文本兜底，岗位照常入库（宁缺 JD 不丢岗位）。
+const ZP_JD_MAX_PER_RUN = 300;
+const ZP_JD_TIMEOUT_MS = 12000;
+const ZP_JD_FAIL_STREAK_LIMIT = 4;
+const ZP_JD_GAP_MS = 180; // 请求间隔基准（另加 0~220ms 抖动）
+// JD 入库长度上限：与 BOSS 详情级采集同量级（本文件详情提取 slice(0, 9000)），
+// 避免长 JD × 大量岗位把 bossclaw-data 的 localStorage 配额撑爆（persistSafe 会降级丢写）。
+const ZP_JD_DESCRIPTION_MAX = 9000;
+const zpJdState = { attempted: 0, filled: 0, failed: 0, skipped: 0, streak: 0, stopped: '', lastError: '' };
+
+function resetZpJdState() {
+  zpJdState.attempted = 0;
+  zpJdState.filled = 0;
+  zpJdState.failed = 0;
+  zpJdState.skipped = 0;
+  zpJdState.streak = 0;
+  zpJdState.stopped = '';
+  zpJdState.lastError = '';
+}
+
+/** 单次请求详情接口：超时 / 网络异常 / 非 2xx 一律返回 {ok:false,error}，**绝不抛出** */
+async function fetchZhaopinJobDetail(number) {
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, ZP_JD_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(ADAPTERS.zhaopinJobDetailUrl(number), {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true, data: await res.json() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 熔断 / 达上限时的一次性诊断回传（带上当前岗位，避免实时面板标题被清空） */
+function notifyZpJdStop(reason, job) {
+  notify('collect-progress', {
+    phase: 'jd-enrich-warn',
+    index: zpJdState.attempted,
+    title: String(job?.title || ''),
+    company: String(job?.company || ''),
+    status: `智联 JD 补齐已停止：${reason}（已补 ${zpJdState.filled} 条 / 尝试 ${zpJdState.attempted} 条，岗位仍按卡片文本入库）`,
+  });
+}
+
+/**
+ * 按岗位补齐 JD 与详情字段（智联）。返回是否补到 JD。
+ * 只对能力表声明的平台生效（`ADAPTERS.PLATFORM_DETAIL_API_FILL`），调用点不硬编码平台名。
+ */
+async function enrichZhaopinJobDetail(job) {
+  if (!job || !ADAPTERS.PLATFORM_DETAIL_API_FILL[PLATFORM]) return false;
+  if (zpJdState.stopped || collectCtl.stopped) return false;
+  if (zpJdState.attempted >= ZP_JD_MAX_PER_RUN) {
+    zpJdState.stopped = `本次已达单次补齐上限 ${ZP_JD_MAX_PER_RUN} 条`;
+    notifyZpJdStop(zpJdState.stopped, job);
+    return false;
+  }
+  const number = ADAPTERS.zhaopinJobNumber(job.jobId || job.url);
+  if (!number) { zpJdState.skipped += 1; return false; } // 无平台岗位号（哈希兜底身份）→ 保持卡片文本
+  zpJdState.attempted += 1;
+  const r = await fetchZhaopinJobDetail(number);
+  if (!r.ok) {
+    zpJdState.failed += 1;
+    zpJdState.streak += 1;
+    zpJdState.lastError = r.error;
+    if (zpJdState.streak >= ZP_JD_FAIL_STREAK_LIMIT) {
+      zpJdState.stopped = `连续 ${zpJdState.streak} 次请求失败（最后错误：${zpJdState.lastError}）`;
+      notifyZpJdStop(zpJdState.stopped, job);
+    }
+    return false;
+  }
+  zpJdState.streak = 0;
+  await sleep(ZP_JD_GAP_MS + Math.random() * 220);
+  const parsed = ADAPTERS.parseZhaopinJobDetail(r.data);
+  if (!parsed) {
+    // 接口通了但载荷结构不符（平台改版）→ 计入失败，连续多次即熔断，不让它静默空转
+    zpJdState.failed += 1;
+    zpJdState.lastError = '详情接口载荷结构不符（无 detailedPosition）';
+    if (zpJdState.failed >= ZP_JD_FAIL_STREAK_LIMIT && !zpJdState.stopped) {
+      zpJdState.stopped = `连续 ${zpJdState.failed} 次载荷不可解析`;
+      notifyZpJdStop(zpJdState.stopped, job);
+    }
+    return false;
+  }
+  const jd = String(parsed.description || '').trim().slice(0, ZP_JD_DESCRIPTION_MAX);
+  if (jd) job.description = jd;
+  // 技能 / 福利 / HR 只在接口确实给到时覆盖（DOM 侧这些字段本为空，不存在覆盖掉有效值的风险）
+  if (parsed.skills.length) job.skills = parsed.skills;
+  if (parsed.welfare.length) job.welfare = parsed.welfare;
+  if (parsed.recruiterName) job.recruiterName = parsed.recruiterName;
+  if (parsed.recruiterTitle) job.recruiterTitle = parsed.recruiterTitle;
+  if (!jd) { zpJdState.skipped += 1; return false; } // 该岗位本身没写 JD → 保留卡片文本兜底
+  zpJdState.filled += 1;
+  return true;
+}
+
+/** 采集收尾时汇总补 JD 结果（但凡有尝试或「无岗位号」都会回传，避免「这批岗位缺 JD」无解释） */
+function reportZpJdSummary() {
+  if (!zpJdState.attempted && !zpJdState.skipped) return;
+  notify('collect-progress', {
+    phase: 'jd-enrich-summary',
+    index: zpJdState.attempted,
+    status: `智联 JD 补齐：成功 ${zpJdState.filled} 条 / 尝试 ${zpJdState.attempted} 条`
+      + (zpJdState.failed ? `，失败 ${zpJdState.failed} 条` : '')
+      // skipped = 卡片拿不到岗位号（如主进程注解未覆盖的滚动加载卡）或该岗位本身没写 JD
+      + (zpJdState.skipped ? `，未补 ${zpJdState.skipped} 条（卡片无岗位号或岗位无 JD，已按卡片文本入库）` : '')
+      + (zpJdState.stopped ? `｜已提前停止：${zpJdState.stopped}` : ''),
+  });
 }
 
 async function visualCollectListOnly(opts = {}) {
@@ -2438,6 +2565,7 @@ async function visualCollectListOnly(opts = {}) {
   const processed = new Set();
   let processedCount = 0;
   let emptyRounds = 0;
+  resetZpJdState(); // 每轮采集重置 JD 补齐计数 / 熔断状态
   notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, platform: PLATFORM, status: `准备中（${PLATFORM} · 列表级采集）` });
 
   // 一次性 DOM 诊断（与 BOSS 同口径，选择器取自适配表）
@@ -2474,6 +2602,7 @@ async function visualCollectListOnly(opts = {}) {
   }
 
   // 主循环：逐卡滚动 + 高亮 + 回传（**不点击卡片** —— 见函数头注释）
+  // 智联额外一步：入库前按 number 调平台详情接口补齐 JD（失败保留卡片文本兜底）。
   while (!collectCtl.stopped) {
     await waitWhilePaused();
     if (collectCtl.stopped) break;
@@ -2523,10 +2652,13 @@ async function visualCollectListOnly(opts = {}) {
     if (collectCtl.stopped) break;
     await waitWhilePaused();
     const job = extractJobFromCardOnly(card);
+    // 补齐详情 JD / 技能 / 福利 / HR（智联经平台详情接口；其它平台能力表未声明 → 直接返回 false）
+    await enrichZhaopinJobDetail(job);
     processedCount += 1;
     notify('collect-progress', { phase: 'done', index: processedCount, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
     await sleep(settleMs);
   }
+  reportZpJdSummary();
   notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
 }
 
