@@ -5,10 +5,12 @@
 //   - 51Job：https://we.51job.com/pc/search?jobArea=&salary=&keyword=
 // 城市/薪资码为硬编码主表 + 已知码直接透传；未知城市回退「全国/不限」（不臆造码）。
 //
-// ⚠️「基础求职条件」的扩展筛选（求职类型 / 学历 / 经验 / 公司规模）不在本文件改 URL，
-//   而是随队列项 criteria 下发给 Camoufox 隐身采集（非 BOSS 平台的唯一采集通道），
-//   由 `camoufox/platforms/filters.py` 统一翻译为各平台筛选参数（唯一权威，含码值来源
-//   与 FILTER_CAPABILITIES 能力表）。本文件的 URL 仅用于展示 / 记录 / 组合去重。
+// ⚠️「基础求职条件」的扩展筛选由 `camoufox/platforms/filters.py` 统一翻译（唯一权威）。
+//   **智联是例外**：搜索 URL 会被「内置浏览器列表级采集」直接打开，筛选必须真实进 URL 才能在
+//   页面上生效，故本文件为智联镜像一套同码值表（双源同步：与 filters.py 的 ZHAOPIN_EXP/EDU/
+//   SCALE/COMPANY_TYPE/FINANCING/JOB_TYPE 逐一对应；改动码值必须两边同步，并以
+//   `scripts/zhaopin-url-regression.mjs` + `python ../tmp/probe-platforms.py` 双验）。
+//   猎聘 / 前程无忧仍只带 城市/薪资/关键词（其 URL 仅用于展示 / 记录 / 组合去重，筛选走隐身采集）。
 import type { AppConfig, DirectionPlan, JobPlatform } from './types';
 import { selectedDirectionItems } from './directions';
 import { buildJobSearchUrl, RANDOM_COLLECT_LABEL } from './searchUrl';
@@ -77,6 +79,7 @@ export const ZHAOPIN_CITY_CODES: Record<string, string> = {
   重庆: '481', 广州: '763', 杭州: '653', 成都: '801', 武汉: '736',
   南京: '635', 苏州: '639', 西安: '854', 郑州: '713', 长沙: '749',
   青岛: '857', 厦门: '683', 沈阳: '483', 大连: '682', 济南: '636',
+  广东: '548', // 省级码：全广东（用户实测链接 jl=548）
 };
 // sl 薪资码（智联：2K以下=1 … 50K以上=7）
 export const ZHAOPIN_SALARY_CODES: Record<string, string> = {
@@ -101,22 +104,79 @@ export function resolveZhaopinSalaryCode(salary?: string): string {
   return ZHAOPIN_SALARY_CODES[s] || '';
 }
 
+// ==================== 智联「基础求职条件」→ URL 参数（镜像 filters.py，双源同步） ====================
+// 下列码表与 `camoufox/platforms/filters.py` 的 ZHAOPIN_* 逐一对应（2026-09 用户实测链接），
+// 只用于「内置浏览器列表级采集」打开 Zhaopin 搜索页时让筛选真实生效；隐身穿墙采集仍走 filters.py。
+const ZHAOPIN_CRITERIA_EXP: Record<string, string> = {
+  经验不限: '-1', 无经验: '0000', '1年以下': '0001', '1年以内': '0001',
+  '1-3年': '0103', '3-5年': '0305', '5-10年': '0510', '10年以上': '1099',
+};
+const ZHAOPIN_CRITERIA_EDU: Record<string, string> = {
+  博士: '1', 硕士: '3', 本科: '4', 大专: '5', 高中: '7',
+};
+const ZHAOPIN_CRITERIA_SCALE: Record<string, string> = {
+  '0-20人': '1', '20人以下': '1', '20-99人': '2', '100-299人': '3',
+  '300-499人': '8', '100-499人': '3,8', '500-999人': '4',
+  '1000-9999人': '5', '10000人以上': '6',
+};
+const ZHAOPIN_CRITERIA_COMPANY_TYPE: Record<string, string> = {
+  国企: '1', 外企: '2', 民营: '5',
+};
+const ZHAOPIN_CRITERIA_FINANCING: Record<string, string> = {
+  不需要融资: '8', 未融资: '1', 有融资: '2;3;4;5;6',
+};
+const ZHAOPIN_CRITERIA_JOB_TYPE: Record<string, string> = {
+  全职: '2', 实习: '4', 校招: '5', 兼职: '1',
+};
+
+/** 多选列表 → 码值（按 `,` 连接，与 filters.py MULTI_SEP['zhaopin'] 一致；未命中项忽略） */
+function zhaopinCriteriaCodes(list: string[] | undefined, table: Record<string, string>): string {
+  const codes = (list ?? []).map((x) => table[x]).filter(Boolean);
+  return codes.length ? codes.join(',') : '';
+}
+
+/** 智联 「基础求职条件」→ URL 查询串（无匹配项返回 ''；空/不限选项自然跳过） */
+export function appendZhaopinCriteria(criteria: PlatformSearchCriteria | undefined | null): string {
+  if (!criteria) return '';
+  const parts: string[] = [];
+  const we = zhaopinCriteriaCodes(criteria.experiences, ZHAOPIN_CRITERIA_EXP);
+  if (we) parts.push(`we=${we}`);
+  const el = zhaopinCriteriaCodes(criteria.degrees, ZHAOPIN_CRITERIA_EDU);
+  if (el) parts.push(`el=${el}`);
+  const cs = criteria.companyScale ? ZHAOPIN_CRITERIA_SCALE[criteria.companyScale] : '';
+  if (cs) parts.push(`cs=${cs}`);
+  const ct = criteria.companyType ? ZHAOPIN_CRITERIA_COMPANY_TYPE[criteria.companyType] : '';
+  if (ct) parts.push(`ct=${ct}`);
+  const fs = zhaopinCriteriaCodes(criteria.financing, ZHAOPIN_CRITERIA_FINANCING);
+  if (fs) parts.push(`fs=${fs}`);
+  const et = zhaopinCriteriaCodes(criteria.employmentTypes, ZHAOPIN_CRITERIA_JOB_TYPE);
+  if (et) parts.push(`et=${et}`);
+  return parts.join('&');
+}
+
 export interface ZhaopinSearchQuery {
   keyword?: string;
   city?: string;
   salary?: string;
   page?: number;
+  /** 「基础求职条件」：随 URL 进入智联搜索页（求职类型/学历/经验/规模/性质/融资） */
+  criteria?: PlatformSearchCriteria;
 }
 
 export function buildZhaopinSearchUrl(query: ZhaopinSearchQuery = {}): string {
   const city = resolveZhaopinCityCode(query.city);
   const page = Math.max(1, query.page || 1);
   let url = `${ZHAOPIN_BASE_URL}${city ? `jl${city}` : ''}/p${page}`;
+  const qs: string[] = [];
   const salary = resolveZhaopinSalaryCode(query.salary);
-  if (salary) url += `?sl=${salary}`;
+  if (salary) qs.push(`sl=${salary}`);
   const kw = String(query.keyword || '').trim();
   // 新版路径式 URL 不含 kw；关键词由引擎在页内搜索框输入（与 get_jobs ZhiLian.java 一致）
-  return url + (kw ? `${salary ? '&' : '?'}kw=${encodeURIComponent(kw)}` : '');
+  if (kw) qs.push(`kw=${encodeURIComponent(kw)}`);
+  const criteriaQs = appendZhaopinCriteria(query.criteria);
+  if (criteriaQs) qs.push(criteriaQs);
+  if (qs.length) url += `?${qs.join('&')}`;
+  return url;
 }
 
 // ==================== 前程无忧 51job ====================
@@ -178,9 +238,11 @@ export interface PlatformSearchQuery {
   city?: string;
   salary?: string;
   page?: number;
+  /** 「基础求职条件」：智联会拼进 URL（面向内置浏览器列表采集）；其余平台仍只走 criteria 下发 */
+  criteria?: PlatformSearchCriteria;
 }
 
-/** 按平台构建搜索 URL（boss 复用 searchUrl.ts 的 BOSS 口径） */
+/** 按平台构建搜索 URL（boss 复用 searchUrl.ts 的 BOSS 口径；zhaopin 会带上 criteria 筛选） */
 export function buildPlatformSearchUrl(platform: JobPlatform, query: PlatformSearchQuery = {}): string {
   switch (platform) {
     case 'liepin':
@@ -199,7 +261,8 @@ export function buildPlatformSearchUrl(platform: JobPlatform, query: PlatformSea
 
 export interface PlatformSearchQueueItem {
   platform: JobPlatform;
-  /** 展示/记录用搜索 URL（城市 + 薪资 + 关键词）；平台侧筛选由 criteria 经 filters.py 附加 */
+  /** 展示/记录/打开用搜索 URL；**智联已把 criteria 筛选拼进 URL**（内置浏览器列表采集直接生效），
+   *  其余平台仅 城市+薪资+关键词，筛选由 criteria 经 filters.py 附加到隐身穿墙采集 */
   url: string;
   keyword: string;
   location: string;
@@ -229,6 +292,10 @@ export type PlatformSearchCriteria = {
   degrees?: string[];
   companyScale?: string;
   employmentTypes?: string[];
+  /** 公司性质（单选；智联 ct：国企=1/外企=2/民营=5，其余平台未验证不附加） */
+  companyType?: string;
+  /** 融资阶段（多选；智联 fs：不需要融资=8/未融资=1/有融资=2;3;4;5;6，其余平台未验证不附加） */
+  financing?: string[];
 };
 
 /** 从全局配置提取「基础求职条件」（非 BOSS 平台隐身采集共用） */
@@ -239,6 +306,8 @@ export function platformSearchCriteria(config: AppConfig): PlatformSearchCriteri
     degrees: config.degrees ?? [],
     companyScale: config.companyScale,
     employmentTypes: config.employmentTypes ?? [],
+    companyType: config.companyType,
+    financing: config.financing ?? [],
   };
 }
 
@@ -251,6 +320,8 @@ export function describePlatformCriteria(c?: PlatformSearchCriteria | null): str
   if (c.degrees?.length) parts.push(`学历=${c.degrees.join('/')}`);
   if (c.experiences?.length) parts.push(`经验=${c.experiences.join('/')}`);
   if (c.companyScale && c.companyScale !== '不限') parts.push(`公司规模=${c.companyScale}`);
+  if (c.companyType && c.companyType !== '不限') parts.push(`公司性质=${c.companyType}`);
+  if (c.financing?.length) parts.push(`融资阶段=${c.financing.join('/')}`);
   return parts.join(' · ');
 }
 
@@ -279,7 +350,9 @@ export function buildPlatformSearchQueue(
   if (config.collectWithoutKeyword) {
     for (const location of locations) {
       for (const employmentType of employmentTypes) {
-        const url = buildPlatformSearchUrl(platform, { city: location, salary: config.salary, page: 1 });
+        const url = buildPlatformSearchUrl(platform, {
+          city: location, salary: config.salary, page: 1, criteria,
+        });
         if (seen.has(url)) continue;
         seen.add(url);
         queue.push({
@@ -300,7 +373,7 @@ export function buildPlatformSearchQueue(
       for (const keyword of direction.keywords) {
         for (const employmentType of employmentTypes) {
           const url = buildPlatformSearchUrl(platform, {
-            keyword, city: location, salary: config.salary, page: 1,
+            keyword, city: location, salary: config.salary, page: 1, criteria,
           });
           if (seen.has(url)) continue;
           seen.add(url);

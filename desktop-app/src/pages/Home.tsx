@@ -45,6 +45,7 @@ import { createTasks } from '@/lib/bossclaw/tasks';
 import { MetricCard } from '@/components/MetricCard';
 import { electronApi } from '@/lib/electronApi';
 import { effectiveDailyCap, dailySentCount } from '@/lib/bossclaw/safety';
+import { PLATFORM_IDS, platformLabel, type JobPlatform } from '@/lib/bossclaw/platforms';
 import MarkdownView from '@/components/MarkdownView';
 
 const { Paragraph, Text } = Typography;
@@ -169,14 +170,28 @@ export default function Home() {
   };
 
   const handleStartAssist = () => {
-    if (bossLoggedIn === false) {
-      message.warning('请先在「工作台」右侧浏览器登录 BOSS 直聘，未登录不能启动');
-      setRoute('workbench');
-      return;
+    // 登录门禁按「待投递岗位所在平台」判定（与工作台口径一致，platformLogins 为 cookie 权威探测）：
+    // 只检查队列里真实要投递的平台，不再拿 BOSS 登录态去拦截智联/猎聘/51job 的投递。
+    const pendingData = useDataStore.getState().pending;
+    const platforms = new Set<JobPlatform>();
+    for (const p of pendingData) {
+      if (p.status === 'approved' || p.status === 'approved_queue') {
+        platforms.add(String(p.job?.platform || 'boss') as JobPlatform);
+      }
     }
-    if (bossLoggedIn === null) {
-      message.warning('正在检测 BOSS 登录状态，请稍候再试');
-      return;
+    const logins = useAppStore.getState().platformLogins;
+    for (const pf of PLATFORM_IDS) {
+      if (!platforms.has(pf)) continue;
+      const st = logins[pf];
+      if (st === false) {
+        message.warning(`请先在「工作台」右侧浏览器登录 ${platformLabel(pf)}，未登录不能启动`);
+        setRoute('workbench');
+        return;
+      }
+      if (st == null) {
+        message.warning(`正在检测 ${platformLabel(pf)} 登录状态，请稍候再试`);
+        return;
+      }
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); setRoute('resume'); return; }
     if (!directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); setRoute('directions'); return; }

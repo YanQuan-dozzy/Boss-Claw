@@ -37,6 +37,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   salary: '不限',
   // 公司规模筛选：默认不限（不附加 scale 过滤）
   companyScale: '不限',
+  // 公司性质筛选：默认不限（智联 ct 已接通：国企=1/外企=2/民营=5；其余平台未验证不附加）
+  companyType: '不限',
+  // 融资阶段筛选：默认不限（智联 fs 已接通：不需要融资=8/未融资=1/有融资=2;3;4;5;6；其余平台未验证不附加）
+  financing: [],
   sendResumeImage: true,
   sendOnlineResume: false,
   betweenJobsSeconds: 20,

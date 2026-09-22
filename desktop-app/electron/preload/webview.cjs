@@ -50,6 +50,17 @@ function visible(el) {
 
 function textOf(el) { return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim(); }
 
+// 原始文本行（**未压平空白**）：`textOf()` 会把换行压成空格，凡是「按行取字段」的兜底（标题首行 /
+// 公司行）都不能用它拆行 —— 旧实现 `textOf(card).split(/\n+/)` 恒得到「整卡一行」，
+// 于是标题首行兜底退化成整卡文本（智联新版卡片实测：标题含薪资/标签/公司/地点，再被 slice(0,80) 截断），
+// 公司行兜底则恒不命中（slice(1) 为空）而静默失效。取原始行必须走这里。
+function rawLines(el) {
+  return String(el?.innerText || el?.textContent || '')
+    .split(/\n+/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
 // BOSS 直聘薪资「字体混淆」还原：平台把薪资里的数字替换为 Unicode 私有区（PUA）码位，
 // 再用自定义字体渲染，DOM 文本因此不含可读数字（'0-9' → U+E031-U+E03A，'.' → U+E02F）。
 // 实测为固定线性偏移（PUA = 数字 ASCII + 0xE001），还原后才能正常展示/解析薪资区间。
@@ -1512,19 +1523,75 @@ function collectCards(quiet = false) {
   if (!quiet) {
     notify('collect-progress', { phase: 'collect-candidates', count: candidates.length });
   }
-  return [...new Set(candidates)].filter((el, i, items) => {
+  const uniq = [...new Set(candidates)];
+  // 有效性过滤：内容长度合理 + 是真实岗位卡
+  const valid = uniq.filter((el) => {
     const content = textOf(el);
     if (!content || content.length > 900) return false;
-    // 必须是真实岗位卡：含 job_detail 链接或薪资文本（排除筛选栏 / 无关 li）
-    const isJobCard = el.querySelector?.(LINK_SELECTOR) || /\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上/.test(content);
-    if (!isJobCard) return false;
-    return !items.some((other, oi) => oi !== i && other.contains(el) && textOf(other).length < content.length);
+    // 必须是真实岗位卡：含 job_detail 链接（智联无锚点变体则认主进程标注的详情 URL）
+    // 或薪资文本（含「元」后缀，如智联「9000-10000元」——排除筛选栏 / 无关 li）
+    return Boolean(el.querySelector?.(LINK_SELECTOR))
+      || Boolean(el.getAttribute?.('data-bossclaw-jobdetail'))
+      || /\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/.test(content);
   });
+  // 「像列表容器」的候选：内部装着 **≥2 个互不包含**的有效候选（即两张以上真卡）→ 它是列表/包装容器。
+  // 这类元素**不允许吸收内层**，否则会把内层真卡并成一条、静默丢岗位（宁重复不遗漏）。
+  // 它自身仍照旧作为候选（与修复前一致）；单卡不会命中本判定 —— 智联新版的标题行 / 薪资行彼此包含
+  // （薪资行在标题行内），「最外层」只有 1 个。
+  const containerLike = new Set(valid.filter((el) => {
+    const inner = valid.filter((o) => o !== el && el.contains(o));
+    const outerMost = inner.filter((o) => !inner.some((p) => p !== o && o.contains(p)));
+    return outerMost.length > 1;
+  }));
+  // 嵌套归并：**同一岗位的嵌套命中只保留最外层卡**。
+  // 为什么必须有它：`[class*="..."]` 这类前缀选择器会同时命中卡片**内层的子元素**，而
+  // `closest()` 先匹配自身 → 子元素不被归一成外层卡。智联 2026-09 新版卡片结构
+  // （`div.job-card` > `div.job-card__title-row` > `span.job-card__salary`）下，同一个岗位
+  // 会被 `[class*="job-card"]` 命中 3 次，一次采集就产出 3 条：
+  //   ① 整卡（标题+薪资+标签+公司+地点）② 标题行（标题+薪资）③ 仅薪资（如「6000-8000元」）
+  // 其中 ②③ 既没有详情链接（投递时「岗位缺少详情链接」）又会重复走 AI 评分、占用投递队列名额
+  // （实测日志：整卡 71~73 分入库，紧随其后「跳过/加入」同名短卡；队列按分排序时最高分那条
+  //  恰恰是无链接的短卡，整批投递当即中止）。实测同一页 40 张卡 → 118 条候选。
+  // 旧实现在这里把方向写反了：`other.contains(el) && textOf(other).length < content.length`
+  // —— 包含关系下外层文本只会更长，该条件恒不成立 = 等于没有去重（`tsc`/探针都照过）。
+  // 归并判据：内层没有岗位身份（标题行 / 薪资行这类纯文本片段），或内外层身份相同（同一岗位的重复渲染）。
+  return valid.filter((el) => {
+    const own = cardJobTokens(el);
+    return !valid.some((other) => {
+      if (other === el || containerLike.has(other) || !other.contains(el)) return false;
+      if (own.size === 0) return true;
+      const outer = cardJobTokens(other);
+      for (const t of own) if (outer.has(t)) return true;
+      return false;
+    });
+  });
+}
+
+// 元素承载的「岗位身份」集合（jobId / jobdetail 路径 / 主进程标注的详情 URL）。
+// 用途：嵌套归并时判断内外层是否同一个岗位（智联新版卡片内层子元素无任何身份 → size=0）。
+function cardJobTokens(el) {
+  const out = new Set();
+  const push = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s) return;
+    const m = s.match(/jobdetail\/([^/?#]+)/i)
+      || s.match(/job_detail\/([^/?#]+)/i)
+      || s.match(/jobId=([^&#]+)/i)
+      || s.match(/\/job\/(\d+)/i)
+      || s.match(/jobs\.51job\.com\/([^/?#]+)/i);
+    out.add(m ? m[1] : s.split('?')[0]);
+  };
+  if (el.matches?.(LINK_SELECTOR)) push(el.getAttribute('href'));
+  push(el.getAttribute?.('data-bossclaw-jobdetail'));
+  for (const a of (el.querySelectorAll?.(LINK_SELECTOR) || [])) push(a.getAttribute('href'));
+  return out;
 }
 
 // 文本行启发式兜底（对齐 AI-BossJob-plus getCardLines / findCompanyFromLines）：
 // 把卡片 innerText 按行拆开，用噪声词排除法找公司名
 const CARD_LINE_NOISE = /立即沟通|继续沟通|打招呼|在线|刚刚活跃|今日活跃|昨日活跃|日内活跃|周内活跃|月内活跃|\d+\s*(?:分钟|小时|天|周|月)前?(?:活跃)?|[Kk]薪|薪[Kk]|元\/月|.BO.|应届|经验|学历|大专|本科|硕士|博士|全职|兼职|实习|招聘|急聘|猎头/i;
+// 薪资形（行兜底排除用）：区间薪（15-25K / 6000-8000元 / 1.2-1.3万）、「20K以上」、日薪（140-150元/天）
+const SALARY_LINE_RE = /\d+(?:\.\d+)?\s*[-–~]\s*\d+(?:\.\d+)?\s*[Kk万]|\d+\s*[Kk]\s*以上|\d+\s*[-–~]\s*\d+\s*元/;
 
 // 地名识别（修复「公司 Top」把地点误当公司名）：
 // BOSS 卡片地点字段形如「城市·区·街道」（如「深圳·南山区·科技园」），与部分公司名容器
@@ -1584,7 +1651,11 @@ function pickFromCard(card, selectorCandidates) {
 // 卡片身份（对齐 job-claw-main cardIdentity，多选择器候选 + 行兜底）
 function cardIdentity(card) {
   const anchor = card.querySelector(LINK_SELECTOR);
-  const cardLines = textOf(card).split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  // 智联无 jobdetail 锚点的渲染变体（标题为 span 而非 a）：主进程按 __INITIAL_STATE__
+  // 匹配后标注的详情 URL 兜底（见 main.cjs ZP_DETAIL_NAV_SCRIPT 的 annotate）
+  const href = anchor?.href || card.getAttribute?.('data-bossclaw-jobdetail') || '';
+  // 行兜底必须取**原始行**（见 rawLines 注释）：压平后的 textOf 只会给出「整卡一行」
+  const cardLines = rawLines(card);
   const title = pickFromCard(card, FIELD_SELECTORS.title)
     || textOf(anchor)
     || cardLines[0]
@@ -1592,11 +1663,15 @@ function cardIdentity(card) {
   let company = pickFromCard(card, FIELD_SELECTORS.company);
   if (!company) {
     for (const line of cardLines.slice(1)) {
-      // 跳过地点串（如「深圳·南山区·科技园」）与噪声行，避免把地名误判为公司名
-      if (!CARD_LINE_NOISE.test(line) && !looksLikeLocation(line) && line.length >= 3 && line.length <= 24) { company = line; break; }
+      // 跳过地点串（如「深圳·南山区·科技园」）、薪资串（如「15-25K」「6000-8000元」）与
+      // 噪声行，避免把地名/薪资误判为公司名。
+      // 注：本行兜底在「cardLines 用压平文本拆行」时是**死代码**（恒无第二行），现已随
+      // rawLines 一起恢复生效 —— 因此必须补上薪资形排除（否则「15-25K」会被当成公司名）。
+      if (CARD_LINE_NOISE.test(line) || SALARY_LINE_RE.test(line) || looksLikeLocation(line)) continue;
+      if (line.length >= 3 && line.length <= 24) { company = line; break; }
     }
   }
-  return { title: title.slice(0, 80), company: cleanCompanyName(company), href: anchor?.href || '', raw: textOf(card).slice(0, 500) };
+  return { title: title.slice(0, 80), company: cleanCompanyName(company), href, raw: textOf(card).slice(0, 500) };
 }
 
 // 卡片结构化字段（对齐 AI-BossJob-plus recordApplication 的多选择器候选）：
@@ -1621,8 +1696,8 @@ function cardFields(card) {
 // 去重 key（对齐 job-claw-main cardKey）
 function collectCardKey(card) {
   const anchor = card.querySelector(LINK_SELECTOR);
-  // data-tlg-ext（猎聘卡片携带 jobId）仅作兜底：BOSS 卡片无该属性，行为不变
-  return anchor?.href || card.getAttribute('data-jobid') || card.getAttribute('data-tlg-ext') || textOf(card).slice(0, 220);
+  // 智联无锚点变体：认主进程标注的 data-bossclaw-jobdetail（保证 processed 去重与 URL 一致）
+  return anchor?.href || card.getAttribute('data-bossclaw-jobdetail') || card.getAttribute('data-jobid') || card.getAttribute('data-tlg-ext') || textOf(card).slice(0, 220);
 }
 
 // jobId token（对齐 job-claw-main jobUrlToken）：优先 pathname /job_detail/{id}，回退 query 参数
@@ -1824,19 +1899,26 @@ function findListScroller() {
     hitCandidate = true;
     if (el.scrollHeight > el.clientHeight + 20) return el;
   }
-  // 兜底：列表候选选择器全部失效（BOSS 改版）且页面没有命中任何候选时，
-  // 扫描「非详情面板」中可滚动面积最大的容器（详情面板是独立滚动区，排除以免滚错）。
-  if (!hitCandidate) {
+  // 兜底：扫描「非详情面板」中可滚动面积最大的容器（详情面板是独立滚动区，排除以免滚错）。
+  // 原实现仅在「候选全未命中」（!hitCandidate）时才扫描；但智联新版拆分布局（jobs-split-page）
+  // body `overflow:hidden`、window 不可滚，而 `[class*="job-list"]`（.job-list-panel）这类候选
+  // 会命中却不是滚动容器 —— 直接回 window 会让「下拉加载更多」永远滚不动、只能采首屏。
+  // 因此对 `PLATFORM_FORCE_OVERFLOW_SCAN` 声明的平台，候选命中但都不可滚时也强制再扫一遍。
+  if (ADAPTERS.PLATFORM_FORCE_OVERFLOW_SCAN[PLATFORM] || !hitCandidate) {
     let best = null;
     let bestOverflow = 0;
     for (const el of all('div,main,section,ul,li')) {
       if (el.closest('.job-detail, .job-detail-box, [class*="job-detail"]')) continue;
+      // 强制扫描平台再排除「包着详情面板」的容器（如智联 .job-split-layout__right 内含
+      // .job-detail-panel，若按祖先选择器只看自身/祖先会被当成可滚容器选中、滚错列）
+      if (ADAPTERS.PLATFORM_FORCE_OVERFLOW_SCAN[PLATFORM]
+        && el.querySelector?.('.job-detail-panel, [class*="job-detail"], [class*="jobDetail"]')) continue;
       const overflow = el.scrollHeight - el.clientHeight;
       if (overflow > 40 && overflow > bestOverflow) { best = el; bestOverflow = overflow; }
     }
-    return best || null;
+    if (best) return best;
   }
-  return null; // 有候选但都不可滚 → 列表挂在 window 上
+  return null; // 有候选但都不可滚 / 无候选 → 用 window（维持既有行为）
 }
 
 // 是否存在「未收集过」的新卡片。用 processed 去重判断而非卡片总数——
@@ -2293,6 +2375,19 @@ function loginWallDetected() {
   } catch { return false; }
 }
 
+// 稳定兜底身份：无真实 URL / jobId 的卡片（智联无锚点变体且主进程注解未命中）
+// 用「标题|公司|薪资|地点」生成确定性 FNV-1a 短哈希作为 jobId。
+// 为什么必须有它：入库去重（Workbench ingestJob）以 normUrl / jobId 为查重键，两者都为空时
+// seen key 为空、永不登记 —— 同一岗位在跨搜索组合 / 滚动重扫 / 重复回采时被反复分析入库，
+// 表现为「已加入」/「跳过」同岗连刷（实测 16 连加入 + 同因跳过 ×62）。给残余卡一个稳定
+// 身份后：同卡去重生效、不同卡（不同地点/薪资的真实多岗位）互不误并。
+function stableFallbackJobId(fields, identity) {
+  const s = [identity.title, identity.company, fields.salary, fields.location].join('\u0001');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return 'f' + (h >>> 0).toString(36);
+}
+
 // 列表级字段提取（不点开详情）：选择器优先 + 文本正则兜底，口径与「加入任务」(platformExtractJob) 一致
 function extractJobFromCardOnly(card) {
   const identity = cardIdentity(card);
@@ -2306,6 +2401,8 @@ function extractJobFromCardOnly(card) {
       || url.match(/jobs\.51job\.com\/([^/?#]+)/i);
     if (m) jobId = m[1];
   } catch {}
+  // 无真实 URL 也无平台 jobId（仅智联新增会出现）→ 用稳定哈希兜底，保证入库去重不失效
+  if (!jobId && !url) jobId = stableFallbackJobId(fields, identity);
   return {
     platform: PLATFORM,
     title: identity.title || '岗位',
@@ -2316,7 +2413,11 @@ function extractJobFromCardOnly(card) {
     isHeadhunter: Boolean(fields.isHeadhunter),
     // 列表级采集拿不到详情 JD：用卡片文本兜底（详情 JD 由 Camoufox 采集链路补齐）
     description: textOf(card).slice(0, 800),
-    url: url || location.href,
+    // 列表级采集拿不到真实详情 URL 时（智联无 jobdetail 锚点变体且主进程注解未命中），
+    // 落空字符串、不回退搜索页 URL：搜索页 URL 会让同批不同岗位折叠成同一链接
+    // （入库 dedupe 抽稀 + 队列链接指向错误页面，即「队列卡片的链接不是单个岗位详情」）。
+    // 详情 JD / 权威信息由 Camoufox 隐身采集链路补齐；锚点型平台（猎聘/51job）anchor 恒有值，不受影响。
+    url: url || '',
     jobId,
     labels: [],
     skills: [],
@@ -2515,8 +2616,8 @@ function findPlatformAction(selectors, labels) {
   for (const sel of selectors) {
     for (const el of all(sel)) {
       if (!visible(el) || el.disabled || el.getAttribute?.('aria-disabled') === 'true') continue;
-      const t = PLATFORM_NORM(textOf(el));
-      if (t && labels.some((l) => t.includes(PLATFORM_NORM(l)))) return el;
+      // 文案命中谓词走适配表（与离线回归同一实现，避免口径漂移）
+      if (ADAPTERS.labelHit(textOf(el), labels)) return el;
     }
   }
   return null;
@@ -2532,6 +2633,37 @@ function externalApplyDetected(hints) {
   }
   const body = PLATFORM_NORM(document.body ? document.body.innerText : '');
   return normHints.some((h) => body.includes(h));
+}
+// 首个可见命中（阻断面板 / 成功面板定位用）
+function firstVisible(selectors) {
+  for (const sel of (selectors || [])) {
+    for (const el of all(sel)) if (visible(el) && textOf(el).length > 0) return el;
+  }
+  return null;
+}
+
+// ===== 智联「继续沟通」入口：点击进入聊天（保留动作），招呼语发送移入「自动沟通」队列 =====
+// 口径来源（2026-09 真机详情页源码）：
+//   · 已投递/已建会话岗位，详情页主操作按钮文案是「继续沟通」（`.summary-planes__action button`）；
+//     投递成功还会弹「打招呼弹窗」（`.deliver-greeting-modal`，标题「已向对方发送简历和打招呼语」，
+//     主按钮同为「继续沟通」）。
+//   · 这里**只点击**「继续沟通」（让工作台/用户看到聊天窗口已打开），招呼语的填写与发送
+//     由「自动沟通」引擎负责 —— 与 BOSS 的 continue_chat 收口口径一致（避免 platform-apply
+//     里做整套填发确认导致 25s 超时）。
+//   返回值：{ ok:true, clicked:true } 已点击；{ ok:false, error } 未找到入口/点击失败。
+async function zhaopinContinueChat(spec) {
+  const continueLabels = spec.continueChatLabels || ['继续沟通'];
+
+  // 1) 定位「继续沟通」按钮：打招呼弹窗主按钮优先 → 详情页主操作按钮兜底
+  const btn = findPlatformAction(spec.deliverGreetingSendSelectors || ['[class*="deliver-greeting-modal"] [class*="--primary"]'], continueLabels)
+    || findPlatformAction(spec.continueChatSelectors || ['.summary-planes__action button', '.summary-planes__right button', '.job-apply-button button'], continueLabels);
+  if (!btn) return { ok: false, error: '未找到「继续沟通」入口（聊天未建立或岗位已下架）' };
+
+  notify('apply-stage', { stage: 'open_chat', label: '点击「继续沟通」，打开聊天窗口', platform: 'zhaopin' });
+  await clickElement(btn);
+  // 合成点击后给页面一点反应时间（聊天窗口渲染），但不在这里填/发招呼语 —— 交自动沟通。
+  await jitterDelay(400);
+  return { ok: true, clicked: true };
 }
 
 async function platformApply(args = {}) {
@@ -2570,25 +2702,103 @@ async function platformApply(args = {}) {
     }
 
     if (platform === 'zhaopin') {
-      const btn = findPlatformAction(['.a-job-apply-button', '[class*="job-apply"]', '[class*="apply"]', 'button', 'a'], ['投递']);
-      if (!btn) return fail('failed', { error: '未找到「投递」按钮（岗位可能已下架/非招聘中）' });
+      // 选择器 / 文案口径集中在适配表（PLATFORM_APPLY_SPEC.zhaopin，真机详情页源码 + 投递组件 bundle）
+      const spec = (ADAPTERS.PLATFORM_APPLY_SPEC || {}).zhaopin || {};
+      const btnSelectors = spec.buttonSelectors || ['button', 'a'];
+      const bodyText = () => PLATFORM_NORM(document.body ? document.body.innerText : '');
+      const applyLabels = spec.applyLabels || ['投递'];
+      const appliedLabels = spec.appliedLabels || ['已投递'];
+      const successTexts = spec.successTexts || ['投递成功'];
+      const limitTexts = spec.limitTexts || ['达到上限'];
+      const riskTexts = spec.riskTexts || ['安全验证'];
+
+      // 1) 已投递短路：主按钮态已是「已投递/已申请」→ 不重复点击（避免重复打扰同一 HR）
+      //    只认投递入口自身的按钮态（appliedSelectors）+ 精确文案兜底，
+      //    避免把导航里的「已申请职位」等链接误判成本岗位已投递而整条跳过。
+      const readAppliedState = () => findPlatformAction(spec.appliedSelectors || btnSelectors, appliedLabels)
+        || all('button, a, [role="button"]').find((el) => visible(el) && ADAPTERS.labelExactHit(textOf(el), appliedLabels))
+        || null;
+      if (readAppliedState()) {
+        return fail('skip', { message: '该岗位在智联已是「已投递」状态，跳过（不重复打扰同一 HR）' });
+      }
+      // 2) 「继续沟通」入口（已投递/已建会话岗位，详情页主按钮是「继续沟通」而非「立即投递」）：
+      //    命中即点击进入聊天窗口（保留动作），但不在这里填/发招呼语 —— 岗位移交「自动沟通」
+      //    队列（continue_chat），与 BOSS 收口口径一致（platform-apply 已取消发送信息职责）。
+      const continueEntry = findPlatformAction(spec.continueChatSelectors || ['.summary-planes__action button'], spec.continueChatLabels || ['继续沟通']);
+      if (continueEntry) {
+        const chat = await zhaopinContinueChat(spec);
+        if (!chat.ok) return fail('failed', { error: chat.error || '点击「继续沟通」失败，请人工核对' });
+        return fail('continue_chat', { message: '已点击「继续沟通」，岗位移入自动沟通队列' });
+      }
+      // 3) 主按钮：优先详情页真机结构（.summary-planes__action / .job-apply-button__btn），再退回文案
+      const btn = findPlatformAction(btnSelectors, applyLabels);
+      if (!btn) return fail('failed', { error: '未找到「立即投递」按钮（岗位可能已下架或已转为外部网申）' });
       notify('apply-stage', { stage: 'send_message', label: '投递简历', platform });
       await clickElement(btn);
-      // 投递弹层/正文判定：申请成功 / 达到上限 / 安全验证
-      const judge = await waitFor(() => {
-        const body = PLATFORM_NORM(document.body ? document.body.innerText : '');
-        const d = $('.deliver-dialog, [class*="deliver-dialog"], [class*="apply-dialog"]');
-        if (d && textOf(d).includes('申请成功')) return 'success';
-        if (d && textOf(d).includes('达到上限')) return 'stop';
-        if (body.includes('申请成功') || body.includes('投递成功')) return 'success';
-        if (body.includes('达到上限') || body.includes('已达上限')) return 'stop';
-        if (/安全验证|请完成验证|验证码/.test(body) || /pwaf_challenge/.test(location.href) || /security-check/.test(location.href)) return 'risk';
+
+      // 4) 结果判定：智联投递是「组件工作流」，点击后可能先弹「选择简历」面板需要二次确认，
+      //    因此这里在等待期间若命中确认按钮就点一次（按文案签名去重，绝不重复点击同一按钮）。
+      //    安全优先级：风控 > 上限 > 成功 > 阻断/未登录 > 继续等。
+      //
+      //    风控只在「风控类容器」内判定（URL 特征 + 验证码控件 + 弹层/横幅/提示容器文案），
+      //    **不做全页正文扫描**——岗位描述里出现「验证码」「行为异常」等词是常见业务诉求
+      //    （如反欺诈/风控开发岗），全页扫描会把正常岗位误判成风控并暂停引擎。
+      const RISK_SCOPE = (spec.riskScopeSelectors || ['.a-job-apply-workflow', '[class*="dialog"]']).join(', ');
+      const riskHit = () => {
+        if (/pwaf_challenge|security-check|captcha/i.test(location.href)) return true;
+        if (firstVisible(['[class*="geetest"]', '[class*="waf"]', '[id*="captcha"]'])) return true;
+        for (const el of all(RISK_SCOPE)) {
+          if (!visible(el)) continue;
+          const t = PLATFORM_NORM(textOf(el));
+          if (t && riskTexts.some((k) => t.includes(k))) return true;
+        }
+        return false;
+      };
+      let confirmedSig = '';
+      const judged = await waitFor(async () => {
+        const body = bodyText();
+        // 风控/账号阻断：立即停止本页任何点击动作，交人工
+        if (riskHit()) return 'risk';
+        if (limitTexts.some((t) => body.includes(t))) return 'stop';
+        // 成功信号：成功面板 / 成功文案 / 主按钮态翻转为「已投递」/ 打招呼弹窗（deliver-greeting-modal）
+        if (firstVisible(spec.successSelectors)) return 'success';
+        if (successTexts.some((t) => body.includes(t))) return 'success';
+        if (readAppliedState()) return 'success';
+        // 阻断态面板：读面板原文归类（risk / login / blocked 由适配表纯函数裁决——
+        // .a-job-apply-block-panel 一个面板承载多种原因，按文案分级才能区分
+        // 「账号异常禁投」与「已屏蔽这家公司」）
+        const blockEl = firstVisible(spec.blockedSelectors);
+        if (blockEl) {
+          const t = textOf(blockEl).replace(/\s+/g, ' ').trim().slice(0, 140);
+          const kind = ADAPTERS.classifyBlockedText('zhaopin', t);
+          if (kind === 'risk') return 'risk';
+          if (kind === 'login') return 'login';
+          return 'blocked:' + (t || '平台投递工作流阻断');
+        }
+        // 二次确认：命中「确定投递 / 同意并投递 / 投递简历」等按钮时点一次（同文案只点一次，防重复提交）
+        const confirmBtn = findPlatformAction(spec.confirmSelectors, spec.confirmLabels || ['确定']);
+        if (confirmBtn) {
+          const sig = PLATFORM_NORM(textOf(confirmBtn));
+          if (sig && sig !== confirmedSig) {
+            confirmedSig = sig;
+            await clickElement(confirmBtn);
+          }
+        }
         return null;
       }, 15000, '智联投递结果');
-      if (judge === 'success') return ok({ method: 'dom' });
-      if (judge === 'stop') return fail('stop', { message: '智联今日投递已达到上限，已停止该岗位' });
-      if (judge === 'risk') return fail('risk', { code: 35, message: '检测到安全验证，已暂停，请人工完成' });
-      return fail('failed', { error: '未确认「申请成功」，请人工核对' });
+
+      // 5) 成功收口：简历已投递。招呼语发送已移交「自动沟通」队列（platform-apply 不再发送信息），
+      //    这里直接 ok —— 不在此补点「继续沟通」（避免弹窗/聊天链路在 platform-apply 内整体超时）。
+      if (judged === 'success') {
+        return ok({ method: 'dom' });
+      }
+      if (judged === 'stop') return fail('stop', { message: '智联今日投递已达到上限，已停止该岗位' });
+      if (judged === 'risk') return fail('risk', { code: 35, message: '检测到安全验证/账号风控提示，已暂停，请人工处理' });
+      if (judged === 'login') return fail('login', { message: '智联未登录（投递工作流要求登录），请先在智联标签页完成登录' });
+      if (judged && judged.indexOf('blocked:') === 0) {
+        return fail('stop', { message: '智联投递被平台阻断：' + judged.slice(8) });
+      }
+      return fail('failed', { error: '未确认「投递成功」：按钮已点击但页面无任何成功信号，请人工核对' });
     }
 
     if (platform === 'job51') {

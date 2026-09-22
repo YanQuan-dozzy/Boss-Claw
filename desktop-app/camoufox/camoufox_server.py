@@ -1622,12 +1622,29 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
 
 
 # 各平台登录态判定 Cookie（名称含关键字即视为已登录）
+# 与 main.cjs `WEBVIEW_AUTH_COOKIE_HINTS` 同源：`=name` 精确匹配 / 嵌套元组 = 成对条件（需同时存在）。
 PLATFORM_AUTH_COOKIE_HINTS = {
     'boss': ('wt2',),
     'liepin': ('lp_login', 'lp_token', 'token'),
-    'zhaopin': ('zp_auto', 'zp_sign', 'swordman', 'zm_job_pc'),
+    'zhaopin': ('zp_auto', 'zp_sign', 'swordman', 'zm_job_pc', ('=at', '=rt')),
     'job51': ('j_ticket', 'sajssp', '51job', 'job51'),
 }
+
+
+def _cookie_name_matches(name: str, hint: str) -> bool:
+    """`=name` 精确匹配；其余子串匹配（沿用历史宽松语义）。"""
+    if hint.startswith('='):
+        return name == hint[1:]
+    return name.startswith(hint) or hint in name
+
+
+def _auth_hint_hit(cookies, hint) -> bool:
+    """单个 hint（字符串=任一 cookie 命中；元组=成对条件需同时命中）。"""
+    pats = hint if isinstance(hint, tuple) else (hint,)
+    return all(
+        any(c.get('value') and _cookie_name_matches(str(c.get('name', '')).lower(), p) for c in cookies)
+        for p in pats
+    )
 
 
 def engine_status(platform: str = 'boss') -> dict:
@@ -1643,10 +1660,7 @@ def engine_status(platform: str = 'boss') -> dict:
                 cookie_count = len(cookies)
             # 登录态独立判定：仅按该平台鉴权 Cookie 命中（不靠匿名 cookie 数量，避免误判已登录）
             hints = PLATFORM_AUTH_COOKIE_HINTS.get(platform, PLATFORM_AUTH_COOKIE_HINTS['boss'])
-            logged_in = any(
-                (str(c.get('name', '')).lower().startswith(hint) or hint in str(c.get('name', '')).lower()) and c.get('value')
-                for c in cookies for hint in hints
-            )
+            logged_in = any(_auth_hint_hit(cookies, hint) for hint in hints)
         except Exception:
             pass
     info = {

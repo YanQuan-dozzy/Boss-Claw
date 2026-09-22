@@ -30,7 +30,7 @@ import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
-import { makePendingItem, jobUrlKey } from '@/store/useDataStore';
+import { makePendingItem, jobUrlKey, sameJobSoft } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
 import { stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
@@ -248,7 +248,6 @@ export default function Workbench() {
   const config = useSettingsStore((s) => s.config);
   const autoAssist = useAppStore((s) => s.autoAssist);
   const setAutoAssist = useAppStore((s) => s.setAutoAssist);
-  const bossLoggedIn = useAppStore((s) => s.bossLoggedIn);
   const browserLoginRequest = useAppStore((s) => s.browserLoginRequest);
   const clearBrowserLogin = useAppStore((s) => s.clearBrowserLogin);
   const setRoute = useAppStore((s) => s.setRoute);
@@ -398,6 +397,32 @@ export default function Workbench() {
     return false;
   };
 
+  // ===== 投递前登录门禁（多平台适配）=====
+  // 只检查「队列里真实要投递」的平台登录态（cookie 权威探测，App.tsx 每 10s 心跳刷新 platformLogins），
+  // 不再拿 BOSS 登录态去拦截智联/猎聘/51job 的投递（此前投递智联也会提示「请先在右侧浏览器登录 BOSS 直聘」）。
+  // 仅提示不阻断：实际投递以各平台页面自身的登录墙探测为准（deliverNonBoss / waitTabReady 的 reason='login'）。
+  const warnPendingPlatformLogins = useCallback(() => {
+    const data = useDataStore.getState();
+    const platforms = new Set<JobPlatform>();
+    for (const p of data.pending) {
+      if (p.status === 'approved' || p.status === 'approved_queue') {
+        platforms.add(String(p.job?.platform || 'boss') as JobPlatform);
+      }
+    }
+    if (!platforms.size) return;
+    const logins = useAppStore.getState().platformLogins;
+    // 按平台优先级顺序提示（PLATFORM_IDS 即优先级序），先拦最靠前的未登录平台
+    for (const pf of PLATFORM_IDS) {
+      if (!platforms.has(pf)) continue;
+      const st = logins[pf];
+      if (st === false) {
+        message.warning(`请先在右侧浏览器登录 ${platformLabel(pf)}，未登录不能启动`);
+      } else if (st == null) {
+        message.warning(`正在检测 ${platformLabel(pf)} 登录状态，请稍候再试`);
+      }
+    }
+  }, []);
+
   // ===== 监听全局 autoAssist，自动启停 =====
   useEffect(() => {
     if (autoAssist) {
@@ -405,9 +430,7 @@ export default function Workbench() {
       if (isLockedOut(cfg)) {
         message.warning(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟），暂不能启动投递`);
       }
-      if (bossLoggedIn !== true) {
-        message.warning(bossLoggedIn === false ? '请先在右侧浏览器登录 BOSS 直聘，未登录不能启动' : '正在检测 BOSS 登录状态，请稍候再试');
-      }
+      warnPendingPlatformLogins();
       if (!profile) message.warning('请先在简历中心生成职业画像');
       if (!directionPlan?.confirmed) message.warning('请先到「投递方向」确认方向');
       if (!running) {
@@ -429,7 +452,7 @@ export default function Workbench() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoAssist, profile, directionPlan, bossLoggedIn]);
+  }, [autoAssist, profile, directionPlan]);
 
   const handleJobExtracted = useCallback((job: JobMeta) => {
     const cur = pendingExtract.current;
@@ -500,8 +523,13 @@ export default function Workbench() {
     // 归一后再入库：job.url 也可能带 securityId 等 query，统一精简为 …/job_detail/xxx.html
     job = { ...job, url: normalizeJobUrl(job.url || cleanUrl) };
     const runId = `task_${Date.now().toString(36)}`;
-    // 同链接查重：已入队的同岗位对象（供「快路径跳过 + 自愈/刷新」共用，避免重复查找）
-    const dup = dupId ? useDataStore.getState().pending.find((p) => p.id === dupId && jobUrlKey(p.job) === cleanUrl.toLowerCase()) : undefined;
+    // 同链接查重：已入队的同岗位对象（供「快路径跳过 + 自愈/刷新」共用，避免重复查找）。
+    // 链接不同但命中软匹配（弱身份哈希兜底 vs 真实链接的同一岗位）时也按已存在处理，
+    // 让弱身份旧卡能借本次权威解析自愈补齐（与 store sameJobSoft 口径一致）。
+    const pendingNow = useDataStore.getState().pending;
+    const dup = dupId
+      ? pendingNow.find((p) => p.id === dupId && jobUrlKey(p.job) === cleanUrl.toLowerCase())
+      : pendingNow.find((p) => sameJobSoft(job, p.job));
 
     const cfg = useSettingsStore.getState().config;
     const hrFilter = cfg.hrActivityFilter || 'any';
@@ -855,7 +883,10 @@ export default function Workbench() {
       data.pending.some(
         (p) =>
           (normUrl && jobUrlKey(p.job) === normUrl) ||
-          (jobId && String(p.job?.jobId || '').trim().toLowerCase() === jobId.toLowerCase())
+          (jobId && String(p.job?.jobId || '').trim().toLowerCase() === jobId.toLowerCase()) ||
+          // 弱身份软匹配兜底：同一岗位一次采到真实链接、一次落到哈希兜底身份时，精确键不同，
+          // 必须按「平台+标题+薪资+公司不冲突」再比一次，否则跨形态重复入队（见 store sameJobSoft）。
+          sameJobSoft(job, p.job)
       )
     )
       return false;
@@ -1815,6 +1846,8 @@ export default function Workbench() {
     }
     setApplyStage('open_job');
     addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
+    // 注意：智联「继续沟通」的招呼语发送已移交「自动沟通」引擎，工作台 platformApply 不再携带
+    // greeting（避免在 platform-apply 内做整套填发确认导致 25s 超时）——见 webview.cjs continue_chat 收口。
     let r: any;
     try {
       // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
@@ -1846,6 +1879,33 @@ export default function Workbench() {
       if (res.tabId) webviewApi.current?.closeTab(res.tabId);
       setApplyStage(null); recomputeStats();
       if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    if (res.stage === 'skip') {
+      // 「已投递/已沟通」不是失败：按跳过收口（与 external 同口径），避免重复打扰同一 HR 也避免误报失败
+      updatePending(candidate.id, { status: 'skipped', error: res.message || '该岗位此前已投递/已沟通，跳过' });
+      addLog('warn', `跳过：${nTitle}（${res.message || '该岗位此前已投递/已沟通'}）`);
+      if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+      setApplyStage(null); recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    if (res.stage === 'continue_chat') {
+      // 「继续沟通」入口：已建立会话（此前已投递/已沟通过）。招呼语发送移交「自动沟通」队列
+      // （status=opened，AutoChat 接管），并从工作台投递队列移除（防重复打扰同一 HR）。
+      updatePending(candidate.id, { status: 'opened', error: '' });
+      addLog('warn', `${nTitle}：检测到「继续沟通」（已建立会话），已移入自动沟通队列`);
+      if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+      setApplyStage(null); recomputeStats();
+      if (useAppStore.getState().autoAssist) requestRunNext();
+      return;
+    }
+    if (res.stage === 'login') {
+      // 该平台未登录：后续岗位必然同样失败 → 立即收口并暂停引擎（与采集侧 login-required 同口径，不逐个白试）
+      updatePending(candidate.id, { status: 'skipped', error: res.message || '平台未登录，已跳过该岗位' });
+      if (res.tabId) webviewApi.current?.closeTab(res.tabId);
+      setApplyStage(null); recomputeStats();
+      pauseAssist(`${res.message || '平台未登录'}。已暂停投递引擎：请在对应平台标签页完成登录后重新启动投递。`);
       return;
     }
     if (res.stage === 'risk') {

@@ -64,6 +64,28 @@ const PLATFORM_SHORT: Partial<Record<JobPlatform, string>> = {
 const platformShort = (platform: JobPlatform): string =>
   PLATFORM_SHORT[platform] || PLATFORM_META[platform]?.label.replace(/(直聘|招聘|无忧)$/, '') || PLATFORM_META[platform]?.label || '加载';
 
+// ===== 非 BOSS「一键投递」详情页就绪上限 =====
+// 上限 25s：与投递看门狗（60s 无进展即跳岗）留足余量，超时后仍取不到「页面可用」的客观事实才交人工。
+const APPLY_PAGE_READY_MS = 25000;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * 详情页就绪失败时的诊断串。
+ * 规范（对齐采集侧）：失败原因**禁止只报「详情页加载超时」**，必须带末次页面探测事实，
+ * 否则日志无法区分「preload 没注入」「遮罩没收敛」「页面真没加载出来」三种根因。
+ */
+const describeApplyProbe = (st: any): string => {
+  if (!st || st.error) return '，末次探测无响应（preload 未注入或页面未加载）';
+  const parts = [
+    `末次探测 URL=${String(st.url || '').slice(0, 120) || '未知'}`,
+    `readyState=${st.readyState || '?'}`,
+    `正文 ${Number(st.bodyLen) || 0} 字`,
+  ];
+  if (Number.isFinite(Number(st.cards))) parts.push(`列表卡片 ${st.cards}`);
+  if (st.loginWall) parts.push('命中登录特征');
+  return '，' + parts.join('，');
+};
+
 // ===== preload 路径：模块顶层一次性读取，避免 React 重渲染导致 undefined =====
 // webview 标签 preload 属性协议必须是 file:（Electron 硬性要求）；Windows 反斜杠绝对路径会被拒绝加载，
 // 这里做协议规范化兜底（兼容旧 app.cjs 返回的裸路径）
@@ -586,20 +608,36 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       if (t) patchTab(tabId, { title: t });
     });
 
-    // ===== new-window：拦截 target=_blank / window.open，转为本标签导航 =====
-    // 手动点击「立即沟通 / 查看岗位更多信息」等触发的弹窗：preventDefault 抑制外部/独立弹窗，
-    // 并把 URL 真实加载到当前激活 webview——只 patchTab 改地址栏缓存会导致内容不渲染（弹窗不弹）。
-    el.addEventListener('new-window', ((event: any) => {
-      const evt = event?.detail ?? event;
-      const url = String(evt?.url || '');
-      try { event?.preventDefault?.(); } catch {}
-      if (!url || !/^https?:\/\//i.test(url)) return;
-      const activeId = activeIdRef.current || tabsRef.current[0]?.id || '';
-      const target = (activeId && webviewEls.current[activeId]) || (activeId && webviewEls.current[tabsRef.current[0]?.id || '']) || el;
-      try { target?.loadURL?.(url)?.catch?.(() => {}); } catch {}
-      if (activeId) touchTab(activeId);
-    }) as any);
+    // ===== target=_blank / window.open 弹窗处理（已移至主进程）=====
+    // 注意：Electron <webview> 不会派发 new-window DOM 事件（webViewEvents 白名单不含它，
+    // v31 实测该监听永不触发），且未设 allowpopups 时 guest 的新窗口请求被静默 deny，
+    // 表现为智联等站点的 target=_blank 链接「点了没反应」。真正处理在主进程
+    // did-attach-webview 的 guest.setWindowOpenHandler：http(s) 弹窗在当前标签内 loadURL，
+    // 其余 deny。此处不再挂无效监听。
   }, [patchTab, touchTab]); // 唯一依赖是最新的 patchTab / 稳定的 touchTab
+
+  // ===== 每标签一个「身份稳定」的 ref 回调 =====
+  // 根因（非 BOSS「一键投递」恒报「详情页加载超时」）：
+  //   `<webview ref={(el) => handleRegister(t.id, el)}>` 的行内箭头**每次渲染都是新引用**，
+  //   而 react-dom 的 markRef 条件是 `current.ref !== workInProgress.ref` —— 命中即先以
+  //   `null` 调用旧 ref（safelyDetachRef），再以元素调用新 ref。于是**每次重渲染**都会走一遍
+  //   handleRegister(tabId, null)：抹掉 preloadReady / registeredTabs / webviewEls，然后重新注册。
+  //   后果：① dom-ready 刚置上的 preloadReady 会在随后的任意一次重渲染（loadingTabs/fadingTabs/
+  //   日志/遮罩状态几乎每帧都在变）里被清空，且 dom-ready 不再重放 → 就绪标记恒为 false，
+  //   宿主轮询 25s 后误判「详情页加载超时」（页面其实 2s 内就已可用）；
+  //   ② 每次重渲染重绑一整套 webview 事件监听 → 监听器持续累积。
+  // 修复：Map 缓存「同一 tabId 恒返回同一个函数引用」，React 便不再做 detach/attach。
+  const tabRefCallbacks = useRef<Map<string, (el: any) => void>>(new Map());
+  const handleRegisterRef = useRef(handleRegister);
+  handleRegisterRef.current = handleRegister;
+  const tabRef = useCallback((tabId: string) => {
+    let fn = tabRefCallbacks.current.get(tabId);
+    if (!fn) {
+      fn = (el: any) => handleRegisterRef.current(tabId, el);
+      tabRefCallbacks.current.set(tabId, fn);
+    }
+    return fn;
+  }, []);
 
   // ===== 创建标签页（多标签版本）=====
   const createTab = useCallback((url: string, title: string, _activate: boolean, kind: 'main' | 'detail' = 'main'): string => {
@@ -751,6 +789,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       delete registeredTabs.current[id];
     }
     delete lastActivityRef.current[id];
+    tabRefCallbacks.current.delete(id); // 释放稳定 ref 回调，避免映射表随开关标签无限增长
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id);
       return next.length ? next : prev;
@@ -851,12 +890,23 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   const pageStatus = useCallback((tabId?: string) => cmdOnce('page-status', {}, 6000, tabId), [cmdOnce]);
 
   // ===== 非 BOSS 平台「一键投递」：新标签页 DOM 投递（promise 通道，终态经 platform-apply-result）=====
-  // 为该平台新建 detail 标签打开岗位详情 → 等 preload 就绪且不再 loading（含登录重定向等待）→
-  // 下发 platform-apply；终态由 webview.cjs 经 platform-apply-result 回传（复用 seqRef/apiResolvers）。
+  // 为该平台新建 detail 标签打开岗位详情 → 等页面可用 → 下发 platform-apply；
+  // 终态由 webview.cjs 经 platform-apply-result 回传（复用 seqRef/apiResolvers）。
+  //
+  // 就绪判定口径与采集侧 waitTabReady 对齐：宿主标记（preload-ready / 加载遮罩）**只作参考**，
+  // 以「页面自身事实」（page-status 探测有响应）为权威。原实现只信宿主标记 `isPreloadReady`，
+  // 一旦该标记因任何原因未置位（详见 handleRegister 上方「身份稳定 ref 回调」的根因说明），
+  // 就会把「页面 2s 内早已可用」误判成「详情页加载超时」——本次报告的智联投递失败即此。
   const platformApply = useCallback(
     (url: string, platform: JobPlatform, job: any): Promise<{ ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string }> =>
       new Promise((resolve) => {
         const tabId = openInNewTab(url, PLATFORM_META[platform]?.label || '岗位投递', 'detail');
+        if (!tabId) {
+          // 白名单拦截 / 标签上限：旧实现拿到空 tabId 会静默等到超时，这里直接给出真实原因
+          resolve({ ok: false, stage: 'failed', error: '未创建投递标签页（网址不在白名单内或标签数已达上限）' });
+          return;
+        }
+        const startedAt = Date.now();
         const start = () => {
           const seq = String((seqRef.current += 1));
           const timer = setTimeout(() => {
@@ -876,18 +926,34 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
             externalApplyHints: PLATFORM_META[platform]?.externalApplyHints || [],
           });
         };
-        const deadline = Date.now() + 25000;
-        const poll = setInterval(() => {
-          if (isPreloadReady(tabId) && !isLoading(tabId)) {
-            clearInterval(poll);
-            start();
-          } else if (Date.now() > deadline) {
-            clearInterval(poll);
-            resolve({ ok: false, stage: 'failed', error: '详情页加载超时', tabId });
+        void (async () => {
+          let lastProbe: any = null;
+          let preloadFlag = false;
+          let overlay = false;
+          while (Date.now() - startedAt < APPLY_PAGE_READY_MS) {
+            await sleep(300);
+            preloadFlag = isPreloadReady(tabId);
+            overlay = isLoading(tabId);
+            if (preloadFlag && !overlay) { start(); return; } // 快路径：宿主标记齐全，不额外探测
+            const st = await pageStatus(tabId);
+            if (st && !st.error) {
+              lastProbe = st;
+              // 探测有响应 ⇒ preload 已注入（比宿主标记更可靠）；文档已解析（非 loading）且正文成形
+              const usable = String(st.readyState || '') !== 'loading'
+                && (Number(st.bodyLen) > 200 || Number(st.cards) > 0);
+              // 页面已可用但遮罩状态没收敛：宽限 2s 后按页面事实放行（遮罩只是观感，不影响页内 DOM 动作）
+              if (usable && (!overlay || Date.now() - startedAt > 2000)) { start(); return; }
+            }
           }
-        }, 350);
+          resolve({
+            ok: false,
+            stage: 'failed',
+            error: `详情页加载超时（preload ${preloadFlag ? '就绪' : '未就绪'}，加载遮罩 ${overlay ? '未收敛' : '已隐藏'}${describeApplyProbe(lastProbe)}）`,
+            tabId,
+          });
+        })();
       }),
-    [openInNewTab, isPreloadReady, isLoading, sendInTab],
+    [openInNewTab, isPreloadReady, isLoading, sendInTab, pageStatus],
   );
 
   // ===== 暴露 apiRef（多标签版本）=====
@@ -1151,7 +1217,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
             <div key={t.id} className={'browser-pane' + (t.id === activeId ? ' is-active' : '')}>
               {/* ⚠️ 核心红线约束：<webview> 元素必须保持 display: flex 容器级联，严禁行内或 CSS 设置 display: block */}
               <webview
-                ref={(el: any) => handleRegister(t.id, el)}
+                ref={tabRef(t.id)}
                 preload={WEBVIEW_PRELOAD}
                 partition="persist:bossclaw"
                 // backgroundThrottling=no：工作台切到其它模块时隐藏但保持挂载，

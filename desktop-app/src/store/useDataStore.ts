@@ -169,13 +169,18 @@ export const useDataStore = create<DataState>()(
         set((s) => {
           // 同岗位查重：同一岗位（归一化去 query/hash 后 URL **或** jobId 任一相同）已入队则不再叠卡。
           // 归一化 URL 在某些采集场景仍会漏（同一岗位 anchor href 与 dataJobId 构造 url 可能不同），
-          // 故叠加 jobId（BOSS encryptJobId / 平台岗位 id 的稳定标识）判重，避免同一岗位重复出现在队列。
+          // 故叠加 jobId（BOSS encryptJobId / 平台岗位 id 的稳定标识）判重；
+          // 再叠加软匹配（sameJobSoft）兜底「真实 URL/jobId 与稳定哈希兜底身份」跨形态重复
+          // （智联 span 变体无 jobdetail 锚点且主进程注解未命中 → 弱身份，键与强身份恒不同，
+          // 同一岗位一次采到真实链接、一次落到哈希兜底时会被判成两个岗位）。
           const key = jobUrlKey(item.job);
           const jid = String(item.job?.jobId || '')
             .trim()
             .toLowerCase();
           const hit = s.pending.some((p) =>
-            (key && jobUrlKey(p.job) === key) || (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid)
+            (key && jobUrlKey(p.job) === key) ||
+            (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid) ||
+            sameJobSoft(item.job, p.job)
           );
           if (hit) return s;
           return { pending: [item, ...s.pending] };
@@ -245,20 +250,27 @@ export const useDataStore = create<DataState>()(
       // 仍保留防抖合批（短窗口内多次 set 只写一次）+ 配额超限兜底（仅丢弃该次持久化，绝不抛进业务代码）。
       storage: createSafePersistStorage(),
       // 版本迁移：v1 起对存量 pending 清洗公司名（剔除采集误把地名当公司名写入的脏数据，
-      // 如「深圳·南山区·科技园」），修复「数据统计 · 公司 Top」把地名当公司名展示的 bug。
-      version: 1,
+      // 如「深圳·南山区·科技园」），修复「数据统计 · 公司 Top」把地名当公司名展示的 bug；
+      // v2 起折叠存量重复岗位（归一化 URL / jobId / 弱身份软匹配，保留更完整的一条）。
+      version: 2,
       migrate: (state) => {
-        if (state && typeof state === 'object' && Array.isArray((state as { pending?: unknown[] }).pending)) {
-          (state as { pending: Array<{ job?: { company?: string } }> }).pending =
-            (state as { pending: Array<{ job?: { company?: string } }> }).pending.map((p) => {
+        let s = state as DataState;
+        if (s && typeof s === 'object' && Array.isArray(s.pending)) {
+          // v1：清洗公司名（幂等，可叠加）
+          s = {
+            ...s,
+            pending: s.pending.map((p) => {
               if (p?.job && typeof p.job.company === 'string') {
                 const cleaned = cleanCompanyName(p.job.company);
                 if (cleaned === undefined) return { ...p, job: { ...p.job, company: '' } };
               }
               return p;
-            });
+            }),
+          };
+          // v2：折叠重复岗位（保留更完整的一条，见 dedupePendingItems）
+          s = { ...s, pending: dedupePendingItems(s.pending) };
         }
-        return state as DataState;
+        return s;
       },
       partialize: (s) => {
         // experienceMaterials 是「经历补充文件」的会话态引用：不持久化（正文每次调用现读磁盘），
@@ -274,6 +286,78 @@ export const useDataStore = create<DataState>()(
 export function jobUrlKey(job?: { url?: string }): string {
   if (!job?.url) return '';
   return String(job.url).split(/[?#]/)[0].trim().toLowerCase();
+}
+
+/**
+ * 弱身份判定：岗位无真实详情 URL（智联无 jobdetail 锚点变体且主进程注解未命中、或列表级采集字段缺失）时，
+ * 其 jobId 只能是「标题|公司|薪资|地点」稳定哈希兜底（webview.cjs stableFallbackJobId，前缀 'f'）或空串。
+ * 这类键与真实 URL/jobId 恒不同，仅凭精确键（normUrl/jobId）无法去重 —— 需软匹配兜底。
+ */
+export function isWeakJobIdentity(job?: { url?: string }): boolean {
+  return !job || !String(job.url || '').trim();
+}
+
+/** 薪资归一（仅去空白小写；保留元/天、元/月等计薪单位语义，避免把不同计薪单位误并） */
+function normSalaryForDedup(s: string): string {
+  return String(s || '').replace(/\s+/g, '').toLowerCase();
+}
+
+/**
+ * 软匹配去重（弱身份兜底）：至少一方为弱身份（无真实 URL）时，
+ * 同平台 + 同标题 + 同薪资 + 公司不冲突（任一方缺失即视为一致；双方都填写且不同才算不同岗位）
+ * 即判定为同一岗位。防止「同一岗位一次采到真实链接、一次落到哈希兜底」重复入队 / 重复分析。
+ * 双方都是强身份时返回 false（精确键已足够，软匹配不介入，避免误并不同岗位）。
+ */
+export function sameJobSoft(
+  a?: Pick<JobMeta, 'platform' | 'title' | 'company' | 'salary' | 'url'> | null,
+  b?: Pick<JobMeta, 'platform' | 'title' | 'company' | 'salary' | 'url'> | null,
+): boolean {
+  if (!a || !b) return false;
+  if (!isWeakJobIdentity(a) && !isWeakJobIdentity(b)) return false;
+  const pa = String(a.platform || 'boss').trim().toLowerCase();
+  const pb = String(b.platform || 'boss').trim().toLowerCase();
+  if (pa !== pb) return false;
+  const ta = String(a.title || '').trim();
+  const tb = String(b.title || '').trim();
+  if (!ta || !tb || ta !== tb) return false;
+  const sa = normSalaryForDedup(String(a.salary || ''));
+  const sb = normSalaryForDedup(String(b.salary || ''));
+  if (!sa || !sb || sa !== sb) return false;
+  const ca = String(a.company || '').trim();
+  const cb = String(b.company || '').trim();
+  if (ca && cb && ca !== cb) return false;
+  return true;
+}
+
+/** 岗位信息完整度（迁移折叠重复时保留更完整的一条：有真实 URL 优先，其次字段更全） */
+function jobCompleteness(job?: Pick<JobMeta, 'url' | 'company' | 'location' | 'salary'> | null): number {
+  if (!job) return 0;
+  let n = 0;
+  if (String(job.url || '').trim()) n += 4;
+  if (String(job.company || '').trim()) n += 1;
+  if (String(job.location || '').trim()) n += 1;
+  if (String(job.salary || '').trim()) n += 1;
+  return n;
+}
+
+/** pending 折叠重复（v2 迁移）：精确键（归一化 URL / jobId）或软匹配命中即视为同一岗位，保留更完整的一条 */
+function dedupePendingItems(pending: PendingItem[]): PendingItem[] {
+  const kept: PendingItem[] = [];
+  for (const item of pending) {
+    const key = jobUrlKey(item.job);
+    const jid = String(item.job?.jobId || '').trim().toLowerCase();
+    const exactHit = kept.some(
+      (p) => (key && jobUrlKey(p.job) === key) || (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid)
+    );
+    if (exactHit) continue;
+    const softIdx = kept.findIndex((p) => sameJobSoft(item.job, p.job));
+    if (softIdx >= 0) {
+      if (jobCompleteness(item.job) > jobCompleteness(kept[softIdx].job)) kept[softIdx] = item;
+      continue;
+    }
+    kept.push(item);
+  }
+  return kept;
 }
 
 // 将"加入任务"封装为一步：分析 -> 生成 PendingItem -> 入队

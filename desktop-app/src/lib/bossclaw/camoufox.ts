@@ -146,7 +146,7 @@ const CAMOUFOX_IN_FLIGHT = new Set<string>();
 /**
  * 隐身搜索岗位（platform 默认 boss；liepin/zhaopin/job51 走各自平台模块）。
  *
- * criteria = 设置页「基础求职条件」（全平台共用：薪资/求职类型/学历/经验/公司规模），
+ * criteria = 设置页「基础求职条件」（全平台共用：薪资/求职类型/学历/经验/公司规模/公司性质/融资阶段），
  * 由 Python 侧 `camoufox/platforms/filters.py` 翻译成各平台自身筛选参数
  * （字段名与码值口径见该文件的「口径来源」与 FILTER_CAPABILITIES 能力表）。
  * BOSS 分支忽略该参数（BOSS 走 searchUrl.ts + webview 通道）。

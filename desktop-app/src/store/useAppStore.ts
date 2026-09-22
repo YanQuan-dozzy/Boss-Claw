@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import { createSafePersistStorage } from '@/lib/persistSafe';
 import type { ThemeMode } from '../theme';
 import type { JobPlatform } from '@/lib/bossclaw/platforms';
+import { PLATFORM_IDS } from '@/lib/bossclaw/platforms';
+import type { PlatformLogins } from '@/lib/bossLogin';
 
 export type RouteKey =
   | 'home'
@@ -81,6 +83,8 @@ interface AppState {
   autoAssist: boolean;
   bridgeStatus: 'connected' | 'disconnected';
   bossLoggedIn: boolean | null;
+  /** 各平台登录态（boss/猎聘/智联/51job），运行时探测结果，不持久化；null = 检测中 */
+  platformLogins: PlatformLogins;
   sidebarCollapsed: boolean;
   /** 侧边栏底部动态动作状态（与 StatusBar 的 OpenClaw 状态区分开） */
   currentAction: { text: string; source: string | null };
@@ -94,6 +98,7 @@ interface AppState {
   setAutoAssist: (v: boolean) => void;
   setBridgeStatus: (s: 'connected' | 'disconnected') => void;
   setBossLoggedIn: (v: boolean | null) => void;
+  setPlatformLogins: (m: PlatformLogins) => void;
   setSidebarCollapsed: (v: boolean) => void;
   toggleSidebarCollapsed: () => void;
   setCurrentAction: (source: string, text: string) => void;
@@ -129,6 +134,7 @@ export const useAppStore = create<AppState>()(
         autoAssist: false,
         bridgeStatus: 'disconnected',
         bossLoggedIn: null,
+        platformLogins: Object.fromEntries(PLATFORM_IDS.map((p) => [p, null])) as PlatformLogins,
         sidebarCollapsed: false,
         engineStatus: 'stopped',
         currentAction: { text: '等待中', source: null },
@@ -148,6 +154,7 @@ export const useAppStore = create<AppState>()(
             engineStatus: deriveEngineStatus(state.autoAssist),
           })),
         setBossLoggedIn: (v) => set({ bossLoggedIn: v }),
+        setPlatformLogins: (m) => set({ platformLogins: m }),
         setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
         toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
         setCurrentAction: (source, text) =>
@@ -171,10 +178,10 @@ export const useAppStore = create<AppState>()(
       name: 'bossclaw-app',
       // P30：安全持久化（防 localStorage 写失败异常冒泡到渲染调用链）
       storage: createSafePersistStorage(),
-      // bridgeStatus / bossLoggedIn / currentAction 是运行时探测结果，不能持久化：
+      // bridgeStatus / bossLoggedIn / platformLogins / currentAction 是运行时探测结果，不能持久化：
       // 否则上次「已连接 / 正在投递」会被带到下次启动，导致未运行时仍显示旧状态
       partialize: (s) => {
-        const { bridgeStatus: _bridge, bossLoggedIn: _login, currentAction: _action, browserLoginRequest: _blr, ...rest } = s;
+        const { bridgeStatus: _bridge, bossLoggedIn: _login, platformLogins: _pl, currentAction: _action, browserLoginRequest: _blr, ...rest } = s;
         return rest;
       },
     }

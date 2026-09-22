@@ -27,6 +27,8 @@ export interface PlatformMeta {
   id: JobPlatform;
   /** 展示名 */
   label: string;
+  /** 简称（底部状态栏 / 紧凑场景用） */
+  shortLabel: string;
   /** 域名（hostname 匹配用，含后缀 .com） */
   domain: string;
   homeUrl: string;
@@ -59,6 +61,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
   boss: {
     id: 'boss',
     label: 'BOSS直聘',
+    shortLabel: 'BOSS',
     domain: 'zhipin.com',
     homeUrl: 'https://www.zhipin.com',
     loginUrl: 'https://www.zhipin.com/web/user/?ka=header-login',
@@ -75,6 +78,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
   liepin: {
     id: 'liepin',
     label: '猎聘',
+    shortLabel: '猎聘',
     domain: 'liepin.com',
     homeUrl: 'https://www.liepin.com',
     loginUrl: 'https://www.liepin.com/login/',
@@ -99,6 +103,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
   zhaopin: {
     id: 'zhaopin',
     label: '智联招聘',
+    shortLabel: '智联',
     domain: 'zhaopin.com',
     homeUrl: 'https://www.zhaopin.com',
     loginUrl: 'https://passport.zhaopin.com/login',
@@ -123,6 +128,7 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
   job51: {
     id: 'job51',
     label: '前程无忧',
+    shortLabel: '51job',
     domain: '51job.com',
     homeUrl: 'https://we.51job.com',
     loginUrl: 'https://we.51job.com/pc/login',

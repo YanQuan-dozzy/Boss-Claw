@@ -878,6 +878,166 @@ async function createMainWindow() {
     });
   });
 
+  // ===== 智联岗位卡「真实详情 URL」注解 + master-detail 点卡整页跳转 =====
+  // 智联新版 PC 搜索页是「左列表 .job-card + 右侧 .job-detail-panel 内联详情」。
+  // 岗位卡存在无 jobdetail 锚点的渲染变体（标题为 span.vue-clamp__text 而非 <a>），
+  // 列表级采集拿不到每卡 URL，会全部折叠成同一链接、去重后只剩 1 个岗位，且队列
+  // 里的链接指向搜索页而非岗位详情。
+  // 官方 SSR `__INITIAL_STATE__` 中每个岗位含详情 URL 所需字段 —— 注意字段名两版并存：
+  //   新版 positionList 顶层：name / number / positionUrl（如
+  //     {"name":"…","positionName"…,"number":"CCL…J…","positionUrl":"http://www.zhaopin.com/jobdetail/…"}）
+  //   旧版：positionName / positionNumber
+  // 旧脚本只认 old 字段 → 新版下 positionList 被整个跳过、注解 100% 不生效
+  // （实测「列表就绪 6 卡却只入 1」「队列链接是搜索页 URL」即源于此）。
+  // 此脚本注入**主世界**（preload 在隔离世界，读不到 __INITIAL_STATE__）：
+  //   1. 按两版字段名建索引，用「岗位名+公司名」精确匹配把详情 URL 标注成
+  //      data-bossclaw-jobdetail（preload 读取兜底，MutationObserver 覆盖懒加载新卡）；
+  //   2. 新鲜度闸门：智联在交互/客户端刷新后 __INITIAL_STATE__ 会与当前卡片不同步
+  //      （实测 20 卡 20 岗内容完全两套），此时索引/selectedJobId 均不可信，绝不盲标。
+  //      以「激活卡标题 === selectedJobId 岗位名」判定新鲜，仅新鲜时才启用
+  //      激活卡锚定与顺序对齐两个盲标兜底，否则只做逐卡文本精确匹配，未命中的
+  //      岗位留空 URL（preload 用文本 key 去重，详情由 Camoufox 链路补齐）；
+  //   3. click 捕获：用户点岗位卡 → 命中索引 → preventDefault + 整页导航到独立详情页
+  //      （当前标签跳转、可后退回列表）；匹配不到不做接管，退回站点原生内联。
+  const ZP_DETAIL_NAV_SCRIPT = `(function () {
+    if (window.__bossclawZpNavDone) return; window.__bossclawZpNavDone = true;
+    var inc = window.__INITIAL_STATE__;
+    if (!inc || !document.querySelector('.job-card')) return;
+    var norm = function (s) { return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim(); };
+    // ===== 岗位索引（兼容新版 name/number 与旧版 positionName/positionNumber）=====
+    var jobs = [];
+    var byJobId = {};
+    var collectArray = function (arr) {
+      if (!Array.isArray(arr)) return;
+      for (var i = 0; i < arr.length; i++) {
+        var o = arr[i];
+        if (!o || typeof o !== 'object') continue;
+        var name = norm(o.positionName) || norm(o.name);
+        var pn = norm(o.positionNumber) || norm(o.number);
+        if (!name || !pn) continue;
+        var jobId = String(o.jobId != null ? o.jobId : pn);
+        jobs.push({ name: name, company: norm(o.companyName), pn: pn, jobId: jobId });
+        if (jobId && !byJobId[jobId]) byJobId[jobId] = jobs[jobs.length - 1];
+      }
+    };
+    collectArray(inc.positionList);
+    if (!jobs.length) {
+      Object.keys(inc).forEach(function (k) {
+        var v = inc[k];
+        if (Array.isArray(v) && v.length && v[0] && (v[0].positionName || v[0].name) && (v[0].positionNumber || v[0].number)) collectArray(v);
+      });
+    }
+    if (!jobs.length) return;
+    var detailBase = 'https://www.zhaopin.com/jobdetail/';
+    // ===== 新鲜度闸门：激活卡（页面 boot 选中）标题与 selectedJobId 岗位名一致才算「索引可信」=====
+    // 智联客户端刷新 / 交互后 __INITIAL_STATE__ 可能与当前卡片不同步（实测 20 卡 20 岗两套数据），
+    // 此时顺序对齐 / 激活卡锚定都会错标 -> 必须关掉盲标兜底，只留逐卡文本精确匹配。
+    var fresh = false;
+    var selJob = (inc.selectedJobId && byJobId[String(inc.selectedJobId)]) ? byJobId[String(inc.selectedJobId)] : null;
+    var activeEl = document.querySelector('.job-card--active .vue-clamp__text');
+    if (selJob && activeEl) {
+      var activeName = norm(activeEl.getAttribute('aria-label') || activeEl.textContent);
+      fresh = Boolean(activeName && selJob.name === activeName);
+    }
+    var pick = function (name, comp) {
+      var exact = [], i, o;
+      for (i = 0; i < jobs.length; i++) { o = jobs[i]; if (o.name === name) exact.push(o); }
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1 && comp) { for (i = 0; i < exact.length; i++) { if (exact[i].company === comp) return exact[i]; } }
+      var byComp = [];
+      for (i = 0; i < jobs.length; i++) { o = jobs[i]; if (comp && o.company === comp) byComp.push(o); }
+      if (byComp.length === 1 && byComp[0].name === name) return byComp[0];
+      if (name.length >= 2 && comp) {
+        for (i = 0; i < jobs.length; i++) {
+          o = jobs[i];
+          if (o.company === comp && (o.name.indexOf(name) >= 0 || name.indexOf(o.name) >= 0)) return o;
+        }
+      }
+      return null;
+    };
+    var annotate = function () {
+      var cards = document.querySelectorAll('.job-card');
+      var done = 0;
+      for (var i = 0; i < cards.length; i++) {
+        var card = cards[i];
+        if (card.getAttribute('data-bossclaw-jobdetail')) { done += 1; continue; }
+        var nameEl = card.querySelector('.vue-clamp__text');
+        var name = nameEl ? norm(nameEl.getAttribute('aria-label') || nameEl.textContent) : '';
+        if (!name) continue;
+        var compEl = card.querySelector('.job-card__company-name');
+        var comp = compEl ? norm(compEl.textContent) : '';
+        var job = pick(name, comp);
+        if (job) { card.setAttribute('data-bossclaw-jobdetail', detailBase + job.pn + '.htm'); done += 1; }
+      }
+      // 下述盲标兜底仅在「索引可信」（fresh）时启用，任一批与此前标注一致即跳过（防重复替标）
+      if (fresh && done === 0 && inc.selectedJobId && byJobId[String(inc.selectedJobId)]) {
+        var active = document.querySelector('.job-card--active');
+        var aj = byJobId[String(inc.selectedJobId)];
+        if (active && !active.getAttribute('data-bossclaw-jobdetail')) {
+          active.setAttribute('data-bossclaw-jobdetail', detailBase + aj.pn + '.htm');
+        }
+      }
+      if (fresh && done === 0 && cards.length === jobs.length && cards.length > 0) {
+        for (var k = 0; k < cards.length; k++) {
+          var c2 = cards[k];
+          if (!c2.getAttribute('data-bossclaw-jobdetail')) c2.setAttribute('data-bossclaw-jobdetail', detailBase + jobs[k].pn + '.htm');
+        }
+      }
+    };
+    annotate();
+    var annotatePending = false;
+    var mo = new MutationObserver(function () {
+      if (annotatePending) return;
+      annotatePending = true;
+      setTimeout(function () { annotatePending = false; annotate(); }, 300);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      var card = t && t.closest ? t.closest('.job-card') : null;
+      if (!card) return;
+      if (t.closest && t.closest('a')) return; // 放行卡片内公司名等真实链接
+      var nameEl = card.querySelector('.vue-clamp__text');
+      var name = nameEl ? norm(nameEl.getAttribute('aria-label') || nameEl.textContent) : '';
+      if (!name) return;
+      var compEl = card.querySelector('.job-card__company-name');
+      var comp = compEl ? norm(compEl.textContent) : '';
+      var job = pick(name, comp);
+      if (!job) return;
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      location.href = detailBase + job.pn + '.htm?from=bossclaw';
+    }, true);
+  })();`;
+  mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
+    // ===== 弹窗 / 新标签（target=_blank / window.open）处理：当前标签内导航 =====
+    // 根因：Electron <webview> 不会向宿主派发 new-window DOM 事件（webViewEvents 白名单
+    // 不含它，渲染层 addEventListener('new-window') 永远不触发），且 webview 未设
+    // allowpopups → guest disablePopups=true，新窗口请求被静默 deny —— 表现为智联首页/
+    // 搜索页点 target=_blank 链接「没反应」，只能右键「在新标签打开链接」。
+    // 修复：在主进程对每个 guest webContents 注册 setWindowOpenHandler —— http(s) 弹窗
+    // 在当前标签内 loadURL（点击即跳转，与旧渲染层注释的意图一致）；非网页协议
+    // （占位弹窗 / javascript: 等）一律 deny，交页面自身降级，行为与 disablePopups 相同。
+    try {
+      wc.setWindowOpenHandler(({ url }) => {
+        const u = String(url || '');
+        if (/^https?:\/\//i.test(u)) { try { wc.loadURL(u); } catch {} }
+        return { action: 'deny' };
+      });
+    } catch {}
+    wc.on('did-finish-load', () => {
+      try {
+        const url = wc.getURL?.() || '';
+        let hostname = '';
+        try { hostname = new URL(url).hostname.toLowerCase(); } catch {}
+        if (hostname !== 'www.zhaopin.com' && !hostname.endsWith('.zhaopin.com')) return;
+        if (/\/jobdetail\//i.test(url)) return; // 详情页本身不注入
+        wc.executeJavaScript(ZP_DETAIL_NAV_SCRIPT, true).catch(() => {});
+      } catch {}
+    });
+  });
+
   // ===== webview 诊断（无条件写 userData/bossclaw-webview-diag.log；排查 preload 注入/IPC 失效）=====
   let webviewDiagPath = null;
   try { webviewDiagPath = path.join(app.getPath('userData'), 'bossclaw-webview-diag.log'); } catch {}
@@ -1506,11 +1666,15 @@ ipcMain.on('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwa
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。
 // 多平台适配：同分区同时上报 猎聘/智联/51Job 的登录态（各自鉴权 cookie 名）。
+// 匹配规则：`=name` = 精确匹配（短名如 at/rt 必须精确，防子串误伤）；
+//           数组 = 成对条件（如智联 SPA 的 at+rt 需同时存在才认登录）；
+//           其余 = 子串匹配（与 camoufox_server.py PLATFORM_AUTH_COOKIE_HINTS 尽量保持一致；
+//           该表在 Python 侧做同构扩展（=精确/数组成对）后需同步回这里）。
 const WEBVIEW_AUTH_COOKIE_HINTS = {
   boss: ['wt2'],
-  liepin: ['lp_login', 'lp_token'],
-  zhaopin: ['zp_auto', 'zp_sign'],
-  job51: ['j_ticket', 'sajssp'],
+  liepin: ['lp_login', 'lp_token', 'token'],
+  zhaopin: ['zp_auto', 'zp_sign', 'swordman', 'zm_job_pc', ['=at', '=rt']],
+  job51: ['j_ticket', 'sajssp', '51job', 'job51'],
 };
 const WEBVIEW_PLATFORM_DOMAIN = {
   boss: 'zhipin.com',
@@ -1527,9 +1691,29 @@ safeHandle('jc:boss-login', async () => {
   try {
     const ses = session.fromPartition('persist:bossclaw');
     const all = await ses.cookies.get({});
-    const hasAuth = (hints) => hints.some((h) => all.some((c) => c.name.toLowerCase().includes(h) && c.value));
+    // 登录态判定必须**按平台域名收口**：持久化会话同时存着 4 个平台的 cookie，
+    // 候选名只做子串匹配的话，智联等平台的「token 系」cookie 会误命中猎聘的通用候选 token，
+    // 导致「智联已登录却显示猎聘已登录」。域名不一致的 cookie 一律不参与判定。
+    // 命中规则：`=name` 精确匹配；数组内的多个候选需同域名同时存在（成对 token）；
+    // 其余按子串匹配（沿用历史候选的宽松语义）。
+    const domainOk = (c, md) => {
+      if (!md) return true;
+      const d = String(c.domain || '').toLowerCase().replace(/^\.+/, '');
+      return !d || d === md || d.endsWith('.' + md);
+    };
+    const nameHit = (name, pat) =>
+      pat.startsWith('=') ? name === pat.slice(1) : name.includes(pat);
+    const hasAuth = (pf, hints) => {
+      const md = String(WEBVIEW_PLATFORM_DOMAIN[pf] || '').toLowerCase();
+      return hints.some((h) => {
+        const pats = Array.isArray(h) ? h : [h];
+        return pats.every((p) =>
+          all.some((c) => Boolean(c.value) && domainOk(c, md) && nameHit(c.name.toLowerCase(), p))
+        );
+      });
+    };
     const platforms = Object.fromEntries(
-      Object.entries(WEBVIEW_AUTH_COOKIE_HINTS).map(([pf, hints]) => [pf, hasAuth(hints)]),
+      Object.entries(WEBVIEW_AUTH_COOKIE_HINTS).map(([pf, hints]) => [pf, hasAuth(pf, hints)]),
     );
     const wt2 = all.find((c) => c.name === 'wt2');
     return { loggedIn: Boolean(wt2 && wt2.value), cookie: Boolean(wt2), platforms };

@@ -3,7 +3,7 @@ import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
 import { useTheme } from './context/ThemeContext';
 import { bridgeStatus } from './lib/bridgeClient';
-import { checkBossLogin } from './lib/bossLogin';
+import { checkAllPlatformsLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
 import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
@@ -126,11 +126,12 @@ export default function App() {
   }, []);
   useInterval(checkBridge, 15000, { immediate: true });
 
-  // 启动即探测 BOSS 直聘登录态（cookie 判定），之后每 10 秒心跳一次；
-  // 未登录时工作台/首页的自动辅助、搜索采集将被拦截。
+  // 启动即探测各平台登录态（cookie 判定），之后每 10 秒心跳一次；
+  // 未登录时工作台/首页的自动辅助、搜索采集将被拦截；platformLogins 供底部状态栏汇总展示。
   const checkBoss = useCallback(async () => {
-    const ok = await checkBossLogin();
-    useAppStore.getState().setBossLoggedIn(ok);
+    const r = await checkAllPlatformsLogin();
+    useAppStore.getState().setBossLoggedIn(r.loggedIn);
+    useAppStore.getState().setPlatformLogins(r.platforms);
   }, []);
   useInterval(checkBoss, 10000, { immediate: true });
 

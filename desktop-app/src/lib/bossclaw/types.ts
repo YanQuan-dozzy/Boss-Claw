@@ -62,6 +62,10 @@ export interface AppConfig {
   salary: string;
   /** 公司规模筛选（单选，BOSS scale 参数：0-20人=301 / 20-99人=302 / 100-499人=303 / 500-999人=304 / 1000-9999人=305 / 10000人以上=306；不限=不附加过滤） */
   companyScale: string;
+  /** 公司性质筛选（单选，全平台共用「基础求职条件」；智联 ct：国企=1/外企=2/民营=5，其余平台未验证不附加） */
+  companyType: string;
+  /** 融资阶段筛选（多选，全平台共用「基础求职条件」；智联 fs：不需要融资=8/未融资=1/有融资=2;3;4;5;6，其余平台未验证不附加） */
+  financing: string[];
   sendResumeImage: boolean;
   sendOnlineResume: boolean;
   betweenJobsSeconds: number;
