@@ -93,6 +93,14 @@ export interface AppConfig {
   minSalaryPerMonth: number;
   /** 是否排除猎头岗位（对齐 AI-BossJob 的 excludeHeadhunters） */
   excludeHeadhunters: boolean;
+  /**
+   * 是否排除「JD 已过截止日期」的岗位（确定性硬约束，非 AI 判断）。
+   * 猎聘 JD 正文末尾常带「截止日期：2027年07月16日」，过期后仍然投递纯属浪费配额。
+   * 判定口径见 jobExpiry.ts（唯一权威）：只在 JD 显式写了截止日期时才判定，
+   * 日期不可解析 / 未写截止日期一律放行；截止日当天仍算有效。
+   * 未配置时按 PLATFORM_EXPIRY_DEFAULT 兜底（仅猎聘默认开启）。
+   */
+  excludeExpiredJobs: boolean;
   /** 搜索采集时是否自动下拉加载更多岗位卡片（BOSS 列表为无限滚动，默认开启以收集更多岗位） */
   listAutoScroll: boolean;
   /** 自动下拉最大轮数：每轮滚到底并等待新卡片出现，连续无新卡片即停止；0 视为使用默认 12 轮 */
@@ -431,6 +439,10 @@ export interface PendingItem {
   sentAt?: number;
   /** HR 来消息后 AI 跟聊回复的成功时间戳（不计入单日投递上限统计；sentAt 仍为空表示仅回复未投递） */
   replySentAt?: number;
+  /** AI 跟聊：最近一次「已回复 / 已收口」的 HR 消息指纹（=HR 最后一条消息文本），防止同一条消息重复回复 */
+  hrRepliedFingerprint?: string;
+  /** AI 跟聊：HR 明确拒绝的时间戳（>0 时该会话停止继续跟聊） */
+  hrRejectedAt?: number;
   /** 已打开沟通窗口时间戳（工作台「点击立即沟通」后、尚未发送文字） */
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */

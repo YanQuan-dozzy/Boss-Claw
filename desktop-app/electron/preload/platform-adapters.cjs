@@ -15,7 +15,8 @@
 // ⚠️ 选择器可信度说明（真机校准前请保持「选择器优先 + 正则/文本兜底」的双通道）：
 //   - BOSS：选择器为真机长期验证，**不得随意改动**（改动前先跑真机验收）。
 //   - 猎聘：站点使用 CSS Modules **哈希类名**（如 `_40108E8PWS`，每次发布都变），
-//     因此只使用稳定属性（`data-nick` / `data-tlg-ext`）与 URL 形态，**禁止**依赖哈希类名。
+//     因此只使用稳定属性（`data-nick` / `data-tlg-ext`）、**语义类名**（`job-card-pc-container`，
+//     get_jobs 的每卡容器口径）与 URL 形态，**禁止**依赖哈希类名。
 //   - 智联 / 前程无忧：类名为可读名（`joblist` / `joblist-item` / `j_joblist` / `sal` 等），
 //     与 `camoufox/platforms/{zhaopin,job51}.py` 的 DOM 兜底选择器同源。
 //   三类平台的字段抓取一律「选择器 → 文本正则兜底」，避免单一通道失效导致整链路空采。
@@ -38,7 +39,9 @@ function detectPlatform(hostname) {
 /** 岗位详情链接选择器（提取 jobId / 去重 key / 卡片判定共用） */
 const PLATFORM_LINK_SELECTOR = Object.freeze({
   boss: 'a[href*="job_detail"]',
-  liepin: 'a[href*="/job/"]',
+  // 猎聘：① 新版 `/job/1984773863.shtml` ② SEO 模板 `/a/80379415.shtml`
+  // （「猜你喜欢」等推荐位只有 ②；只写 ① 会让这些卡拿不到 anchor → jobId 恒空 + 去重 key 退化为标题）
+  liepin: 'a[href*="/job/"], a[href*="/a/"]',
   zhaopin: 'a[href*="/jobdetail/"]',
   job51: "a[href*='/pc/jobdetail'], a[href*='jobs.51job.com/']",
 });
@@ -73,11 +76,26 @@ const PLATFORM_CARD_SELECTORS = Object.freeze({
     '.search-job-result li.job-card-box',
     'a[href*="/job_detail/"]',
   ],
-  // 猎聘：只用稳定属性（哈希类名不可依赖）
+  // 猎聘：只用稳定属性 + 语义类名（哈希类名不可依赖）
+  //
+  // ⚠️ 2026-10-01 真机取证修正（用户提供的 /zhaopin/ 搜索页源码）：站点用的是**驼峰**语义类名，
+  //   旧写法 `job-card-pc-container`（连字符）是**猜的**，与实际 DOM 不匹配 ——
+  //   `[class*=...]` 是区分大小写的子串匹配，`"jobCardPcContainer".includes("job-card-pc-container")`
+  //   恒为 false ⇒ 首选选择器 0 命中。
+  //   实际链路之所以还能跑，全靠 `a[data-nick="job-detail-job-info"]` 兜住；而卡片归一容器
+  //   `[class*="job-card"]` 同样不匹配驼峰，`el.closest(...)` 一路走到外层 `.job-list-box`，
+  //   把**整页 42 张卡塌成 1 个候选**，再被「内容 > 900 字」有效性过滤丢弃 ⇒ collectCards 恒返回 0 卡。
+  //   界面表现 = 「采集页有画面、但没有任何反应」（页内等满 listTimeoutMs 后回传 list-selector-warn）。
+  //   同时保留英文连字符候选：猎聘不同模板 / 灰度版本存在新旧两套类名，双通道才能都覆盖。
   liepin: [
+    // ① 驼峰容器（当前生产形态，真机源码逐字核对）+ ② 连字符（历史/灰度模板）
+    'div[class*="jobCardPcContainer"]',
+    'div[class*="job-card-pc-container"]',
+    // ③ 卡片锚点：同时覆盖新版 /job/xxx.shtml 与 SEO 模板 /a/xxx.shtml（后者见「猜你喜欢」列表）
     'a[data-nick="job-detail-job-info"]',
     'li[data-tlg-ext]',
     'a[href*="/job/"]',
+    'a[href*="/a/"]',
   ],
   zhaopin: [
     '[class*="joblist-box"] a',
@@ -97,7 +115,9 @@ const PLATFORM_CARD_SELECTORS = Object.freeze({
 /** 卡片归一容器（`el.closest(...)` 用） */
 const PLATFORM_CARD_CONTAINER_SELECTOR = Object.freeze({
   boss: '.job-card-wrapper, .job-card-box, li',
-  liepin: 'li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
+  // 猎聘：必须显式列出**驼峰**容器 —— `[class*="job-card"]` 不匹配 `jobCardPcContainer`，
+  // 缺它会让 closest() 越过卡片本身、一路吸附到外层列表容器（整页塌成 1 条候选）。
+  liepin: 'div[class*="jobCardPcContainer"], li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
   zhaopin: 'li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
   job51: 'li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
 });
@@ -143,11 +163,46 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
     recruiterTitle: ['.boss-title', '.job-card-footer .boss-title', '[class*="boss-title"]', '.boss-info-attr'],
   },
   liepin: {
-    title: ['[class*="job-title"]', '[class*="ellipsis-1"]', 'h3', '.job-name'],
-    company: ['[class*="company-name"]', '[class*="comp-name"]', '[data-nick="job-detail-company-info"] .ellipsis-1', '[class*="company"]'],
-    salary: ['[class*="job-salary"]', '[class*="salary"]'],
-    location: ['[class*="job-dq"]', '[class*="dq"]', '[class*="area"]'],
-    recruiterTitle: ['[class*="recruiter"]', '[class*="hr-name"]', '[class*="recruiter-title"]'],
+    // 2026-10-01 真机取证：站点类名是驼峰（jobTitleBox / companyName / …），
+    // 旧写法的连字符（job-title / company-name）在真实搜索页 0 命中 —— 双写并存覆盖新旧模板。
+    // 同页还有 `.ellipsis-1`（标题与地点共用）+ `title="…"` 属性，作为稳定的语义兜底。
+    title: [
+      '[class*="jobTitleBox"]',
+      '[class*="job-title"]',
+      '[data-nick="job-detail-job-info"] [title]', // 标题 div 带 title="岗位名"
+      '[class*="ellipsis-1"]',
+      'h3', '.job-name',
+    ],
+    company: [
+      '[class*="companyName"]',
+      '[class*="company-name"]',
+      '[class*="comp-name"]',
+      '[data-nick="job-detail-company-info"] [class*="ellipsis-1"]',
+      '[class*="company"]',
+    ],
+    salary: [
+      // ⚠️ 2026-10-01 真机取证：猎聘薪资节点的类名是 **CSS Modules 哈希**（如 `_40108qjbMk`，
+      //    每次发布都变），且它是 `jobTitleBox` 的**兄弟 span**，没有任何稳定语义类名 ——
+      //    下面三个候选在真实搜索页上 **0 命中**，薪资完全依赖 webview.cjs 的
+      //    `platformSalaryFromCard()`（按 jobTitleBox 父节点的兄弟结构提取）兜底。
+      //    保留本列表是为了兼容可能存在语义类名的历史/灰度模板，**不要**据此认为薪资有选择器可依。
+      //    也**不要**改用 `[class*="ellipsis-1"]`：同卡内标题/城市/公司名共用该类，会先命中标题。
+      '[class*="jobSalary"]',
+      '[class*="job-salary"]',
+      '[class*="salary"]',
+    ],
+    location: [
+      // 真机：地点写在 jobTitleBox 内「【城市-区】」的 ellipsis-1 span 里（与标题同容器）
+      '[class*="job-dq"]',
+      '[class*="dq"]',
+      '[class*="area"]',
+    ],
+    recruiterTitle: [
+      '[class*="recruiterName"]',
+      '[class*="recruiter"]',
+      '[class*="hr-name"]',
+      '[class*="recruiter-title"]',
+    ],
   },
   zhaopin: {
     /**
@@ -218,6 +273,49 @@ const PLATFORM_DETAIL_URL_RE = Object.freeze({
 
 /** 详情页 URL 通用否定形态（列表页判定用：命中即非列表页） */
 const DETAIL_URL_ANY_RE = /job_detail|jobdetail|\/job\/\d+/i;
+
+/**
+ * 岗位链接 → 平台岗位号（**唯一权威**，webview.cjs 的 jobId 提取一律走这里）。
+ *
+ * 为什么必须集中一处：这条正则曾在 webview.cjs 里**散落三份**（`platformExtractJob` /
+ * `cardJobTokens` / `extractJobFromCardOnly`），新增链接形态时只改一处、其余静默失效。
+ * 2026-10-01 猎聘修复即为实例：卡片选择器补了 SEO 模板 `/a/80379415.shtml`，
+ * 而三份正则都不认 `/a/` → 采到的岗位 jobId 恒为空。集中后新增形态只需改这里。
+ *
+ * 覆盖形态（按优先级）：
+ *   jobId=123                （51job / 通用 query）
+ *   /jobdetail/CC…J…         （智联）
+ *   /job_detail/xxx          （BOSS）
+ *   /job/1984773863.shtml    （猎聘新版；**去 .shtml 后缀**）
+ *   /a/80379415.shtml        （猎聘 SEO 模板；同上去后缀）
+ *   jobs.51job.com/xxx       （51job 路径式）
+ * @param {string} raw URL 或任意含链接的文本
+ * @returns {string} 岗位号；取不到返回 ''
+ */
+function jobIdFromUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+
+  // ① 51job 路径式（`jobs.51job.com/all/12345678.html`）：
+  //    必须**先于** `/job/` 分支判定，否则 `jobs.51job.com/job/...` 会被 `/job/` 截胡；
+  //    且取**最后一个**路径段（`/all/12345678.html` → `12345678`），
+  //    直接取第一段会得到目录名 `all`（实测踩过）。
+  const h51 = s.match(/jobs\.51job\.com\//i);
+  if (h51) {
+    const seg = s.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || '';
+    return seg.replace(/\.html?$/i, '').trim();
+  }
+
+  const m = s.match(/jobId=(\d+)/i)
+    || s.match(/jobdetail\/([^/?#]+)/i)
+    || s.match(/job_detail\/([^/?#]+)/i)
+    // 猎聘新版 `/job/1984773863.shtml`：字符类**必须排除点号**，否则会把 `.shtml` 一起吃进来
+    || s.match(/\/job\/([^/?#.]+)/i)
+    // 猎聘 SEO 模板 `/a/80379415.shtml`（只认纯数字，避免误吞任意 /a/ 路径）
+    || s.match(/\/a\/(\d+)/i);
+  if (!m) return '';
+  return String(m[1]).replace(/\.html?$/i, '').trim();
+}
 
 /** 登录墙 URL 形态（命中即视为登录页） */
 const LOGIN_WALL_URL_RE = /\/login|passport|signin|sign-in|verify/i;
@@ -342,12 +440,268 @@ function parseZhaopinJobDetail(payload) {
   };
 }
 
+// ============================================================================
+// 猎聘「列表卡无 JD」补齐 —— 同源**详情页 HTML**（服务端渲染，JD 直接写在 HTML 里）
+// ============================================================================
+// 为什么要它（2026-10-01 真机取证，用户提供的详情页源码 `liepin/JD.txt`）：
+//   猎聘搜索页卡片 DOM **只有标题/城市/薪资/标签/公司/HR**，**没有 JD 正文**
+//   （真机样本：`<a data-nick="job-detail-job-info">` 内只有 jobTitleBox / jobSalary / labels），
+//   列表级采集只能把整卡文本当描述入库 → 岗位匹配与定制简历拿到的「岗位」是
+//   「【红杉成员企业】全栈开发实习生 【 北京-海淀区 】 500元/天 实习 学生可投 本科 红杉中国 …」
+//   这类**列表摘要**，没有一句职责/要求，AI 评分与简历定制全线失真。
+//
+// 口径来源（非猜测）：详情页 `https://www.liepin.com/job/<id>.shtml` 是**服务端渲染**（SSR），
+//   完整 JD 就在 HTML 里的
+//     `<dd data-selector="job-intro-content">【公司介绍】…【你将负责】…</dd>`
+//   同一页还能拿到：`section.job-apply-content` 的 `.job-title` / `.salary` / `.job-properties span`、
+//   `section.recruiter-container` 的 HR 姓名与职位、`[data-selector="company-intro-container"] .inner` 公司简介。
+//   **同源 fetch 即可取**（preload 隔离世界从 liepin 页面 origin 发请求，与页面自身导航同源同权限）；
+//   公开详情页、只读 GET、不带任何写操作，不投递、不改岗位状态、不绕平台措施。
+//
+// 与智联的差异（勿照抄）：智联走 JSON 接口（fe-api.zhaopin.com），**跨域**需接口自身 CORS 放行；
+//   猎聘走**同源页面 HTML**（无跨域问题，但需自己解析 DOM —— 见 parseLiepinJobDetailHtml）。
+
+/** 详情页 JD 正文选择器（真机逐字核对，SSR 输出稳定） */
+const LIEPIN_JD_TEXT_SELECTORS = Object.freeze([
+  '[data-selector="job-intro-content"]',
+  'section.job-intro-container dd',
+  '.job-intro-container dd',
+]);
+/** 详情页公司简介选择器（可选，用于补充背景；不写进 JD 正文） */
+const LIEPIN_COMPANY_INTRO_SELECTORS = Object.freeze([
+  '[data-selector="company-intro-container"] .inner',
+  '.company-intro-container .inner',
+]);
+/** 详情页薪资 / 标题 / 属性选择器 */
+const LIEPIN_DETAIL_SELECTORS = Object.freeze({
+  title: ['.job-apply-content .name-box .job-title', '.job-apply-content .job-title', '.job-apply-content .name'],
+  salary: ['.job-apply-content .name-box .salary', '.job-apply-content .salary'],
+  // ⚠️ 取 `.job-properties` **容器本身**（不是它的 span）：调用方再按顶层 span 切分，
+  //    第一个 span 即地点、其余为「实习 / 5天/周 / 本科 / 学生可投」等标签。
+  //    写成 `… .job-properties span` 会只拿到**第一个** span（地点），标签全丢。
+  properties: ['.job-apply-content .job-properties', '.job-properties'],
+  company: ['.recruiter-container .title-box a'],
+  recruiterName: ['.recruiter-container .name-box .name'],
+  // HR 职位是 `.recruiter-container .title-box` 下的**首个** span（真机为「HRM」，其后才是公司链接）
+  recruiterTitle: ['.recruiter-container .title-box span'],
+});
+
 /**
- * 该平台是否走「详情接口补齐 JD」通道（能力表，勿在各调用点硬编码平台名）。
- * 智联：可行（详情接口匿名可取 + 列表卡有 number）；猎聘 / 前程无忧：暂无同源接口，仍只有列表字段。
+ * 猎聘岗位号 → 详情页 URL（**唯一权威**，调用方勿自行拼接）。
+ * 入参可为：完整详情链接（/job/ 或 SEO /a/）/ 任意含链接的文本 / **纯岗位号**。
+ * @param {string} raw
+ * @returns {string} 详情页绝对 URL；取不到返回 ''
+ */
+function liepinJobDetailUrl(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  // 纯岗位号（卡片 data-jobid / 上游已提取好的 jobId）直接可用，不必强行当 URL 解析
+  const id = /^\d{4,}$/.test(s) ? s : jobIdFromUrl(s);
+  return id ? `https://www.liepin.com/job/${encodeURIComponent(id)}.shtml` : '';
+}
+
+/**
+ * 猎聘详情页 HTML → 补齐字段（**纯函数**，离线回归直接喂真实页面样本）。
+ *
+ * ⚠️ 本函数**不依赖 DOM API**（browser 的 `document` 在 node 里不存在）——用正则从 HTML 文本里
+ * 抽「带属性的目标容器 → 容器 innerHTML」，再交给 `jdHtmlToText()` 洗成纯文本。这样：
+ *   1. 离线回归可直接吃真实页面样本（无需起浏览器 / 无需 jsdom）；
+ *   2. 解析口径集中一处，webview 侧只负责 fetch 与调用。
+ *
+ * @param {string} html 详情页 HTML 文本
+ * @returns {{description: string, title: string, salary: string, location: string, company: string, recruiterName: string, recruiterTitle: string, welfare: string[]} | null}
+ */
+function parseLiepinJobDetailHtml(html) {
+  const src = String(html == null ? '' : html);
+  if (!src || src.length < 500) return null; // 空响应 / 错误页 → 让调用方保持卡片文本兜底
+
+  /**
+   * 从 HTML 里抽「首个命中 selector 的元素 innerHTML」。
+   * 只支持本文件实际用到的形态：`tag[attr="v"]` / `tag.class` / `.class` / 纯 tag，
+   * 以及其后代的 `.class` / `[attr="v"]`（用最后一段定位）。避免引入完整 CSS 引擎。
+   * @param {string[]} selectors
+   * @returns {string} 命中元素的 innerHTML（未命中 ''）
+   */
+  const pickHtml = (selectors) => {
+    for (const sel of (selectors || [])) {
+      const m = matchElementBySelector(src, sel);
+      if (m) return m;
+    }
+    return '';
+  };
+
+  const jdHtml = pickHtml(LIEPIN_JD_TEXT_SELECTORS);
+  const titleHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.title);
+  const salaryHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.salary);
+  const propertiesHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.properties);
+  const companyHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.company);
+  const recruiterNameHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.recruiterName);
+  const recruiterTitleHtml = pickHtml(LIEPIN_DETAIL_SELECTORS.recruiterTitle);
+
+  const description = jdHtmlToText(jdHtml);
+  const title = jdHtmlToText(titleHtml);
+  const salary = decodeLiepinSalary(jdHtmlToText(salaryHtml));
+  // 属性区：第一个 span 即「城市-区」（真机 `北京-海淀区`），其余为 实习/学历/学生可投 等标签
+  const propTexts = (propertiesHtml ? splitTopLevelTags(propertiesHtml) : [])
+    .map((s) => jdHtmlToText(s))
+    .filter(Boolean);
+  const location = propTexts.length ? propTexts[0] : '';
+  // 标签 = 属性里除地点外的可读项，保留「实习 / 本科 / 学生可投 / 5天/周」这类口径；
+  // 剔除「招N人」「N月N日更新」这类**统计/时间**属性（不是岗位要求，混进 welfare 是噪声）。
+  const welfare = propTexts
+    .slice(1)
+    .map((t) => t.replace(/\s+/g, ' ').trim())
+    .filter((t) => t && t.length <= 24 && !/^招\s*\d+\s*人$/.test(t) && !/更新$/.test(t));
+  const company = jdHtmlToText(companyHtml).replace(/^[·\s]+/, '');
+  const recruiterName = jdHtmlToText(recruiterNameHtml);
+  const recruiterTitle = jdHtmlToText(recruiterTitleHtml);
+
+  // JD 正文是这条链路的唯一目的；取不到就当解析失败（调用方保持卡片文本兜底，绝不丢岗位）
+  if (!description) return null;
+  return {
+    description,
+    title,
+    salary,
+    location,
+    company,
+    recruiterName,
+    recruiterTitle,
+    welfare,
+  };
+}
+
+/**
+ * 在 HTML 文本里定位「首个匹配 selector 的元素」，返回其 innerHTML。
+ *
+ * 支持的 selector 子集（够本文件用即可，勿扩成半个 CSS 引擎）：
+ *   `tag`、`.class`、`tag[attr="v"]`、`[attr="v"]`、`tag.class`，
+ *   `A B`（空格=后代组合器）。
+ *
+ * ⚠️ 组合器必须**逐段收敛**（2026-10-01 踩过）：只取最后一段定位会把
+ *   `.recruiter-container .title-box span` 退化成「整页第一个 span」——
+ *   实测 `recruiterName` 取到岗位标题、`recruiterTitle` 取到「全国」。
+ *   正确做法：从左到右依次定位，每段在**上一段命中的 innerHTML 范围内**再找，
+ *   最后一段的 innerHTML 才是结果。前段用「唯一容器」语义（`.recruiter-container` 全页仅 1 个）。
+ * 元素边界用「同 tag 配对计数」扫描（不写正则回溯），能正确处理嵌套同 tag（如 section > dd）。
+ * @param {string} html
+ * @param {string} selector
+ * @returns {string} 元素 innerHTML；未命中 ''
+ */
+function matchElementBySelector(html, selector) {
+  const sel = String(selector || '').trim();
+  if (!sel || !html) return '';
+  const parts = sel.split(/\s+/).filter(Boolean);
+  let scope = html;
+  let inner = '';
+  for (const part of parts) {
+    // 自闭合 / void 段（如 `br`）无 innerHTML，直接返回空
+    const m = matchOneElement(scope, part);
+    if (!m) return '';
+    inner = m;
+    scope = m;
+  }
+  return inner;
+}
+
+/**
+ * 单个复合选择器（无组合器）在 `html` 文本里定位首个匹配元素，返回其 innerHTML。
+ * @param {string} html
+ * @param {string} simple
+ * @returns {string} 未命中 ''
+ */
+function matchOneElement(html, simple) {
+  const src = String(html || '');
+  const tagMatch = simple.match(/^([a-zA-Z][\w-]*)/);
+  const tag = tagMatch ? tagMatch[1] : '\\w+';
+  const attrMatch = simple.match(/\[([\w-]+)\s*=\s*"([^"]*)"\]/) || simple.match(/\[([\w-]+)\s*=\s*'([^']*)'\]/);
+  const classMatch = simple.match(/\.([\w-]+)/);
+
+  const openRe = new RegExp(`<(${tag})\\b([^>]*)>`, 'gi');
+  let m;
+  while ((m = openRe.exec(src))) {
+    const attrs = m[2] || '';
+    if (attrMatch) {
+      const a = attrs.match(new RegExp(`\\b${attrMatch[1]}\\s*=\\s*["']([^"']*)["']`));
+      if (!a || a[1] !== attrMatch[2]) continue;
+    }
+    if (classMatch) {
+      const c = attrs.match(/\bclass\s*=\s*["']([^"']*)["']/);
+      if (!c || !c[1].split(/\s+/).includes(classMatch[1])) continue;
+    }
+    const contentStart = m.index + m[0].length;
+    const end = findMatchingCloseTag(src, m[1], contentStart);
+    if (end < 0) continue;
+    return src.slice(contentStart, end);
+  }
+  return '';
+}
+
+/**
+ * 从 `contentStart` 起，找到与 `tag` 配对的闭合标签位置（返回 `</tag>` 的起始下标；找不到 -1）。
+ * 用「同 tag 开闭配对计数」扫描，正确处理嵌套同 tag。
+ * @param {string} html
+ * @param {string} tag
+ * @param {number} contentStart
+ * @returns {number}
+ */
+function findMatchingCloseTag(html, tag, contentStart) {
+  const re = new RegExp(`<(/?)(${tag})\\b[^>]*>`, 'gi');
+  re.lastIndex = contentStart;
+  let depth = 1;
+  let m;
+  while ((m = re.exec(html))) {
+    if (m[1] === '/') {
+      depth -= 1;
+      if (depth === 0) return m.index;
+    } else {
+      depth += 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 把一段 HTML 按「顶层同级标签」切成若干片段（用于属性区 span 列表）。
+ * 只做一层：扫描顶层 `<tag ...>…</tag>`，收集并列的元素片段。
+ * @param {string} html
+ * @returns {string[]}
+ */
+function splitTopLevelTags(html) {
+  const src = String(html || '');
+  const out = [];
+  const re = /<([a-zA-Z][\w-]*)\b[^>]*>/g;
+  let m;
+  while ((m = re.exec(src))) {
+    const tag = m[1];
+    // 自闭合 / void 标签跳过
+    if (/^(br|img|input|hr|meta|link)$/i.test(tag)) continue;
+    const contentStart = m.index + m[0].length;
+    const end = findMatchingCloseTag(src, tag, contentStart);
+    if (end < 0) continue;
+    out.push(src.slice(m.index, end + tag.length + 3));
+    re.lastIndex = end + tag.length + 3;
+  }
+  return out;
+}
+
+/**
+ * 猎聘详情页薪资串清洗：真机为 `500元/天` / `15-20k·14薪`，偶带 `·14薪` 后缀。
+ * 只做 strip（去掉首尾空白与 ·N薪 后缀以外的噪声），**不改写数字**——数字口径交给 jobMatch 的
+ * `parseSalaryRange`（唯一权威），此处不做任何单位换算。
+ * @param {string} raw
+ * @returns {string}
+ */
+function decodeLiepinSalary(raw) {
+  return String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 该平台是否走「详情补齐 JD」通道（能力表，勿在各调用点硬编码平台名）。
+ * 智联：JSON 详情接口（`zhaopinJobDetailUrl`）；猎聘：同源详情页 HTML（`liepinJobDetailUrl`）。
+ * 前程无忧：暂无同源通道，仍只有列表字段。
  */
 const PLATFORM_DETAIL_API_FILL = Object.freeze({
   zhaopin: true,
+  liepin: true,
 });
 
 /** 该平台是否为「列表页内联详情」形态（仅 BOSS） */
@@ -549,6 +903,8 @@ module.exports = {
   jdHtmlToText,
   toStringTags,
   parseZhaopinJobDetail,
+  liepinJobDetailUrl,
+  parseLiepinJobDetailHtml,
   normLabelText,
   labelHit,
   labelExactHit,
@@ -556,4 +912,5 @@ module.exports = {
   supportsInlineDetail,
   isListPage,
   isDetailPage,
+  jobIdFromUrl,
 };

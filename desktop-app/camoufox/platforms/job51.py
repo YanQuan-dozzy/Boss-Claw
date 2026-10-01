@@ -16,6 +16,7 @@
 import re
 
 from .base import CollectorBase
+from .common import human_sleep, log
 from .filters import build_filter_params
 from .models import JobCandidate
 
@@ -42,8 +43,12 @@ SEARCH_API_HINT = '/api/job/search-pc'
 DELIVER_BTN_RE = re.compile(r'批\s*量\s*投\s*递|投\s*递\s*简\s*历|投\s*递')
 # 投递成功弹窗（含成功数量）
 DELIVER_OK_RE = re.compile(r'投递成功|投递完成|已投递|投递.{0,6}份|成功投递')
-# 每日搜索/投递受限提示
-LIMIT_RE = re.compile(r'今日投递|已达上限|投递上限|操作频繁|请稍后再试')
+# 每日搜索/投递受限提示（瞬态 toast；词表对齐 get_jobs(Job51.java)::detectDailyLimitToast51job，
+# 「达到上限 / 次数过多 / 休息一下明天再来」是平台实际文案，漏了就会继续投递直到被风控）
+LIMIT_RE = re.compile(
+    r'今日投递|您今日投递太多|达到上限|已达上限|投递上限|投递次数|次数过多|操作频繁|'
+    r'休息一下明天再来|明天再来|请稍后再试'
+)
 
 
 def _resolve_area(city: str) -> str:
@@ -75,6 +80,9 @@ def build_search_url(query: str, city: str, salary: str, page: int = 1,
       workYear 经验 · degree 学历 · companySize 公司规模 · jobType 工作类型。
     注意：51Job 的码值为「顺位 2 位编码」推得（inferred，见 filters.py 能力表），
     真机登录实测后可逐项校准 filters.py 中的 JOB51_* 表。
+
+    分页不经 URL：51Job 搜索页无可靠的 page 查询参数（get_jobs 亦如此），翻页由页内
+    「跳页」控件完成 → `page` 形参在此**刻意不使用**，第 2 页起交给 `after_navigate` 跳页。
     """
     area = _resolve_area(city)
     sal = _resolve_salary(salary or ((criteria or {}).get('salary') or ''))
@@ -144,22 +152,51 @@ JS_DOM_CARDS = r"""() => {
     return out;
 }"""
 
-# 投递按钮定位（批量投递/投递简历；已投递态直接判否）
-JS_FIND_DELIVER_BTN = r"""() => {
-    const all = Array.from(document.querySelectorAll('button, a, [role="button"], span, div'));
-    const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
-    const visible = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch(e) { return false; } };
-    const hits = all.filter(el => visible(el) && text(el).length <= 10 && /投递/.test(text(el)));
-    if (!hits.length) return false;
-    hits.sort((a, b) => text(b).length - text(a).length);
-    const el = hits[0];
-    if (/已投递|投递成功/.test(text(el))) return false;
-    el.setAttribute('data-job51-deliver', '1');
+# 空结果文案（对齐 get_jobs(Job51.java)::detectNoJobs51job）
+JS_NO_JOBS = r"""() => {
+    const kws = ['暂无职位', '没有符合条件的职位', '暂无符合条件职位', '暂无符合职位', '暂无相关职位'];
+    const body = (document.body ? document.body.innerText : '') || '';
+    return kws.some(k => body.includes(k));
+}"""
+
+# 页内跳页（对齐 get_jobs(Job51.java)::jumpToPage：页码输入框 #jump_page + 跳转控件 .jumpPage）
+JS_JUMP_TO_PAGE = r"""(pageNum) => {
+    const input = document.querySelector('#jump_page');
+    if (!input) return false;
+    try { input.focus(); } catch (e) {}
+    input.value = String(pageNum);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const btn = document.querySelector('span.jumpPage, .jumpPage');
+    if (btn) { btn.click(); return true; }
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
     return true;
 }"""
 
-# 投递成功确认：成功弹窗/toast（含投递成功/成功投递 N 份）
+# 投递按钮定位：① 列表页「批量投递」控件（get_jobs(Job51.java) 真机口径：
+# div.tabs_in 下第 2 个 button.p_but）→ ② 详情页按**精确文案**匹配投递类按钮。
+# ⚠️ 不得再用「文本含『投递』+ 按文本长度排序」的宽泛启发式：它会命中任意含该字的
+# 容器/导航项，点击对象不可预期（旧实现对文本长度降序取首个，语义不明）。
+JS_FIND_DELIVER_BTN = r"""() => {
+    const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
+    const visible = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch(e) { return false; } };
+    const mark = (el) => { el.setAttribute('data-job51-deliver', '1'); return true; };
+    const batch = Array.from(document.querySelectorAll('div.tabs_in button.p_but')).filter(visible);
+    if (batch.length > 1) return mark(batch[1]);
+    const APPLY_RE = /^(批量投递|立即投递|投递简历|立即申请|申请职位|投递)$/;
+    const DONE_RE = /已投递|投递成功|已申请/;
+    const hits = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+        .filter(el => visible(el) && APPLY_RE.test(text(el)));
+    const ready = hits.find(el => !DONE_RE.test(text(el)));
+    return ready ? mark(ready) : false;
+}"""
+
+# 投递成功确认：① 结果弹窗「投递成功 N 个，未投递 M 个」（get_jobs(Job51.java) 真机口径：
+# .el-dialog__body 含「投递成功」）→ ② toast / 正文兜底
 JS_DELIVER_CONFIRMED = r"""() => {
+    const dlg = document.querySelector('.el-dialog__body');
+    if (dlg && /投递成功/.test(dlg.innerText || '')) return true;
     const body = (document.body ? document.body.innerText : '') || '';
     return /投递成功|成功投递|投递完成|已投递\s*\d+|投递\s*\d+\s*份/.test(body.slice(0, 4000));
 }"""
@@ -182,20 +219,82 @@ class Job51Collector(CollectorBase):
         return build_search_url(query, city, salary, page, criteria)
 
     def parse_api_payload(self, root: dict) -> list:
-        """/api/job/search-pc → data.result / data.jobs / data.list（含 dict 包裹兜底）。"""
-        data = (root or {}).get('data') or {}
-        if not isinstance(data, dict):
-            return []
-        results = data.get('result') or data.get('jobs') or data.get('list') or []
-        if isinstance(results, dict):
-            results = results.get('list') or results.get('jobs') or []
-        return results if isinstance(results, list) else []
+        """`/api/job/search-pc` → 岗位列表。
+
+        候选路径与 get_jobs(Job51.java)::extractJobIdsFromJson 的清单对齐
+        （items / jobList / list / jobs / resultbody.job.items / job.items / resultbody.items，
+        get_jobs 按此顺序兜底），另保留既有的 `data.result` 分支（含 dict 包裹）。
+        只认已知结构，不猜字段名；全部落空返回 []，交给 DOM 兜底。
+        """
+        root = root if isinstance(root, dict) else {}
+        data = root.get('data') if isinstance(root.get('data'), dict) else {}
+        resultbody = root.get('resultbody') if isinstance(root.get('resultbody'), dict) else {}
+        nested_job = resultbody.get('job') if isinstance(resultbody.get('job'), dict) else {}
+        top_job = root.get('job') if isinstance(root.get('job'), dict) else {}
+
+        candidates = (
+            data.get('items'), data.get('jobList'), data.get('list'), data.get('jobs'),
+            data.get('result'),
+            resultbody.get('items'), nested_job.get('items'), top_job.get('items'),
+        )
+        for cand in candidates:
+            if isinstance(cand, list):
+                return cand
+            if isinstance(cand, dict):
+                for key in ('list', 'jobs', 'items'):
+                    inner = cand.get(key)
+                    if isinstance(inner, list):
+                        return inner
+        return []
 
     def format_jobs(self, raw, keyword='', page=0) -> list:
         return format_jobs(raw, keyword, page)
 
     def dom_cards_js(self) -> str:
         return JS_DOM_CARDS
+
+    def after_navigate(self, page, query, page_num) -> bool | None:
+        """分页：页内「跳页」控件（`#jump_page` + `.jumpPage`，get_jobs 真机口径）。
+
+        骨架逐页 goto 同一 URL（51Job 无可靠 page 查询参数），故第 2 页起在此处跳页；
+        返回 True 让骨架丢弃跳页前捕获的响应（否则首页列表会混进本页）。
+        跳页控件缺失只告警不中断——不把「控件变更」伪装成采集失败（宁少采不误判）。
+        """
+        if page_num <= 1:
+            return None
+        try:
+            jumped = bool(page.evaluate(JS_JUMP_TO_PAGE, page_num))
+        except Exception as e:
+            jumped = False
+            log('⚠️', f'[job51] 跳到第 {page_num} 页异常：{e}')
+        if not jumped:
+            log('⚠️', f'[job51] 未找到跳页控件，#{page_num} 页可能仍是上一页内容')
+            return None
+        human_sleep(2.0, 0.35, 1.2)
+        return True
+
+    def empty_list_hit(self, page) -> bool:
+        """空结果判定（文案对齐 get_jobs::detectNoJobs51job）→ 本词提前收口翻页。"""
+        try:
+            return bool(page.evaluate(JS_NO_JOBS))
+        except Exception:
+            return False
+
+    def is_logged_out(self, page) -> bool:
+        """未登录判定：页头 `a.uname` 文案为「登录」（get_jobs::checkNeedLogin 口径）。
+
+        51Job 未登录不跳转 /login，只看 URL 会把「未登录」误判成「找不到投递按钮」。
+        """
+        try:
+            return bool(page.evaluate(
+                r"""() => {
+                    const a = document.querySelector('a.uname');
+                    if (!a) return false;
+                    return /登录/.test((a.textContent || '').trim());
+                }"""
+            ))
+        except Exception:
+            return False
 
     # ---------- 投递差异 ----------
     def find_action_button(self, page):

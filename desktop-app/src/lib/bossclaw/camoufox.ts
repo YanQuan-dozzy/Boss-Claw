@@ -59,6 +59,8 @@ export interface CamoufoxJob {
   bossTitle: string;
   companySize: string;
   companyType: string;
+  /** 公司所属行业（猎聘 compIndustry；与 companyType「公司性质」语义分离） */
+  industry?: string;
   url: string;
   /** 采集溯源：该岗位由哪个关键词采到（多平台来源统计用；Python JobCandidate 追加字段） */
   sourceKeyword?: string;
@@ -87,6 +89,12 @@ export interface CamoufoxSendResult {
   error?: string;
 }
 
+/** 会话内一条消息（AI 跟聊多轮上下文用）：fromHr=true 为 HR 发出，false 为我方发出。 */
+export interface ChatHistoryEntry {
+  fromHr: boolean;
+  text: string;
+}
+
 export interface CamoufoxChatResult {
   ok: boolean;
   sent?: boolean;
@@ -100,9 +108,15 @@ export interface CamoufoxChatResult {
   conflict?: boolean;
   /** HR 已发来消息，需进入「AI 跟聊」回复（code 700） */
   needsReply?: boolean;
+  /** 已与该 HR 建立会话且无需回复（code 701）：跳过重复打招呼 */
+  alreadyChatted?: boolean;
   hasHrMessage?: boolean;
   /** HR 最新一条消息文本（用于生成 AI 回复） */
   hrLastMessage?: string;
+  /** 双方最近的消息（按时序，早→晚）：mode='check'/'auto' 命中跟聊时回传，供多轮 AI 回复 */
+  hrHistory?: ChatHistoryEntry[];
+  /** 本次为「只读巡检」（mode='check'）：仅读取会话，未发送任何消息 */
+  checked?: boolean;
   error?: string;
 }
 
@@ -114,7 +128,69 @@ export interface CamoufoxLoginResult {
   error?: string;
 }
 
-export type CamoufoxAction = 'search' | 'send' | 'chat' | 'login' | 'logout' | 'clear' | 'platforms' | 'progress';
+export type CamoufoxAction = 'search' | 'send' | 'chat' | 'chatWatch' | 'login' | 'logout' | 'clear' | 'platforms' | 'progress';
+
+// ===== 常驻「AI 跟聊」会话监听（/chat-watch）=====
+// 单一常驻浏览器停在 BOSS 会话页：scan 读会话列表 → open 切会话读聊天记录 → send 回复。
+// 身份校验（getBossData / 窗口头部）与气泡确认都在 Python 侧完成，渲染层只做 AI 决策。
+export type ChatWatchCommand = 'start' | 'scan' | 'open' | 'send' | 'stop' | 'status';
+
+/** 会话列表中的一条会话（scan 返回） */
+export interface ChatWatchConversation {
+  name: string;
+  company?: string;
+  jobName?: string;
+  preview?: string;
+  unread?: boolean;
+  friendId?: string;
+  uid?: string;
+  lastFromId?: string;
+  /** true = 由 DOM 兜底扫描得到（接口不可用） */
+  dom?: boolean;
+}
+
+export interface ChatWatchResult {
+  ok: boolean;
+  code?: number;
+  message?: string;
+  error?: string;
+  /** start：会话页是否就绪 */
+  ready?: boolean;
+  /** status：监听是否运行中 / 当前页面 URL */
+  running?: boolean;
+  url?: string;
+  /** scan：会话列表 */
+  conversations?: ChatWatchConversation[];
+  total?: number;
+  /** open：会话名 / 公司 / 岗位名 / 完整聊天记录 / 是否需要回复 */
+  name?: string;
+  company?: string;
+  jobName?: string;
+  history?: ChatHistoryEntry[];
+  needsReply?: boolean;
+  hrLastMessage?: string;
+  /** open：身份校验依据（api=getBossData / header=窗口头部 / content=聊天内容） */
+  matchedBy?: string;
+  /** send：是否已发送 */
+  sent?: boolean;
+  method?: string;
+  sentVia?: string;
+}
+
+/** 调用常驻会话监听命令（start / scan / open / send / stop / status）。 */
+export function camoufoxChatWatch(
+  cmd: ChatWatchCommand,
+  payload?: { os?: string; name?: string; company?: string; text?: string }
+): Promise<ChatWatchResult> {
+  return camoufoxCall<ChatWatchResult>('chatWatch', {
+    cmd,
+    platform: 'boss',
+    os: payload?.os || undefined,
+    name: payload?.name || '',
+    company: payload?.company || '',
+    text: payload?.text || '',
+  });
+}
 
 /** 查询 Camoufox 引擎状态（会尝试自动拉起桥；platform 指定平台登录态） */
 export async function camoufoxStatus(platform: string = 'boss'): Promise<CamoufoxStatus> {
@@ -209,9 +285,10 @@ export function camoufoxChat(
     resumeImages?: CamoufoxResumeImageInput[];
     /**
      * 'auto'（默认）首次打招呼投递：若 HR 已发来消息则返回 needsReply 供 AI 跟聊；
-     * 'reply' 发送渲染层生成的 AI 回复文本（配合 replyText）。仅 BOSS 支持。
+     * 'reply' 发送渲染层生成的 AI 回复文本（配合 replyText）。仅 BOSS 支持；
+     * 'check' 只读巡检：仅打开会话读取 HR 历史（回传 hrHistory/needsReply），不发送任何消息。
      */
-    mode?: 'auto' | 'reply';
+    mode?: 'auto' | 'reply' | 'check';
     /** mode='reply' 时要发送的 AI 回复文本 */
     replyText?: string;
   }

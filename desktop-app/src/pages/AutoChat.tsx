@@ -4,7 +4,7 @@
  * - 页头状态栏（执行模式 / 隐身引擎就绪 / 风控冷却 三个 status-pill）
  * - 隐身引擎投递控制卡（开始批量沟通 / 停止 / 检测状态 + 待沟通/已沟通/失败指标 + 各平台登录态与扫码登录 autochat-platform-grid）
  * - 待沟通岗位队列卡（job-card 列表：平台/岗位/优先级/状态，招呼语可编辑，选中进行沟通）
- * - 沟通与附件设置卡（打招呼语非空红线、附件开关与水印、图片简历上传）
+ * - 沟通与附件设置卡（打招呼语非空红线、附件开关与水印、图片简历上传、AI 跟聊监听开关）
  * - 沟通信息卡（AI 跟聊引用：薪资期望/面试时间/到岗时间等人工填写）
  * - 防封号节奏限制卡（岗位间隔 / 每分动作 / 冷却 / 每日上限等 Rate Limit）
  */
@@ -81,9 +81,12 @@ export default function AutoChat() {
   // ===== 自动沟通后台引擎（全局持久：切页仍继续运行，工作台新批准岗位自动加入）=====
   const chatRunning = useAutoChatStore((s) => s.chatRunning);
   const activeChatId = useAutoChatStore((s) => s.activeChatId);
+  const watchRunning = useAutoChatStore((s) => s.watchRunning);
+  const watchActiveId = useAutoChatStore((s) => s.watchActiveId);
   const progress = useAutoChatStore((s) => s.progress);
   const chatOne = useAutoChatStore((s) => s.chatOne);
   const start = useAutoChatStore((s) => s.start);
+  const setWatch = useAutoChatStore((s) => s.setWatch);
   const stop = useAutoChatStore((s) => s.stop);
 
   // ===== Camoufox 隐身引擎状态 =====
@@ -258,6 +261,26 @@ export default function AutoChat() {
     // 启动后台持久沟通：切到工作台仍继续运行，新批准的岗位会自动加入
     start();
   }, [profile, config, batchQueue, start, cfxPlatformLogin, refreshPlatformStatus]);
+
+  // ===== AI 跟聊监听：常驻巡检已投递的 BOSS 会话，HR 回消息即带上下文自动回复 =====
+  const handleToggleWatch = useCallback(async (on: boolean) => {
+    if (!on) { setWatch(false); return; }
+    if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
+    if (isLockedOut(config)) {
+      message.warning(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(config) / 60000)} 分钟），暂不能开启跟聊监听`);
+      return;
+    }
+    const st = await camoufoxStatus();
+    if (!st.ready) {
+      message.warning('隐身引擎未就绪：' + (st.message || '请先下载 Camoufox 隐身引擎内核（暂未下载）'));
+      return;
+    }
+    if (!st.engine?.loggedIn) {
+      message.warning('BOSS 未登录，请先在上方扫码登录后再开启跟聊监听');
+      return;
+    }
+    setWatch(true);
+  }, [profile, config, setWatch]);
 
   return (
     <main className="page" aria-label="自动沟通控制台">
@@ -439,7 +462,9 @@ export default function AutoChat() {
                 >
                   {queueItems.map((p: PendingItem) => {
                     const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
-                    const isActive = p.id === activeChatId;
+                    const isActive = p.id === activeChatId
+                      || (!!watchActiveId && [p.job?.recruiterName, p.job?.company]
+                        .some((v) => String(v || '').replace(/\s+/g, '') === String(watchActiveId).replace(/\s+/g, '')));
                     const canChat = p.status !== 'sent';
                     // 薪资：cleanSalary 已还原 BOSS 直聘的字体混淆（PUA 数字），并过滤无效/占位值
                     const salaryText = cleanSalary(p.job?.salary);
@@ -576,6 +601,18 @@ export default function AutoChat() {
                 <div className="setting-row__desc">自动跳过猎头招聘岗位</div>
               </div>
               <div className="setting-row__control"><Switch checked={config.excludeHeadhunters} onChange={(v) => setConfig({ excludeHeadhunters: v })} /></div>
+            </div>
+
+            <div className="setting-row">
+              <div className="setting-row__main">
+                <div className="setting-row__label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <RobotOutlined style={{ color: 'var(--brand)' }} />
+                  AI 跟聊监听
+                  {watchRunning && <Tag color="processing" icon={<SyncOutlined spin />} style={{ margin: 0, borderRadius: 6 }}>监听中</Tag>}
+                </div>
+                <div className="setting-row__desc">常驻 BOSS 会话页扫描全部 HR 会话，有新消息即结合聊天记录自动回复（不占用当日投递上限）</div>
+              </div>
+              <div className="setting-row__control"><Switch checked={watchRunning} onChange={(v) => { void handleToggleWatch(v); }} /></div>
             </div>
 
             {/* 图片简历 2x2 缩略图网格 */}

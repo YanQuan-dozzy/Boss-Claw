@@ -167,17 +167,8 @@ function platformListPage() {
 // 非 BOSS 平台详情页岗位提取（URL jobId + 通用文本字段）
 function platformExtractJob() {
   const url = location.href;
-  let jobId = '';
-  if (PLATFORM === 'liepin') {
-    const m = url.match(/\/job\/(\d+)/i) || url.match(/jobId=(\d+)/i);
-    if (m) jobId = m[1];
-  } else if (PLATFORM === 'zhaopin') {
-    const m = url.match(/jobdetail\/([^/?]+)/i);
-    if (m) jobId = m[1];
-  } else if (PLATFORM === 'job51') {
-    const m = url.match(/jobId=(\d+)/i) || url.match(/jobs\.51job\.com\/([^/]+)/i);
-    if (m) jobId = m[1];
-  }
+  // jobId 统一走适配表唯一权威（覆盖猎聘 /job/ 与 SEO /a/ 两种形态，见 jobIdFromUrl 注释）
+  const jobId = ADAPTERS.jobIdFromUrl(url);
   const title = pickText(['h1', '[class*="job-title"]', '[class*="job-name"]', '[class*="position"] h3', 'title']) || document.title;
   // 公司名：窄选择器优先，避免 [class*="company"] 命中地点容器；cleanCompanyName 兜底
   const company = cleanCompanyName(pickText(['[class*="company-name"] .name', '[class*="company-name"]', '[class*="companyName"]', '[class*="comp-name"]', '.cname', 'a[href*="gongsi"]', 'a[href*="company"]']));
@@ -714,7 +705,7 @@ function extractJobFromDom() {
   // 薪资：选择器优先；兜底正则在还原后的整段文本上跑（与采集 cardFields 同口径，
   // 新版页面/选择器不命中时也能从正文拿到薪资）
   const salary = decodeSalaryDigits(pick(['.job-banner .salary', '.salary', '.job-salary', '[class*="job-salary"]', '[class*="salary"]']))
-    || scopeText.match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
+    || matchSalaryText(scopeText)
     || '';
   // 地点：选择器优先（含新版 a.text-city 城市链接）；兜底城市关键字正则（与采集 cardFields 同口径），
   // 之后 applyEmbeddedOverlay 还会用 meta「地点：」权威覆盖。
@@ -1561,7 +1552,7 @@ function collectCards(quiet = false) {
     // 或薪资文本（含「元」后缀，如智联「9000-10000元」——排除筛选栏 / 无关 li）
     return Boolean(el.querySelector?.(LINK_SELECTOR))
       || Boolean(el.getAttribute?.('data-bossclaw-jobdetail'))
-      || /\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/.test(content);
+      || SALARY_TEXT_RE.test(content);
   });
   // 「像列表容器」的候选：内部装着 **≥2 个互不包含**的有效候选（即两张以上真卡）→ 它是列表/包装容器。
   // 这类元素**不允许吸收内层**，否则会把内层真卡并成一条、静默丢岗位（宁重复不遗漏）。
@@ -1603,12 +1594,9 @@ function cardJobTokens(el) {
   const push = (raw) => {
     const s = String(raw || '').trim();
     if (!s) return;
-    const m = s.match(/jobdetail\/([^/?#]+)/i)
-      || s.match(/job_detail\/([^/?#]+)/i)
-      || s.match(/jobId=([^&#]+)/i)
-      || s.match(/\/job\/(\d+)/i)
-      || s.match(/jobs\.51job\.com\/([^/?#]+)/i);
-    out.add(m ? m[1] : s.split('?')[0]);
+    // 岗位号提取统一走适配表（新增链接形态只需改 jobIdFromUrl）
+    const id = ADAPTERS.jobIdFromUrl(s);
+    out.add(id || s.split('?')[0]);
   };
   if (el.matches?.(LINK_SELECTOR)) push(el.getAttribute('href'));
   push(el.getAttribute?.('data-bossclaw-jobdetail'));
@@ -1621,6 +1609,48 @@ function cardJobTokens(el) {
 const CARD_LINE_NOISE = /立即沟通|继续沟通|打招呼|在线|刚刚活跃|今日活跃|昨日活跃|日内活跃|周内活跃|月内活跃|\d+\s*(?:分钟|小时|天|周|月)前?(?:活跃)?|[Kk]薪|薪[Kk]|元\/月|.BO.|应届|经验|学历|大专|本科|硕士|博士|全职|兼职|实习|招聘|急聘|猎头/i;
 // 薪资形（行兜底排除用）：区间薪（15-25K / 6000-8000元 / 1.2-1.3万）、「20K以上」、日薪（140-150元/天）
 const SALARY_LINE_RE = /\d+(?:\.\d+)?\s*[-–~]\s*\d+(?:\.\d+)?\s*[Kk万]|\d+\s*[Kk]\s*以上|\d+\s*[-–~]\s*\d+\s*元/;
+
+/**
+ * 卡片文本里的薪资兜底提取正则（**浏览期唯一权威**，全部薪资兜底一律引用本常量）。
+ *
+ * 2026-10-01 收口：这条正则在改造前被**内联复制 5 处**（详情页 scopeText 兜底 / 列表有效性
+ * 判定 `hasSalaryText` / `cardFields` / `extractJobFromCardOnly` / 详情页 `salaryMatch`）。
+ * 修复猎聘「薪资解析错误」时只改了其中一处，其余三处继续用旧形态 → 静默不一致。
+ * 现集中为单一常量，新增薪资形态只改这里。
+ *
+ * 关键修复点（旧形态的两个缺陷，均已在真机 DOM 取证）：
+ *   ① **`元` 分支缺少「/天·/月·/时·/年」单位后缀** —— 旧写法 `\d+[-–~]\d+元` 是**贪婪截断**，
+ *      猎聘卡片「200-300元/天」被截成 `200-300元`。日期口径标签（`/天`）就此丢失，
+ *      下游 `parseSalaryRange` 判不出 daily → 按月薪 K 值处理 200-300 → 触发 `high > 200`
+ *      → ÷1000 → 月薪 0.2K → 等效日薪 9.1 元/天 → 被「最低日薪 100 元/天」硬拦截。
+ *      界面表现为「页面上明明是 200-300 元/天，日志却报日薪约 9.1 元/天」。
+ *   ② **不支持单值**（`500元/天` / `250元/天` / `20K以上` 的 `元` 形态）—— 旧写法要求
+ *      必须有区间连字符，猎聘大量单值日薪卡因此完全取不到薪资。
+ *   ③ **不支持「高段带单位、低段无单位」的混合单位区间**（`8千-1.2万` 旧写法只吃到 `8千`）——
+ *      改为区间两段各自独立带单位（单位可选），与 jobMatch 的单位继承口径解耦。
+ *   保留 K/k/万 两分支的原有形态（BOSS/智联/51job 既有行为，不得回归）。
+ *
+ * 设计约束：
+ *   - 两个分支：**区间分支**（低段[单位可选] - 高段[单位必填]）优先，**单值分支**兜底。
+ *     单位放在**区间之后**是关键 —— 若让单位先于区间（`数值 单位 [- 数值 单位]`），
+ *     正则回溯时会从低段单位处收尾，把 `200-300元/天` 截成 `300元/天`（实测踩过）。
+ *     区间分支要求高段**必须**带单位，低段单位可省，故 `8千-1.2万`、`200-300元/天`
+ *     均整段命中，而 `1-49人`（高段无单位）不会误命中。
+ *   - 单值分支同样要求带单位 —— 纯数字（`5000`）不视为薪资，避免「1-49人」类噪声。
+ *   - `元` 单位后缀限定 天/日/月/时/年，避免「5000人」被截成「5000元」。
+ *   - 单位后加 `(?![人项岁个年月日天款次])` 负向断言 —— 拦住「6千以下（筛选栏）」这类
+ *     带比较词的数量描述；真实薪资串后面不会紧跟这些量词，故该断言只减噪声、不减能力。
+ */
+const SALARY_TEXT_RE = /(\d+(?:\.\d+)?)(?:\s*([Kk]|万|千|元(?:\s*\/\s*(?:天|日|月|时|年))?))?\s*[-–~至到]\s*(\d+(?:\.\d+)?)\s*([Kk]|万|千|元(?:\s*\/\s*(?:天|日|月|时|年))?)\s*(以上|以下)?(?![人项岁个款次])|(\d+(?:\.\d+)?)\s*([Kk]|万|千|元(?:\s*\/\s*(?:天|日|月|时|年))?)\s*(以上|以下)?(?![人项岁个款次])/;
+
+/**
+ * 从任意文本里提取薪资串（引用 {@link SALARY_TEXT_RE}）。取不到返回 ''。
+ * @param {string} text
+ * @returns {string}
+ */
+function matchSalaryText(text) {
+  return String(text == null ? '' : text).match(SALARY_TEXT_RE)?.[0] || '';
+}
 
 // 地名识别（修复「公司 Top」把地点误当公司名）：
 // BOSS 卡片地点字段形如「城市·区·街道」（如「深圳·南山区·科技园」），与部分公司名容器
@@ -1703,13 +1733,49 @@ function cardIdentity(card) {
   return { title: title.slice(0, 80), company: cleanCompanyName(company), href, raw: textOf(card).slice(0, 500) };
 }
 
+// ===== 平台专属「结构型」字段提取 =====
+// 为什么不能只靠 CSS 选择器：猎聘薪资节点的类名是 CSS Modules 哈希（如 `_40108qjbMk`，每次发布都变），
+// 而它与标题容器 `jobTitleBox` 是**兄弟关系**（没有语义类名可供 `[class*=...]` 命中）。
+// 真机取证（2026-10-01，用户提供的 /zhaopin/ 搜索页源码）：
+//   <div class="_40108bQFNb">                     ← 行容器
+//     <div class="_40108ZRrnt jobTitleBox">…</div> ← 标题+【城市】
+//     <span class="_40108qjbMk">200-300元/天</span> ← 薪资（哈希类名，无稳定钩子）
+//   </div>
+// 因此猎聘的薪资只能按**结构**取：定位 `jobTitleBox` → 在其父节点下找首个
+// 「非标题容器且文本整体符合薪资形态」的兄弟元素。该口径在真机 29/29 全命中。
+// 注意：**不要**改用 `[class*="ellipsis-1"]` 兜底 —— 它在本卡内会先命中**标题**（同为 ellipsis-1），
+// 把岗位名当成薪资返回（同卡片内已有 3 个 ellipsis-1：标题 / 城市 / 公司名）。
+/**
+ * 薪资串整体形态（用于兄弟节点筛选，必须整串匹配，避免把「16-20万」筛选栏等噪声纳入）。
+ * 允许尾部「·13薪 / ×15薪 / 15薪」年终奖月数（猎聘常见「8-15k·15薪」）——
+ * 下游 `parseSalaryRange` 会先剥掉 `1[2-8]薪` 再解析，故这里放行不会污染数字。
+ */
+const SALARY_WHOLE_RE = /^\s*\d+(?:\.\d+)?(?:\s*[-–~至到]\s*\d+(?:\.\d+)?)?\s*(?:[Kk]|万|千|元(?:\s*\/\s*(?:天|日|月|时|年))?)\s*(?:以上|以下)?\s*(?:[·*＊xX×]\s*1[2-8]\s*薪)?\s*$/;
+
+/** 平台专属结构型薪资提取（当前仅猎聘需要；其余平台走选择器 + 文本兜底） */
+function platformSalaryFromCard(card) {
+  if (PLATFORM !== 'liepin') return '';
+  const titleBox = card.querySelector('[class*="jobTitleBox"]');
+  const row = titleBox?.parentElement;
+  if (!row) return '';
+  for (const child of Array.from(row.children)) {
+    if (child === titleBox) continue;
+    if (child.querySelector?.('[class*="jobTitleBox"]')) continue;
+    const t = textOf(child);
+    if (t && SALARY_WHOLE_RE.test(t)) return decodeSalaryDigits(t);
+  }
+  return '';
+}
+
 // 卡片结构化字段（对齐 AI-BossJob-plus recordApplication 的多选择器候选）：
 // 薪资 / 地区 / 经验学历 / HR 职位 / HR 活跃度 / 猎头标记
 function cardFields(card) {
   const cardText = textOf(card);
-  // 薪资：选择器命中值优先；兜底正则在「还原混淆后的文本」上跑，否则 PUA 数字永远匹配不到
-  const salary = decodeSalaryDigits(pickFromCard(card, FIELD_SELECTORS.salary))
-    || decodeSalaryDigits(cardText).match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/)?.[0]
+  // 薪资：① 平台专属结构提取（猎聘）→ ② 选择器命中值 → ③ 整卡文本正则兜底
+  // 兜底正则在「还原混淆后的文本」上跑，否则 PUA 数字永远匹配不到
+  const salary = platformSalaryFromCard(card)
+    || decodeSalaryDigits(pickFromCard(card, FIELD_SELECTORS.salary))
+    || matchSalaryText(decodeSalaryDigits(cardText))
     || '';
   // 地点：选择器 → 平台特有形态（猎聘卡片把城市写成「【北京】」）→ 城市名正则
   const location = pickFromCard(card, FIELD_SELECTORS.location)
@@ -1885,7 +1951,7 @@ function extractJobDetail(card) {
   const recruiterName = textOf(root?.querySelector('[class*="boss-name"],[class*="bossName"],[class*="recruiter-name"],[class*="job-boss"] [class*="name"],[class*="boss-info"] [class*="name"]'))
     || '';
   // 薪资兜底正则同样跑在「还原混淆后」的文本上；title/company 亦做还原，避免把 PUA 写进库
-  const salaryMatch = decodeSalaryDigits(`${cardText} ${detailText}`).match(/\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?[Kk万]|\d+[Kk]以上|\d+[-–~]\d+元/);
+  const salaryMatch = matchSalaryText(decodeSalaryDigits(`${cardText} ${detailText}`));
   const token = jobUrlToken(anchor?.href || '');
   const jobId = token || dataJobId || '';
   const realUrl = anchor?.href
@@ -1897,7 +1963,7 @@ function extractJobDetail(card) {
   return {
     title: decodeSalaryDigits(title),
     company,
-    salary: fields.salary || salaryMatch?.[0] || '',
+    salary: fields.salary || salaryMatch || '',
     location: fields.location,
     description: cleanJobDescription(decodeSalaryDigits(detailText)).slice(0, 9000),
     cardText: decodeSalaryDigits(cardText).slice(0, 1000),
@@ -2396,11 +2462,16 @@ async function prefillGreetingText(rawText) {
 //
 // 详情 JD 的来源（2026-09 更正，原注释称「由 Camoufox 补齐」不准确：camoufox/platforms/
 // {liepin,zhaopin,job51}.py 只做列表级，无详情段）：
-//   · 智联 zhaopin → **本文件 `enrichZhaopinJobDetail()`**：按卡片链接里的 number 调平台自己的
+//   · 智联 zhaopin → **本文件 `enrichJobDetail()`**：按卡片链接里的 number 调平台自己的
 //     职位详情接口（`platform-adapters.cjs` 的 zhaopinJobDetailUrl，口径与出处见该处注释），
 //     取回完整 JD / 技能 / 福利 / HR → 覆盖「整卡文本」兜底。接口不可用或熔断时保留卡片文本兜底，
 //     **绝不因为补 JD 失败而丢岗位**。
-//   · 猎聘 / 前程无忧 → 目前只有列表字段（各自详情接口需另行实测，勿照抄智联参数）。
+//   · 猎聘 liepin → **本文件 `enrichJobDetail()`**：猎聘详情页是**服务端渲染**（JD 直接写在 HTML 里），
+//     按卡片链接的 jobId 取同源详情页 `/job/<id>.shtml` 的 HTML，交给
+//     `platform-adapters.cjs::parseLiepinJobDetailHtml()` 解析（口径与真机证据见该处注释）。
+//     为什么不用 JSON 接口：猎聘详情页本身就是 SSR，JD/HR/薪资/属性全在同一份 HTML 里，
+//     没有独立的匿名详情 JSON 接口可用（2026-10-01 真机取证）；同源 fetch 与页面自身导航同权限。
+//   · 前程无忧 → 目前只有列表字段（详情页形态需另行实测，勿照抄猎聘/智联参数）。
 // 复用件：collectCtl（暂停/继续/停止/调速）/ smoothScrollIntoView / highlightElement /
 //         scrollJobListLoadMore / collectCards / cardIdentity / cardFields / collectCardKey。
 
@@ -2434,14 +2505,8 @@ function extractJobFromCardOnly(card) {
   const identity = cardIdentity(card);
   const fields = cardFields(card);
   const url = String(identity.href || '');
-  let jobId = '';
-  try {
-    const m = url.match(/jobId=(\d+)/i)
-      || url.match(/jobdetail\/([^/?#]+)/i)
-      || url.match(/\/job\/(\d+)/i)
-      || url.match(/jobs\.51job\.com\/([^/?#]+)/i);
-    if (m) jobId = m[1];
-  } catch {}
+  // jobId 统一走适配表唯一权威（猎聘 /job/xxx.shtml 与 SEO /a/xxx.shtml 都能取到并去后缀）
+  let jobId = ADAPTERS.jobIdFromUrl(url);
   // 无真实 URL 也无平台 jobId（仅智联新增会出现）→ 用稳定哈希兜底，保证入库去重不失效
   if (!jobId && !url) jobId = stableFallbackJobId(fields, identity);
   return {
@@ -2453,7 +2518,8 @@ function extractJobFromCardOnly(card) {
     hrActive: fields.hrActive || '',
     isHeadhunter: Boolean(fields.isHeadhunter),
     // 列表级采集拿不到详情 JD：先用卡片文本占位（AI 评分至少不吃空），
-    // 随后由 enrichZhaopinJobDetail() 按平台详情接口覆盖为真实 JD（智联）。
+    // 随后由 enrichJobDetail() 按平台详情通道覆盖为真实 JD
+    // （智联 → JSON 详情接口；猎聘 → 同源详情页 HTML）。
     description: textOf(card).slice(0, 800),
     // 列表级采集拿不到真实详情 URL 时（智联无 jobdetail 锚点变体且主进程注解未命中），
     // 落空字符串、不回退搜索页 URL：搜索页 URL 会让同批不同岗位折叠成同一链接
@@ -2467,43 +2533,60 @@ function extractJobFromCardOnly(card) {
   };
 }
 
-// ===== 智联 JD 补齐：列表卡不带 JD，按 number 调平台自身职位详情接口（口径见 platform-adapters.cjs）=====
+// ===== 非 BOSS 平台 JD 补齐：列表卡不带 JD，按卡片链接取平台自己的详情（口径见 platform-adapters.cjs）=====
+// 两档获取策略（`PLATFORM_DETAIL_API_FILL` 声明哪些平台走本通道）：
+//   智联 zhaopin → 同源**JSON 详情接口**（跨域，需接口自身 CORS 放行）；
+//   猎聘 liepin  → 同源**详情页 HTML**（SSR，无跨域问题，由 parseLiepinJobDetailHtml 解析）。
 // 三档护栏（缺一不可）：
 //   ① 单次采集总量上限 —— 防 maxJobsPerRun=1000 时打出上千请求；
-//   ② 连续失败熔断 —— 接口变更 / 需登录 / 被限流时立即停手并回传诊断，避免「每卡等满超时」把采集拖成假死；
+//   ② 连续失败熔断 —— 接口/页面变更、需登录、被限流时立即停手并回传诊断，避免「每卡等满超时」把采集拖成假死；
 //   ③ 单请求超时 + 请求间隔抖动 —— 不并发打接口、不瞬间连发。
 // 失败一律**不改 job**：保留卡片文本兜底，岗位照常入库（宁缺 JD 不丢岗位）。
-const ZP_JD_MAX_PER_RUN = 300;
-const ZP_JD_TIMEOUT_MS = 12000;
-const ZP_JD_FAIL_STREAK_LIMIT = 4;
-const ZP_JD_GAP_MS = 180; // 请求间隔基准（另加 0~220ms 抖动）
+const JD_FILL_MAX_PER_RUN = 300;
+const JD_FILL_TIMEOUT_MS = 12000;
+const JD_FILL_FAIL_STREAK_LIMIT = 4;
+const JD_FILL_GAP_MS = 180; // 请求间隔基准（另加 0~220ms 抖动）
 // JD 入库长度上限：与 BOSS 详情级采集同量级（本文件详情提取 slice(0, 9000)），
 // 避免长 JD × 大量岗位把 bossclaw-data 的 localStorage 配额撑爆（persistSafe 会降级丢写）。
-const ZP_JD_DESCRIPTION_MAX = 9000;
-const zpJdState = { attempted: 0, filled: 0, failed: 0, skipped: 0, streak: 0, stopped: '', lastError: '' };
+const JD_FILL_DESCRIPTION_MAX = 9000;
+const jdFillState = { attempted: 0, filled: 0, failed: 0, skipped: 0, streak: 0, stopped: '', lastError: '' };
+/** 当前平台的补 JD 通道（'zhaopin-json' | 'liepin-html'）；能力表未声明的平台为 '' */
+const JD_FILL_CHANNEL = PLATFORM === 'zhaopin' ? 'zhaopin-json' : (PLATFORM === 'liepin' ? 'liepin-html' : '');
 
-function resetZpJdState() {
-  zpJdState.attempted = 0;
-  zpJdState.filled = 0;
-  zpJdState.failed = 0;
-  zpJdState.skipped = 0;
-  zpJdState.streak = 0;
-  zpJdState.stopped = '';
-  zpJdState.lastError = '';
+function resetJdFillState() {
+  jdFillState.attempted = 0;
+  jdFillState.filled = 0;
+  jdFillState.failed = 0;
+  jdFillState.skipped = 0;
+  jdFillState.streak = 0;
+  jdFillState.stopped = '';
+  jdFillState.lastError = '';
 }
 
-/** 单次请求详情接口：超时 / 网络异常 / 非 2xx 一律返回 {ok:false,error}，**绝不抛出** */
-async function fetchZhaopinJobDetail(number) {
+/** 平台显示名（诊断文案用；勿在正文里散写平台名） */
+const PLATFORM_LABEL = { boss: 'BOSS直聘', liepin: '猎聘', zhaopin: '智联', job51: '前程无忧' }[PLATFORM] || PLATFORM;
+
+/**
+ * 单次请求（**绝不抛出**）：超时 / 网络异常 / 非 2xx 一律返回 {ok:false,error}。
+ * @param {string} url
+ * @param {'json'|'text'} as
+ * @returns {Promise<{ok:boolean, data?:any, error?:string}>}
+ */
+async function fetchDetailSource(url, as) {
   const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, ZP_JD_TIMEOUT_MS) : null;
+  const timer = ctrl ? setTimeout(() => { try { ctrl.abort(); } catch {} }, JD_FILL_TIMEOUT_MS) : null;
   try {
-    const res = await fetch(ADAPTERS.zhaopinJobDetailUrl(number), {
+    const res = await fetch(url, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      // 猎聘详情页 HTML：显式声明接受 HTML，且带 Referer 让平台按「站内跳转」处理（与点卡打开同源同权限）
+      headers: as === 'text'
+        ? { Accept: 'text/html,application/xhtml+xml' }
+        : { Accept: 'application/json' },
+      credentials: 'include', // 同源带 Cookie：未登录时平台会回登录页 → 我们按「解析无 JD」静默跳过，不绕登录
       signal: ctrl ? ctrl.signal : undefined,
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    return { ok: true, data: await res.json() };
+    return { ok: true, data: as === 'text' ? await res.text() : await res.json() };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   } finally {
@@ -2512,78 +2595,103 @@ async function fetchZhaopinJobDetail(number) {
 }
 
 /** 熔断 / 达上限时的一次性诊断回传（带上当前岗位，避免实时面板标题被清空） */
-function notifyZpJdStop(reason, job) {
+function notifyJdFillStop(reason, job) {
   notify('collect-progress', {
     phase: 'jd-enrich-warn',
-    index: zpJdState.attempted,
+    index: jdFillState.attempted,
     title: String(job?.title || ''),
     company: String(job?.company || ''),
-    status: `智联 JD 补齐已停止：${reason}（已补 ${zpJdState.filled} 条 / 尝试 ${zpJdState.attempted} 条，岗位仍按卡片文本入库）`,
+    status: `${PLATFORM_LABEL} JD 补齐已停止：${reason}（已补 ${jdFillState.filled} 条 / 尝试 ${jdFillState.attempted} 条，岗位仍按卡片文本入库）`,
   });
 }
 
 /**
- * 按岗位补齐 JD 与详情字段（智联）。返回是否补到 JD。
+ * 按岗位补齐 JD 与详情字段。返回是否补到 JD。
  * 只对能力表声明的平台生效（`ADAPTERS.PLATFORM_DETAIL_API_FILL`），调用点不硬编码平台名。
+ * @param {object} job extractJobFromCardOnly 产出的卡片岗位对象（就地覆盖 description 等字段）
+ * @returns {Promise<boolean>}
  */
-async function enrichZhaopinJobDetail(job) {
+async function enrichJobDetail(job) {
   if (!job || !ADAPTERS.PLATFORM_DETAIL_API_FILL[PLATFORM]) return false;
-  if (zpJdState.stopped || collectCtl.stopped) return false;
-  if (zpJdState.attempted >= ZP_JD_MAX_PER_RUN) {
-    zpJdState.stopped = `本次已达单次补齐上限 ${ZP_JD_MAX_PER_RUN} 条`;
-    notifyZpJdStop(zpJdState.stopped, job);
+  if (jdFillState.stopped || collectCtl.stopped) return false;
+  if (jdFillState.attempted >= JD_FILL_MAX_PER_RUN) {
+    jdFillState.stopped = `本次已达单次补齐上限 ${JD_FILL_MAX_PER_RUN} 条`;
+    notifyJdFillStop(jdFillState.stopped, job);
     return false;
   }
-  const number = ADAPTERS.zhaopinJobNumber(job.jobId || job.url);
-  if (!number) { zpJdState.skipped += 1; return false; } // 无平台岗位号（哈希兜底身份）→ 保持卡片文本
-  zpJdState.attempted += 1;
-  const r = await fetchZhaopinJobDetail(number);
+
+  // ① 按平台取「详情来源 URL」与解析器；取不到岗位号（哈希兜底身份）→ 保持卡片文本
+  let url = '';
+  if (JD_FILL_CHANNEL === 'zhaopin-json') {
+    const number = ADAPTERS.zhaopinJobNumber(job.jobId || job.url);
+    if (!number) { jdFillState.skipped += 1; return false; }
+    url = ADAPTERS.zhaopinJobDetailUrl(number);
+  } else if (JD_FILL_CHANNEL === 'liepin-html') {
+    url = ADAPTERS.liepinJobDetailUrl(job.jobId || job.url);
+    if (!url) { jdFillState.skipped += 1; return false; }
+  } else {
+    return false;
+  }
+
+  jdFillState.attempted += 1;
+  const as = JD_FILL_CHANNEL === 'liepin-html' ? 'text' : 'json';
+  const r = await fetchDetailSource(url, as);
   if (!r.ok) {
-    zpJdState.failed += 1;
-    zpJdState.streak += 1;
-    zpJdState.lastError = r.error;
-    if (zpJdState.streak >= ZP_JD_FAIL_STREAK_LIMIT) {
-      zpJdState.stopped = `连续 ${zpJdState.streak} 次请求失败（最后错误：${zpJdState.lastError}）`;
-      notifyZpJdStop(zpJdState.stopped, job);
+    jdFillState.failed += 1;
+    jdFillState.streak += 1;
+    jdFillState.lastError = r.error;
+    if (jdFillState.streak >= JD_FILL_FAIL_STREAK_LIMIT) {
+      jdFillState.stopped = `连续 ${jdFillState.streak} 次请求失败（最后错误：${jdFillState.lastError}）`;
+      notifyJdFillStop(jdFillState.stopped, job);
     }
     return false;
   }
-  zpJdState.streak = 0;
-  await sleep(ZP_JD_GAP_MS + Math.random() * 220);
-  const parsed = ADAPTERS.parseZhaopinJobDetail(r.data);
+  jdFillState.streak = 0;
+  await sleep(JD_FILL_GAP_MS + Math.random() * 220);
+
+  const parsed = JD_FILL_CHANNEL === 'liepin-html'
+    ? ADAPTERS.parseLiepinJobDetailHtml(r.data)
+    : ADAPTERS.parseZhaopinJobDetail(r.data);
   if (!parsed) {
-    // 接口通了但载荷结构不符（平台改版）→ 计入失败，连续多次即熔断，不让它静默空转
-    zpJdState.failed += 1;
-    zpJdState.lastError = '详情接口载荷结构不符（无 detailedPosition）';
-    if (zpJdState.failed >= ZP_JD_FAIL_STREAK_LIMIT && !zpJdState.stopped) {
-      zpJdState.stopped = `连续 ${zpJdState.failed} 次载荷不可解析`;
-      notifyZpJdStop(zpJdState.stopped, job);
+    // 通道通了但载荷结构不符（平台改版 / 登录墙 HTML / 该岗位没写 JD）→ 计入失败，连续多次即熔断
+    jdFillState.failed += 1;
+    jdFillState.lastError = JD_FILL_CHANNEL === 'liepin-html'
+      ? '详情页未解析出 JD 正文（页面结构变更或登录墙）'
+      : '详情接口载荷结构不符（无 detailedPosition）';
+    if (jdFillState.failed >= JD_FILL_FAIL_STREAK_LIMIT && !jdFillState.stopped) {
+      jdFillState.stopped = `连续 ${jdFillState.failed} 次载荷不可解析`;
+      notifyJdFillStop(jdFillState.stopped, job);
     }
     return false;
   }
-  const jd = String(parsed.description || '').trim().slice(0, ZP_JD_DESCRIPTION_MAX);
+  const jd = String(parsed.description || '').trim().slice(0, JD_FILL_DESCRIPTION_MAX);
   if (jd) job.description = jd;
-  // 技能 / 福利 / HR 只在接口确实给到时覆盖（DOM 侧这些字段本为空，不存在覆盖掉有效值的风险）
-  if (parsed.skills.length) job.skills = parsed.skills;
-  if (parsed.welfare.length) job.welfare = parsed.welfare;
+  // 技能 / 福利 / HR 只在详情确实给到时覆盖（DOM 侧这些字段本为空，不存在覆盖掉有效值的风险）
+  // 标题 / 薪资 / 地点同理：只在详情页给到**非空**值时覆盖（列表卡这三项已由 DOM 稳定抓到，
+  // 详情页是更权威的来源但缺值时不回吐空串，避免把卡片已抓到的好值打回空）。
+  if (Array.isArray(parsed.skills) && parsed.skills.length) job.skills = parsed.skills;
+  if (Array.isArray(parsed.welfare) && parsed.welfare.length) job.welfare = parsed.welfare;
   if (parsed.recruiterName) job.recruiterName = parsed.recruiterName;
   if (parsed.recruiterTitle) job.recruiterTitle = parsed.recruiterTitle;
-  if (!jd) { zpJdState.skipped += 1; return false; } // 该岗位本身没写 JD → 保留卡片文本兜底
-  zpJdState.filled += 1;
+  if (parsed.salary) job.salary = parsed.salary;
+  if (parsed.location) job.location = parsed.location;
+  if (parsed.company) job.company = parsed.company;
+  if (!jd) { jdFillState.skipped += 1; return false; } // 该岗位本身没写 JD → 保留卡片文本兜底
+  jdFillState.filled += 1;
   return true;
 }
 
 /** 采集收尾时汇总补 JD 结果（但凡有尝试或「无岗位号」都会回传，避免「这批岗位缺 JD」无解释） */
-function reportZpJdSummary() {
-  if (!zpJdState.attempted && !zpJdState.skipped) return;
+function reportJdFillSummary() {
+  if (!jdFillState.attempted && !jdFillState.skipped) return;
   notify('collect-progress', {
     phase: 'jd-enrich-summary',
-    index: zpJdState.attempted,
-    status: `智联 JD 补齐：成功 ${zpJdState.filled} 条 / 尝试 ${zpJdState.attempted} 条`
-      + (zpJdState.failed ? `，失败 ${zpJdState.failed} 条` : '')
+    index: jdFillState.attempted,
+    status: `${PLATFORM_LABEL} JD 补齐：成功 ${jdFillState.filled} 条 / 尝试 ${jdFillState.attempted} 条`
+      + (jdFillState.failed ? `，失败 ${jdFillState.failed} 条` : '')
       // skipped = 卡片拿不到岗位号（如主进程注解未覆盖的滚动加载卡）或该岗位本身没写 JD
-      + (zpJdState.skipped ? `，未补 ${zpJdState.skipped} 条（卡片无岗位号或岗位无 JD，已按卡片文本入库）` : '')
-      + (zpJdState.stopped ? `｜已提前停止：${zpJdState.stopped}` : ''),
+      + (jdFillState.skipped ? `，未补 ${jdFillState.skipped} 条（卡片无岗位号或岗位无 JD，已按卡片文本入库）` : '')
+      + (jdFillState.stopped ? `｜已提前停止：${jdFillState.stopped}` : ''),
   });
 }
 
@@ -2600,7 +2708,7 @@ async function visualCollectListOnly(opts = {}) {
   const processed = new Set();
   let processedCount = 0;
   let emptyRounds = 0;
-  resetZpJdState(); // 每轮采集重置 JD 补齐计数 / 熔断状态
+  resetJdFillState(); // 每轮采集重置 JD 补齐计数 / 熔断状态
   notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, platform: PLATFORM, status: `准备中（${PLATFORM} · 列表级采集）` });
 
   // 一次性 DOM 诊断（与 BOSS 同口径，选择器取自适配表）
@@ -2687,13 +2795,14 @@ async function visualCollectListOnly(opts = {}) {
     if (collectCtl.stopped) break;
     await waitWhilePaused();
     const job = extractJobFromCardOnly(card);
-    // 补齐详情 JD / 技能 / 福利 / HR（智联经平台详情接口；其它平台能力表未声明 → 直接返回 false）
-    await enrichZhaopinJobDetail(job);
+    // 补齐详情 JD / 技能 / 福利 / HR（智联经 JSON 详情接口、猎聘经同源详情页 HTML；
+    // 其它平台能力表未声明 → 直接返回 false）
+    await enrichJobDetail(job);
     processedCount += 1;
     notify('collect-progress', { phase: 'done', index: processedCount, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
     await sleep(settleMs);
   }
-  reportZpJdSummary();
+  reportJdFillSummary();
   notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
 }
 
@@ -2851,19 +2960,133 @@ async function platformApply(args = {}) {
     }
 
     if (platform === 'liepin') {
-      // 已沟通/已投递过 → 直接跳过（不再点，避免重复打扰同一 HR）
-      if (findPlatformAction(['.ant-btn-round', '[class*="btn"]', '[class*="chat"]', 'button', 'a'], ['已沟通', '已投递', '聊过', '已招满'])) {
-        return fail('skip', { message: '该岗位已沟通/已投递过，跳过' });
+      // ===== 猎聘详情页「聊一聊」= 触发 App 预设招呼语自动发送，无需本机打字 =====
+      //
+      // 2026-10-01 真机源码取证（用户提供的 `岗位.txt` 详情页 HTML），纠正三处旧口径：
+      //   ① **「聊一聊」是 <a> 不是 <button>** —— 主操作区
+      //      `section.job-apply-container .job-apply-operate .apply-box > a.btn-main[data-selector="chat-chat"]`；
+      //      右侧招聘者卡片还有一处分身
+      //      `div.chat-btn-box[data-nick="recruiter-info-box-chat-btn"] > button.ant-btn-round[data-selector="chat-chat"] > span`。
+      //      旧写法靠 `labelHit(['聊一聊'])` 扫 `[class*="btn"]/button/a` —— 能命中但对 `a.btn-main`
+      //      依赖泛化 `'a'` 兜底，且「已投递态」判断同样泛化 → 会把导航/页脚任意含这些词的链接误判。
+      //   ② **IM 就绪信号命名不符**：真机是 `#im-c-entry` / `.im-ui-chat-modal-container` /
+      //      `.im-ui-basic-entry`（侧栏「我的沟通」），**不存在** `.__im_basic__*`（旧写法是从
+      //      别的项目抄来的命名，在本站恒不命中 ⇒ 点完必走 15s 超时判 failed）。
+      //   ③ **风控判定不能只用行内正则**：旧写法 `/安全验证|验证码|请完成验证/` 对整页正文扫描，
+      //      岗位描述里出现这些词（风控/反欺诈岗）会被误判成风控并暂停引擎 —— 与智联分支同一教训，
+      //      这里对齐智联：**只在风控类容器内**判定。
+      //
+      // 安全不变量不变：已沟通/已投递 → 跳过；未确认 IM 打开 → failed 交人工；绝不猜成功。
+      const btnSelectors = [
+        // ① 主操作区「聊一聊」（真机 `<a class="btn-main" data-selector="chat-chat">`）
+        'a.btn-main[data-selector="chat-chat"]',
+        '.job-apply-operate .apply-box a.btn-main',
+        '.job-apply-operate a[data-selector="chat-chat"]',
+        // ② 招聘者卡片「聊一聊」（真机 `<button ... data-selector="chat-chat"><span>聊一聊</span></button>`）
+        'div.chat-btn-box[data-nick="recruiter-info-box-chat-btn"] button',
+        '.chat-btn-box button[data-selector="chat-chat"]',
+        // ③ 语义兜底（data-selector 是站点埋点属性，跨模板稳定）
+        '[data-selector="chat-chat"]',
+        // ④ 历史兜底：文案命中（顺序最后，避免泛化选择器抢在专用选择器之前）
+        '.ant-btn-round',
+        '.chat-btn-box button',
+      ];
+      const chatLabels = ['聊一聊'];
+
+      // 已沟通/已投递态：**只认操作区自身的按钮态**（专用选择器 + 精确文案），
+      // 不做全页链接扫描（页脚/导航含「已投递」等词的链接会误判整条跳过）。
+      const appliedSelectors = [
+        'a.btn-main[data-selector="chat-chat"]',
+        '.job-apply-operate .apply-box a.btn-main',
+        '.job-apply-operate a[data-selector="chat-chat"]',
+        '.chat-btn-box button',
+      ];
+      const appliedLabels = ['已沟通', '已投递', '聊过了', '已招满', '继续沟通'];
+      const readAppliedState = () =>
+        findPlatformAction(appliedSelectors, appliedLabels)
+        || all('a.btn-main, .chat-btn-box button').find((el) => visible(el) && ADAPTERS.labelExactHit(textOf(el), appliedLabels))
+        || null;
+      if (readAppliedState()) {
+        return fail('skip', { message: '该岗位已沟通/已投递过，跳过（不重复打扰同一 HR）' });
       }
-      const btn = findPlatformAction(['.ant-btn-round', '[class*="btn"]', '[class*="chat"]', 'button', 'a'], ['聊一聊']);
-      if (!btn) return fail('failed', { error: '未找到「聊一聊」按钮（岗位可能已下架/非招聘中）' });
+
+      // 阻断面板归类（本地判定，不依赖适配表 —— `PLATFORM_APPLY_SPEC` 当前只有 zhaopin 条目，
+      // 调 `classifyBlockedText('liepin', …)` 因取不到 riskTexts 恒返回 'blocked'）：
+      //   risk  = 安全验证 / 人机校验 / 操作频繁（必须整体暂停交人工）
+      //   login = 登录墙（立即收口本平台，不逐个白试）
+      const LIEPIN_RISK_TEXTS = ['安全验证', '请完成验证', '验证码', '行为异常', '操作频繁', '访问受限'];
+      const LIEPIN_LOGIN_TEXTS = ['请先登录', '登录后', '立即登录', '扫码登录', '账号登录', '登录/注册'];
+      const classifyLiepinBlock = (t) => {
+        if (LIEPIN_RISK_TEXTS.some((k) => t.includes(k))) return 'risk';
+        if (LIEPIN_LOGIN_TEXTS.some((k) => t.includes(k)) || /登录|注册/.test(t)) return 'login';
+        return 'blocked';
+      };
+
+      const btn = findPlatformAction(btnSelectors, chatLabels);
+      if (!btn) {
+        // 找不到入口时先看是不是被登录墙/风控拦了，给出可定位的原因而不是笼统「未找到」
+        const blockEl = firstVisible([
+          '[class*="login"]', '[class*="passport"]', '[class*="captcha"]',
+          '[class*="geetest"]', '[class*="waf"]', '[class*="verify"]',
+        ]);
+        if (blockEl) {
+          const t = PLATFORM_NORM(textOf(blockEl)).slice(0, 120);
+          const kind = classifyLiepinBlock(t);
+          if (kind === 'risk') return fail('risk', { code: 35, message: `检测到安全验证/风控提示：${t || '请人工完成'}，已暂停` });
+          if (kind === 'login') return fail('login', { message: '猎聘未登录（详情页要求登录后才能沟通），请先在猎聘标签页完成登录' });
+          return fail('failed', { error: `详情页被阻断：${t || '平台未渲染沟通入口'}，请人工核对` });
+        }
+        // 兜底：登录墙可能没有专用容器类名 —— 用与适配表同源的登录墙文案做一次页面级判定
+        // （仅在**找不到沟通入口**时才做，正常详情页正文里不会出现这些词，避免误判）
+        const pageText = PLATFORM_NORM(document.body ? document.body.innerText : '').slice(0, 4000);
+        if (ADAPTERS.LOGIN_WALL_TEXT_RE && ADAPTERS.LOGIN_WALL_TEXT_RE.test(pageText)) {
+          return fail('login', { message: '猎聘未登录（页面出现登录提示且无沟通入口），请先在猎聘标签页完成登录' });
+        }
+        return fail('failed', { error: '未找到「聊一聊」入口（岗位可能已下架/非招聘中/详情页未加载完成）' });
+      }
+
       notify('apply-stage', { stage: 'send_message', label: '平台自动打招呼', platform });
       await clickElement(btn);
-      // 成功 = IM 会话窗口打开（猎聘 App 预设招呼语自动发送，无需本机输入）
-      const okIm = await waitFor(() => $('.__im_basic__header-wrap, [class*="__im_basic__"]'), 15000, '猎聘 IM 会话窗口');
-      if (!okIm) {
-        if (/安全验证|验证码|请完成验证/.test(String(document.body?.innerText || ''))) return fail('risk', { code: 35, message: '检测到安全验证，已暂停，请人工完成' });
-        return fail('failed', { error: '点击「聊一聊」后 IM 会话未打开，请人工核对' });
+
+      // 成功 = IM 会话打开（猎聘用 App 预设招呼语自动发送，无需本机输入）。
+      // 就绪信号以**页面自身事实**为准（真机：`#im-c-entry` 容器 / `.im-ui-chat-modal-container` 弹层 /
+      // `.im-ui-basic-entry` 侧栏入口），旧 `.__im_basic__*` 命名在本站恒不命中，已移除。
+      // 风控容器范围收窄：只在弹层/提示/校验类容器内查风控文案，不扫岗位描述正文。
+      const RISK_SCOPE = [
+        '[class*="im-ui-chat-modal"]', '[class*="im-ui-basic"]',
+        '.ant-modal', '.ant-drawer', '.ant-message', '.ant-notification',
+        '[class*="dialog"]', '[class*="toast"]', '[class*="message"]',
+        '[class*="risk"]', '[class*="warning"]', '[class*="alert"]',
+        '[class*="verify"]', '[class*="captcha"]', '[class*="waf"]', '[class*="geetest"]',
+      ];
+      const riskHit = () => {
+        if (/pwaf_challenge|security-check|captcha/i.test(location.href)) return true;
+        if (firstVisible(['[class*="geetest"]', '[class*="waf"]', '[id*="captcha"]', '[class*="captcha"]'])) return true;
+        for (const el of all(RISK_SCOPE.join(', '))) {
+          if (!visible(el)) continue;
+          const t = PLATFORM_NORM(textOf(el));
+          if (t && ['安全验证', '请完成验证', '验证码', '行为异常', '操作频繁'].some((k) => t.includes(k))) return true;
+        }
+        return false;
+      };
+      const imReady = await waitFor(() => {
+        if (riskHit()) return 'risk';
+        // IM 会话真机信号（任一命中即视为已打开）：
+        const modal = $('.im-ui-chat-modal-container');
+        if (modal && visible(modal) && PLATFORM_NORM(textOf(modal)).length > 0) return 'ok';
+        const entry = $('.im-ui-basic-entry, .im-ui-basic-entry-title');
+        if (entry && visible(entry)) return 'ok';
+        // SPA 场景也可能整页跳到 /im/ 路由
+        if (/\/im\b/i.test(location.pathname)) return 'ok';
+        return null;
+      }, 15000, '猎聘 IM 会话窗口');
+      if (imReady === 'risk') {
+        return fail('risk', { code: 35, message: '点击「聊一聊」后检测到安全验证/风控提示，已暂停，请人工完成' });
+      }
+      if (!imReady) {
+        return fail('failed', {
+          error: '点击「聊一聊」后 IM 会话未打开（未检测到 im-ui-chat-modal/im-ui-basic-entry，请人工核对页面）',
+        });
       }
       return ok({ method: 'dom' });
     }

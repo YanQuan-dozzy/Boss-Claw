@@ -1,17 +1,19 @@
 // 多平台搜索 URL 构建器（BOSS 之外的 猎聘 / 智联招聘 / 前程无忧 51Job）
 // 口径来源：GitHub 调研 get_jobs(loks666, 8.3k★) / Auto-JobHunter(jolie-z)
-//   - 猎聘：https://www.liepin.com/zhaopin/?city=&dq=&salary=&currentPage=0&key=
+//   - 猎聘：https://www.liepin.com/zhaopin/?city=&dq=&salaryCode=&currentPage=0&key=
 //   - 智联：https://www.zhaopin.com/sou/jl{city}/p{page}?sl={salary}（新版路径式）
 //   - 51Job：https://we.51job.com/pc/search?jobArea=&salary=&keyword=
 // 城市/薪资码为硬编码主表 + 已知码直接透传；未知城市回退「全国/不限」（不臆造码）。
 //
 // ⚠️「基础求职条件」的扩展筛选由 `camoufox/platforms/filters.py` 统一翻译（唯一权威）。
-//   **智联是例外**：搜索 URL 会被「内置浏览器列表级采集」直接打开，筛选必须真实进 URL 才能在
-//   页面上生效，故本文件为智联镜像一套同码值表（双源同步：与 filters.py 的 ZHAOPIN_EXP/EDU/
-//   SCALE/COMPANY_TYPE/FINANCING/JOB_TYPE 逐一对应；改动码值必须两边同步，并以
-//   `scripts/zhaopin-url-regression.mjs` + `python ../tmp/probe-platforms.py` 双验）。
-//   猎聘 / 前程无忧仍只带 城市/薪资/关键词（其 URL 仅用于展示 / 记录 / 组合去重，筛选走隐身采集）。
-import type { AppConfig, DirectionPlan, JobPlatform } from './types';
+//   **猎聘 / 智联是例外**：搜索 URL 会被「内置浏览器列表级采集」直接打开，筛选必须真实进 URL
+//   才能在页面上生效，故本文件为这两个平台各镜像一套同码值表（双源同步：
+//   猎聘 ↔ LIEPIN_*、智联 ↔ ZHAOPIN_*；改动码值必须两边同步，并以
+//   `scripts/liepin-url-regression.mjs` / `scripts/zhaopin-url-regression.mjs`
+//   + `python ../tmp/probe-platforms.py` 三验）。
+//   前程无忧仍只带 城市/薪资/关键词（其 URL 仅用于展示 / 记录 / 组合去重，筛选走隐身采集）。
+import type { AppConfig, DirectionPlan, HrActivityFilter, JobPlatform } from './types';
+import { HR_ACTIVITY_FILTER_LABEL } from './hrActivity';
 import { selectedDirectionItems } from './directions';
 import { buildJobSearchUrl, RANDOM_COLLECT_LABEL } from './searchUrl';
 
@@ -23,10 +25,11 @@ export const LIEPIN_CITY_CODES: Record<string, string> = {
   广州: '050020', 深圳: '050090', 杭州: '070020', 成都: '280020',
   武汉: '170020', 南京: '060020', 苏州: '060080',
 };
-// 薪资码（猎聘为年薪档）
+// 薪资码（年薪档；2026-10-01 用户实测 10万以下=1 / 10-15万=2，其余按平台面板顺序推得）
+// 与 `camoufox/platforms/liepin.py::SALARY_CODES` **双源同步**（改一处必须改另一处）
 export const LIEPIN_SALARY_CODES: Record<string, string> = {
-  不限: '', '10万以下': '1', '10-15万': '2', '15-20万': '3', '20-30万': '4',
-  '30-40万': '5', '40-50万': '6', '50万以上': '7',
+  '10万以下': '1', '10-15万': '2', '16-20万': '3', '21-30万': '4',
+  '31-50万': '5', '51-100万': '6', '100万以上': '7',
 };
 
 function isNoFilter(value: string | undefined | null): boolean {
@@ -44,11 +47,35 @@ export function resolveLiepinCityCode(city?: string): string {
   return LIEPIN_CITY_CODES['全国'];
 }
 
+/** 数字 → URL 文本（整数去掉小数尾巴，否则保留 1 位） */
+function fmtSalaryNum(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+/**
+ * 薪资期望 → 猎聘 `salaryCode`（与 `camoufox/platforms/liepin.py::_resolve_salary` 双源同步）。
+ *
+ * 设置页「薪资期望」是**月薪**自由文本（如 15-25K），猎聘只认**年薪档 / 年薪自定义区间**：
+ *   1) 纯数字（1-2 位）→ 平台档位码透传（10万以下=1 … 100万以上=7）
+ *   2) 年薪档名（如 16-20万）→ 对应档位码
+ *   3) 年薪自定义区间（万元单位，如 9-11万）→ `9$11`（平台「自定义」写法）
+ *   4) 月薪区间（K 为单位，如 15-25K）→ 换算年薪（×12 月 ÷ 10）后自定义 → `18$30`
+ *   5) 其余（单值 20K / 不限 / 无单位区间）→ 不附加（单值无法构成区间，宁可多召回不误杀）
+ */
 export function resolveLiepinSalaryCode(salary?: string): string {
   const s = String(salary || '').trim();
   if (!s || isNoFilter(s)) return '';
   if (/^\d{1,2}$/.test(s)) return s;
-  return LIEPIN_SALARY_CODES[s] || '';
+  if (LIEPIN_SALARY_CODES[s]) return LIEPIN_SALARY_CODES[s];
+  const m = /^(\d+(?:\.\d+)?)\s*[-~～至]\s*(\d+(?:\.\d+)?)\s*([万wWkK]?)$/.exec(s);
+  if (!m) return '';
+  let lo = Number(m[1]);
+  let hi = Number(m[2]);
+  if (hi < lo) [lo, hi] = [hi, lo];
+  const unit = (m[3] || '').toLowerCase();
+  if (unit === '万' || unit === 'w') return `${fmtSalaryNum(lo)}$${fmtSalaryNum(hi)}`;
+  if (unit === 'k') return `${fmtSalaryNum(lo * 1.2)}$${fmtSalaryNum(hi * 1.2)}`;
+  return '';
 }
 
 export interface LiepinSearchQuery {
@@ -56,18 +83,81 @@ export interface LiepinSearchQuery {
   city?: string;
   salary?: string;
   page?: number;
+  /** 「基础求职条件」+ HR 活跃度：会真实拼进 URL（内置浏览器列表采集直接生效） */
+  criteria?: PlatformSearchCriteria;
 }
 
 export function buildLiepinSearchUrl(query: LiepinSearchQuery = {}): string {
   const params = new URLSearchParams();
   params.set('city', resolveLiepinCityCode(query.city));
   params.set('dq', resolveLiepinCityCode(query.city));
-  const salary = resolveLiepinSalaryCode(query.salary);
-  if (salary) params.set('salary', salary);
   params.set('currentPage', String(Math.max(0, (query.page || 1) - 1)));
   const kw = String(query.keyword || '').trim();
   if (kw) params.set('key', kw);
-  return `${LIEPIN_BASE_URL}?${params.toString()}`;
+  // 平台侧筛选（薪资 `salaryCode` + criteria）用**原样拼接**、不 percent-encode：
+  // 薪资自定义 `18$30`、经验区间 `1$3` 必须与平台自生成链接逐字一致（`$` 在 query 中合法）
+  const extra: string[] = [];
+  const salary = resolveLiepinSalaryCode(query.salary);
+  if (salary) extra.push(`salaryCode=${salary}`);
+  const criteriaQs = appendLiepinCriteria(query.criteria);
+  if (criteriaQs) extra.push(criteriaQs);
+  const qs = params.toString();
+  return extra.length ? `${LIEPIN_BASE_URL}?${qs}&${extra.join('&')}` : `${LIEPIN_BASE_URL}?${qs}`;
+}
+
+// ==================== 猎聘「基础求职条件」→ URL 参数（镜像 filters.py，双源同步） ====================
+// 与 `camoufox/platforms/filters.py` 的 LIEPIN_* 表逐一对应（2026-10-01 用户真机点选实测）。
+// 内置浏览器列表级采集会**直接打开**本文件构建的猎聘搜索 URL，筛选必须真实进 URL 才能在页面上生效。
+// 经验：区间式单值（0$1 / 1$3 …；应届生 1 / 实习生 2 / 10年以上 10$999；5-10年按区间边界规律推得）
+const LIEPIN_CRITERIA_EXP: Record<string, string> = {
+  应届生: '1', 在校生: '2', 实习生: '2',
+  '1年以内': '0$1', '1-3年': '1$3', '3-5年': '3$5', '5-10年': '5$10', '10年以上': '10$999',
+};
+// 学历（用户实测逐值确认：博士 010 / 硕士 030 / 本科 040 / 大专 050）
+const LIEPIN_CRITERIA_EDU: Record<string, string> = {
+  博士: '010', 硕士: '030', 本科: '040', 大专: '050',
+};
+// 公司规模（实测 010~040，其余按平台面板顺序推得）；平台为单选 8 档，
+// 设置页「20-99人」「1000-9999人」跨多档 → 不在表内（不附加，宁可多召回不误杀）
+const LIEPIN_CRITERIA_SCALE: Record<string, string> = {
+  '0-20人': '010', '1-49人': '010', '50-99人': '020', '100-499人': '030', '500-999人': '040',
+  '1000-2000人': '050', '2000-5000人': '060', '5000-10000人': '070', '10000人以上': '080',
+};
+// 企业性质（实测 外企 010 / 中外合资 020，其余按平台面板顺序推得）
+const LIEPIN_CRITERIA_COMPANY_TYPE: Record<string, string> = {
+  外企: '010', 中外合资: '020', 民营: '030', 国企: '040', 其他: '080',
+};
+// HR 活跃度过滤 → 招聘者活跃窗口（实测 一天以内 1 / 三天以内 3，其余按天数规律推得）
+const LIEPIN_CRITERIA_HR_ACTIVITY: Record<string, string> = {
+  month: '30', week: '7', '3days': '3', today: '1', justActive: '1',
+};
+// 融资阶段（实测 A轮 02 / B轮 03，其余按面板顺序推得 01~08）。键为**猎聘口径**选项名；
+// 智联口径的「不需要融资/未融资/有融资」不在表内 → 猎聘不附加。
+const LIEPIN_CRITERIA_FINANCING: Record<string, string> = {
+  天使轮: '01', A轮: '02', B轮: '03', C轮: '04',
+  'D轮及以上': '05', 已上市: '06', 战略融资: '07', 融资未公开: '08',
+};
+
+/**
+ * 猎聘「基础求职条件」+ HR 活跃度 → URL 查询串（无匹配项返回 ''）。
+ * 经验为区间式单值（`$` 是区间分隔而非多选分隔），多选无法拼接 → 只取第一个可映射项。
+ */
+export function appendLiepinCriteria(criteria: PlatformSearchCriteria | undefined | null): string {
+  if (!criteria) return '';
+  const parts: string[] = [];
+  const exp = (criteria.experiences ?? []).map((x) => LIEPIN_CRITERIA_EXP[x]).find(Boolean);
+  if (exp) parts.push(`workYearCode=${exp}`);
+  const edu = (criteria.degrees ?? []).map((x) => LIEPIN_CRITERIA_EDU[x]).filter(Boolean);
+  if (edu.length) parts.push(`eduLevel=${edu.join('$')}`);
+  const cs = criteria.companyScale ? LIEPIN_CRITERIA_SCALE[criteria.companyScale] : '';
+  if (cs) parts.push(`compScale=${cs}`);
+  const ct = criteria.companyType ? LIEPIN_CRITERIA_COMPANY_TYPE[criteria.companyType] : '';
+  if (ct) parts.push(`compKind=${ct}`);
+  const hr = criteria.hrActivity ? LIEPIN_CRITERIA_HR_ACTIVITY[criteria.hrActivity] : '';
+  if (hr) parts.push(`pubTime=${hr}`);
+  const fs = (criteria.financing ?? []).map((x) => LIEPIN_CRITERIA_FINANCING[x]).filter(Boolean);
+  if (fs.length) parts.push(`compStage=${fs.join('$')}`);
+  return parts.join('&');
 }
 
 // ==================== 智联招聘 zhaopin ====================
@@ -262,16 +352,17 @@ export function buildPlatformSearchUrl(platform: JobPlatform, query: PlatformSea
 
 export interface PlatformSearchQueueItem {
   platform: JobPlatform;
-  /** 展示/记录/打开用搜索 URL；**智联已把 criteria 筛选拼进 URL**（内置浏览器列表采集直接生效），
-   *  其余平台仅 城市+薪资+关键词，筛选由 criteria 经 filters.py 附加到隐身穿墙采集 */
+  /** 展示/记录/打开用搜索 URL；**猎聘 / 智联已把 criteria 筛选拼进 URL**（内置浏览器列表采集
+   *  直接生效），前程无忧仅 城市+薪资+关键词，其筛选由 criteria 经 filters.py 附加到隐身采集 */
   url: string;
   keyword: string;
   location: string;
   employmentType: string;
   /**
-   * 「基础求职条件」原始条件（全平台共用一份设置）：传给 Camoufox 隐身采集，
-   * 由 `camoufox/platforms/filters.py` 按平台翻译成各自筛选参数
-   * （猎聘 workYearCode/eduLevel、智联 we/el/cs、前程无忧 workYear/degree/companySize/jobType）。
+   * 平台筛选条件（「基础求职条件」+ HR 活跃度，全平台共用一份设置）：既拼进猎聘 / 智联的 URL，
+   * 也随隐身采集下发，由 `camoufox/platforms/filters.py` 按平台翻译成各自筛选参数
+   * （猎聘 workYearCode/eduLevel/compScale/compKind/pubTime、智联 we/el/cs/ct/fs/et、
+   * 前程无忧 workYear/degree/companySize/jobType）。
    * 城市 / 薪资 / 关键词仍由本文件的 URL 构建器处理。
    */
   criteria: PlatformSearchCriteria;
@@ -283,7 +374,7 @@ export interface PlatformSearchQueueItem {
 }
 
 /**
- * 设置页「基础求职条件」快照（字段名与 AppConfig 对齐，Python 侧兼容 camelCase）。
+ * 平台筛选条件快照（字段名与 AppConfig 对齐，Python 侧兼容 camelCase）。
  * 说明：刻意用 **type 别名**而非 interface —— TS 只对类型别名/对象字面量推导隐式索引签名，
  * 这样它可直接作为 JSON payload（`Record<string, unknown>`）传给 Camoufox 通道，无需强转。
  */
@@ -293,13 +384,16 @@ export type PlatformSearchCriteria = {
   degrees?: string[];
   companyScale?: string;
   employmentTypes?: string[];
-  /** 公司性质（单选；智联 ct：国企=1/外企=2/民营=5，其余平台未验证不附加） */
+  /** 公司性质（单选；智联 ct：国企=1/外企=2/民营=5，猎聘 compKind：外企=010/中外合资=020/民营=030/国企=040/其他=080） */
   companyType?: string;
-  /** 融资阶段（多选；智联 fs：不需要融资=8/未融资=1/有融资=2;3;4;5;6，其余平台未验证不附加） */
+  /** 融资阶段（多选）。智联口径 fs：不需要融资=8/未融资=1/有融资=2;3;4;5;6；
+   *  猎聘口径 compStage：天使轮=01 … 融资未公开=08（两套口径互不通用，各自平台不匹配的取值不附加） */
   financing?: string[];
+  /** HR 活跃度过滤阈值（设置页枚举；目前仅猎聘有对应筛选：pubTime 招聘者活跃时间窗） */
+  hrActivity?: HrActivityFilter;
 };
 
-/** 从全局配置提取「基础求职条件」（非 BOSS 平台隐身采集共用） */
+/** 从全局配置提取平台筛选条件（非 BOSS 平台隐身采集 / 猎聘与智联 URL 共用） */
 export function platformSearchCriteria(config: AppConfig): PlatformSearchCriteria {
   return {
     salary: config.salary,
@@ -309,10 +403,11 @@ export function platformSearchCriteria(config: AppConfig): PlatformSearchCriteri
     employmentTypes: config.employmentTypes ?? [],
     companyType: config.companyType,
     financing: config.financing ?? [],
+    hrActivity: config.hrActivityFilter,
   };
 }
 
-/** 「基础求职条件」日志摘要：只列出用户**实际设置**的项（空 / 不限不显示） */
+/** 平台筛选条件日志摘要：只列出用户**实际设置**的项（空 / 不限不显示） */
 export function describePlatformCriteria(c?: PlatformSearchCriteria | null): string {
   if (!c) return '';
   const parts: string[] = [];
@@ -323,6 +418,7 @@ export function describePlatformCriteria(c?: PlatformSearchCriteria | null): str
   if (c.companyScale && c.companyScale !== '不限') parts.push(`公司规模=${c.companyScale}`);
   if (c.companyType && c.companyType !== '不限') parts.push(`公司性质=${c.companyType}`);
   if (c.financing?.length) parts.push(`融资阶段=${c.financing.join('/')}`);
+  if (c.hrActivity && c.hrActivity !== 'any') parts.push(`HR活跃度=${HR_ACTIVITY_FILTER_LABEL[c.hrActivity]}`);
   return parts.join(' · ');
 }
 

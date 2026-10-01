@@ -103,6 +103,8 @@ class JobCandidate:
     bossTitle: str = ''
     companySize: str = ''
     companyType: str = ''
+    # 公司所属行业（猎聘接口的 compIndustry 落这里；**不得**与 companyType 混用）
+    industry: str = ''
     url: str = ''
     # 溯源：该岗位由哪个关键词/页面采到（BossHunter 的 source_keyword 口径）
     sourceKeyword: str = ''
@@ -143,6 +145,7 @@ class JobCandidate:
             'bossTitle': self.bossTitle,
             'companySize': self.companySize,
             'companyType': self.companyType,
+            'industry': self.industry,
             'url': self.url,
             'sourceKeyword': self.sourceKeyword,
             'recruitmentType': self.recruitmentType,

@@ -30,6 +30,7 @@ import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
+import { checkJobExpiry, isExpiryFilterEnabled, PLATFORM_EXPIRY_DEFAULT } from '@/lib/bossclaw/jobExpiry';
 import { makePendingItem, jobUrlKey, sameJobSoft } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
 import { stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
@@ -558,6 +559,17 @@ export default function Workbench() {
       recomputeStats();
       return;
     }
+    // JD 截止日期已过（确定性过滤）：与 ingestJob 同口径（jobExpiry.ts 唯一权威），
+    // 让「加入任务」这条不经 ingestJob 的入口也被拦截，避免过期岗位绕过设置进队列。
+    if (isExpiryFilterEnabled(cfg, job.platform, PLATFORM_EXPIRY_DEFAULT[String(job.platform || '')] ?? false)) {
+      const exp = checkJobExpiry(job);
+      if (exp.expired) {
+        addPendingItem({ id: runId, runId, job, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: exp.reason });
+        addLog('info', `已跳过：${job.title || job.url}（${exp.reason}）`);
+        recomputeStats();
+        return;
+      }
+    }
     const imFilterM = cfg.interviewModeFilter || 'any';
     if (imFilterM !== 'any') {
       const modeM = detectInterviewMode(job);
@@ -914,6 +926,16 @@ export default function Workbench() {
       addSkipLogOnce('info', `跳过「${job?.title || '岗位'}」（${jd.reason}）`);
       return false;
     }
+    // JD 截止日期已过（确定性过滤）：猎聘 JD 末尾常带「截止日期：YYYY年MM月DD日」，
+    // 过期岗位无投递价值。此处前置拦截，省掉后续 AI 分析（jobMatch 里还有同一条硬约束兜底，
+    // 保证「加入任务」等不经 ingestJob 的入口同样被拦）。判定口径唯一权威见 jobExpiry.ts。
+    if (isExpiryFilterEnabled(cfg, job?.platform, PLATFORM_EXPIRY_DEFAULT[String(job?.platform || '')] ?? false)) {
+      const exp = checkJobExpiry(job);
+      if (exp.expired) {
+        addSkipLogOnce('info', `跳过「${job?.title || '岗位'}」（${exp.reason}）`);
+        return false;
+      }
+    }
     const imFilterC = cfg.interviewModeFilter || 'any';
     if (imFilterC !== 'any') {
       const modeC = detectInterviewMode(job);
@@ -1225,7 +1247,8 @@ export default function Workbench() {
     if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
     // 搜索队列按平台分源，两条通道口径统一：
     //   BOSS   → searchUrl.ts（官方筛选码 + 城市码表）
-    //   其余平台 → platformUrls.ts（城市/薪资/关键词进 URL，基础求职条件同步拼接）—— 与隐身采集同一构建器
+    //   其余平台 → platformUrls.ts（城市/薪资/关键词进 URL；猎聘与智联把「基础求职条件」+ HR 活跃度
+    //              一并拼进 URL，前程无忧仍只带城市/薪资/关键词）—— 与隐身采集同一构建器
     if (platform === 'boss') await loadBossCityCodes();
     const queue = platform === 'boss'
       ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds)
@@ -1590,8 +1613,9 @@ export default function Workbench() {
       const item = queue[qi];
       if (!cfxActiveRef.current) break;
       const cityCode = platform === 'boss' ? (resolveCityCode(item.location) || '100010000') : String(item.location || '全国');
-      // 非 BOSS 平台：城市/薪资/关键词在 URL 里，其余「基础求职条件」（学历/经验/公司规模/求职类型）
-      // 随 criteria 下发，由 Python 侧 platform filters 翻译成本平台筛选参数。
+      // 非 BOSS 平台：城市/薪资/关键词在 URL 里，其余筛选（学历/经验/公司规模/公司性质/融资阶段/
+      // HR 活跃度）随 criteria 下发，由 Python 侧 platform filters 翻译成本平台筛选参数
+      // （猎聘：workYearCode / eduLevel / compScale / compKind / pubTime）。
       // （BOSS 队列项来自 searchUrl.ts，不含 criteria —— 故按 platform 收窄类型）
       const itemCriteria = platform === 'boss' ? undefined : (item as PlatformSearchQueueItem).criteria;
       const criteriaNote = platform === 'boss' ? '' : describePlatformCriteria(itemCriteria);

@@ -203,6 +203,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   // ===== 最低薪资口径切换（日薪 ↔ 月薪）=====
   const isMonthlySalary = (config.minSalaryMode ?? 'day') === 'month';
+  // 排除已过截止日期岗位：未配置时（旧持久化数据）回落到「开启」——触发源是猎聘 JD 里显式的
+  // 截止日期字段，属「过期即无意义」的确定性过滤（口径见 lib/bossclaw/jobExpiry.ts）。
+  const isExpiryFilterOn = config.excludeExpiredJobs !== false;
   const toggleSalaryMode = useCallback(() => {
     if (isMonthlySalary) {
       // 切换为日薪：K元/月 * 1000 / 22 工作日
@@ -1082,12 +1085,35 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">薪资期望</span>
+                <span className="field-label">
+                  薪资期望
+                  <Tooltip title="按月薪填写（如 15-25K）。BOSS 按 BOSS 档位映射；猎聘只认年薪档，月薪区间会自动换算为年薪自定义区间（15-25K → 18-30万）；只填单值（如 20K）时猎聘侧不附加筛选。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
                 <Input
                   value={config.salary}
                   onChange={(e) => setConfig({ salary: e.target.value })}
                   placeholder="不限 / 15-25K"
                 />
+              </div>
+              {/* 薪资单位切换：属「薪资口径」设置，与上面的「薪资期望」同区更合语义。
+                  原先它挂在「硬性智能过滤」卡片里，会让该卡片多出孤零零的第 3 行（右侧两格留白），
+                  故移到这里；卡片内「最低日薪」输入框右侧的「元/天」徽标仍可一键切换（同一动作）。 */}
+              <div className="sg-item">
+                <span className="field-label">
+                  最低薪资筛选单位
+                  <Tooltip title="决定「硬性智能过滤 → 最低薪资」按日薪还是月薪比较：日薪档位细、适合兼职/实习；月薪档位贴近绝大多数全职岗位。切换会同步换算当前阈值，也可直接点「最低薪资」输入框右侧的单位徽标切换。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                <Button
+                  icon={<SwapOutlined />}
+                  onClick={toggleSalaryMode}
+                  style={{ width: '100%' }}
+                >
+                  {isMonthlySalary ? '切换为日薪' : '切换为月薪'}
+                </Button>
               </div>
               <div className="sg-item">
                 <span className="field-label">求职类型</span>
@@ -1123,7 +1149,12 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">公司规模</span>
+                <span className="field-label">
+                  公司规模
+                  <Tooltip title="猎聘的规模档位与本站不同（1-49 / 50-99 / 100-499 / 500-999 / 1000-2000 / 2000-5000 / 5000-10000 / 10000人以上）：「0-20人」按猎聘「1-49人」筛；「20-99人」「1000-9999人」跨多个猎聘档位，无法单值表达，猎聘侧不附加筛选（宁可多召回）。智联 / 前程无忧各自独立映射。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
                 <Select
                   style={{ width: '100%' }}
                   value={config.companyScale || '不限'}
@@ -1137,7 +1168,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="sg-item">
                 <span className="field-label">
                   公司性质
-                  <Tooltip title="智联招聘已接通（国企 / 外企 / 民营 / 中外合资 / 港澳台企业 / 机关/事业单位 / 其他）；猎聘 / 前程无忧暂不支持该项，选择后不会附加筛选。">
+                  <Tooltip title="智联招聘（国企 / 外企 / 民营 / 中外合资 / 港澳台企业 / 机关·事业单位 / 其他）与猎聘（外企 / 中外合资 / 民营 / 国企 / 其他）已接通；「港澳台企业」「机关/事业单位」在猎聘无对应项，猎聘侧不附加筛选；前程无忧暂不支持该项。">
                     <InfoCircleOutlined className="field-label__hint" />
                   </Tooltip>
                 </span>
@@ -1151,7 +1182,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="sg-item">
                 <span className="field-label">
                   融资阶段
-                  <Tooltip title="智联招聘已接通（不需要融资 / 未融资 / 有融资）；猎聘 / 前程无忧暂不支持该项，选择后不会附加筛选。">
+                  <Tooltip title="两套口径互不通用，按目标平台各填各的：智联（不需要融资 / 未融资 / 有融资）；猎聘（天使轮 / A轮 / B轮 / C轮 / D轮及以上 / 已上市 / 战略融资 / 融资未公开）。选了某平台不认的取值时，该平台侧不附加筛选；前程无忧暂不支持该项。">
                     <InfoCircleOutlined className="field-label__hint" />
                   </Tooltip>
                 </span>
@@ -1160,7 +1191,10 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                   value={config.financing}
                   onChange={(v) => setConfig({ financing: v })}
-                  options={['不限', '不需要融资', '未融资', '有融资'].map((x) => ({ label: x, value: x }))}
+                  options={[
+                    '不限', '不需要融资', '未融资', '有融资',
+                    '天使轮', 'A轮', 'B轮', 'C轮', 'D轮及以上', '已上市', '战略融资', '融资未公开',
+                  ].map((x) => ({ label: x, value: x }))}
                   tokenSeparators={[',', '，', '、']}
                 />
               </div>
@@ -1208,7 +1242,12 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">HR 活跃度过滤</span>
+                <span className="field-label">
+                  HR 活跃度过滤
+                  <Tooltip title="BOSS 按页面活跃度文本过滤（采集后筛选）；猎聘已接通，映射为平台「招聘者活跃」时间窗（一天 / 三天 / 一周 / 一个月以内，仅在线无对应窗口）。智联 / 前程无忧暂不适用。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
                 <Select
                   style={{ width: '100%' }}
                   value={config.hrActivityFilter || 'any'}
@@ -1259,14 +1298,23 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
               <div className="sg-item">
-                <span className="field-label">薪资单位切换</span>
-                <Button
-                  icon={<SwapOutlined />}
-                  onClick={toggleSalaryMode}
-                  style={{ width: '100%' }}
-                >
-                  {isMonthlySalary ? '切换为日薪' : '切换为月薪'}
-                </Button>
+                <span className="field-label">
+                  排除已过截止日期岗位
+                  <Tooltip title="猎聘 JD 正文末尾常带「截止日期：2027年07月16日」。开启后，命中该字段且日期早于今天的岗位会被硬性排除（截止日当天仍有效），不再消耗 AI 分析 Token 与投递配额。仅在 JD 明确写出截止日期时才判定——未写截止日期、或写成「长期有效 / 招满即止」的岗位一律照常放行；该字段是猎聘 JD 的常见形态，故默认开启。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                {/* 开关类字段纵向排布会在控件行留出大片空白、与同排输入框不成列；
+                    改为「标签在左、开关在右」单行内联布局（见 .sg-item--inline）。 */}
+                <div className="sg-item__switch">
+                  <Switch
+                    checked={isExpiryFilterOn}
+                    onChange={(v) => {
+                      setConfig({ excludeExpiredJobs: v });
+                      message.info(v ? '已开启：JD 截止日期已过的岗位将被跳过' : '已关闭：不再按 JD 截止日期过滤岗位');
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>

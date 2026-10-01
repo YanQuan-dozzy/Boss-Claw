@@ -62,6 +62,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   minSalaryPerMonth: 0,
   // 猎头过滤（对齐 AI-BossJob 的 excludeHeadhunters，默认关闭）
   excludeHeadhunters: false,
+  // 排除「JD 已过截止日期」的岗位（确定性硬约束）：默认开启 —— 触发源是猎聘 JD 里显式的
+  // 「截止日期：YYYY年MM月DD日」字段，过期岗位无投递价值。判定只在 JD 写了截止日期时生效，
+  // 未写 / 日期不可解析一律放行（见 jobExpiry.ts），因此对没有该字段的平台零副作用。
+  excludeExpiredJobs: true,
   // 搜索采集自动下拉加载更多岗位（默认开启，解决「收集太少」问题）
   listAutoScroll: true,
   listScrollRounds: 12,

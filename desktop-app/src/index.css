@@ -1812,6 +1812,15 @@ html[data-theme='dark'] .direction-tag {
   grid-column: span 2;
 }
 
+/* 开关类字段（设置页）：「标签在上、开关在下」的纵向排布会让控件行留出大片空白，
+   与同排输入框不成列。这里把开关撑到与 antd 默认控件（32px）等高并垂直居中，
+   使其在栅格中与相邻输入框形成同一基线。 */
+.sg-item__switch {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
 /* 确定性过滤分钟内分组标题（城市反选 / 公司招聘方 / 岗位描述关键字） */
 .settings-grid__group-title {
   grid-column: 1 / -1;

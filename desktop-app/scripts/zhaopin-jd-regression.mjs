@@ -113,7 +113,8 @@ try {
   eq('业务失败码', parseZhaopinJobDetail({ code: 500, data: null }), null);
 
   // ---------- 能力表 + 旧版 /sou/ 卡字段选择器（防回退）----------
-  eq('补齐能力表只开智联', PLATFORM_DETAIL_API_FILL, { zhaopin: true });
+  // 2026-10-01：猎聘补 JD 通道上线（同源详情页 HTML）→ 能力表由 { zhaopin } 扩为 { zhaopin, liepin }
+  eq('补齐能力表含智联 + 猎聘', PLATFORM_DETAIL_API_FILL, { zhaopin: true, liepin: true });
   const zp = PLATFORM_FIELD_SELECTORS.zhaopin;
   ok('旧版 /sou/ 卡标题选择器', zp.title.includes('.jobinfo__name'), zp.title.join(','));
   ok('旧版 /sou/ 卡公司选择器', zp.company.includes('.companyinfo__name'), zp.company.join(','));

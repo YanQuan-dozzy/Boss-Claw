@@ -62,18 +62,36 @@ export function normalizeGreetingText(text: string): string {
 }
 
 // =====「AI 跟聊」回复 =====
-// 对齐 AI-BossJob Core.aiReply / generatePersonalizedReply：读取 HR 最新消息并在聊天页 AI 回复。
+// 对齐 AI-BossJob Core.aiReply / generatePersonalizedReply，并移植觅星小臣 / ghost-job 的做法：
+//   ① 带最近 N 条「完整聊天记录」生成回复，避免答非所问、重复寒暄；
+//   ② 输出结构化决策 JSON（continue / hr_rejected / declined + send_resume + interview），
+//      比关键词匹配更准，也让上层能识别 HR 拒绝 / 索要简历 / 面试邀约。
 // 安全不变量（AGENTS.md 2.1）：求职者口吻；只引用简历真实事实；不得承诺薪资/到岗时间/面试时间/不存在的能力。
 const REPLY_MIN_LEN = 8;
+/** 带给模型的历史消息条数（对齐觅星小臣 AI_CHAT.HISTORY_LIMIT = 20）。 */
+export const REPLY_HISTORY_LIMIT = 20;
 
 // 基础指令（不主动承诺薪资/面试/到岗时间等；有沟通信息时由下方分支放开）
 const REPLY_SYSTEM_PROMPT_BASE = `你是求职者本人（第一人称），正在与招聘方 HR 线上沟通，回复 HR 发来的最新消息。
-安全规则：只能引用简历中的真实事实；不得编造简历中不存在的经历与能力；不得暴露自己是 AI。语气自然口语化、真诚，像真人聊天。
-直接给出要发送的回复内容，不要任何前缀、引号或解释。`;
+安全规则：只能引用简历中的真实事实；不得编造简历中不存在的经历与能力；不得暴露自己是 AI。语气自然口语化、真诚，像真人聊天。`;
 // 无「沟通信息」时：不主动承诺薪资、面试/到岗时间或任何未填写的安排（原行为，稳健）
 const REPLY_SYSTEM_PROMPT = `${REPLY_SYSTEM_PROMPT_BASE}\n不主动承诺薪资、面试/到岗时间或任何未填写的安排。`;
 // 用户提供「沟通信息」时：可引用其中填写的内容（薪资期望、面试/到岗时间等，仅限明确提到的），不编造不在其中的内容
 const REPLY_SYSTEM_PROMPT_WITH_TIME = `${REPLY_SYSTEM_PROMPT_BASE}\n可引用用户在「沟通信息」中填写的具体内容（如薪资期望、面试/到岗时间等），仅限该信息中明确提到的内容，不得编造不在其中的内容。`;
+
+/** 结构化决策输出契约（对齐觅星小臣 buildChatDecisionPrompt：填充版样例 + 字段说明 + 回复策略）。 */
+const REPLY_DECISION_SPEC = `【任务】阅读聊天记录（从早到晚，最后一条是 HR 刚发的消息），针对它作出判断并回复。只输出一个 JSON 对象，禁止输出任何其他文字、解释或代码块标记，格式：
+{"outcome":"continue","reply":"回复正文","send_resume":false,"interview":false}
+
+字段说明：
+1. outcome 取值："hr_rejected"=HR 明确拒绝（说不合适 / 已招满 / 暂不考虑等），此时 reply 留空字符串；"declined"=岗位与我的方向明显不符、由我礼貌婉拒（reply 写婉拒的话）；"continue"=其他一切情况。
+2. send_resume：HR 索要简历或发来简历请求时为 true（回复发出后系统会自动附带简历）。
+3. interview：HR 主动邀请面试，或正在与我确认面试时间 / 地点 / 方式时为 true；仅我方提到面试不算。
+
+reply 正文的固定策略：
+- 像真人手机聊天：口语化、15-40 字、一次一句话、不换行；不用「您好」「很高兴」等套话，绝不承认或暗示自己是 AI。
+- 严格衔接聊天记录的上下文：HR 已经说过的事不要重复问，我方已经回答过的问题不要重复回答，不要每次都重新自我介绍。
+- HR 最新一条是系统提示、表情或无实质内容时，reply 留空字符串。`;
 
 // 未提供「沟通信息」时拒绝的「承诺/安排」类表述（薪资、面试/到岗时间等）
 const FABRICATED_COMMIT = /薪资.{0,8}(要求|期望|多少|是|给)|期望薪资|实习工资|可到岗|现在(就)?入职|到岗时间|随时到岗|面试时间|可以面试|安排面试/;
@@ -95,19 +113,65 @@ function buildLocalReply(jobTitle: string): string {
     : '您好，谢谢您联系我。我想进一步了解岗位的具体工作内容，希望能多沟通，谢谢。';
 }
 
+export type ReplyOutcome = 'continue' | 'hr_rejected' | 'declined';
+
 export interface ReplyResult {
   text: string;
   method: 'ai' | 'local' | 'none';
+  /** 结构化决策：continue=正常回复；hr_rejected=HR 已明确拒绝（不再回复）；declined=我方礼貌婉拒 */
+  outcome: ReplyOutcome;
+  /** AI 判断 HR 索要简历 → 发送后附带简历 */
+  sendResume: boolean;
+  /** AI 判断 HR 邀约面试 */
+  interview: boolean;
   warning?: string;
 }
 
+interface ReplyDecision {
+  outcome: ReplyOutcome;
+  reply: string;
+  sendResume: boolean;
+  interview: boolean;
+}
+
+const EMPTY_DECISION: ReplyDecision = { outcome: 'continue', reply: '', sendResume: false, interview: false };
+
+/** 解析 AI 返回的结构化决策；未按 JSON 输出时降级为普通回复（对齐觅星小臣 parseAiDecision）。 */
+function parseReplyDecision(raw: string): ReplyDecision | null {
+  const text0 = String(raw || '').trim();
+  if (!text0) return null;
+  let text = text0;
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  // 非 JSON：整体当普通回复（降级，不丢内容）
+  if (start === -1 || end === -1 || end <= start) {
+    const fallback = normalizeGreetingText(text.replace(/^["'「]|["'」]$/g, ''));
+    return fallback ? { ...EMPTY_DECISION, reply: fallback } : null;
+  }
+  try {
+    const obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+    const outcome: ReplyOutcome =
+      obj.outcome === 'hr_rejected' || obj.outcome === 'declined' ? obj.outcome : 'continue';
+    const reply = typeof obj.reply === 'string' ? normalizeGreetingText(obj.reply) : '';
+    return { outcome, reply, sendResume: Boolean(obj.send_resume), interview: Boolean(obj.interview) };
+  } catch {
+    const fallback = normalizeGreetingText(text.replace(/^["'「]|["'」]$/g, ''));
+    return fallback ? { ...EMPTY_DECISION, reply: fallback } : null;
+  }
+}
+
 /**
- * 生成对 HR 最新消息的 AI 回复（跟聊）。
+ * 生成对 HR 最新消息的 AI 跟聊回复。
  * 用 callModel 直连（不缓存：回复与被回复消息强相关、随时间变化）。
- * AI 未配置 / 生成失败 / 未通过口吻校验时回退到安全的通用回复。
+ * 带最近 N 条完整聊天记录做多轮上下文，并输出结构化决策（对齐觅星小臣 / ghost-job）。
+ * AI 未配置 / 生成失败 / 未通过口吻校验时回退到安全的通用回复；HR 明确拒绝时不回复。
  */
 export async function generateReply(opts: {
   hrMessage: string;
+  /** 会话最近消息（按时序，早→晚）：有则做多轮上下文，无则回退单条 hrMessage */
+  chatHistory?: { fromHr: boolean; text: string }[];
   jobTitle?: string;
   resumeText?: string;
   profile?: Profile | null;
@@ -116,10 +180,13 @@ export async function generateReply(opts: {
   model: AppConfig['model'];
 }): Promise<ReplyResult> {
   const hr = String(opts.hrMessage || '').trim();
-  if (!hr) return { text: '', method: 'none' };
+  if (!hr) return { text: '', method: 'none', outcome: 'continue', sendResume: false, interview: false };
   const localFallback = buildLocalReply(opts.jobTitle || '');
+  const localResult = (warning: string): ReplyResult => ({
+    text: localFallback, method: 'local', outcome: 'continue', sendResume: false, interview: false, warning,
+  });
   if (!opts.model?.apiKey) {
-    return { text: localFallback, method: 'local', warning: 'AI 尚未配置，本次使用通用回复。' };
+    return localResult('AI 尚未配置，本次使用通用回复。');
   }
   const comm = String(opts.communicationInfo || '').trim();
   try {
@@ -143,28 +210,52 @@ export async function generateReply(opts: {
         purpose: '自动沟通-简历上下文',
       })
     ).text;
-    const user = `HR 的最新消息："${hr}"\n\n应聘岗位：${String(opts.jobTitle || '未知岗位')}\n\n简历信息：\n${resumeCtx}\n\n职业画像：\n${JSON.stringify(profileBrief || {})}${commBlock}\n\n请直接给出你作为求职者的回复内容：`;
+    // 多轮上下文：优先用真实聊天记录（最近 N 条），否则回退单条 HR 消息
+    const history = (opts.chatHistory && opts.chatHistory.length
+      ? opts.chatHistory
+      : [{ fromHr: true, text: hr }]
+    )
+      .filter((m) => String(m?.text || '').trim())
+      .slice(-REPLY_HISTORY_LIMIT);
+    const historyLines = history.map((m) => `${m.fromHr ? 'HR' : '我'}：${String(m.text).trim()}`).join('\n');
+    const user = `应聘岗位：${String(opts.jobTitle || '未知岗位')}
+
+【聊天记录（从早到晚，最后一条是 HR 刚发的消息）】
+${historyLines}
+
+【我的简历】
+${resumeCtx}
+
+【职业画像】
+${JSON.stringify(profileBrief || {})}${commBlock}
+
+${REPLY_DECISION_SPEC}`;
     const content = await callModel(
       [
         { role: 'system', content: sysPrompt },
         { role: 'user', content: user },
       ],
       opts.model,
-      { temperature: 0.6, maxTokens: 400, jsonMode: false, timeoutMs: 45000 }
+      { temperature: 0.6, maxTokens: 2000, jsonMode: true, timeoutMs: 45000 }
     );
-    const text = normalizeGreetingText(String(content || ''));
+    const decision = parseReplyDecision(String(content || ''));
+    if (!decision) {
+      return localResult('AI 决策解析失败，已回退为通用回复。');
+    }
+    // HR 明确拒绝：不再回复（也不回退通用回复，避免打扰）
+    if (decision.outcome === 'hr_rejected') {
+      return { text: '', method: 'ai', outcome: 'hr_rejected', sendResume: false, interview: false };
+    }
+    // 无需回复（系统提示 / 表情 / 无实质内容）：按决策 outcome 返回空文本，由上层决定是否记录
+    if (!decision.reply) {
+      return { text: '', method: 'ai', outcome: decision.outcome, sendResume: decision.sendResume, interview: decision.interview };
+    }
     // 提供了「沟通信息」时才允许回复引用其中的薪资/面试/到岗等安排（否则仅用简历事实）
-    if (isAcceptableReply(text, Boolean(comm))) return { text, method: 'ai' };
-    return {
-      text: localFallback,
-      method: 'local',
-      warning: 'AI 回复未通过求职者口吻/承诺校验，已回退为通用回复。',
-    };
+    if (!isAcceptableReply(decision.reply, Boolean(comm))) {
+      return localResult('AI 回复未通过求职者口吻/承诺校验，已回退为通用回复。');
+    }
+    return { text: decision.reply, method: 'ai', outcome: decision.outcome, sendResume: decision.sendResume, interview: decision.interview };
   } catch (error: any) {
-    return {
-      text: localFallback,
-      method: 'local',
-      warning: `AI 回复生成失败（${error?.message || '未知原因'}），已回退为通用回复。`,
-    };
+    return localResult(`AI 回复生成失败（${error?.message || '未知原因'}），已回退为通用回复。`);
   }
 }

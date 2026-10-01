@@ -715,7 +715,7 @@ safeHandle('jc:camoufox-call', async (_event, action, payload) => {
     const r = await startCamoufoxBridge(readyPython);
     if (!r.running) return { ok: false, error: r.error || '桥启动失败' };
   }
-  const pathMap = { search: '/search', send: '/send', chat: '/chat', login: '/login', logout: '/logout', clear: '/clear', platforms: '/platforms', progress: '/collection-progress' };
+  const pathMap = { search: '/search', send: '/send', chat: '/chat', chatWatch: '/chat-watch', login: '/login', logout: '/logout', clear: '/clear', platforms: '/platforms', progress: '/collection-progress' };
   const apiPath = pathMap[action];
   if (!apiPath) return { ok: false, error: `unknown action: ${action}` };
   try {
@@ -897,7 +897,7 @@ async function createMainWindow() {
   //      以「激活卡标题 === selectedJobId 岗位名」判定新鲜，仅新鲜时才启用
   //      激活卡锚定与顺序对齐两个盲标兜底，否则只做逐卡文本精确匹配，未命中的
   //      岗位留空 URL（preload 用文本 key 去重；这类卡也拿不到岗位号 → 列表级采集的
-  //      详情 JD 补齐（webview.cjs::enrichZhaopinJobDetail，按 number 查详情）同样跳过，
+  //      详情 JD 补齐（webview.cjs::enrichJobDetail，按 number 查详情）同样跳过，
   //      按卡片文本入库，不丢岗位）；
   //   3. click 捕获：用户点岗位卡 → 命中索引 → preventDefault + 整页导航到独立详情页
   //      （当前标签跳转、可后退回列表）；匹配不到不做接管，退回站点原生内联。

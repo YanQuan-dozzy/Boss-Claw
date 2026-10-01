@@ -82,3 +82,10 @@ mcp/bossclaw-mcp/.workspace-root
 .vscode/
 .idea/
 *.swp
+
+# Local agent sandbox (design-skill copies, not part of the app)
+/.agents/
+
+# 封面设计草稿（本地素材，不入库）
+bossclaw-cover.miora
+/bossclaw-cover_assets/

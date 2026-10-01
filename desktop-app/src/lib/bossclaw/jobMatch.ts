@@ -14,6 +14,7 @@ import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInT
 import { isCompanyExcluded } from './companyFilter';
 import { isLocationExcluded } from './locationFilter';
 import { detectInterviewMode } from './interviewMode';
+import { checkJobExpiry, isExpiryFilterEnabled, PLATFORM_EXPIRY_DEFAULT } from './jobExpiry';
 import { decodeSalaryDigits } from './jobDisplay';
 import {
   detectWorkSchedule,
@@ -41,6 +42,35 @@ const SEGMENT_RE = /(\d+(?:\.\d+)?)\s*(万|千|[Kk])?/g;
 // 年薪口径：串里出现「年薪/年包/每年/万/年」等（「13薪」已在上游清洗，不会误伤）
 const ANNUAL_RE = /年薪|年包|每年|万\s*[-\/]\s*年|[-\/]\s*年/;
 
+/**
+ * 薪资文本归一化（**唯一权威**，parseSalaryRange 入口必过）。
+ *
+ * 为什么必须有这一步（2026-10-01 猎聘「薪资解析错误」根因）：
+ * 采集链路（webview.cjs 的 `pickFromCard` / 节点文本，以及部分平台的链接文本兜底）
+ * 会把**链接尾部的 query / hash 残留**带进 salary 字段，实测形如：
+ *   `200-300元?salary=1`、`15-22k?salary=1`
+ * `SEGMENT_RE` 会把 query 里的 `1` 当成第三个薪资段，于是「元/天」日期口径丢失、
+ * 数字被当成月薪 K 值处理：「200-300元」→ 200-300（K）→ 触发 `high > 200` → ÷1000
+ * → 月薪 0.2K → 日薪等效 9.1 元/天 → 被「最低日薪 100 元/天」硬拦截。
+ * 表现为「岗位页面明写 200-300 元/天，日志却报日薪约 9.1 元/天」。
+ *
+ * 归一化内容：
+ *   ① 截断 URL 残留：`?…` / `#…` 之后一律丢弃（薪资串里不可能合法出现这两个字符）；
+ *   ② 统一区间连字符与空白（`至`/`到`/全角波浪线 → `-`，压缩连续空白），
+ *      避免下游 `desc`/`salary` 拼接形态差异导致漏判。
+ * 注意：只做「剔除噪声 + 规范化」，**不猜数字、不补单位**——无单位段的单位继承仍由
+ * parseSalarySegments 的前向优先规则决定，保持既有口径不变。
+ */
+export function normalizeSalaryText(input: string | undefined | null): string {
+  return String(input || '')
+    // ① URL query / hash 残留（含全角问号）：连同其后内容一并丢弃
+    .replace(/[?#？＃][\s\S]*$/, '')
+    // ② 区间连接词与空白统一：至 / 到 / ~ / ～ / – / — → `-`
+    .replace(/[~～–—]|至|到/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** 把「数字 + 可选单位」逐段解析；单位缺失的段继承最近的显式单位（前向优先）：「1.5-2万」→ 1.5 继承 万。 */
 function parseSalarySegments(cleaned: string): SalarySeg[] | null {
   const segs: SalarySeg[] = [];
@@ -67,8 +97,10 @@ export function parseSalaryRange(
   monthlyWorkDays = monthlyWorkDaysOf(DEFAULT_WEEKLY_DAYS)
 ): SalaryRange {
   const invalid: SalaryRange = { low: 0, high: 0, daily: false, hourly: false, valid: false };
-  // 先还原平台字体混淆（BOSS 把薪资数字映射到 Unicode 私有区），否则一律落到「未识别」
-  const raw = decodeSalaryDigits(String(salary || '')).trim();
+  // 先还原平台字体混淆（BOSS 把薪资数字映射到 Unicode 私有区），再剥离 URL 残留
+  // （形如 `200-300元?salary=1` 会把 query 里的 1 当成第三段，见 normalizeSalaryText），
+  // 否则一律落到「未识别」或算出严重偏低的等效薪资。
+  const raw = normalizeSalaryText(decodeSalaryDigits(String(salary || '')));
   if (!raw || /面议/.test(raw)) return invalid;
   // 去掉「13薪/14薪/15薪」等年终奖月数，避免「13」被误当作薪资区间上限
   const cleaned = raw.replace(/[·*＊xX×\s]*1[2-8]\s*薪/g, '').trim();
@@ -529,6 +561,21 @@ function collectHardBlocksFromCtx(ctx: LocalMatchContext): string[] {
         }
       }
       return null;
+    },
+    // 10. JD 截止日期已过（设置 → 排除已过截止日期岗位）
+    //     触发源是猎聘 JD 正文末尾的「截止日期：YYYY年MM月DD日」字段（口径见 jobExpiry.ts 唯一权威）。
+    //     只在 JD **显式写了**截止日期时才判定；未写 / 日期不可解析（如「长期有效」「招满即止」）→ 放行，
+    //     避免把绝大多数不写截止日期的岗位误拦。截止日当天仍算有效。
+    //     ⚠️ 新增硬约束必须追加在数组末尾（matching.ts 取前 2 条生成拦截文案，插中间会改展示）。
+    () => {
+      const enabled = isExpiryFilterEnabled(
+        config,
+        job.platform,
+        PLATFORM_EXPIRY_DEFAULT[String(job.platform || '')] ?? false
+      );
+      if (!enabled) return null;
+      const res = checkJobExpiry(job);
+      return res.expired ? res.reason : null;
     },
   ];
   const hardBlocks: string[] = [];

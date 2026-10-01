@@ -16,6 +16,7 @@ BossClaw 隐身引擎 —— 本地 Python 桥服务（仅 Camoufox 原生隐身
   - /search  隐身搜索（humanize/stealth，自动处理 code 37 环境检查）
   - /send    隐身发送招呼语（friend/add.json API + 页面真实点击兜底）
   - /chat    自动沟通（真正的浏览器操作：可见窗口真实点击「立即沟通」+ 真实键盘输入 + 发送 + 气泡确认）
+  - /chat-watch 常驻「AI 跟聊」会话监听（单一常驻浏览器停在 BOSS 会话页：scan 会话列表 / open 切会话读记录 / send 回复）
   - /login   打开可见窗口扫码登录，Cookie 持久化到 ~/.bossclaw/camoufox-cookies.json
 
 安全边界（与 Boss-claw AGENTS.md 一致）：
@@ -35,6 +36,8 @@ import re
 import sys
 import time
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,7 +56,7 @@ import platforms as platform_mods
 # ============================================================
 # BOSS 直聘专用风控文案与外部网申检测（聊天投递链路用）
 # ============================================================
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 
 
 # ============================================================
@@ -966,30 +969,59 @@ def _resolve_target_conflict(expected: dict, actual: dict) -> bool:
 
 
 def _read_hr_friend_context(page) -> dict:
-    """读取 HR 发来的消息（对齐 AI-BossJob getLastFriendMessageText / hasHRResponded）：
-    统计 `li.message-item.item-friend` 消息数并取最新一条**非系统提示**的文本（`.text span`），
-    用于判断是否需要「AI 跟聊」回复。无 HR 真实消息返回 {count:0, last:''}。"""
+    """读取 HR 发来的消息与完整对话历史（对齐 AI-BossJob getLastFriendMessageText / hasHRResponded）。
+
+    返回：
+      - count：HR 侧消息条数（兼容旧判定）
+      - last：最新一条**非系统提示**的 HR 消息文本（无则 ''）
+      - history：双方最近消息（按时序，早→晚），元素 {fromHr, text, sys}，用于多轮 AI 跟聊
+      - needs_reply：最后一条「非系统」消息是 HR 发的（= 在等我回复，对齐 ghost-job 的 unanswered()）
+    无 HR 真实消息返回 {count:0, last:'', history:[], needs_reply:False}。"""
     try:
         r = page.evaluate("""() => {
             const c = document.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
-            if (!c) return { count: 0, last: '' };
-            const friends = Array.from(c.querySelectorAll('li.message-item.item-friend, li[class*="item-friend"]'))
+            if (!c) return { count: 0, last: '', history: [] };
+            const items = Array.from(c.querySelectorAll('li.message-item, li[class*="message-item"]'))
                 .filter(el => el.getBoundingClientRect().width > 0);
-            if (!friends.length) return { count: 0, last: '' };
             const clean = (s) => (s || '').replace(/[\\u200b-\\u200d\\ufeff\\u2060]/g, ' ').trim().replace(/\\s+/g, ' ').slice(0, 800);
-            // 跳过 BOSS 系统/提示类消息（打招呼确认、等待回复、简历被查看等），取最新一条「真实 HR 消息」
+            // BOSS 系统/提示类消息（打招呼确认、等待回复、简历被查看等）：不计入「真实消息」判定
             const sysRe = /已向(TA|.{1,6})打了招呼|等待对方回复|请耐心等待|BOSS推荐|简历已被查看|系统消息|非常抱歉|未读/;
-            for (let i = friends.length - 1; i >= 0; i--) {
-                const f = friends[i];
-                const t = f.querySelector('.text span, [class*="text"] span, [class*="content"]') || f;
+            const history = [];
+            let friendCount = 0;
+            let last = '';
+            for (const el of items) {
+                const cls = el.className || '';
+                const fromHr = el.classList.contains('item-friend') || /item-friend/.test(cls);
+                const fromMe = el.classList.contains('item-myself') || /item-myself/.test(cls);
+                if (!fromHr && !fromMe) continue;
+                const t = el.querySelector('.text span, [class*="text"] span, [class*="content"]') || el;
                 const s = clean(t ? t.textContent : '');
-                if (s && !sysRe.test(s)) return { count: friends.length, last: s };
+                if (!s) continue; // 纯系统卡片没有文字，跳过
+                const sys = sysRe.test(s);
+                history.push({ fromHr: !!fromHr, text: s, sys: sys });
+                if (fromHr) {
+                    friendCount += 1;
+                    if (!sys) last = s;
+                }
             }
-            return { count: friends.length, last: '' };
+            return { count: friendCount, last: last, history: history.slice(-30) };
         }""") or {}
-        return r
+        hist = r.get('history') or []
+        # needs_reply：从末尾往前跳过系统提示，最后一条真实消息是谁发的（对齐 ghost-job unanswered()）
+        needs = False
+        for m in reversed(hist):
+            if m.get('sys'):
+                continue
+            needs = bool(m.get('fromHr'))
+            break
+        return {
+            'count': int(r.get('count') or 0),
+            'last': str(r.get('last') or ''),
+            'history': hist,
+            'needs_reply': needs,
+        }
     except Exception:
-        return {'count': 0, 'last': ''}
+        return {'count': 0, 'last': '', 'history': [], 'needs_reply': False}
 
 
 def _chat_button_link(page) -> str:
@@ -1221,25 +1253,95 @@ def _upload_resume_images(page, resume_images: list) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _send_chat_text(target_page, text: str) -> dict:
+    """在「当前已打开的聊天窗口」里真实输入并发送文本，确认我方气泡后返回结果。
+
+    发送前快照 → 类人逐字输入（空则 execCommand 兜底）→ 点发送/回车 → 稳定指纹 ×3 完整文本确认。
+    发送失败或未确认一律不计成功（AGENTS.md 2.1 安全不变量）。首次招呼语与 AI 跟聊回复共用。
+    返回 {ok:True, sentVia} 或 {ok:False, code, message}。
+    """
+    # 输入框就绪（重新打分标记：常驻会话页切换会话后输入框可能重建）
+    input_el = _find_chat_input(target_page)
+    if input_el is None:
+        return {"ok": False, "code": 500, "message": "未找到聊天输入框"}
+    before_fps = _outgoing_message_fingerprints(target_page)
+    try:
+        input_el.click()
+        # 点击后短暂停顿，模拟真人移动鼠标/停留
+        human_sleep(0.4, 0.5)
+        target_page.keyboard.press('ControlOrMeta+a')
+        target_page.keyboard.press('Delete')
+        # 逐字随机打字节奏（接近真人，替代固定 delay=25）
+        type_greeting_human(target_page, text)
+        human_sleep(0.5, 0.4)
+        typed = _input_text(target_page)
+        if not typed.strip() or len(typed.strip()) < 5:
+            log('⚠️', '键盘输入后内容为空，execCommand 兜底注入…')
+            _inject_text_via_exec(target_page, text)
+            human_sleep(0.4, 0.5)
+        log('⌨️', '沟通文本已真实输入')
+    except Exception as e:
+        return {"ok": False, "code": 500, "message": f"输入沟通文本失败：{e}"}
+
+    sent_via = 'enter'
+    send_btn, send_kind = _find_send_button(target_page)
+    if send_btn is not None:
+        # 发送前随机停顿，模拟真人看完输入内容后点击
+        human_sleep(0.5, 0.5, 0.2)
+        try:
+            send_btn.click()
+            sent_via = send_kind or 'button'
+            log('🖱️', f'已点击发送按钮（{sent_via}）')
+        except Exception:
+            try:
+                target_page.keyboard.press('Enter')
+                sent_via = 'enter'
+                log('⌨️', '发送按钮点击失败，已回车发送')
+            except Exception:
+                pass
+    else:
+        try:
+            target_page.keyboard.press('Enter')
+            log('⌨️', '已回车发送')
+        except Exception:
+            pass
+    # 发送后随机停留，等气泡出现主体再确认（对齐 waitForStableOutgoingGreeting 的稳定期）
+    human_sleep(1.8, 0.4, 0.8)
+
+    confirmed = _confirm_message(target_page, text, before_fps)
+    if not confirmed:
+        human_sleep(2.6, 0.3, 1.5)
+        confirmed = _confirm_message(target_page, text, before_fps)
+    if not confirmed:
+        return {"ok": False, "code": 501, "message": "未能确认文字气泡已发送，请人工核对"}
+    log('✅', f'文字气泡确认（发送方式：{sent_via}）')
+    return {"ok": True, "sentVia": sent_via}
+
+
 def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
                   send_resume_image: bool = False, send_online_resume: bool = False,
                   expected: dict | None = None, resume_images: list | None = None,
                   mode: str = 'auto', reply_text: str | None = None,
                   attachment_delay_seconds: float = 4.0) -> dict:
     # mode: 'auto' 首次打招呼投递（若 HR 已发来消息则转「AI 跟聊」返回 700）；
-    #       'reply' 发送渲染层生成的 AI 回复文本（对齐 AI-BossJob aiReply 链路）。
-    if mode == 'reply':
+    #       'reply' 发送渲染层生成的 AI 回复文本（对齐 AI-BossJob aiReply 链路）；
+    #       'check' 只读巡检：打开会话但不发送，仅回传 HR 历史供渲染层生成 AI 跟聊（长驻监听用）。
+    if mode == 'check':
+        send_text = ''
+        scope_label = 'AI 跟聊巡检'
+    elif mode == 'reply':
         send_text = str(reply_text or greeting or '').strip()
         scope_label = 'AI 回复'
     else:
         send_text = str(greeting or '').strip()
         scope_label = '打招呼'
-    if not send_text:
-        return {"ok": False, "code": 400, "message": "沟通文本为空，拒绝发送", "sent": False}
-    if len(send_text) > 800:
-        return {"ok": False, "code": 400, "message": "沟通文本过长（>800 字），拒绝发送", "sent": False}
-    if len(send_text) < GREETING_MIN_LEN:
-        return {"ok": False, "code": 400, "message": f"沟通文本过短（<{GREETING_MIN_LEN} 字），拒绝发送", "sent": False}
+    if mode != 'check':
+        if not send_text:
+            return {"ok": False, "code": 400, "message": "沟通文本为空，拒绝发送", "sent": False}
+        if len(send_text) > 800:
+            return {"ok": False, "code": 400, "message": "沟通文本过长（>800 字），拒绝发送", "sent": False}
+        if len(send_text) < GREETING_MIN_LEN:
+            return {"ok": False, "code": 400, "message": f"沟通文本过短（<{GREETING_MIN_LEN} 字），拒绝发送", "sent": False}
 
     log('💬', f'自动沟通（{scope_label}）→ job={job_id}（{len(send_text)} 字，可见窗口）')
 
@@ -1335,74 +1437,44 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
                         "message": f"目标疑似冲突：期望 HR={expected.get('recruiterName') or '?'}/公司={expected.get('company') or '?'}，"
                                    f"实见 HR={actual.get('recruiter') or '?'}/公司={actual.get('company') or '?'}，已暂停发送"}
 
-        # Step 5.7: 判断是否需要「AI 跟聊」——HR 已发来消息（对齐 AI-BossJob 跟聊触发）。
-        # 不发送打招呼语，仅返回 HR 最新消息供渲染层生成 AI 回复后走 mode='reply' 发送。
+        # Step 5.6: 只读巡检（mode='check'）——不发送任何消息，仅回传 HR 最新消息与完整对话历史，
+        # 供渲染层「AI 跟聊监听」生成多轮回复后走 mode='reply' 发送。
+        if mode == 'check':
+            hr_ctx = _read_hr_friend_context(target_page)
+            save_cookies(page.context)
+            return {"ok": True, "code": 0, "checked": True, "sent": False,
+                    "needsReply": bool(hr_ctx.get('needs_reply')),
+                    "hasHrMessage": hr_ctx.get('count', 0) > 0,
+                    "hrLastMessage": hr_ctx.get('last', ''),
+                    "hrHistory": hr_ctx.get('history') or [],
+                    "message": "巡检完成（未发送）"}
+
+        # Step 5.7: 判断会话状态（对齐 ghost-job unanswered()）：
+        #   - 最后一条真实消息是 HR 发的 → 返回 700，进入「AI 跟聊」回复（不发送打招呼语）；
+        #   - 已建立会话但最后一条是我方发的（无需回复）→ 返回 701，跳过重复打招呼；
+        #   - 尚无任何会话 → 继续正常发送打招呼语。
+        # 注意：不能用「HR 曾发过消息」当回复条件，否则我方已回复过的会话会被重复回复。
         if mode != 'reply':
             hr_ctx = _read_hr_friend_context(target_page)
-            if hr_ctx.get('count', 0) > 0 and hr_ctx.get('last'):
+            if hr_ctx.get('count', 0) > 0:
+                if hr_ctx.get('needs_reply') and hr_ctx.get('last'):
+                    save_cookies(page.context)
+                    return {"ok": False, "code": 700, "needsReply": True, "hasHrMessage": True,
+                            "hrLastMessage": hr_ctx.get('last', ''),
+                            "hrHistory": hr_ctx.get('history') or [],
+                            "message": "HR 已发来消息，进入 AI 跟聊回复", "sent": False}
                 save_cookies(page.context)
-                return {"ok": False, "code": 700, "needsReply": True, "hasHrMessage": True,
-                        "hrLastMessage": hr_ctx.get('last', ''),
-                        "message": "HR 已发来消息，进入 AI 跟聊回复", "sent": False}
+                return {"ok": False, "code": 701, "alreadyChatted": True, "sent": False,
+                        "hrHistory": hr_ctx.get('history') or [],
+                        "message": "已与该 HR 建立会话且无需回复，跳过重复打招呼"}
 
-        # Step 6: 发送前快照自己气泡指纹（对齐 waitForStableOutgoingGreeting 的 before 快照）
-        before_fps = _outgoing_message_fingerprints(target_page)
-
-        # Step 7: 真实输入招呼语（聚焦 → 清空 → 逐字随机输入；内容为空则 execCommand 兜底）
-        try:
-            input_el.click()
-            # 点击后短暂停顿，模拟真人移动鼠标/停留
-            human_sleep(0.4, 0.5)
-            target_page.keyboard.press('ControlOrMeta+a')
-            target_page.keyboard.press('Delete')
-            # 逐字随机打字节奏（接近真人，替代固定 delay=25）
-            type_greeting_human(target_page, send_text)
-            human_sleep(0.5, 0.4)
-            typed = _input_text(target_page)
-            if not typed.strip() or len(typed.strip()) < 5:
-                log('⚠️', '键盘输入后内容为空，execCommand 兜底注入…')
-                _inject_text_via_exec(target_page, send_text)
-                human_sleep(0.4, 0.5)
-            log('⌨️', '招呼语已真实输入')
-        except Exception as e:
+        # Step 6-9: 真实输入并发送（发送前快照 → 类人逐字输入 → 发送 → 稳定气泡确认）
+        send_res = _send_chat_text(target_page, send_text)
+        if not send_res.get('ok'):
             save_cookies(page.context)
-            return {"ok": False, "code": 500, "message": f"输入招呼语失败：{e}", "sent": False}
-
-        # Step 8: 发送（优先聊天输入区邻近「发送」按钮，避免误点「发送简历」，最后回车）
-        sent_via = 'enter'
-        send_btn, send_kind = _find_send_button(target_page)
-        if send_btn is not None:
-            # 发送前随机停顿，模拟真人看完输入内容后点击
-            human_sleep(0.5, 0.5, 0.2)
-            try:
-                send_btn.click()
-                sent_via = send_kind or 'button'
-                log('🖱️', f'已点击发送按钮（{sent_via}）')
-            except Exception:
-                try:
-                    target_page.keyboard.press('Enter')
-                    sent_via = 'enter'
-                    log('⌨️', '发送按钮点击失败，已回车发送')
-                except Exception:
-                    pass
-        else:
-            try:
-                target_page.keyboard.press('Enter')
-                log('⌨️', '已回车发送')
-            except Exception:
-                pass
-        # 发送后随机停留，等气泡出现主体再确认（对齐 waitForStableOutgoingGreeting 的稳定期）
-        human_sleep(1.8, 0.4, 0.8)
-
-        # Step 9: 发送结果确认 —— 稳定指纹 ×3 + 完整目标文字匹配（安全不变量：未确认不计成功）
-        confirmed = _confirm_message(target_page, send_text, before_fps)
-        if not confirmed:
-            human_sleep(2.6, 0.3, 1.5)
-            confirmed = _confirm_message(target_page, send_text, before_fps)
-        if not confirmed:
-            save_cookies(page.context)
-            return {"ok": False, "code": 501, "message": "未能确认文字气泡已发送，请人工核对", "sent": False}
-        log('✅', f'文字气泡确认（发送方式：{sent_via}）')
+            return {"ok": False, "code": send_res.get('code', 500),
+                    "message": send_res.get('message', '发送失败'), "sent": False}
+        sent_via = send_res.get('sentVia') or 'enter'
 
         # Step 10: 可选 —— 在线简历 / 图片简历（对齐 chat-new v5543 流程：
         # 聊天工具栏「简历」入口 → upload-select-dialog →「上传简历 / 发送在线简历」）。
@@ -1491,6 +1563,365 @@ def do_login(timeout: int = 180, os_name: str | None = None) -> dict:
 
         log('❌', '登录超时')
         return {"ok": False, "code": 31, "message": "扫码登录超时，请重试"}
+
+
+# ============================================================
+# 常驻「AI 跟聊」会话监听（单一常驻浏览器停在 BOSS 会话页）
+# ============================================================
+# 对齐觅星小臣 / ghost-job 的做法：不逐岗位重开浏览器，而是常驻一个会话页，
+#   ① scan  读会话列表（接口优先 / DOM 兜底），筛出「HR 发了最后一条」的会话；
+#   ② open  点击列表项切到目标会话，用 getBossData 响应 / 窗口头部双重校验身份，回传完整聊天记录；
+#   ③ send  发送前再校验一次窗口身份，再真实输入 + 稳定气泡确认（防串人）。
+# Playwright sync 对象有线程亲和性 → 所有浏览器操作都投递到**单线程执行器**里跑，
+# HTTP 处理线程只负责提交命令并等待结果。
+CHAT_WATCH_URL = 'https://www.zhipin.com/web/geek/chat'
+CHAT_WATCH_ACTIONS = ('start', 'scan', 'open', 'send', 'stop', 'status')
+
+_chat_watch_cm = None      # 常驻 open_browser 上下文（懒创建，stop 时 __exit__）
+_chat_watch_page = None    # 常驻会话页
+_chat_watch_lock = threading.RLock()
+_chat_watch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='bossclaw-chat-watch')
+
+# 伪会话（BOSS 智能聊天 / 系统消息等）：不是真人 HR，必须排除
+PSEUDO_CONV_RE = re.compile(
+    r'Boss智能聊天|BOSS智能聊天|智能聊天|智能对话|智能助手|求职助手|简历助手|'
+    r'系统消息|官方账号|AI筛选|^AI$|^系统$'
+)
+
+# 读会话列表：接口优先（geekFilterByLabel + getGeekFriendList），DOM 兜底/并集
+_JS_SCAN_CONV = """
+async () => {
+  const norm = (s) => (s || '').replace(/[\\u200b-\\u200d\\ufeff\\u2060]/g, '').replace(/\\s+/g, ' ').trim();
+  const out = [];
+  const seen = new Set();
+  const push = (o) => { if (o.name && !seen.has(o.name)) { seen.add(o.name); out.push(o); } };
+
+  // ① 接口：先按更新时间取会话 id，再批量取详情（详情里才有 uid / lastMessageInfo）
+  try {
+    const r1 = await fetch('/wapi/zprelation/friend/geekFilterByLabel?labelId=0', { credentials: 'include' })
+      .then((r) => r.json()).catch(() => null);
+    if (r1 && r1.code === 0) {
+      const ids = ((r1.zpData && r1.zpData.friendList) || []).slice(0, 30)
+        .map((f) => f.friendId).filter(Boolean);
+      if (ids.length) {
+        const r2 = await fetch('/wapi/zprelation/friend/getGeekFriendList.json', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: 'friendIds=' + encodeURIComponent(ids.join(',')),
+          credentials: 'include',
+        }).then((r) => r.json()).catch(() => null);
+        const list = (r2 && r2.code === 0 && r2.zpData && (r2.zpData.result || r2.zpData.friendList)) || [];
+        for (const f of list) {
+          const lm = f.lastMessageInfo || {};
+          push({
+            name: norm(f.name || f.bossName || ''),
+            company: norm(f.brandName || f.company || ''),
+            jobName: norm(f.jobName || (f.job && f.job.jobName) || ''),
+            preview: norm(lm.text || lm.message || ''),
+            unread: Number(f.unreadCount || f.unreadMsgCount || 0) > 0 || !!lm.unread,
+            friendId: String(f.friendId || ''),
+            uid: String(f.uid || ''),
+            lastFromId: String(lm.fromId || ''),
+            dom: false,
+          });
+        }
+      }
+    }
+  } catch (e) { /* 接口不可用 → 走 DOM */ }
+
+  // ② DOM 兜底/并集：接口没覆盖到的会话补上（含未读标记与预览）
+  try {
+    const raw = document.querySelectorAll(
+      'ul[role="group"] li[role="listitem"], .user-list-content li, .user-list li, .chat-user li, ' +
+      '.friend-list li, [class*="user-list"] li, [class*="friend-list"] li, [class*="chat-list"] li, ' +
+      '[class*="user-item"], [class*="conversation-item"]'
+    );
+    const FILTER_LABEL = /^(全部|未读|新招呼|沟通过|已投递|已交换|牛人|新消息|我的|推荐|筛选|更多|置顶|收藏|不合适|已结束|打招呼|AI筛选|AI筛选提交|AI助手|智能助手)$/;
+    for (const li of Array.from(raw)) {
+      if (li.querySelectorAll('li').length || !li.querySelector('img')) continue;
+      const whole = norm(li.textContent);
+      if (whole.length < 2 || FILTER_LABEL.test(whole.replace(/\\s+/g, ''))) continue;
+      const nameEl = li.querySelector('[class*="name"], [class*="title"], [class*="geek-name"]');
+      const lines = norm(li.innerText || li.textContent || '').split(' ').filter(Boolean);
+      let name = norm(nameEl ? nameEl.textContent : '');
+      if (!name) {
+        name = lines.find((t) => t.length >= 2 && t.length <= 12 &&
+          !/公司|科技|集团|有限|刚|活跃|在线|已读|未读|回复|您好|你好/.test(t)) || '';
+      }
+      if (!name || seen.has(name)) continue;
+      const unread = !!li.querySelector('[class*="unread"], [class*="badge"], sup');
+      const preview = lines.length ? lines[lines.length - 1] : '';
+      push({ name, company: '', jobName: '', preview, unread, friendId: '', uid: '', lastFromId: '', dom: true });
+    }
+  } catch (e) { /* 忽略 */ }
+  return out;
+}
+"""
+
+# 在左侧列表里定位并标记目标会话项（返回坐标，供 Playwright / mouse 点击）
+_JS_MARK_CONV = """
+(arg) => {
+  const norm = (s) => (s || '').replace(/[\\u200b-\\u200d\\ufeff\\u2060]/g, '').replace(/\\s+/g, ' ').trim();
+  const target = norm(arg && arg.name);
+  const cTarget = norm(arg && arg.company);
+  const raw = Array.from(document.querySelectorAll(
+    'ul[role="group"] li[role="listitem"], .user-list-content li, .user-list li, .chat-user li, ' +
+    '.friend-list li, [class*="user-list"] li, [class*="friend-list"] li, [class*="chat-list"] li, ' +
+    '[class*="user-item"], [class*="conversation-item"]'
+  )).filter((li) => !li.querySelectorAll('li').length && li.querySelector('img'));
+  document.querySelectorAll('[data-bossclaw-conv]').forEach((el) => el.removeAttribute('data-bossclaw-conv'));
+  let exact = null, loose = null;
+  for (const li of raw) {
+    const t = norm(li.textContent);
+    if (!t) continue;
+    const nameEl = li.querySelector('[class*="name"], [class*="title"], [class*="geek-name"]');
+    const n = norm(nameEl ? nameEl.textContent : '');
+    if (n && n === target) { exact = li; break; }
+    if (!loose && t.includes(target) && (!cTarget || t.includes(cTarget))) loose = li;
+  }
+  const hit = exact || loose;
+  if (!hit) return { found: false };
+  hit.setAttribute('data-bossclaw-conv', '1');
+  try { hit.scrollIntoView({ block: 'center' }); } catch (e) { /* 忽略 */ }
+  const r = hit.getBoundingClientRect();
+  return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+           text: norm(hit.textContent).slice(0, 60) };
+}
+"""
+
+
+def _same_identity(a: str, b: str) -> bool:
+    """两个身份串是否视为同一人（复用 _norm_identity 的归一化口径）。"""
+    na, nb = _norm_identity(a), _norm_identity(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def _boss_data_name(api: dict | None) -> str:
+    """从 getBossData 响应里取 HR 姓名（= ghost-job 的 zpData.data.name）。"""
+    try:
+        zp = (api or {}).get('zpData') or api or {}
+        data = zp.get('data') or {}
+        return str(data.get('name') or zp.get('hrName') or '').strip()
+    except Exception:
+        return ''
+
+
+def _boss_data_job(api: dict | None) -> str:
+    """从 getBossData 响应里取岗位名。"""
+    try:
+        zp = (api or {}).get('zpData') or api or {}
+        job = zp.get('job') or {}
+        data = zp.get('data') or {}
+        return str(job.get('jobName') or data.get('jobName') or zp.get('jobName') or '').strip()
+    except Exception:
+        return ''
+
+
+def _chat_page_ready(page) -> bool:
+    """会话页是否已渲染（登录后才有会话列表 / 输入框）。"""
+    try:
+        return bool(page.evaluate("""() => !!(document.querySelector(
+            '#chat-input,[data-bossclaw-chat-input],[class*="im-list"],[class*="user-list"],'
+            + '[class*="chat-conversation"],[class*="geek-chat"],[class*="friend-list"]'
+        ))"""))
+    except Exception:
+        return False
+
+
+def _open_conversation(page, name: str, company: str = '') -> dict:
+    """点击左侧列表项切到目标会话，并双重校验身份后回传完整聊天记录（防串人）。"""
+    name = str(name or '').strip()
+    if not name:
+        return {"ok": False, "code": 400, "message": "缺少会话名"}
+    info = page.evaluate(_JS_MARK_CONV, {"name": name, "company": company})
+    if not info or not info.get('found'):
+        return {"ok": False, "code": 404, "message": f"左侧列表未找到会话「{name}」（可能未渲染或已折叠）"}
+
+    api = None
+    api_name = ''
+    try:
+        with page.expect_response(lambda r: 'getBossData' in r.url, timeout=6000) as ri:
+            try:
+                page.locator('[data-bossclaw-conv]').first.click(timeout=5000)
+            except Exception:
+                page.mouse.click(info.get('x', 0), info.get('y', 0))
+        try:
+            api = ri.value.json()
+            api_name = _boss_data_name(api)
+        except Exception:
+            api = None
+    except Exception:
+        # 无 getBossData（命中缓存等）→ 坐标点击 + 头部校验兜底
+        try:
+            page.mouse.click(info.get('x', 0), info.get('y', 0))
+        except Exception:
+            pass
+
+    # 接口明确报的是别人 → 立刻放弃（绝不放行，防串人）
+    if api_name and not _same_identity(api_name, name):
+        return {"ok": False, "code": 602,
+                "message": f"点击后打开的会话是「{api_name}」，与目标「{name}」不符，已放弃（防串人）"}
+
+    human_sleep(1.0, 0.4, 0.5)
+    header = {}
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        header = _chat_header_identity(page)
+        cur = str(header.get('recruiter') or '')
+        if cur and _same_identity(cur, name):
+            break
+        human_sleep(0.6, 0.3, 0.3)
+
+    hr_ctx = _read_hr_friend_context(page)
+    cur_name = str((header or {}).get('recruiter') or '')
+    if cur_name and not _same_identity(cur_name, name) and not (api_name and _same_identity(api_name, name)):
+        return {"ok": False, "code": 602,
+                "message": f"当前窗口是「{cur_name}」，与目标「{name}」不符，已放弃（防串人）"}
+    if not hr_ctx.get('history'):
+        return {"ok": False, "code": 500, "message": f"「{name}」会话内暂无可读消息（会话可能为空或未切换成功）"}
+    return {
+        "ok": True,
+        "name": name,
+        "company": str((header or {}).get('company') or company or ''),
+        "jobName": _boss_data_job(api),
+        "history": hr_ctx.get('history') or [],
+        "needsReply": bool(hr_ctx.get('needs_reply')),
+        "hrLastMessage": hr_ctx.get('last', ''),
+        "matchedBy": 'api' if api_name else ('header' if cur_name else 'content'),
+    }
+
+
+def _send_to_conversation(page, name: str, company: str = '', text: str = '') -> dict:
+    """发送前再校验一次窗口身份，然后真实输入并发送（防串人 + 未确认不计成功）。"""
+    text = str(text or '').strip()
+    if not text:
+        return {"ok": False, "code": 400, "message": "回复文本为空，拒绝发送", "sent": False}
+    if len(text) > 800:
+        return {"ok": False, "code": 400, "message": "回复文本过长（>800 字），拒绝发送", "sent": False}
+    if len(text) < GREETING_MIN_LEN:
+        return {"ok": False, "code": 400, "message": f"回复文本过短（<{GREETING_MIN_LEN} 字），拒绝发送", "sent": False}
+    header = _chat_header_identity(page)
+    cur = str((header or {}).get('recruiter') or '')
+    if cur and name and not _same_identity(cur, name):
+        return {"ok": False, "code": 602, "sent": False,
+                "message": f"发送前校验失败：当前窗口是「{cur}」，与目标「{name}」不符，放弃发送（防串人）"}
+    res = _send_chat_text(page, text)
+    if not res.get('ok'):
+        return {"ok": False, "code": res.get('code', 500), "sent": False,
+                "message": res.get('message', '发送失败')}
+    return {"ok": True, "sent": True, "method": "browser-chat-watch", "sentVia": res.get('sentVia')}
+
+
+def _watch_teardown() -> None:
+    """关闭常驻会话浏览器（幂等；必须在执行器线程内调用以保证线程亲和）。"""
+    global _chat_watch_cm, _chat_watch_page
+    cm = _chat_watch_cm
+    _chat_watch_cm, _chat_watch_page = None, None
+    if cm is not None:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as e:
+            log('⚠️', f'关闭会话监听浏览器失败：{e}')
+
+
+def _watch_start(os_name: str | None = None) -> dict:
+    _watch_teardown()
+    cm = open_browser(os_name=os_name, headless=False)
+    page = cm.__enter__()
+    global _chat_watch_cm, _chat_watch_page
+    _chat_watch_cm, _chat_watch_page = cm, page
+    cookies = load_cookies()
+    if cookies:
+        try:
+            page.context.add_cookies(cookies)
+        except Exception as e:
+            log('⚠️', f'注入 Cookie 失败：{e}')
+    page.goto(CHAT_WATCH_URL, wait_until="domcontentloaded", timeout=30000)
+    human_sleep(3.4, 0.35, 2.0)
+    if 'login' in (page.url or '').lower():
+        return {"ok": False, "code": 31, "message": "未登录 BOSS，请先扫码登录"}
+    risk = _risk_text_hit(page)
+    if risk:
+        return {"ok": False, "code": 35, "message": f"检测到安全验证/访问受限（{risk}），请人工完成验证"}
+    if not _chat_page_ready(page):
+        human_sleep(3.0, 0.3, 2.0)
+    if not _chat_page_ready(page):
+        return {"ok": False, "code": 500, "message": "会话页未就绪（可能未登录或页面结构已变化）"}
+    save_cookies(page.context)
+    log('👂', '常驻会话监听已启动（BOSS 会话页）')
+    return {"ok": True, "ready": True}
+
+
+def _watch_scan() -> dict:
+    if _chat_watch_page is None:
+        return {"ok": False, "code": 400, "message": "会话监听未启动"}
+    page = _chat_watch_page
+    risk = _risk_text_hit(page)
+    if risk:
+        return {"ok": False, "code": 35, "message": f"检测到安全验证/访问受限（{risk}）"}
+    try:
+        items = page.evaluate(_JS_SCAN_CONV) or []
+    except Exception as e:
+        return {"ok": False, "code": 500, "message": f"读取会话列表失败：{e}"}
+    # 过滤伪会话（BOSS 智能聊天 / 系统消息等）
+    convs = [c for c in items if not PSEUDO_CONV_RE.search(str(c.get('name') or '').replace(' ', ''))]
+    return {"ok": True, "conversations": convs, "total": len(items)}
+
+
+def _watch_open(name: str, company: str) -> dict:
+    if _chat_watch_page is None:
+        return {"ok": False, "code": 400, "message": "会话监听未启动"}
+    return _open_conversation(_chat_watch_page, name, company)
+
+
+def _watch_send(name: str, company: str, text: str) -> dict:
+    if _chat_watch_page is None:
+        return {"ok": False, "code": 400, "message": "会话监听未启动"}
+    return _send_to_conversation(_chat_watch_page, name, company, text)
+
+
+def _watch_stop() -> dict:
+    _watch_teardown()
+    log('🛑', '常驻会话监听已停止')
+    return {"ok": True, "running": False}
+
+
+def _watch_dispatch(cmd: str, payload: dict) -> dict:
+    """所有会话监听命令都在执行器线程内串行执行（保证 Playwright 线程亲和）。"""
+    with _chat_watch_lock:
+        if cmd == 'start':
+            return _watch_start(payload.get('os'))
+        if cmd == 'scan':
+            return _watch_scan()
+        if cmd == 'open':
+            return _watch_open(payload.get('name', ''), payload.get('company', ''))
+        if cmd == 'send':
+            return _watch_send(payload.get('name', ''), payload.get('company', ''), payload.get('text', ''))
+        if cmd == 'stop':
+            return _watch_stop()
+        if cmd == 'status':
+            return {"ok": True, "running": _chat_watch_page is not None,
+                    "url": (_chat_watch_page.url if _chat_watch_page is not None else '')}
+        return {"ok": False, "error": f"unknown chat-watch cmd: {cmd}"}
+
+
+def chat_watch_command(cmd: str, payload: dict, timeout: float = 90.0) -> dict:
+    """把会话监听命令投递到单线程执行器并等待结果（HTTP 处理线程不直接碰浏览器）。"""
+    try:
+        fut = _chat_watch_executor.submit(_watch_dispatch, cmd, payload or {})
+        return fut.result(timeout=timeout)
+    except FutureTimeoutError:
+        log('❌', f'会话监听命令超时：{cmd}')
+        return {"ok": False, "error": f"会话监听命令超时（{cmd}）"}
+    except Exception as e:
+        log('❌', f'会话监听命令异常：{cmd} / {e}')
+        try:
+            _chat_watch_executor.submit(_watch_teardown)
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e)}
 
 
 # ============================================================
@@ -1603,8 +2034,12 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                     attachment_delay_seconds = 4.0
                 if not job_id:
                     return self._send(400, {"ok": False, "error": "缺少 jobId"})
-                if not greeting:
+                # mode='check' 为只读巡检，无需 greeting；其余模式 greeting 必填
+                if not greeting and mode != 'check':
                     return self._send(400, {"ok": False, "error": "缺少 greeting", "code": 400})
+                # AI 跟聊巡检仅 BOSS 支持（其余平台回复请在平台 App 内人工跟进）
+                if mode == 'check' and platform != 'boss':
+                    return self._send(200, {"ok": False, "code": 400, "error": "AI 跟聊巡检仅支持 BOSS 平台"})
                 if platform == 'boss':
                     result = chat_greeting(job_id, greeting, os_name, send_resume_image, send_online_resume,
                                            expected, resume_images, mode, reply_text, attachment_delay_seconds)
@@ -1632,6 +2067,15 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
             if parsed.path == '/logout':
                 clear_cookies(platform)
                 return self._send(200, {"ok": True, "loggedIn": False})
+
+            # 常驻「AI 跟聊」会话监听：start / scan / open / send / stop / status
+            # 命令在单线程执行器内串行执行（Playwright 线程亲和）；浏览器操作较慢，给足超时。
+            if parsed.path == '/chat-watch':
+                cmd = str(body.get('cmd') or '').strip().lower()
+                if cmd not in CHAT_WATCH_ACTIONS:
+                    return self._send(400, {"ok": False, "error": f"不支持的会话监听命令：{cmd}"})
+                result = chat_watch_command(cmd, body, timeout=120.0)
+                return self._send(200, result)
 
             if parsed.path == '/clear':
                 clear_cookies(platform)

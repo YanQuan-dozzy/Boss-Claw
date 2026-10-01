@@ -120,9 +120,38 @@ class CollectorBase:
         raise NotImplementedError
 
     # ---------- 可选钩子 ----------
-    def after_navigate(self, page, query: str, page_num: int) -> None:
-        """导航完成后的平台专属动作（如智联的页内搜索框输入关键词）。"""
+    def after_navigate(self, page, query: str, page_num: int) -> bool | None:
+        """导航完成后的平台专属动作（如智联的页内搜索框输入关键词、51Job 页内跳页）。
+
+        返回值语义：返回**真值**表示「已切换到另一个视图」（如点页内跳页控件）——
+        骨架会随即丢弃本次导航后已捕获的接口响应，避免把上一页的列表混进本页
+        （宁少采不重复）。默认 / 未切换视图时返回 None。
+        """
         return None
+
+    def match_api_url(self, url: str) -> bool:
+        """响应 URL 是否属于本平台搜索接口（默认：包含 `api_hint` 子串）。
+
+        子类可覆盖以排除「同前缀的其它接口」：如猎聘 `pc-search-job-cond-init` 是筛选字典
+        接口而非岗位列表接口（get_jobs 侧同样显式排除），不排除会做无效拦截。
+        """
+        return bool(self.api_hint) and self.api_hint in (url or '')
+
+    def empty_list_hit(self, page) -> bool:
+        """列表页是否呈现「暂无职位 / 无符合条件职位」空态（默认不识别）。
+
+        命中 → 本关键词已采完，骨架提前结束翻页（**不推进词级断点**，避免把
+        「暂时为空」固化成 TTL 内整词跳过）。
+        """
+        return False
+
+    def is_logged_out(self, page) -> bool:
+        """平台特有的未登录判定（默认只看 URL）。
+
+        部分平台未登录**不跳转** `/login`，只在页头把用户名换成「登录」（如 51Job 的
+        `a.uname`）——只看 URL 会把「未登录」误判成「找不到投递按钮」。
+        """
+        return False
 
     def find_action_button(self, page):
         """定位投递动作按钮 → `(state, locator | None)`。
@@ -185,7 +214,7 @@ class CollectorBase:
                 try:
                     if response.status != 200:
                         return
-                    if self.api_hint and self.api_hint not in (response.url or ''):
+                    if not self.match_api_url(response.url or ''):
                         return
                     ctype = (response.headers.get('content-type') or '')
                     if 'json' not in ctype and ctype:
@@ -212,7 +241,10 @@ class CollectorBase:
                 if risk:
                     last_code, last_msg = 35, f'风控：{risk}'
                     break
-                self.after_navigate(page, query, page_num)
+                if self.after_navigate(page, query, page_num):
+                    # 钩子已切换到另一个视图（如 51Job 页内跳页）：丢弃切换前捕获的响应，
+                    # 否则会把上一页的列表混进本页（宁少采不重复）
+                    captured.clear()
                 for _ in range(self.capture_wait_attempts):
                     if captured:
                         break
@@ -222,6 +254,9 @@ class CollectorBase:
                     all_jobs.extend(self.format_jobs(captured, query, page_num))
                 elif dom_jobs:
                     all_jobs.extend(dom_jobs)
+                elif self.empty_list_hit(page):
+                    log('ℹ️', f'[{self.platform}] Page {page_num}: 页面提示无符合条件岗位，提前结束「{query}」')
+                    break
                 captured = []
                 collected_pages = page_num
                 log('✅', f'[{self.platform}] Page {page_num}: {len(all_jobs)} 个岗位')
@@ -292,7 +327,7 @@ class CollectorBase:
             if risk:
                 return self._fail(35, f'检测到安全验证/访问受限（{risk}），已暂停', page)
             current = (page.url or '').lower()
-            if 'login' in current or 'passport' in current:
+            if 'login' in current or 'passport' in current or self.is_logged_out(page):
                 return self._fail(31, f'未登录{self.label}，请先扫码登录', page)
 
             if url and self.detail_markers and any(m in url for m in self.detail_markers):
@@ -321,19 +356,22 @@ class CollectorBase:
                 return {'ok': False, 'code': 500, 'sent': False,
                         'message': f'点击「{self.action_label()}」失败：{e}'}
 
-            human_sleep(2.0, 0.4, 1.0)
-            # 平台侧每日上限 / 操作受限提示 → 立即停止交人工
-            if self.limit_re is not None:
-                try:
-                    body = page.evaluate("() => (document.body ? document.body.innerText.slice(0, 4000) : '')") or ''
-                    if self.limit_re.search(body):
-                        save_cookies(page.context, self.platform)
-                        return {
-                            'ok': False, 'code': 32, 'sent': False,
-                            'message': self.limit_message(),
-                        }
-                except Exception:
-                    pass
+            # 平台侧每日上限 / 操作受限提示 → 立即停止交人工。
+            # 该提示是**瞬态 toast**（约 2s 后自行消失），点击后只检测一次极易漏检
+            # （会继续投递直到风控）→ 对齐 get_jobs 的「点击后 10×200ms 轮询」；
+            # 轮询总时长与原有 2s 停顿一致，不引入额外空等。
+            hit_limit = False
+            for _ in range(10):
+                if self._limit_hit(page):
+                    hit_limit = True
+                    break
+                human_sleep(0.2, 0.3, 0.15)
+            if hit_limit:
+                save_cookies(page.context, self.platform)
+                return {
+                    'ok': False, 'code': 32, 'sent': False,
+                    'message': self.limit_message(),
+                }
 
             confirmed = False
             deadline = time.time() + self.confirm_timeout_seconds
@@ -365,6 +403,16 @@ class CollectorBase:
             except Exception:
                 pass
         return {'ok': False, 'code': code, 'message': message, 'sent': False}
+
+    def _limit_hit(self, page) -> bool:
+        """平台侧限流 / 每日上限提示是否出现在页面正文（瞬态 toast，需轮询检测）。"""
+        if self.limit_re is None:
+            return False
+        try:
+            body = page.evaluate("() => (document.body ? document.body.innerText.slice(0, 4000) : '')") or ''
+            return bool(self.limit_re.search(body))
+        except Exception:
+            return False
 
     # ---------- 投递相关：子类可覆盖的提示 / 后置动作 ----------
     def missing_button_message(self) -> str:

@@ -221,9 +221,18 @@ def goto_stable(page, url, *, max_tries=4, min_content=500, wait=3):
 # ============================================================
 # 风控文本 / 外部网申检测（跨平台复用；各平台按需调用）
 # ============================================================
+# 「访问验证 / 请按住滑块」是 Aliyun WAF 滑块壳页的正文文案（51Job 实测），
+# 单靠空壳页长度判定不够——必须能按文案收口，否则会静默空采而不是停止交人工。
 RISK_TEXT_RE = re.compile(
-    r'安全验证|访问过于频繁|请完成验证|验证码|异常请求|账号异常|操作过于频繁|请稍后再试|'
+    r'安全验证|访问验证|请按住滑块|访问过于频繁|请完成验证|验证码|异常请求|账号异常|操作过于频繁|请稍后再试|'
     r'登录已过期|请重新登录|当前环境异常|系统检测到异常'
+)
+
+# 结构化 WAF 标记（Aliyun WAF 滑块壳页正文可能为空，文本词表会漏检；
+# 与 get_jobs(Job51.java)::checkAccessVerification 的判定标记同源）
+WAF_DOM_PROBE_JS = (
+    "() => { try { return !!(document.querySelector('.waf-nc-title')"
+    " || document.querySelector('script[name^=\"aliyunwaf_\"]')); } catch (e) { return false; } }"
 )
 
 # 投递类平台（智联/51Job）每日上限提示词
@@ -231,10 +240,17 @@ DAILY_LIMIT_RE = re.compile(r'今日投递|已达上限|投递上限|投递次�
 
 
 def risk_text_hit(page) -> str:
-    """页面正文风控文本检测，命中返回命中词。"""
+    """风控检测：页面正文文案 + Aliyun WAF 结构标记，命中返回命中词（无命中返回空串）。"""
     try:
         text = page.evaluate("() => (document.body ? document.body.innerText.slice(0, 4000) : '')") or ''
         m = RISK_TEXT_RE.search(text)
-        return m.group(0) if m else ''
+        if m:
+            return m.group(0)
     except Exception:
-        return ''
+        pass
+    try:
+        if page.evaluate(WAF_DOM_PROBE_JS):
+            return 'aliyun-waf'
+    except Exception:
+        pass
+    return ''

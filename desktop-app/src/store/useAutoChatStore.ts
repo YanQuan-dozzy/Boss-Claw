@@ -12,8 +12,8 @@ import { useDataStore } from '@/store/useDataStore';
 import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import {
-  camoufoxChat, camoufoxRestart, isCamoufoxStopCode, isCamoufoxEnvCode,
-  type CamoufoxChatResult,
+  camoufoxChat, camoufoxChatWatch, camoufoxRestart, isCamoufoxStopCode, isCamoufoxEnvCode,
+  type CamoufoxChatResult, type ChatHistoryEntry, type ChatWatchConversation,
 } from '@/lib/bossclaw/camoufox';
 import {
   ActionPacer, effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
@@ -67,6 +67,22 @@ let nextRunToken = 0;                    // 单调递增：每次 start()/chatOn
 let currentRun: EngineRun | null = null; // 单一真值：null = 空闲（替代原 busy 互斥量 + ownerRun 归属）
 let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE); // 跨 run 共享的动作节流器（预算重置在 start()）
 
+// =====「AI 跟聊监听」常驻循环（对齐觅星小臣的单一串行 worker）=====
+// 持续巡检「已投递（sent）」的 BOSS 会话，发现 HR 发了新消息就带多轮上下文生成回复并发送。
+// 与「批量投递」共用同一 pacer/冷却/风控不变量；批量投递运行时本轮监听让路（避免两个隐身窗口争抢）。
+/** 每轮巡检间隔（毫秒）：轮询所有在跟会话，兜底频率 */
+const WATCH_CYCLE_MS = 120_000;
+/** 每轮最多巡检的会话数（防止回复风暴；按最近互动时间优先） */
+const WATCH_MAX_PER_CYCLE = 6;
+/** 同一轮内两次巡检之间的最小间隔（毫秒，叠加随机抖动） */
+const WATCH_MIN_BETWEEN_MS = 20_000;
+interface WatchRun {
+  token: number;            // 本监听 run 的唯一标识（复用 nextRunToken 单调递增）
+  seq: number;              // 监听代际（每次 setWatch(true) 递增；旧 run 退出时若代际已变则不关闭常驻会话）
+  cancelRequested: boolean; // setWatch(false)/stop() 置位：唤醒后立即退出
+}
+let currentWatch: WatchRun | null = null; // 单一真值：null = 监听未运行
+
 // ===== Camoufox 引擎自愈重启（误触关闭后自动拉起；多次失败自动停止）=====
 const MAX_ENGINE_RESTART = 3;
 const ENGINE_RESTART_WAIT_MS = 8000;
@@ -115,6 +131,103 @@ async function chatWithEngineRecovery(
     }
   }
   return { result, dead: true };
+}
+
+/** camoufoxChat 的 opts 类型（复用其签名，避免另写一份参数定义）。 */
+type ChatOpts = NonNullable<Parameters<typeof camoufoxChat>[2]>;
+
+/**
+ * 生成并发送一次「AI 跟聊」回复（首次投递命中 needsReply 与「AI 跟聊监听」共用）。
+ * 对齐觅星小臣：带多轮聊天记录生成结构化决策；HR 明确拒绝即收口；无需回复时只记指纹不发送。
+ * 返回：sent=已发送；rejected=HR 已拒绝（收口）；none=无需回复；stop=引擎不可用需停止监听。
+ */
+async function aiReplyAndSend(args: {
+  item: PendingItem;
+  jobId: string;
+  title: string;
+  company: string;
+  hrMessage: string;
+  hrHistory?: ChatHistoryEntry[];
+  baseOpts: ChatOpts;
+}): Promise<{ outcome: 'sent' | 'rejected' | 'none' | 'stop'; result?: CamoufoxChatResult }> {
+  const { item, jobId, title, company, hrMessage, hrHistory, baseOpts } = args;
+  const { updatePending } = useDataStore.getState();
+  const { addChatLog, addLog } = useRuntimeLogsStore.getState();
+  const platform = String(item.job?.platform || 'boss');
+  const hrPreview = hrMessage.slice(0, 200);
+
+  addChatLog({
+    level: 'stage', stage: 'ai_reply', jobId, jobTitle: title, company,
+    msg: '检测到 HR 已发来消息，正在生成 AI 回复...',
+    errorDetail: hrMessage ? `HR 消息：${hrPreview}` : '',
+  });
+
+  const reply = await generateReply({
+    hrMessage,
+    chatHistory: hrHistory,
+    jobTitle: item.job?.title || '',
+    resumeText: useDataStore.getState().resumeText,
+    profile: useDataStore.getState().profile,
+    communicationInfo: useDataStore.getState().communicationInfo,
+    model: useSettingsStore.getState().config.model,
+  });
+
+  // HR 明确拒绝：不再回复，收口该会话（记录指纹 + 拒绝时间，避免下一轮重复生成）
+  if (reply.outcome === 'hr_rejected') {
+    updatePending(item.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: hrMessage });
+    addChatLog({
+      level: 'warn', stage: 'ai_reply', jobId, jobTitle: title, company,
+      msg: 'AI 判断 HR 已明确拒绝，结束该会话（不再回复）', errorDetail: hrPreview,
+    });
+    addLog('warn', `HR 已拒绝，已结束跟聊：${title}`);
+    return { outcome: 'rejected' };
+  }
+  // 无需回复（系统提示 / 表情 / 无实质内容）：只记指纹，避免下一轮重复调用 AI
+  if (!reply.text) {
+    updatePending(item.id, { hrRepliedFingerprint: hrMessage });
+    addChatLog({
+      level: 'info', stage: 'ai_reply', jobId, jobTitle: title, company,
+      msg: 'AI 判断本条无需回复（系统提示或无实质内容）', errorDetail: hrPreview,
+    });
+    return { outcome: 'none' };
+  }
+
+  addChatLog({
+    level: reply.method === 'ai' ? 'info' : 'warn',
+    stage: 'ai_reply', jobId, jobTitle: title, company,
+    msg: reply.method === 'ai' ? `AI 回复已生成：${reply.text.slice(0, 60)}...` : (reply.warning || 'AI 回复已生成'),
+    errorDetail: reply.text,
+  });
+  if (reply.interview) {
+    addChatLog({
+      level: 'info', stage: 'ai_reply', jobId, jobTitle: title, company,
+      msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',
+    });
+  }
+
+  const canAttach = platformSupports(platform as JobPlatform, 'attach');
+  const replySend = await chatWithEngineRecovery(
+    () => camoufoxChat(jobId, reply.text, {
+      ...baseOpts,
+      mode: 'reply',
+      replyText: reply.text,
+      // HR 索要简历 → 回复后附带在线简历（图片简历仍按用户设置）
+      sendOnlineResume: canAttach && (Boolean(baseOpts.sendOnlineResume) || reply.sendResume),
+    }),
+    title, platform
+  );
+  if (replySend.dead) {
+    addChatLog({
+      level: 'error', stage: 'system', jobId, jobTitle: title, company,
+      msg: '❌ 发送 AI 回复时 Camoufox 引擎多次重启失败，自动沟通已自动停止',
+      errorDetail: '请检查引擎/登录态后重试。',
+    });
+    addLog('error', `发送 AI 回复时引擎多次重启失败，自动沟通已停止：${title}`);
+    return { outcome: 'stop', result: replySend.result };
+  }
+  // 成功：记录「已回复的 HR 消息指纹」，防止同一条消息被重复回复
+  updatePending(item.id, { hrRepliedFingerprint: hrMessage });
+  return { outcome: 'sent', result: replySend.result };
 }
 
 /** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致） */
@@ -238,62 +351,43 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       return 'stop';
     }
 
-    // HR 已发来消息 →「AI 跟聊」（对齐 AI-BossJob aiReply）：生成回复并以回复文本发送。
-    // 仅 BOSS 聊天链路支持（其余平台回复在平台 App 内人工跟进）
+    // 已与 HR 建立会话且无需回复（code 701）→ 不重复发打招呼语，标记跳过并收口
+    if (result.alreadyChatted || result.code === 701) {
+      updatePending(item.id, { status: 'skipped', error: '已建立会话，跳过重复打招呼', retryable: false });
+      addChatLog({
+        level: 'warn', stage: 'skip', jobId, jobTitle: title, company,
+        msg: '已与该 HR 建立会话且最后一条是我方消息，跳过重复打招呼（避免打扰）',
+      });
+      addLog('warn', `跳过重复打招呼：${title}`);
+      return 'continue';
+    }
+
+    // HR 已发来消息 →「AI 跟聊」（对齐 AI-BossJob aiReply + 觅星小臣多轮决策）：
+    // 带完整聊天记录生成结构化回复并以回复文本发送。仅 BOSS 聊天链路支持。
     if (platform === 'boss' && result.needsReply) {
       const hrMessage = String(result.hrLastMessage || '').trim();
-      addChatLog({
-        level: 'stage',
-        stage: 'ai_reply',
+      // 已收口（HR 曾明确拒绝）或已回复过这条消息 → 不再重复生成/发送
+      const curNow = useDataStore.getState().pending.find((x) => x.id === item.id);
+      if (curNow?.hrRejectedAt || (hrMessage && curNow?.hrRepliedFingerprint === hrMessage)) {
+        return 'continue';
+      }
+      const replyOut = await aiReplyAndSend({
+        item: curNow || item,
         jobId,
-        jobTitle: title,
+        title,
         company,
-        msg: '检测到 HR 已发来消息，正在生成 AI 回复...',
-        errorDetail: hrMessage ? `HR 消息：${hrMessage.slice(0, 200)}` : '',
-      });
-      const reply = await generateReply({
         hrMessage,
-        jobTitle: item.job?.title || '',
-        resumeText: useDataStore.getState().resumeText,
-        profile: useDataStore.getState().profile,
-        communicationInfo: useDataStore.getState().communicationInfo,
-        model: useSettingsStore.getState().config.model,
+        hrHistory: Array.isArray(result.hrHistory) ? result.hrHistory : undefined,
+        baseOpts,
       });
-      if (!reply.text) {
-        updatePending(item.id, { status: 'failed', error: 'HR 已回复但无法生成 AI 回复', retryable: true });
-        addChatLog({ level: 'error', stage: 'ai_reply', jobId, jobTitle: title, company, msg: 'AI 回复生成失败，已暂停该条' });
-        return 'failed';
+      if (replyOut.outcome === 'stop') {
+        updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
+        return 'stop';
       }
-      addChatLog({
-        level: reply.method === 'ai' ? 'info' : 'warn',
-        stage: 'ai_reply',
-        jobId,
-        jobTitle: title,
-        company,
-        msg: reply.method === 'ai' ? `AI 回复已生成：${reply.text.slice(0, 60)}...` : (reply.warning || 'AI 回复已生成'),
-        errorDetail: reply.text,
-      });
-      const replySend = await chatWithEngineRecovery(
-          async () => camoufoxChat(jobId, reply.text, { ...baseOpts, mode: 'reply', replyText: reply.text }),
-          title, platform
-        );
-        if (replySend.dead) {
-          updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
-          addChatLog({
-            level: 'error',
-            stage: 'system',
-            jobId,
-            jobTitle: title,
-            company,
-            msg: '❌ 发送 AI 回复时 Camoufox 引擎多次重启失败，自动沟通已自动停止',
-            errorDetail: '请检查引擎/登录态后重试。',
-          });
-          addLog('error', `发送 AI 回复时引擎多次重启失败，自动沟通已停止：${title}`);
-          return 'stop';
-        }
-        result = replySend.result;
-        sentAsReply = true;
-      }
+      if (replyOut.outcome !== 'sent') return 'continue'; // 已拒绝 / 无需回复：不改岗位状态
+      result = replyOut.result!;
+      sentAsReply = true;
+    }
 
     if (result.ok && result.sent) {
       // 用户已在沟通过程中手动「跳过」该岗位 → 尊重跳过，不再覆写为已沟通
@@ -403,6 +497,263 @@ export interface AutoChatProgress {
   total: number;
 }
 
+/** 会话级去重：会话名 → 已处理过的「HR 最后一条消息」指纹（常驻会话页内实时去重，防重复回复） */
+const watchHandled = new Map<string, string>();
+/** 监听代际：每次 setWatch(true) 递增；旧循环退出时若代际已变则不再关闭常驻会话（归新循环管） */
+let watchSeq = 0;
+/** 会话身份归一（匹配工作台岗位用：去空白/括号/连字符，转小写） */
+function normConvText(v: unknown): string {
+  return String(v || '').replace(/[\s（）()·\-—_/\\|]/g, '').toLowerCase();
+}
+
+/** 该会话是否「在等我回复」：接口有 fromId 信息时按「最后一条来自 HR / 未读」，否则只要有预览就交给 open 判定 */
+function isWaitingConversation(c: ChatWatchConversation, apiHasFromInfo: boolean): boolean {
+  if (apiHasFromInfo && !c.dom) {
+    const hrLast = Boolean(c.uid) && Boolean(c.lastFromId) && c.lastFromId === c.uid;
+    return Boolean(c.unread) || hrLast;
+  }
+  return Boolean(c.unread) || Boolean(String(c.preview || '').trim());
+}
+
+/** 把会话匹配到工作台已投递岗位（用于记录 replySentAt / 指纹）：仅按 HR 姓名或公司做保守精确匹配 */
+function matchPendingForConversation(conv: ChatWatchConversation, pending: PendingItem[]): PendingItem | null {
+  const name = normConvText(conv.name);
+  const company = normConvText(conv.company);
+  if (!name && !company) return null;
+  for (const p of pending) {
+    if (p.status !== 'sent') continue;
+    const recruiter = normConvText(p.job?.recruiterName);
+    const pCompany = normConvText(p.job?.company);
+    if (name && recruiter && name === recruiter) return p;
+    if (company && pCompany && (company === pCompany || company.includes(pCompany) || pCompany.includes(company))) return p;
+  }
+  return null;
+}
+
+/** 风控/环境码统一处置：命中即停止监听（冷却 / 交人工），绝不重试（AGENTS.md 红线） */
+function handleWatchStopCode(
+  run: WatchRun,
+  code: number | null | undefined,
+  message: string,
+  conv?: ChatWatchConversation
+): boolean {
+  if (code == null) return false;
+  const { addChatLog, addLog } = useRuntimeLogsStore.getState();
+  const jobTitle = conv?.name || '';
+  const company = conv?.company || '';
+  if (isCamoufoxStopCode(code) || code === 35) {
+    useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+    addChatLog({
+      level: 'error', stage: 'risk', jobTitle, company,
+      msg: `命中安全风控警示码 [Code ${code}]：${message}。跟聊监听已停止并进入保护性冷却！`,
+      errorDetail: '安全规则红线：遇到风控或人机验证必须停止，请在浏览器中人工核验后再重试。',
+    });
+    addLog('error', `跟聊监听命中风控码 ${code}，已停止`);
+    run.cancelRequested = true;
+    return true;
+  }
+  if (isCamoufoxEnvCode(code)) {
+    addChatLog({
+      level: 'error', stage: 'risk', jobTitle, company,
+      msg: `环境异常 [Code ${code}]：${message}。请先完成扫码登录。`,
+    });
+    run.cancelRequested = true;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 「AI 跟聊监听」一轮：常驻会话页上 scan 会话列表 → 对「HR 发了最后一条」的会话 open 读记录
+ * → 生成多轮结构化回复 → send 回复。全程串行，复用同一 pacer / 冷却 / 风控不变量；
+ * 批量投递运行时本轮让路（避免两个隐身窗口争抢）。
+ */
+async function watchCycle(run: WatchRun): Promise<void> {
+  // 批量投递运行时让路：避免两个隐身浏览器窗口争抢与重复动作
+  if (useAutoChatStore.getState().chatRunning) return;
+  const cfg = useSettingsStore.getState().config;
+  if (isLockedOut(cfg)) return;                 // 冷却期：本轮不巡检
+  if (!platformEnabled(cfg, 'boss')) return;
+
+  const { addChatLog, addLog } = useRuntimeLogsStore.getState();
+  const scan = await camoufoxChatWatch('scan', { os: cfg.camoufox?.os });
+  if (handleWatchStopCode(run, scan.code, scan.message || '')) return;
+  if (!scan.ok) {
+    addChatLog({ level: 'warn', stage: 'system', msg: `跟聊监听：读取会话列表失败（${scan.message || scan.error || '未知原因'}）` });
+    return;
+  }
+  const conversations = scan.conversations || [];
+  if (!conversations.length) return;
+  const apiHasFromInfo = conversations.some((c) => Boolean(c.uid) && Boolean(c.lastFromId));
+  const waiting = conversations.filter((c) => isWaitingConversation(c, apiHasFromInfo));
+  if (!waiting.length) return;
+  addChatLog({ level: 'info', stage: 'ai_reply', msg: `跟聊监听：发现 ${waiting.length} 个会话可能有新消息，逐个核对…` });
+
+  for (const conv of waiting.slice(0, WATCH_MAX_PER_CYCLE)) {
+    if (currentWatch !== run || run.cancelRequested) return;
+    if (useAutoChatStore.getState().chatRunning) return; // 批量投递插入 → 本轮让路
+
+    const c0 = useSettingsStore.getState().config;
+    if (isLockedOut(c0)) return;
+    const convName = String(conv.name || '');
+    const convCompany = String(conv.company || '');
+    if (!convName) continue;
+    useAutoChatStore.setState({ watchActiveId: convName });
+    try {
+      await pacer.waitForSlot();
+      const open = await camoufoxChatWatch('open', { os: c0.camoufox?.os, name: convName, company: convCompany });
+      if (handleWatchStopCode(run, open.code, open.message || '', conv)) return;
+      if (!open.ok) {
+        // 打开失败（会话已折叠/页面结构变化等）：不阻断整轮，下一轮再试
+        continue;
+      }
+      if (!open.needsReply || !open.hrLastMessage) continue;
+
+      const fp = String(open.hrLastMessage);
+      const matched = matchPendingForConversation(conv, useDataStore.getState().pending);
+      // 已收口 / 已回复过这条 HR 消息 → 跳过（防重复回复）
+      if (matched?.hrRejectedAt) continue;
+      if (watchHandled.get(convName) === fp) continue;
+      if (matched?.hrRepliedFingerprint === fp) continue;
+
+      const reply = await generateReply({
+        hrMessage: fp,
+        chatHistory: Array.isArray(open.history) ? open.history : undefined,
+        jobTitle: matched?.job?.title || open.jobName || '',
+        resumeText: useDataStore.getState().resumeText,
+        profile: useDataStore.getState().profile,
+        communicationInfo: useDataStore.getState().communicationInfo,
+        model: useSettingsStore.getState().config.model,
+      });
+
+      // HR 明确拒绝：收口该会话，不再回复
+      if (reply.outcome === 'hr_rejected') {
+        watchHandled.set(convName, fp);
+        if (matched) useDataStore.getState().updatePending(matched.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: fp });
+        addChatLog({
+          level: 'warn', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
+          msg: `AI 判断「${convName}」已明确拒绝，结束该会话（不再回复）`,
+        });
+        addLog('warn', `HR 已拒绝，已结束跟聊：${convName}`);
+        continue;
+      }
+      // 无需回复（系统提示 / 表情 / 无实质内容）：只记指纹，避免下一轮重复调用 AI
+      if (!reply.text) {
+        watchHandled.set(convName, fp);
+        if (matched) useDataStore.getState().updatePending(matched.id, { hrRepliedFingerprint: fp });
+        addChatLog({
+          level: 'info', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
+          msg: `AI 判断「${convName}」本条无需回复（系统提示或无实质内容）`,
+        });
+        continue;
+      }
+
+      addChatLog({
+        level: reply.method === 'ai' ? 'info' : 'warn',
+        stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
+        msg: reportReplyText(open.hrLastMessage, reply.text, reply.method, reply.warning),
+        errorDetail: reply.text,
+      });
+      if (reply.interview) {
+        addChatLog({
+          level: 'info', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
+          msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',
+        });
+      }
+
+      const send = await camoufoxChatWatch('send', {
+        name: open.name || convName,
+        company: open.company || convCompany,
+        text: reply.text,
+      });
+      if (handleWatchStopCode(run, send.code, send.message || '', conv)) return;
+      if (send.ok && send.sent) {
+        watchHandled.set(convName, fp);
+        addChatLog({
+          level: 'success', stage: 'confirm', jobTitle: matched?.job?.title || convName, company: convCompany,
+          msg: `AI 跟聊回复发送成功！已回复「${convName}」（不计入今日投递数，依据：${open.matchedBy || 'content'} 身份校验）`,
+        });
+        addLog('success', `AI 跟聊回复成功：${convName}`);
+        // 回复类发送不计入单日投递上限：仅记录 replySentAt（不改 sentAt）
+        if (matched) {
+          useDataStore.getState().updatePending(matched.id, { status: 'sent', error: '', replySentAt: Date.now(), hrRepliedFingerprint: fp });
+        }
+      } else {
+        addChatLog({
+          level: 'error', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
+          msg: `AI 回复发送失败：${send.message || send.error || '未知原因'}（下一轮会重试）`,
+        });
+      }
+    } catch (e: unknown) {
+      addChatLog({ level: 'error', stage: 'system', jobTitle: convName, company: convCompany, msg: `跟聊处理异常：${getErrorMessage(e)}` });
+    } finally {
+      useAutoChatStore.setState({ watchActiveId: null });
+    }
+    await sleep(WATCH_MIN_BETWEEN_MS + Math.random() * 8_000);
+  }
+}
+
+/** 回复生成结果的可读日志（AI 与本地兜底分开措辞） */
+function reportReplyText(hrMessage: string, replyText: string, method: string, warning?: string): string {
+  const head = `检测到「${String(hrMessage).slice(0, 30)}」→ `;
+  return method === 'ai'
+    ? `${head}AI 回复已生成：${replyText.slice(0, 60)}...`
+    : `${head}${warning || '已生成兜底回复'}：${replyText.slice(0, 60)}...`;
+}
+
+/**
+ * 启动「AI 跟聊监听」常驻循环：先拉起常驻会话页（start），再按轮 scan→open→send；
+ * 单一串行执行（currentWatch 引用比较保证不串台）。退出时关闭常驻浏览器（仅当代际未变，避免关掉新会话）。
+ */
+function watchLoop(run: WatchRun): void {
+  void (async () => {
+    const { addChatLog } = useRuntimeLogsStore.getState();
+    const cfg = useSettingsStore.getState().config;
+    let started = false;
+    try {
+      const st = await camoufoxChatWatch('start', { os: cfg.camoufox?.os });
+      if (currentWatch !== run || run.cancelRequested) return;
+      if (!st.ok) {
+        addChatLog({
+          level: 'error', stage: 'system',
+          msg: `AI 跟聊监听启动失败：${st.message || st.error || '未知原因'}`,
+        });
+        return;
+      }
+      started = true;
+      addChatLog({
+        level: 'info', stage: 'system',
+        msg: `👂 AI 跟聊监听已启动：常驻 BOSS 会话页，持续扫描所有 HR 会话并自动带上下文回复（每 ${Math.round(WATCH_CYCLE_MS / 60000)} 分钟一轮，批量投递运行时会自动让路）。`,
+      });
+      while (currentWatch === run && !run.cancelRequested) {
+        try {
+          await watchCycle(run);
+        } catch {
+          /* 单轮异常不影响下一轮 */
+        }
+        // 分片休眠：停止信号可提前唤醒
+        const steps = Math.ceil(WATCH_CYCLE_MS / 1000);
+        for (let i = 0; i < steps; i += 1) {
+          if (currentWatch !== run || run.cancelRequested) break;
+          await sleep(1000);
+        }
+      }
+    } finally {
+      if (currentWatch === run) currentWatch = null;
+      // 仅当代际未变（没有新的 setWatch(true) 接手）时才关闭常驻会话
+      if (started && watchSeq === run.seq) {
+        try {
+          await camoufoxChatWatch('stop');
+        } catch {
+          /* 忽略关闭异常 */
+        }
+      }
+      watchHandled.clear();
+      useAutoChatStore.setState({ watchRunning: false, watchActiveId: null });
+    }
+  })();
+}
+
 /**
  * 批量沟通的可选限定范围（由「定时投递」任务等入口传入；手动启动不传 = 全部已启用平台、不限额）：
  *  - platforms：仅处理这些平台的任务（需同时满足「平台已启用」）；空/缺省 = 全部已启用平台。
@@ -416,19 +767,27 @@ export interface AutoChatScope {
 
 interface AutoChatState {
   chatRunning: boolean;
+  /** 「AI 跟聊监听」是否运行中（常驻后台，持续跟进 HR 回复） */
+  watchRunning: boolean;
   activeChatId: string | null;
+  /** 跟聊监听当前正在巡检的岗位 id（UI 高亮用） */
+  watchActiveId: string | null;
   progress: AutoChatProgress;
   /** 启动后台批量沟通：持续处理当前队列，并自动接收工作台新批准岗位 */
   start: (scope?: AutoChatScope) => void;
   /** 仅处理单个岗位（不与批量并发） */
   chatOne: (item: PendingItem) => void;
-  /** 停止后台任务 */
+  /** 开启/关闭「AI 跟聊监听」（对齐觅星小臣的常驻 AI 回复 worker） */
+  setWatch: (on: boolean) => void;
+  /** 停止后台任务（批量沟通 + 跟聊监听） */
   stop: () => void;
 }
 
 export const useAutoChatStore = create<AutoChatState>((set) => ({
   chatRunning: false,
+  watchRunning: false,
   activeChatId: null,
+  watchActiveId: null,
   progress: { index: 0, total: 0 },
 
   start: (scope?: AutoChatScope) => {
@@ -470,6 +829,8 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           const allEligible = rerankPending(data.pending, loopCfg).filter(
             (p: PendingItem) =>
               BATCH_ELIGIBLE.includes(p.status) &&
+              // HR 已明确拒绝（AI 跟聊判定）的会话不再投递
+              !p.hrRejectedAt &&
               !run.processedIds.has(p.id) &&
               !isDeliveryClaimed(p.id, String(p.job?.platform || 'boss')) &&
               platformEnabled(loopCfg, String(p.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51') &&
@@ -615,16 +976,46 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
     })();
   },
 
+  setWatch: (on: boolean) => {
+    if (on) {
+      if (currentWatch || useAutoChatStore.getState().watchRunning) return;
+      watchSeq += 1;
+      const run: WatchRun = { token: ++nextRunToken, seq: watchSeq, cancelRequested: false };
+      currentWatch = run;
+      set({ watchRunning: true, watchActiveId: null });
+      watchLoop(run);
+      return;
+    }
+    // 关闭：置取消信号并立刻通知 Python 关闭常驻会话（loop 退出时按代际判断是否再关一次）
+    if (currentWatch) {
+      currentWatch.cancelRequested = true;
+      currentWatch = null;
+      set({ watchRunning: false, watchActiveId: null });
+      void camoufoxChatWatch('stop').catch(() => undefined);
+      useRuntimeLogsStore.getState().addChatLog({
+        level: 'warn',
+        stage: 'system',
+        msg: '⏹ 已停止 AI 跟聊监听（常驻会话页已关闭）。',
+      });
+    }
+  },
+
   stop: () => {
     // 作废进行中的批量循环并释放互斥（currentRun = null；token 单调递增无需额外递增）
     const run = currentRun;
     if (run) run.cancelRequested = true; // P04：通知进行中的发送取消（发送前检查，已发出则无法撤回）
     currentRun = null;
-    set({ chatRunning: false, activeChatId: null, progress: { index: 0, total: 0 } });
+    // 同时停止「AI 跟聊监听」并关闭常驻会话页（同一停止按钮覆盖两个后台任务）
+    if (currentWatch) {
+      currentWatch.cancelRequested = true;
+      currentWatch = null;
+      void camoufoxChatWatch('stop').catch(() => undefined);
+    }
+    set({ chatRunning: false, watchRunning: false, activeChatId: null, watchActiveId: null, progress: { index: 0, total: 0 } });
     useRuntimeLogsStore.getState().addChatLog({
       level: 'warn',
       stage: 'system',
-      msg: '⏹ 用户手动停止了后台自动沟通任务。',
+      msg: '⏹ 用户手动停止了后台自动沟通任务（批量沟通 / AI 跟聊监听）。',
     });
   },
 }));
