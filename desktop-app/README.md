@@ -8,7 +8,7 @@
 
 ## 功能闭环
 
-* **岗位来源**：内置浏览器打开招聘平台岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据；岗位详情自动清洗页面噪音（`jdCleaner.ts` 渲染层 + `webview.cjs` 同步）。岗位卡片带**平台标识 chip**（BOSS 直聘绿 / 智联招聘蓝 / 猎聘橙 / 前程无忧紫，`PlatformChip` 组件，配色集中定义于 `platforms.ts`）。
+* **岗位来源**：内置浏览器打开招聘平台岗位 → 中栏点「加入任务」→ 自动识别 HR 活跃度（在线 / 刚刚活跃 / N 日内活跃）作为匹配判断依据；岗位详情自动清洗页面噪音（`jdCleaner.ts` 渲染层 + `webview.cjs` 同步）；采集同时透传岗位**发布时间**（`publishTime`），供「新鲜度」维度参与排序。岗位卡片带**平台标识 chip**（BOSS 直聘绿 / 智联招聘蓝 / 猎聘橙 / 前程无忧紫，`PlatformChip` 组件，配色集中定义于 `platforms.ts`）。
 
 * **多平台（BOSS 直聘 / 猎聘 / 智联招聘 / 前程无忧 51Job）**：设置页「招聘平台」分区启用平台、调整平台优先级（数字 1 = 最高，决定工作台搜索顺序与自动沟通先完成高优先级平台再切换）、配置每平台「每日投递目标」（BOSS / 猎聘 / 前程无忧默认 120/日，智联 100/日，0 = 不限，均受平台侧上限 / `MAX_SAFE_DAILY=150` 收窄，智联平台侧约 100/日）并查看两通道登录状态。各平台登录态本地独立持久化：内置浏览器经 Electron 分区会话（工作台扫码登录），Camoufox 自动沟通经 `~/.bossclaw/camoufox-cookies-{platform}.json`（BOSS 保持 `camoufox-cookies.json`）。至少保留一个启用平台（唯一启用平台不可取消）。
 
@@ -16,9 +16,9 @@
 
 * **AI 匹配与评分（v2.5.3）**：岗位匹配改为 **AI 四层整体裁决**（硬门槛 → 优先条件 → 职责信号 → 团队信号，一次判断给出 `fitLevel` 档位：strong / match / cautious / unfit），**分数由档位映射、不跨档，AI 分即最终分**（本地五维仅用于界面展示与 AI 不可用时兜底，不再做融合或降级调整）；五维语义锚点与「仅显著命中才给高分」的反通胀口径全链路统一；入队门槛改为设置页可配 `minQueueScore`；工作台会话级去重 + `addSkipLogOnce` 合并重复跳过日志。
 
-* **多平台投递入口**：工作台「一键投递」仅处理 **BOSS 直聘岗位**（webview 链路）；猎聘 / 智联 / 前程无忧岗位确认后保持投递队列，由「自动沟通」批量引擎投递。
+* **多平台投递入口**：工作台「一键投递 / 开始投递」按岗位平台**分派三条通道**（`runNext` 只做「选岗位 + 预检 + 分派」，三条通道各自 try/finally 持有投递锁）：**通道 A 非 BOSS DOM** —— 猎聘 / 智联 / 前程无忧，新建该平台自己的标签页打开岗位详情后下发 `platform-apply`（猎聘 = 点「聊一聊」`a.btn-main[data-selector="chat-chat"]` + 等 IM 窗口就绪；智联 = 投递按钮 + 简历面板二次确认，命中「继续沟通」→ 岗位移交自动沟通队列；前程无忧 = 投递按钮 + 成功弹层），外部网申 / 已投递 / 平台上限一律收口为跳过；**通道 B Camoufox** —— 仅 BOSS，且需设置页开启「优先走隐身通道」；**通道 C BOSS DOM** —— 内置浏览器详情页真实 DOM 沟通（默认路径）。
 
-* **多平台搜索采集**（引擎闸门 = `config.camoufox.enabled`，全平台统一语义）：开启隐身引擎 → Camoufox 通道（列表 + 详情 JD + 词级断点续采，profile 存 `~/.bossclaw/collection-progress.json`，TTL 24h）；未开启 → **内置浏览器可视化采集**（`visual-collect` / `collect-control` 全平台注册；BOSS 详情级、其余平台列表级，详情 JD 由 Camoufox 链路补齐）。各平台按设置页优先级**串行**采集；**故障范围**由 `platforms.ts::collectFaultScope()` 统一裁定 —— 平台级（31 未登录 / 4xx·5xx）只收口当前平台、后续平台继续，队列级（风控 32·35·36、环境异常 37·38、未知码 fail-safe）**立即中止整批**交人工。
+* **多平台搜索采集**（引擎闸门 = `config.camoufox.enabled`，全平台统一语义）：开启隐身引擎 → Camoufox 通道（列表 + 详情 JD + 词级断点续采，profile 存 `~/.bossclaw/collection-progress.json`，TTL 24h）；未开启 → **内置浏览器可视化采集**（`visual-collect` / `collect-control` 全平台注册；BOSS 详情级、其余平台列表级）。**列表级平台的详情 JD 由内置浏览器自己的详情补齐通道 `webview.cjs::enrichJobDetail()` 按能力表 `PLATFORM_DETAIL_API_FILL` 拉取**（智联 = 同源详情 JSON 接口；猎聘 = 同源 SSR 详情页 HTML，由 `platform-adapters.cjs::parseLiepinJobDetailHtml()` 纯函数解析；前程无忧暂无同源通道，只有列表字段）——**与是否安装 Camoufox 无关**；护栏：单次上限 300 条 / 连败 4 次熔断 / 失败保留卡片文本不丢岗位。各平台按设置页优先级**串行**采集；**故障范围**由 `platforms.ts::collectFaultScope()` 统一裁定 —— 平台级（31 未登录 / 4xx·5xx）只收口当前平台、后续平台继续，队列级（风控 32·35·36、环境异常 37·38、未知码 fail-safe）**立即中止整批**交人工。
 
 * **自动辅助**：启动后按匹配优先级依次投递 `approved_queue` 队列；webview 回传投递阶段（打开沟通 → 填写 → 发送 → 确认文字气泡 → 确认结果），失败自动暂停交人工核对；**首次成功投递后强制暂停验收**（安全不变量）。
 
@@ -46,7 +46,7 @@
 
   * **不绕过验证码 / 账户验证**：code 35/36/32 立即停止并交人工。
 
-* **自动沟通**（「自动沟通」页）：Camoufox 隐身引擎**多平台批量沟通**，按平台优先级串行消费（先完成高优先级平台的全部已确认岗位，再切下一平台）。投递语义按平台适配：BOSS 输入并发送打招呼语（**文字气泡确认**）；猎聘点「聊一聊」→ 平台用 **App 预设招呼语自动发送**（须先在猎聘 App 设置招呼语文案，脚本不注入文本），确认聊天窗打开 / 按钮变「继续聊」即计成功；智联 / 前程无忧点「投递」（前程无忧按「批量投递」+ 成功数量确认），确认「投递成功」/「已投递」即计成功。**AI 跟聊（needsReply）仅 BOSS 聊天链路支持**，其余平台回复请在平台 App 内人工跟进。平台卡片实时显示各平台引擎 / 登录状态，可逐平台「登录 / 退出」；未确认投递结果不计成功、code 35/36/32/37 立即停止交人工。
+* **自动沟通**（「自动沟通」页）：Camoufox 隐身引擎**多平台批量沟通**，按平台优先级串行消费（先完成高优先级平台的全部已确认岗位，再切下一平台）。投递语义按平台适配：BOSS 输入并发送打招呼语（**文字气泡确认**）；猎聘点「聊一聊」→ 平台用 **App 预设招呼语自动发送**（须先在猎聘 App 设置招呼语文案，脚本不注入文本），确认聊天窗打开 / 按钮变「继续聊」即计成功；智联 / 前程无忧点「投递」（前程无忧按「批量投递」+ 成功数量确认），确认「投递成功」/「已投递」即计成功。**AI 跟聊仅 BOSS 支持**，其余平台回复请在平台 App 内人工跟进。**「AI 跟聊监听」**（自动沟通页开关，独立于批量投递）：开启后引擎用**单一常驻浏览器停在 BOSS 会话页**（Python `/chat-watch`：`start` / `scan` / `open` / `send` / `stop`，与批量投递**共用同一 pacer 与冷却不变量**，批量投递运行时本轮监听让路，避免两个隐身窗口争抢），每轮巡检间隔 2 分钟、每轮最多处理 6 个会话、两次回复最小间隔 20s；发现 HR 新消息即带**完整多轮聊天上下文**生成回复并发送，HR 明确拒绝则收口该会话（记指纹 + 拒绝时间）不再回复，系统提示 / 表情 / 无实质内容只记指纹、不重复调用 AI；回复类发送只记 `replySentAt`，**不计入单日投递上限**（不改 `sentAt`）。回复中可引用的薪资期望 / 面试时间 / 到岗时间等来自「沟通信息（AI 跟聊引用）」用户自填内容，留空则不作任何此类承诺；冷却期或 BOSS 未登录时不允许开启。平台卡片实时显示各平台引擎 / 登录状态，可逐平台「登录 / 退出」；未确认投递结果不计成功、code 35/36/32/37 立即停止交人工。
 
 * **主题**：浅色 / 深色 / 跟随系统（antd + CSS 变量，状态持久化）。
 
@@ -62,11 +62,13 @@
 
 * **面试方式筛选**（`main` 新增）：设置页指定「线上 / 线下 / 不限」，由 `interviewMode.ts` 做**确定性**识别（优先本地关键词，宽松不误杀）：「加入任务」时按岗位标题 / 描述 / 卡片文本判定面试方式；**未明确披露一律判为合格**，不参与过滤、不误杀；出现「无需到场 / 线上即可」等否定表述不判为线下。目的是排除与设定冲突的岗位，避免浪费每日打招呼配额。
 
+* **岗位过期判定**（`main` 新增，`jobExpiry.ts` 唯一权威）：JD 中**显式写出**投递截止日期（猎聘 JD 常见「截止日期：YYYY年MM月DD日」，也认 `2027-07-16` / `2027/7/16` / 缺年份的「07月16日」）的岗位做纯本地**确定性**判定 —— **截止日当天仍有效**，早于今天即判过期并硬性排除，不消耗 AI Token 与投递配额；**未写截止日期、写成「长期有效 / 招满即止」、或日期不可解析一律放行**（大多数岗位不写该字段 ⇒ 对其它平台零副作用）。判定输入为标题 + 描述 + 卡片文本，**不做全页扫描**；`ingestJob` 与「加入任务」两条入口同口径拦截。设置项 `excludeExpiredJobs` 默认按平台取值（`PLATFORM_EXPIRY_DEFAULT`：**仅猎聘默认开启**），用户在设置页的显式开关**优先于**平台默认值。回归：`scripts/liepin-jd-regression.mjs`。
+
 * **外部 Agent 通道**（默认关闭）：应用内控制桥（`electron/control-bridge.cjs`，仅监听 `127.0.0.1:17650`，除 `/health` 外要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json`）+ 零依赖 stdio MCP 服务器 `mcp/bossclaw-mcp`（**8 工具 / 3 组**：运行控制 3 · 应用控制 2 · agent 代答 3）。动作由渲染层白名单 `controlRuntime.ts` 强制，**不提供发消息 / 批量投递 / 绕过验证码 / 改安全参数的能力**。
 
 * **Agent 代答**（`main` 新增）：用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）由 `agentAnswer.ts` 挂入本地待答队列并等待，在线外部 Agent 经 `bossclaw_agent_tasks`（长轮询，**领取即心跳**）领取、用自有模型生成、`bossclaw_agent_submit` 回填；超时 / 取消 / 无心跳则回落应用内本地规则。心跳窗口 90s，单任务等待 30~240s，JSON 纠错最多 1 次。**只搬运「提示词 ↔ 生成文本」**，回填仍走应用既有校验链。
 
-* **数据统计与导出**：`Stats` 页由 `statsAggregate.ts` 聚合（趋势「已投递」按投递成功时间归桶），支持导出**岗位明细 CSV / 统计汇总 CSV / 统计报表 PDF（A4 横版）**，每次导出都由系统保存对话框选择位置。
+* **数据统计与导出**：`Stats` 页由 `statsAggregate.ts` 聚合（趋势「已投递」按投递成功时间归桶），含**投递漏斗**转化看板（采集入队 → 已投递 → 已打开沟通 → 已回复 → 面试，并给出占采集比、打开率 / 回复率），支持导出**岗位明细 CSV / 统计汇总 CSV / 统计报表 PDF（A4 横版）**，每次导出都由系统保存对话框选择位置。
 
 * **数据**：设置页可导出 / 导入 / 清空本地数据（localStorage），并支持「立即备份 / 从本地备份恢复」。
 
@@ -103,7 +105,7 @@ desktop-app/
 │       └── cloakPreload.cjs          # CloakBrowser 页面预加载
 ├── bridge/                           # Node 桥接服务（mammoth / 文件 / 任务恢复）
 ├── camoufox/
-│   ├── camoufox_server.py            # Python 隐身搜索/发送桥（多平台调度基座 + BOSS 既有链路）
+│   ├── camoufox_server.py            # Python 隐身搜索/发送桥（多平台调度基座 + BOSS 既有链路 + `/chat-watch` 常驻 AI 跟聊会话监听）
 │   ├── platforms/
 │   │   ├── models.py                 # JobCandidate 等统一数据模型
 │   │   ├── capabilities.py           # 平台能力矩阵（与 platforms.ts 双源同口径）
@@ -112,7 +114,7 @@ desktop-app/
 │   │   ├── progress.py               # 词级断点续采（TTL 24h）
 │   │   ├── filters.py                # 「基础求职条件」跨平台码值映射唯一权威
 │   │   ├── common.py                 # 公共基座（人类化行为 / Cookie 按平台持久化）
-│   │   └── liepin.py / zhaopin.py / job51.py   # 各平台差异声明
+│   │   └── liepin.py / zhaopin.py / job51.py   # 各平台差异声明（搜索 URL 附加 / 投递 / 登录）
 │   └── requirements.txt
 ├── resources/
 │   ├── icon.ico / icon.png
@@ -128,7 +130,7 @@ desktop-app/
 └── src/
     ├── main.tsx / App.tsx / theme.ts / index.css
     ├── store/                        # useAppStore / useDataStore / useSettingsStore / useScheduleStore
-    ├── lib/                          # storage / electronApi / bridgeClient / controlRuntime / localBackup / scheduler / bossclaw/*（platforms 平台注册与能力矩阵 / matching / fitLevel / profile / greetings / schoolTier / jobMatch / jobAssistant / jdCleaner / skills / agentAnswer / statsAggregate / interviewMode 等）
+    ├── lib/                          # storage / electronApi / bridgeClient / controlRuntime / localBackup / scheduler / bossclaw/*（platforms 平台注册与能力矩阵 / platformUrls 各平台搜索 URL 构造 / matching / fitLevel / profile / greetings / schoolTier / jobMatch / jobExpiry 岗位过期判定 / jobAssistant / jdCleaner / docParser 旧版 .doc 解析 / skills / agentAnswer / statsAggregate / interviewMode 等）
     ├── components/                   # TitleBar / Sidebar / StatusBar / BrowserView / CloakView / PlatformChip / MarkdownView / feedback
     └── pages/                        # Home / Workbench / Resume / Directions / Tasks / ScheduleTasks / Stats / Assistant（定制简历）/ OpenClaw / AutoChat / Settings
 ```
@@ -313,13 +315,23 @@ release/
 
 * **没配 AI API Key，AI 相关功能还能用吗？**：能。三条路径按顺序生效 —— ① 外部 Agent 代答（需开启控制桥且有 agent 在线，见「本地控制桥」）；② 应用内**本地规则**兜底（职业画像 `buildLocalProfile`、匹配、招呼语等）；③ 纯本地确定性能力（简历解析、噪音清洗、排序）不受影响。用户配了 API Key 即直连自己的模型，不会走代答。
 
-* **非 BOSS 平台采集不到详情 JD？**：内置浏览器链路对非 BOSS 平台只做**列表级**采集（这些平台搜索页没有内联详情面板，点卡片会导航走），详情 JD 由 Camoufox 隐身引擎链路（`camoufox/platforms/`）补齐。BOSS 是唯一「列表内联详情」形态。
+* **非 BOSS 平台采集不到详情 JD？**：内置浏览器链路对非 BOSS 平台只做**列表级**采集（这些平台搜索页没有内联详情面板，点卡片会导航走），列表卡本身**不含 JD 正文**；拿到列表后由 `webview.cjs::enrichJobDetail()` 按能力表 `PLATFORM_DETAIL_API_FILL` 调**平台同源**通道补齐 —— 智联 = 详情 JSON 接口（按卡片 number 取 `jobDesc`，滚动加载出的卡由主进程旁路监听页面自身的 `POST /c/i/search/positions` 并入注解索引）、猎聘 = **同源 SSR 详情页 HTML**（`parseLiepinJobDetailHtml()`，JD 在 `<dd data-selector="job-intro-content">`，同页顺带取标题 / 薪资 / 地点 / 公司 / HR）；前程无忧暂无同源通道，只有列表字段。**该补齐不需要 Camoufox**（未装内核也能拿到 JD）；护栏：单次上限 300 条 / 连败 4 次熔断，失败保留卡片文本、绝不丢岗位。BOSS 是唯一「列表内联详情」形态。
 
 * **采集卡住很久才报超时？**：先确认 `visual-collect` / `collect-control` 是否已注册（全平台注册是硬约束，漏注册会静默等到最长 15 分钟兜底超时）；preload 改动后必须重启 Electron（`webview.cjs` 是 CommonJS，HMR 不覆盖）。
 
 ***
 
 ## 变更记录
+
+* **`main`（v2.5.5 之后，尚未打包发布）** — 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听：
+  * **猎聘 / 前程无忧全链路补齐**：`platformUrls.ts` 新增猎聘筛选码表与 `appendLiepinCriteria`（经验 / 学历 / 规模 / 公司性质 / HR 活跃度 / 融资阶段）、前程无忧 `buildJob51SearchUrl`；`liepin.py` / `job51.py` / `filters.py` / `common.py` / `base.py` 收敛「搜索 · 投递 · 登录」三段差异声明；新增三支回归 `scripts/liepin-url-regression.mjs`（筛选码值 ↔ `filters.py` 双源同步守卫）· `liepin-jd-regression.mjs`（详情页 HTML → 字段补齐，JD 保真保留分段）· `liepin-apply-regression.mjs`（「聊一聊」`a.btn-main[data-selector="chat-chat"]` + IM 就绪信号 `#im-c-entry` 等，纠正旧错误的 `.__im_basic__*` 命名）。
+  * **岗位过期判定**：新增 `jobExpiry.ts`（纯函数、零依赖、可离线回归）—— 仅当 JD **显式写出**截止日期时判定，过期即硬性排除、无信号一律放行；设置项 `excludeExpiredJobs` 默认仅猎聘开启（`PLATFORM_EXPIRY_DEFAULT`），`ingestJob` 与「加入任务」两条入口同口径拦截。
+  * **AI 跟聊监听**：Camoufox 新增常驻 `/chat-watch`（单一常驻浏览器停在 BOSS 会话页；`start` / `scan` / `open` / `send` / `stop`），渲染层 `useAutoChatStore` 新增监听循环（2 分钟一轮、每轮 ≤6 会话、最小间隔 20s、批量投递让路、代际 token 防串台）；HR 明确拒绝则收口会话，回复类发送不计入单日投递上限；自动沟通页新增「AI 跟聊监听」开关与「沟通信息（AI 跟聊引用）」输入卡。
+  * **投递链路**：工作台非 BOSS DOM 投递（`platform-adapters.cjs::PLATFORM_APPLY_SPEC` + `webview.cjs::platformApply`）补齐猎聘「聊一聊」分支，四个平台全部可在工作台一键投递；`jobIdFromUrl()` 收口为唯一权威（`/job/xxx.shtml` 排除点号、`jobs.51job.com` 取末段）；猎聘卡片容器归一 + CSS Modules 驼峰类名口径校验（`[class*=]` 区分大小写，写错会静默把整页卡塌成 1 条候选）。
+  * **统计与首页**：`Stats` 页新增**投递漏斗**（采集入队 → 已投递 → 已打开沟通 → 已回复 → 面试 + 打开率 / 回复率）；首页补齐投递步骤归因（进度不再无声停在 80%）。
+  * **岗位发布时间透传**：`camoufox_server.py` / `webview.cjs` / `camoufox.ts` 贯通 `publishTime`，修复「新鲜度」维度恒失效。
+  * **界面**：新增 `index.polish.css` 组件级 polish 样式层与组件级主题 token；设置页「硬性过滤 / 求职偏好」栅格改零留白排布（开关类字段内联同行）；修复工作台事件回调被冻结导致 `apply-stage` 全量丢弃。
+  * 门禁：`tsc -b` + `vite build` 通过。
 
 * **v2.5.5（2026-09-22 发布）** — 智联招聘全链路接入 + 多平台基础求职条件扩展 + MCP 全自动投递：
   * **智联招聘全链路接入（筛选 / 搜索 / 投递）**：`camoufox/platforms/zhaopin.py` 按差异声明补齐筛选参数拼接与投递链路；递送 `filters.py` ↔ `platformUrls.ts` 双源同步，六大筛选维度（职位类型 et / 学历 el / 经验 we / 公司性质 ct / 融资阶段 fs / 规模 cs）码值**按实测链接逐档校准**（公司性质：中外合资=4 / 港澳台=16 / 机关事业单位=6;10 / 其他=7;14;15；多值拼接规则 = 同类型 `;` 分隔、跨类型 `,` 分隔）；新增 `companyType` / `financing` 求职条件配置项并接入智联；新增 `scripts/zhaopin-url-regression.mjs`（32 项断言）守护拼接口径。
