@@ -354,7 +354,7 @@ Boss-claw/
 │   └── package.json           依赖与 scripts（dev / build / package）+ electron-builder 打包目标
 ├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（8 工具 / 3 组；外部 Agent 读取状态与控制应用、agent 代答）
 ├── docs/                      **本地内部文档，未随仓库分发**（`.gitignore` 忽略）
-│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / Safety / FAQ）
+│   ├── wiki/                  Wiki 教程源文件（Home / Quick-Start / User-Guide / Architecture / Safety / FAQ / _Sidebar，镜像推送到 GitHub Wiki）
 │   ├── release-notes-*.md     版本发布说明
 │   └── 使用前必读.md / 使用注意事项.md
 ├── install-deps.cmd           Windows 一键安装依赖（Node + Electron，可选 Python 隐身引擎）
