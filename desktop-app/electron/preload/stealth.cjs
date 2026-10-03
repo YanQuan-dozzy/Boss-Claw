@@ -17,6 +17,79 @@
 'use strict';
 
 // 补丁项清单（每一项都可单独开关，出问题时可二分定位）
+// =====================================================================
+// 目标浏览器画像（单一权威）
+// =====================================================================
+// 来源：用户抓包得到的「真机浏览器 → www.zhipin.com」请求头样本（2026-10-03）。
+// 一份画像同时驱动三处，保证三者**永不互相矛盾**：
+//   ① session.setUserAgent                  —— UA 字符串
+//   ② session.webRequest.onBeforeSendHeaders —— 请求头（服务端直接可见）
+//   ③ 主世界补丁                             —— navigator.userAgentData / languages
+// 任何一处单独改都会制造新矛盾（例如 JS 说 brands 是 X、请求头却是 Y）。
+//
+// 覆盖方式（优先级递增）：默认值 < BOSSCLAW_UA_VERSION < BOSSCLAW_PROFILE_JSON
+//
+// 实测教训（勿重蹈）：
+//   - Electron 126 的导航请求**根本不发** Sec-CH-UA 系列头，而 JS 层 navigator.userAgentData 存在
+//     → 服务端看到的是「声明有 UA-CH、请求却不带」的自相矛盾，必须在请求头层补齐。
+//   - 目标样本的 Sec-CH-UA **不含 Google Chrome 品牌**（仅 grease + Chromium）。
+//     早先版本凭推断补 Google Chrome 是错的 —— 该样本才是平台接受的形态。
+//
+// ⚠️ 已知取舍：目标样本 Chrome 主版本为 146，而本应用 Electron 31 的内核是 Chromium 126。
+//   对齐版本号 = 声明值与这台已验证可用的浏览器一致；代价是「声明版本 vs 内核真实特性集合」
+//   存在可被高级检测的差异。要去根只有升级 Electron（详见 docs 报告 §13）。
+const DEFAULT_PROFILE = {
+  uaChromeVersion: '146.0.0.0',
+  brands: [
+    { brand: 'Not-A.Brand', version: '24', full: '24.0.0.0' },
+    { brand: 'Chromium', version: '146', full: '146.0.0.0' },
+  ],
+  secChUaMobile: '?0',
+  secChUaPlatform: '"Windows"',
+  acceptLanguage: 'zh-CN,zh;q=0.9',
+  languages: ['zh-CN', 'zh'],
+};
+
+/** 解析生效画像（默认值 ← BOSSCLAW_UA_VERSION ← BOSSCLAW_PROFILE_JSON） */
+function resolveProfile() {
+  const p = JSON.parse(JSON.stringify(DEFAULT_PROFILE));
+  const ver = String(process.env.BOSSCLAW_UA_VERSION || '').trim();
+  if (ver) {
+    const major = ver.split('.')[0];
+    p.uaChromeVersion = ver;
+    p.brands = p.brands.map((b) => (/Chromium/i.test(b.brand)
+      ? { brand: b.brand, version: major, full: ver }
+      : b));
+  }
+  if (process.env.BOSSCLAW_PROFILE_JSON) {
+    try { Object.assign(p, JSON.parse(process.env.BOSSCLAW_PROFILE_JSON)); } catch (e) { /* 忽略非法 JSON */ }
+  }
+  return p;
+}
+
+/** 目标 UA 字符串（与画像同源，禁止各处另写一份） */
+function buildUserAgent(profile) {
+  const p = profile || resolveProfile();
+  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/' +
+    p.uaChromeVersion + ' Safari/537.36';
+}
+
+/**
+ * onBeforeSendHeaders 要对齐的请求头。
+ * 键一律**小写**（Electron 的 requestHeaders 键为小写），值按目标样本形态。
+ * 幂等：无论 Chromium 原本发不发这些头，都强制设定为样本值。
+ */
+function buildRequestHeaderOverrides(profile) {
+  const p = profile || resolveProfile();
+  return {
+    'sec-ch-ua': p.brands.map((b) => '"' + b.brand + '";v="' + b.version + '"').join(', '),
+    'sec-ch-ua-mobile': p.secChUaMobile,
+    'sec-ch-ua-platform': p.secChUaPlatform,
+    'accept-language': p.acceptLanguage,
+    'user-agent': buildUserAgent(p),
+  };
+}
+
 const PATCH_KEYS = [
   'webdriver',      // navigator.webdriver → false
   'uaCh',           // User-Agent Client Hints 与 UA 字符串对齐（补 Google Chrome 品牌）
@@ -28,14 +101,14 @@ const PATCH_KEYS = [
 ];
 
 // ===== 默认关闭项（实测驱动，不是推测）=====
-// 依据 2026-10-02 在 Electron 31.7.7 / Chromium 126.0.6478.234 上跑出的真实基线
-// （desktop-app/tmp/stealth-probe/out/baseline-webview.json）：
-//   webdriver : 实测 navigator.webdriver === false —— 本来就对，改写只会引入风险
+//   webdriver : Electron 31.7.7 实测 navigator.webdriver === false —— 本来就对，改写只会引入风险
 //   plugins   : 实测已有 5 项标准 PDF 插件、2 项 mimeTypes、instanceof PluginArray === true —— 完全正常
 //               （首版补丁反而把 isPluginArray 改成了 false，等于自己制造破绽）
-//   languages : 实测 ['zh-CN','zh-Hans-CN'] —— 是否异常必须用真机 Chrome 对照才能判定，未判定前不动
-// 教训：静态推断的 3 项高风险里有 2 项（plugins/mimeTypes、webdriver）实测证伪。
-const DEFAULT_OFF = ['webdriver', 'plugins', 'languages'];
+// languages 已移出本列表：2026-10-03 抓到真机样本 Accept-Language = "zh-CN,zh;q=0.9"，
+//   对应 navigator.languages 应为 ['zh-CN','zh']，而 Electron 实测为 ['zh-CN','zh-Hans-CN']
+//   —— 有对照依据，故启用（默认值取 TARGET_PROFILE.languages）。
+// 教训：静态推断的 3 项高风险里有 2 项实测证伪；「等对照再改」比「先改了再说」安全得多。
+const DEFAULT_OFF = ['webdriver', 'plugins'];
 
 const STEALTH_VERSION = 1;
 const STEALTH_MARK = '__bossclawStealth';
@@ -70,7 +143,15 @@ function resolveEnabled() {
  */
 function buildStealthScript(opts) {
   const enabled = (opts && opts.enabled) || resolveEnabled();
+  const profile = (opts && opts.profile) || resolveProfile();
   const flags = JSON.stringify(enabled.reduce((acc, k) => { acc[k] = true; return acc; }, {}));
+  // 注入给主世界的画像 —— 与 UA 字符串 / 请求头同源，禁止在补丁内部另写一份
+  const profileLiteral = JSON.stringify({
+    brands: profile.brands.map((b) => ({ brand: b.brand, version: b.version, full: b.full || b.version })),
+    languages: profile.languages,
+    mobile: profile.secChUaMobile === '?1',
+    platform: String(profile.secChUaPlatform || '"Windows"').replace(/^"|"$/g, '')
+  });
   return `(function(){
   'use strict';
   if (window.${STEALTH_MARK}) return;
@@ -79,6 +160,7 @@ function buildStealthScript(opts) {
   } catch (e) { window.${STEALTH_MARK} = ${STEALTH_VERSION}; }
 
   var ON = ${flags};
+  var PROFILE = ${profileLiteral};
   var _nativeToString = Function.prototype.toString;
   var _patched = new WeakMap();
 
@@ -121,46 +203,35 @@ function buildStealthScript(opts) {
     } catch (e) {}
   }
 
-  // ===== 2. UA-CH 与 UA 字符串对齐 =====
-  // 根因（实测确认）：Electron 的 UA-CH brands 只有 ["Not/A)Brand","Chromium"]，
-  // 而 UA 字符串自称 Chrome/126 —— 缺 Google Chrome 品牌是可直接判定的矛盾。
-  // 做法：**保留原生条目与顺序**（含原生 grease 品牌及其版本），只插入 Google Chrome；
-  //   高熵值先取原生结果再补 brand —— 不硬编码 platformVersion 之类（硬编码会与真机不符）。
+  // ===== 2. UA-CH 对齐目标画像 =====
+  // 依据 2026-10-03 抓包样本重建：目标 Sec-CH-UA = "Not-A.Brand";v="24", "Chromium";v="146"
+  //   → **不含 Google Chrome 品牌**。早先版本凭「UA 自称 Chrome 却没有 GC 品牌就是矛盾」的推断
+  //     去补 Google Chrome，被样本证伪 —— 样本本身就是这个形态，且平台是接受的。
+  // 做法：JS 层 brands **整体对齐目标画像**（与 onBeforeSendHeaders 写入的 Sec-CH-UA 同源，禁止两处各写一份）；
+  //   高熵值先取原生结果、再按画像覆盖 brands / fullVersionList，其余字段（platformVersion 等）原样透传。
   if (ON.uaCh) {
     try {
       var nativeUAD = navigator.userAgentData;
-      var ua = navigator.userAgent || '';
-      var m = /Chrome\\/([0-9.]+)/.exec(ua);
-      var full = m ? m[1] : '';
-      var major = full ? full.split('.')[0] : '';
-      var isGrease = function (b) { return /^Not/i.test(b && b.brand); };
-
-      if (nativeUAD && full) {
-        // 把 brand 列表补齐为真实 Chrome 形态：normal 项 + Google Chrome + 原生 grease 项
-        var withGoogleChrome = function (list, ver) {
-          var normal = [], grease = [];
-          for (var i = 0; i < list.length; i++) (isGrease(list[i]) ? grease : normal).push(list[i]);
-          for (var j = 0; j < normal.length; j++) { if (normal[j].brand === 'Google Chrome') return list; }
-          return normal.concat([{ brand: 'Google Chrome', version: ver }], grease);
-        };
-
-        var brands = withGoogleChrome(Array.prototype.slice.call(nativeUAD.brands || []), major);
+      if (nativeUAD) {
+        var brandList = PROFILE.brands.map(function (b) { return { brand: b.brand, version: b.version }; });
+        var fullList = PROFILE.brands.map(function (b) { return { brand: b.brand, version: b.full }; });
 
         var uaData = {
-          brands: brands,
-          mobile: nativeUAD.mobile,
-          platform: nativeUAD.platform,
+          brands: brandList,
+          mobile: PROFILE.mobile,
+          platform: PROFILE.platform,
           getHighEntropyValues: disguise(function (hints) {
             return nativeUAD.getHighEntropyValues(hints).then(function (res) {
               try {
-                if (res && res.brands) res.brands = withGoogleChrome(Array.prototype.slice.call(res.brands), major);
-                if (res && res.fullVersionList) res.fullVersionList = withGoogleChrome(Array.prototype.slice.call(res.fullVersionList), full);
+                if (res && res.brands) res.brands = brandList.map(function (b) { return { brand: b.brand, version: b.version }; });
+                if (res && res.fullVersionList) res.fullVersionList = fullList.map(function (b) { return { brand: b.brand, version: b.version }; });
+                if (res) res.mobile = PROFILE.mobile;
               } catch (e) {}
               return res;
             });
           }, 'getHighEntropyValues'),
           toJSON: disguise(function () {
-            return { brands: brands, mobile: nativeUAD.mobile, platform: nativeUAD.platform };
+            return { brands: brandList, mobile: PROFILE.mobile, platform: PROFILE.platform };
           }, 'toJSON')
         };
         def(Navigator.prototype, 'userAgentData', disguise(function () { return uaData; }, 'get userAgentData'));
@@ -238,14 +309,13 @@ function buildStealthScript(opts) {
   }
 
   // ===== 4. languages =====
+  // 依据 2026-10-03 抓包样本 Accept-Language = "zh-CN,zh;q=0.9" → navigator.languages 应为 ['zh-CN','zh']。
+  // Electron 实测为 ['zh-CN','zh-Hans-CN']：第二项是「简体中文」的语言标签而非语言代码，与样本不符。
   if (ON.languages) {
     try {
-      var cur = Array.prototype.slice.call(navigator.languages || []);
-      if (cur.length < 3) {
-        var want = ['zh-CN', 'zh', 'en'];
-        def(Navigator.prototype, 'languages', disguise(function () { return want.slice(); }, 'get languages'));
-        def(Navigator.prototype, 'language', disguise(function () { return 'zh-CN'; }, 'get language'));
-      }
+      var wantLang = PROFILE.languages.slice();
+      def(Navigator.prototype, 'languages', disguise(function () { return wantLang.slice(); }, 'get languages'));
+      def(Navigator.prototype, 'language', disguise(function () { return wantLang[0] || 'zh-CN'; }, 'get language'));
     } catch (e) {}
   }
 
@@ -541,10 +611,15 @@ const PROBE_SCRIPT = `(async function () {
 
 module.exports = {
   PATCH_KEYS,
+  DEFAULT_OFF,
+  DEFAULT_PROFILE,
   STEALTH_VERSION,
   STEALTH_MARK,
   PROBE_VERSION,
   PROBE_SCRIPT,
   buildStealthScript,
   resolveEnabled,
+  resolveProfile,
+  buildUserAgent,
+  buildRequestHeaderOverrides,
 };

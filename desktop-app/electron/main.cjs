@@ -1154,7 +1154,7 @@ async function createMainWindow() {
     let stealthEnabled = [];
     try { stealthEnabled = stealth.resolveEnabled(); } catch (e) { stealthEnabled = []; }
     if (stealthEnabled.length > 0) {
-      const stealthCode = stealth.buildStealthScript({ enabled: stealthEnabled });
+      const stealthCode = stealth.buildStealthScript({ enabled: stealthEnabled, profile: stealth.resolveProfile() });
       const injectStealth = (when) => {
         try {
           wc.executeJavaScript(stealthCode, true)
@@ -1973,13 +1973,34 @@ app.whenReady().then(async () => {
     const applied = (typeof bossclawSession.getPreloads === 'function') ? JSON.stringify(bossclawSession.getPreloads()) : 'n/a';
     console.log('SET-PRELOADS preload=' + preloadPath + ' applied=' + applied);
 
-    // ===== User-Agent 设置：模拟真实 Chrome 浏览器，避免 BOSS 反爬导致加载缓慢/被拦截 =====
-    // Electron 默认的 UA 包含 "Electron/31.x"，BOSS 直聘可能据此降级响应或触发额外验证，
-    // 导致页面加载响应过慢（服务端对 Electron UA 有额外处理逻辑）。
-    // 替换为与 Chromium 版本对齐的标准 Chrome UA（不含 Electron 特征）。
-    const chromeVersion = process.versions.chrome || '128.0.0.0';
-    const realChromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+    // ===== 目标浏览器画像：UA + 请求头 + JS 层三处同源（唯一权威 = stealth.cjs）=====
+    // 画像来源 = 用户抓包得到的「真机浏览器 → www.zhipin.com」请求头样本（2026-10-03）。
+    // 三处必须同源，否则会制造「JS 说一套、请求头说另一套」的新矛盾：
+    //   ① setUserAgent              —— UA 字符串
+    //   ② onBeforeSendHeaders       —— 请求头（服务端直接可见，JS 补丁够不到）
+    //   ③ injectStealth（主世界补丁）—— navigator.userAgentData / languages
+    const stealthProfile = stealth.resolveProfile();
+    const realChromeUA = stealth.buildUserAgent(stealthProfile);
     bossclawSession.setUserAgent(realChromeUA);
+    dlog('info', 'stealth profile', { ua: realChromeUA, brands: stealthProfile.brands });
+
+    // ===== 请求头对齐：根因是「实测 Electron 126 的导航请求完全不发 Sec-CH-UA 系列头」=====
+    // 而 JS 层 navigator.userAgentData 却存在 → 服务端看到的是「声明有 UA-CH、请求却不带」的自相矛盾。
+    // 这里强制把 Sec-CH-UA / Mobile / Platform / Accept-Language / User-Agent 设为画像值（幂等覆盖）。
+    // 只改这几个头：accept / sec-fetch-* / upgrade-insecure-requests 实测与目标样本已一致，多改易错。
+    try {
+      const headerOverrides = stealth.buildRequestHeaderOverrides(stealthProfile);
+      bossclawSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        try {
+          const h = details.requestHeaders;
+          for (const k of Object.keys(headerOverrides)) h[k] = headerOverrides[k];
+        } catch (e) { /* 单次失败不影响该请求 */ }
+        callback({ requestHeaders: details.requestHeaders });
+      });
+      dlog('info', 'request header overrides armed', headerOverrides);
+    } catch (e) {
+      dlog('warn', 'request header override failed', { message: e?.message });
+    }
 
     // ===== 磁盘缓存配置：增大缓存上限（默认值偏小，BOSS 首页资源较多）=====
     // setCacheSize 在 Electron 31+ 中对 persistent session 有效；
