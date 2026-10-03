@@ -10,6 +10,8 @@ const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
+// 内置浏览器「主世界」反检测补丁 + 指纹自检（补丁本体与探针同一模块，见文件头说明）
+const stealth = require('./preload/stealth.cjs');
 
 // ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
 // 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
@@ -52,6 +54,14 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   dlog('error', 'unhandledRejection', { reason: reason?.message || String(reason) });
 });
+
+// ===== Chromium 启动开关（必须在 app ready 之前设置）=====
+// 与 stealth.cjs 的补丁配合：该开关保证即使将来附加 CDP debugger（路线 B），
+// navigator.webdriver 也不会被 Chromium 置为 true。
+// 实测：Electron 31.7.7 未附加时 webdriver 已是 false，故本开关属预防性加固。
+try {
+  app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+} catch (e) { /* 受限环境可能不允许，忽略即可 */ }
 
 // ===== 统一 IPC 错误包装 =====
 function safeHandle(channel, handler) {
@@ -1132,6 +1142,38 @@ async function createMainWindow() {
     } catch {}
     webviewDiag('ATTACH url=' + (wc.getURL?.() || '') + ' prefs=' + wpref);
     try { mainWindow?.webContents.send('jc:webview-diag', { type: 'attach', prefs: wpref, url: wc.getURL?.() || '' }); } catch {}
+
+    // ===== 主世界反检测补丁注入（路线 A 阶段 1）=====
+    // 为什么不能在 preload 里改：<webview preload> 与 session.setPreloads 都运行在**隔离世界**
+    //   （contextIsolation:true，AGENTS.md §3.1 已记录），隔离世界的 navigator 与页面主世界不共享，
+    //   在 preload 里 Object.defineProperty(navigator, ...) 对页面完全无效。
+    //   因此补丁字符串必须由主进程 executeJavaScript 注入到**主世界**。
+    // 时机：did-start-loading（尽早）+ dom-ready（兜底）；补丁内有 __bossclawStealth 幂等守卫，
+    //   重复注入无副作用。更早的一枪由 webview.cjs 在 preload 阶段用 webFrame.executeJavaScript 打出。
+    // 开关：环境变量 BOSSCLAW_STEALTH（off / only=a,b / skip=a,b），项名见 stealth.PATCH_KEYS。
+    let stealthEnabled = [];
+    try { stealthEnabled = stealth.resolveEnabled(); } catch (e) { stealthEnabled = []; }
+    if (stealthEnabled.length > 0) {
+      const stealthCode = stealth.buildStealthScript({ enabled: stealthEnabled });
+      const injectStealth = (when) => {
+        try {
+          wc.executeJavaScript(stealthCode, true)
+            .then(() => { webviewDiag('STEALTH-INJECTED[' + when + '] ' + stealthEnabled.join(',')); })
+            .catch((err) => {
+              webviewDiag('STEALTH-FAILED[' + when + '] ' + String((err && err.message) || err).slice(0, 200));
+              dlog('warn', 'stealth inject failed', { when, message: err?.message });
+            });
+        } catch (e) {
+          dlog('warn', 'stealth inject threw', { when, message: e?.message });
+        }
+      };
+      wc.on('did-start-loading', () => injectStealth('did-start-loading'));
+      wc.on('dom-ready', () => injectStealth('dom-ready'));
+      webviewDiag('STEALTH-ARMED ' + stealthEnabled.join(','));
+    } else {
+      webviewDiag('STEALTH-OFF (BOSSCLAW_STEALTH=' + String(process.env.BOSSCLAW_STEALTH || '') + ')');
+    }
+
     wc.on('preload-error', (_ev, err, code) => {
       webviewDiag('PRELOAD-ERROR code=' + code + ' err=' + String(err || '').slice(0, 300));
       try { mainWindow?.webContents.send('jc:webview-diag', { type: 'preload-error', errorCode: code, error: String(err || '').slice(0, 300) }); } catch {}

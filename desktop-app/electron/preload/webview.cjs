@@ -42,6 +42,15 @@ try { notify('preload-alive', { url: location.href, time: Date.now() }); } catch
 // sandboxed preload 与页面共享 window，此标记在页面上下文可见；无此标记 = preload 未注入
 try { window.__bossclawPreload = Date.now(); } catch {}
 
+// 注：主世界反检测补丁**不在 preload 注入**，原因（2026-10-02 实测，见
+// docs/内置浏览器反检测评估报告-2026-10-02.md §5 与 tmp/stealth-probe/out/verify-inject-timing-*.json）：
+//   本 preload 运行在隔离世界，改不了主世界 navigator；改用 webFrame.executeJavaScript 送主世界
+//   虽然可行，但实测其执行时机**仍晚于页面第一段内联脚本**（head 采样时补丁标记为 null），
+//   与主进程 did-start-loading 通道等价、却多一层依赖 —— 故不做。
+//   另实测：preload 内 require 向上跳出目录会 module not found（仅同目录相对路径可用）。
+//   补丁注入统一由 main.cjs 的 injectStealth 负责（did-start-loading + dom-ready 双时机）。
+//   唯一能抢在文档创建前注入主世界的是 CDP Page.addScriptToEvaluateOnNewDocument（路线 B，见报告 §6）。
+
 function visible(el) {
   if (!el) return false;
   const rect = el.getBoundingClientRect();
