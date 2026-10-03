@@ -8,6 +8,11 @@
 //      - 投递  : POST /wapi/zpgeek/friend/add.json { encryptJobId, encryptBossId, greeting }
 //   2. 页面信息回传（nav / login-state）供地址栏、标签页、登录态显示。
 //   3. 真实输入通道（jc:webview-input）——BOSS 受控 contenteditable 只认真实输入（isTrusted:true）。
+//      · 2026-10-03 收口第一期：**BOSS 聊天链路**（立即沟通 / 发送按钮 / 弹窗确认 / 输入前悬停）
+//        已改为真实事件优先（humanClickElement：真实优先、合成兜底，带重复点击去重）。
+//      · 采集用的卡片点击**必须保持合成**（依赖 cancelable 事件阻止默认导航），见 clickElement 注释。
+//      · 非 BOSS 平台按钮（智联 / 猎聘 / 前程无忧）**本期未收口**：那些平台的合成点击已验证可用，
+//        无证据支持下改动属盲改。收口前置条件 = 先在真机确认其同样校验 isTrusted。
 //   4. DOM 兜底投递（start-apply 简化版）——仅当 API 返回未知码 / 网络异常时使用。
 //
 // 安全不变量（AGENTS.md 2.1）：未确认文字气泡不计成功；招呼语非空；验证码/风控立即停止交人工；
@@ -18,6 +23,9 @@ const { ipcRenderer } = require('electron');
 // 多平台 DOM 适配表（webview 侧唯一权威：列表选择器 / 链接形态 / 页面形态判定）。
 // 纯数据 + 纯函数、零 DOM 依赖 → 可直接单测（见 desktop-app/tmp/probe-webview-platforms.cjs）。
 const ADAPTERS = require('./platform-adapters.cjs');
+// 人类化输入计划（纯函数，零 DOM 依赖 → 单测见 desktop-app/scripts/humanize-regression.mjs）。
+// 只负责「怎么动」，不发事件；真实点击/输入仍走 jc:webview-input 主进程通道。
+const humanize = require('./humanize.cjs');
 // ===== 防重复注入保护（session.setPreloads 与元素 preload 属性双路径可能重复注入同一脚本）=====
 (function () {
   if (typeof window !== 'undefined' && window.__bossclawWebviewPreload) return;
@@ -1099,20 +1107,74 @@ function confirmOwnMessage(greeting) {
 // 为什么必须有它：BOSS「立即沟通」是 <a href="javascript:;">，页面处理器**只认可信输入**——
 // dispatchEvent 的合成点击会被完全忽略（线上实测：点击后按钮仍在、无弹窗、无输入框、无导航、无风控），
 // 这与 BOSS 聊天输入框「只认真实输入」是同一套加固。坐标用视口坐标（getBoundingClientRect 即视口系）。
-async function trustedClickElement(el) {
+//
+// 人类化轨迹：真人不「瞬移光标 + 立即点击」。这里先沿弧线走一小段（humanize.buildMousePath），
+// 再落点按下抬起——整条轨迹仍只占 1 条信道消息（主进程 walkPathThen），不吃频率预算。
+// 光标起点用上一次落点推算（lastCursor），避免每次都从固定坐标出发这一可统计特征。
+let lastCursor = null;
+
+function elementCenter(el) {
+  try {
+    const rect = el.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+    // 视口外坐标不会命中目标（也会误伤页面其它元素）→ 直接放弃，交上层按失败处理
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
+    return { x, y };
+  } catch { return null; }
+}
+
+async function trustedClickElement(el, opts = {}) {
   if (!el) return false;
   try { el.scrollIntoView?.({ block: 'center', behavior: 'instant' }); } catch {}
   await jitterDelay(200);
-  let rect = null;
-  try { rect = el.getBoundingClientRect(); } catch {}
-  if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-  const x = Math.round(rect.left + rect.width / 2);
-  const y = Math.round(rect.top + rect.height / 2);
-  // 视口外坐标不会命中目标（也会误伤页面其它元素）→ 直接放弃，交上层按失败处理
-  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
-  const r = await trustedInput('clickAt', '', { x, y });
-  await jitterDelay(160);
+  const to = elementCenter(el);
+  if (!to) return false;
+  const from = lastCursor || { x: Math.max(0, to.x - 70 - Math.round(Math.random() * 40)), y: Math.max(0, to.y - 50 - Math.round(Math.random() * 30)) };
+  const path = humanize.buildMousePath(from, to);
+  if (opts.settle !== false) await sleep(humanize.settleDelayMs());
+  const r = await trustedInput('clickAt', '', { x: to.x, y: to.y, path });
+  if (r && r.ok) lastCursor = { x: to.x, y: to.y };
+  await jitterDelay(opts.afterMs || 160);
   return Boolean(r && r.ok);
+}
+
+// 纯悬停：只移动光标到元素（可带轨迹），不按键。用于「输入前先把鼠标移过去」。
+async function trustedHoverElement(el) {
+  if (!el) return false;
+  const to = elementCenter(el);
+  if (!to) return false;
+  const from = lastCursor || { x: Math.max(0, to.x - 60), y: Math.max(0, to.y - 40) };
+  const path = humanize.buildMousePath(from, to);
+  const r = await trustedInput('hoverAt', '', { path });
+  if (r && r.ok) lastCursor = { x: to.x, y: to.y };
+  return Boolean(r && r.ok);
+}
+
+// 同一元素短时间内的重复点击去重。
+// 为什么需要：轮询等待（如等弹窗消失）里每 300ms 就点一次同一按钮——真人不会，
+// 而且每次点都消耗一次信道频率预算。去重后只点一次，之后再等。
+const recentClickAt = new WeakMap();
+
+function clickedRecently(el, windowMs) {
+  const t = recentClickAt.get(el);
+  return Boolean(t) && (Date.now() - t) < windowMs;
+}
+
+// 统一点击入口：**真实点击优先，合成点击兜底**。
+// 优先级依据：BOSS 交互按钮与受控输入框有线上实测证明只认 isTrusted；
+// 兜底依据：真实点击要求元素在视口内且主进程通道可用，任一不满足时不能让业务空转。
+// 注意：采集用的「卡片点击」**不能**走这里——它依赖 sanitizeUnsafeActivation +
+// cancelable 合成事件阻止默认导航（真实点击无法 preventDefault），详见 clickElement 注释。
+async function humanClickElement(el, opts = {}) {
+  if (!el) return false;
+  const dedupeMs = Number(opts.dedupeMs) || 1500;
+  if (clickedRecently(el, dedupeMs)) return true; // 已处理过，视为成功，避免轮询里反复点
+  recentClickAt.set(el, Date.now());
+  const okTrusted = await trustedClickElement(el, opts);
+  if (okTrusted) return true;
+  try { await clickElement(el); return false; } catch { return false; }
 }
 
 async function enterChat() {
@@ -1131,17 +1193,26 @@ async function enterChat() {
     location.href = href; // 跨域导航到 app.zhipin.com，preload 会重新注入
     return null;
   }
-  await clickElement(button);
-  // 先用合成点击（与参考实现一致）；3s 内没出现输入框就判定合成点击未被页面接受，
-  // 改用**真实鼠标点击**重试——BOSS 的交互按钮只认 isTrusted 事件（实测合成点击零反应）。
-  let input = await waitFor(() => chatInput(), 3000, '聊天输入框(合成点击)');
-  if (!input) {
-    const clicked = await trustedClickElement(button);
+  // 顺序说明（2026-10-03 调整）：**真实点击优先**，不再是「先合成、失败再真实」。
+  // 依据：BOSS 的交互按钮有线上实测证明只认 isTrusted（合成点击零反应），
+  // 先合成等于必然多花一次 3s 等待 + 一次无效点击（无效点击本身也是行为层噪声）。
+  // 合成点击保留为兜底：真实点击要求元素在视口内，滚出视口时有兜底才不会整链路空转。
+  const clicked = await humanClickElement(button);
+  if (!clicked) {
     notify('apply-stage', {
       stage: 'log',
-      message: clicked
-        ? '合成点击未生效，已改用真实鼠标点击（isTrusted）重试：' + diagChatButton(button)
-        : '合成点击未生效，且真实点击不可用（元素不在视口内），现场诊断：' + diagChatButton(button),
+      message: '真实鼠标点击不可用（元素不在视口内或通道受限），已回退合成点击，现场诊断：' + diagChatButton(button),
+    });
+  }
+  let input = await waitFor(() => chatInput(), 3000, '聊天输入框(真实点击)');
+  if (!input) {
+    // 兜底路径下再给真实点击一次机会（元素可能刚刚滚入视口）
+    const retried = await trustedClickElement(button);
+    notify('apply-stage', {
+      stage: 'log',
+      message: retried
+        ? '首次点击未生效，已改用真实鼠标点击（isTrusted）重试：' + diagChatButton(button)
+        : '点击未生效且真实点击不可用，现场诊断：' + diagChatButton(button),
     });
   }
   // 点击后 BOSS 对新会话岗位常弹确认框（「继续沟通 / 确认沟通 / 留在此页 / 我知道了」等），
@@ -1152,7 +1223,9 @@ async function enterChat() {
   const deadline = Date.now() + 12000;
   while (Date.now() < deadline) {
     const dlg = dialogConfirmButton();
-    if (dlg) { try { dlg.click(); } catch {} }
+    // 弹窗确认同样走真实点击（BOSS 弹窗按钮与主按钮同一套加固）；
+    // dedupe 必须给足：轮询 300ms 一轮，不去重会每轮点一次同一按钮（真人不会，且吃频率预算）。
+    if (dlg) await humanClickElement(dlg, { dedupeMs: 2500 });
     input = chatInput();
     if (input) break;
     await jitterDelay(300);
@@ -1280,6 +1353,9 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
     notify('apply-stage', { stage: 'fill_message', label: '填写招呼语' });
     // 仅编辑区内清空/聚焦（严禁整页 selectAll）；随后可信 insertText 插入。
     input.scrollIntoView({ block: 'center' });
+    // 先把光标真实移过去再输入：否则序列是「点按钮 → 鼠标不动 → 文字凭空出现」，
+    // 这是行为层很显眼的一条（真人必然先移动鼠标）。纯移动、不按键，失败也不影响后续写入。
+    await trustedHoverElement(input);
     const editor = focusEditableScoped(input);
     // 沟通窗口渲染慢时 Slate 编辑器可能未完全就绪，单次 insertText 易失权：带重试 + 落盘文本校验。
     const needle20 = normalizeChatText(safeGreeting).slice(0, 20);
@@ -1318,7 +1394,8 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
     if (btn) {
       try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
       await waitFor(() => !isDisabledish(btn), 4000, '发送按钮启用');
-      btn.click();
+      // 「发送」是 BOSS 受控组件按钮，与「立即沟通」同属只认 isTrusted 的那一类 → 真实点击优先
+      await humanClickElement(btn, { dedupeMs: 1200 });
     } else {
       // 未找到按钮：弹窗 textarea 内回车是换行、不会发送，直接交人工；
       // 其余输入（contenteditable 聊天页等）仍退回回车发送兜底。
@@ -1387,7 +1464,8 @@ async function openChatOnly() {
       try { location.href = href; } catch {}
       return;
     }
-    await clickElement(button);
+    // 真实点击优先（同 enterChat：BOSS 交互按钮只认 isTrusted）
+    await humanClickElement(button);
     // 等待聊天输入框出现；期间自动点确认弹窗、检测安全验证
     const deadline = Date.now() + 12000;
     let riskHit = false;
@@ -1397,7 +1475,7 @@ async function openChatOnly() {
         break;
       }
       const dlg = dialogConfirmButton();
-      if (dlg) { try { dlg.click(); } catch {} }
+      if (dlg) await humanClickElement(dlg, { dedupeMs: 2500 });
       input = chatInput();
       if (input) break;
       await jitterDelay(300); // 轮询等待聊天输入框出现（节奏人肉化）
@@ -1451,6 +1529,14 @@ async function smoothScrollIntoView(el) {
 // 关键：点击岗位卡片 / 立即沟通按钮时，临时移除 javascript: href 和内联 onclick，
 // 派发可取消的 click 事件，让 BOSS 的 React/Vue 监听器收到事件但默认导航被阻止，
 // 从而「内联更新详情面板」而不是「跳转页面」，实现连续采集多个岗位。
+//
+// ⚠️ 为什么这里**不能**改用真实点击（humanClickElement / sendInputEvent）：
+//   本函数的核心不是「让页面收到事件」，而是「让页面收到事件但**阻止默认导航**」。
+//   阻止导航靠的是 cancelable 合成事件 + capture 阶段 preventDefault —— 真实鼠标事件由浏览器
+//   在页面外产生，preload 无法 preventDefault。而岗位卡片本身是 <a href="/job_detail/...">
+//   （sanitizeUnsafeActivation 只摘 javascript: 形式，正常的相对/绝对 href 会保留），
+//   真实点击会直接把列表页导航走 → 采集串台、断链。
+//   **需要真事件的场景请走 humanClickElement（真实优先、合成兜底），不要改这里。**
 const UNSAFE_NAV_ATTRS = ['href', 'xlink:href', 'formaction', 'action'];
 const INLINE_ACT_ATTRS = ['onclick', 'onmousedown', 'onmouseup', 'onpointerdown', 'onpointerup', 'ontouchstart', 'ontouchend'];
 const normalize = (value) => String(value || '').replace(/\s+/g, '').replace(/[·•｜|]/g, '').trim().toLowerCase();
@@ -2446,6 +2532,7 @@ async function prefillGreetingText(rawText) {
       return { ok: false, reason: btn ? '沟通入口需要跳转页面，请在新页面重试' : '未找到聊天输入框，且无「立即沟通」入口（岗位可能已下架）' };
     }
     input.scrollIntoView({ block: 'center' });
+    await trustedHoverElement(input); // 同 domApply：先真实移动光标再输入
     focusEditableScoped(input);
     const ins = await trustedInput('insertText', greeting);
     if (!ins.ok) return { ok: false, reason: '真实输入写入失败（无权限/输入框失焦），请人工发送' };

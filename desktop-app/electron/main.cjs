@@ -1903,13 +1903,18 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
 ipcMain.on('jc:webview-input', (event, payload) => {
   const wc = event.sender;
   // P4-12：主进程侧频率兜底（渲染层自律之外的最后防线）。
-  // 阈值 = 16 次/分钟（渲染层 ActionPacer 正常 8 次/分钟，留 2 倍余量：
-  // 既能拦住渲染层 bug 引发的输入风暴，又不误伤「填字 → 回车」两连击）。
+  // ⚠️ 阈值与「单次业务动作消耗的信道消息数」绑定，改动输入链路时必须同步复核：
+  //   收口到真事件通道后，一次投递 = 立即沟通点击 + insertText + 发送点击（＋偶发弹窗确认）
+  //   ≈ 3~4 条消息；ActionPacer 允许 8 动作/分钟 → 峰值约 32 条/分钟。
+  //   旧阈值 16 是按「1 动作 ≈ 1~2 消息」定的，收口后会**把正常投递误判为输入风暴**，故同步上调。
+  // 双层判定：60 条/60s（均值）+ 20 条/10s（突发）。
+  // 目标是拦「渲染层 bug 引发的输入风暴」（量级是数百/分钟），而非给正常业务动作设卡。
   const now = Date.now();
   inputWindow = inputWindow.filter((t) => t > now - 60_000);
-  if (inputWindow.length >= 16) {
+  const burst = inputWindow.filter((t) => t > now - 10_000).length;
+  if (inputWindow.length >= 60 || burst >= 20) {
     try { wc.send('jc:webview-input-done', { seq: String((payload && payload.seq) || ''), ok: false, action: String((payload && payload.action) || ''), error: 'rate limited' }); } catch {}
-    dlog('warn', 'webview-input rate limited（主进程兜底）');
+    dlog('warn', 'webview-input rate limited（主进程兜底）', { perMinute: inputWindow.length, perTenSec: burst });
     return;
   }
   inputWindow.push(now);
@@ -1919,6 +1924,30 @@ ipcMain.on('jc:webview-input', (event, payload) => {
   const action = String((payload && payload.action) || '');
   const text = String((payload && payload.text) || '');
   const reply = (result) => { try { wc.send('jc:webview-input-done', { seq, ...result }); } catch {} };
+  // 沿人类化轨迹逐点移动鼠标，走完再执行收尾动作（点击 / 仅悬停）。
+  // 轨迹由 preload 侧 humanize.cjs 生成（纯函数、可离线回归），这里只负责「按顺序发事件」。
+  // 为什么合成在一处：整条轨迹只占 **1 条信道消息**，不会因分段移动而吃掉频率预算。
+  const walkPathThen = (points, finish) => {
+    const list = Array.isArray(points) ? points : [];
+    let i = 0;
+    const step = () => {
+      try {
+        if (i >= list.length) { finish(); return; }
+        const p = list[i++];
+        const px = Math.round(Number(p && p.x));
+        const py = Math.round(Number(p && p.y));
+        if (Number.isFinite(px) && Number.isFinite(py)) wc.sendInputEvent({ type: 'mouseMove', x: px, y: py });
+        const delay = Math.min(Math.max(Number(p && p.delayMs) || 0, 0), 120);
+        if (delay > 0) setTimeout(step, delay);
+        else step();
+      } catch (e) {
+        // 轨迹只是「锦上添花」，任一步失败都必须确保收尾动作照常执行，否则业务空转
+        try { finish(); } catch {}
+      }
+    };
+    step();
+  };
+
   try {
     switch (action) {
       case 'clickAt': {
@@ -1929,10 +1958,26 @@ ipcMain.on('jc:webview-input', (event, payload) => {
         const x = Math.round(Number(payload && payload.x));
         const y = Math.round(Number(payload && payload.y));
         if (!Number.isFinite(x) || !Number.isFinite(y)) return reply({ ok: false, action, error: 'bad coords' });
-        wc.sendInputEvent({ type: 'mouseMove', x, y });
-        wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-        wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-        return reply({ ok: true, action, x, y });
+        const fire = () => {
+          wc.sendInputEvent({ type: 'mouseMove', x, y });
+          wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+          reply({ ok: true, action, x, y, path: Array.isArray(payload && payload.path) ? payload.path.length : 0 });
+        };
+        // 有轨迹则先「移过去」再点：消除「光标瞬移 + 立即点击」这一最容易被行为层识别的特征。
+        // 无轨迹时保持旧行为（单点移动 + 点击），保证既有调用方不受影响。
+        const path = (payload && payload.path) || [];
+        if (Array.isArray(path) && path.length > 1) walkPathThen(path, fire);
+        else fire();
+        return;
+      }
+      case 'hoverAt': {
+        // 纯悬停（不按键）：用于「移动到输入框再输入」，补上「零鼠标移动直接打字」的破绽。
+        const pts = (payload && payload.path) || [];
+        const finish = () => reply({ ok: true, action });
+        if (Array.isArray(pts) && pts.length) walkPathThen(pts, finish);
+        else finish();
+        return;
       }
       case 'insertText':
         if (!text) return reply({ ok: false, action, error: 'empty text' });
