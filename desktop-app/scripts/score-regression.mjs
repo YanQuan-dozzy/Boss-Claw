@@ -163,6 +163,50 @@ try {
     (blocks) => !blocks.some((b) => /学历/.test(b))
   );
 
+  // ===== 三之二、JD 学历要求解析：不得把「及以上」升档，不得采信「优先」与薪酬福利句 =====
+  // 真实误拦（2026-10-03）：JD 写「本科及以上学历在读（本科大四、研究生优先）」/ 福利段写
+  // 「硕士研究生实习薪资 3500 元/月」，旧实现全文取最高档 → 判成「要求硕士」→ 本科画像被硬拦。
+  const bachelorProfile = () => ({
+    ...baseProfile(),
+    facts: { ...baseProfile().facts, education: ['XX大学 计算机科学与技术 本科'] },
+  });
+  checkNoThrow(
+    '「本科及以上学历在读（本科大四、研究生优先）」+ 画像本科 → 不得命中学历硬约束',
+    () => computeLocalMatch(baseJob({ description: '任职要求：本科及以上学历在读（本科大四、研究生优先），计算机、软件工程等相关专业' }), bachelorProfile(), {}).hardBlocks,
+    (blocks) => !blocks.some((b) => /学历/.test(b))
+  );
+  checkNoThrow(
+    '「本科及以上 + 福利段『硕士研究生实习薪资 3500 元/月』」+ 画像本科 → 不得命中学历硬约束',
+    () => {
+      const desc = '任职要求：\n1、本科及以上，计算机相关专业优先;熟悉 AI 辅助编程者优先;\n薪酬福利：\n1、实习薪资标准：本科生实习薪资为 3000 元/月;硕士研究生实习薪资为 3500 元/月。';
+      return computeLocalMatch(baseJob({ description: desc }), bachelorProfile(), {}).hardBlocks;
+    },
+    (blocks) => !blocks.some((b) => /学历/.test(b))
+  );
+  checkNoThrow(
+    '「硕士优先」不是硬性要求 → 画像本科不拦',
+    () => computeLocalMatch(baseJob({ description: '岗位职责：后端开发。任职要求：本科及以上学历，硕士研究生优先' }), bachelorProfile(), {}).hardBlocks,
+    (blocks) => !blocks.some((b) => /学历/.test(b))
+  );
+  checkNoThrow(
+    '「本科以上」漏判修复：画像大专 + JD 要求本科以上 → 必须拦下',
+    () => {
+      const profile = { ...baseProfile(), facts: { ...baseProfile().facts, education: ['XX学院 软件技术 大专'] } };
+      return computeLocalMatch(baseJob({ description: '任职要求：本科以上学历，负责后端服务开发' }), profile, {}).hardBlocks;
+    },
+    (blocks) => blocks.some((b) => /学历/.test(b))
+  );
+  checkNoThrow(
+    '真正的「硕士及以上」要求仍必须拦下（不得被新口径放过）',
+    () => computeLocalMatch(baseJob({ description: '任职要求：硕士及以上学历，计算机相关专业' }), bachelorProfile(), {}).hardBlocks,
+    (blocks) => blocks.some((b) => /学历/.test(b))
+  );
+  checkNoThrow(
+    '「学历不限」不构成要求',
+    () => computeLocalMatch(baseJob({ description: '任职要求：学历不限，有相关经验即可' }), bachelorProfile(), {}).hardBlocks,
+    (blocks) => !blocks.some((b) => /学历/.test(b))
+  );
+
   // ===== 四、城市反选：跨省同名城市不得互相误杀 =====
   const excl = (provinces, cities = []) => ({ excludedProvinces: provinces, excludedCities: cities });
   check('排除青海 → 不应误杀「海南·海口」（海南藏族自治州 vs 海南省同名）', isLocationExcluded('海南·海口', excl(['青海'])), false);
