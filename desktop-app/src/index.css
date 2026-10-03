@@ -5247,6 +5247,8 @@ html[data-theme='dark'] .skill-chip-gap:hover {
 .sic-scope {
   display: flex;
   align-items: center;
+  /* 允许换行：整卡生效范围横幅是长句，容器窄时要能折行而不是溢出 */
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 2px;
   font-size: 11px;
