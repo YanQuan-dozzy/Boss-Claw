@@ -17,8 +17,9 @@ import {
 } from '@/lib/bossclaw/camoufox';
 import {
   ActionPacer, effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
-  isLockedOut, cooldownRemaining, SAFETY_LIMITS,
+  isLockedOut, cooldownRemaining, SAFETY_LIMITS, classifyRiskCode, resolveCooldownMs,
 } from '@/lib/bossclaw/safety';
+import { checkDeliveryGate, batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
 import { cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { generateReply } from '@/lib/bossclaw/greetings';
@@ -66,6 +67,10 @@ interface EngineRun {
 let nextRunToken = 0;                    // 单调递增：每次 start()/chatOne() 取新 token
 let currentRun: EngineRun | null = null; // 单一真值：null = 空闲（替代原 busy 互斥量 + ownerRun 归属）
 let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE); // 跨 run 共享的动作节流器（预算重置在 start()）
+// 本轮连续沟通计数（批次休息用）：与 Workbench 的 deliveredSinceRestRef 同口径。
+// 为什么自动沟通也必须算它：设置页「防封号节奏限制」是账号级保护，
+// 若只有工作台投递受约束，则「只跑自动沟通」就成了绕过作息/批次保护的路径。
+let chatDeliveredSinceRest = 0;
 
 // =====「AI 跟聊监听」常驻循环（对齐觅星小臣的单一串行 worker）=====
 // 持续巡检「已投递（sent）」的 BOSS 会话，发现 HR 发了新消息就带多轮上下文生成回复并发送。
@@ -440,7 +445,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     const isRiskStop = isCamoufoxStopCode(code) || code === 35;
     if (isRiskStop) {
       updatePending(item.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
-      useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+      useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
       addChatLog({
         level: 'error',
         stage: 'risk',
@@ -542,7 +547,7 @@ function handleWatchStopCode(
   const jobTitle = conv?.name || '';
   const company = conv?.company || '';
   if (isCamoufoxStopCode(code) || code === 35) {
-    useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+    useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
     addChatLog({
       level: 'error', stage: 'risk', jobTitle, company,
       msg: `命中安全风控警示码 [Code ${code}]：${message}。跟聊监听已停止并进入保护性冷却！`,
@@ -599,6 +604,12 @@ async function watchCycle(run: WatchRun): Promise<void> {
     const convCompany = String(conv.company || '');
     if (!convName) continue;
     useAutoChatStore.setState({ watchActiveId: convName });
+    // ⚠️ 本循环（跟聊监听巡检）**不做批次休息**，原因有二（2026-10-03 纠正）：
+    //   1) 语义不符：`batchRest` 的口径是「每 N 个**岗位**休息」，而这里处理的是**会话巡检**，
+    //      计数口径不同，混用会让「连续投递数」虚高；
+    //   2) 会双重计数：同一变量 `chatDeliveredSinceRest` 已被批量投递循环使用，
+    //      两个循环各自 +1 → 批次边界提前命中，休息次数与设置值不符。
+    // 批次休息的唯一落点是批量投递循环（见下方 `chatDeliveredSinceRest += 1`）。
     try {
       await pacer.waitForSlot();
       const open = await camoufoxChatWatch('open', { os: c0.camoufox?.os, name: convName, company: convCompany });
@@ -797,6 +808,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
     const cfg = useSettingsStore.getState().config;
     const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
     if (pacer.budget !== pacerMax) pacer = new ActionPacer(pacerMax);
+    chatDeliveredSinceRest = 0; // 批次休息计数随本轮重新起算（与 Workbench 每轮重置同口径）
     set({ chatRunning: true, activeChatId: null, progress: { index: 0, total: 0 } });
     // 范围描述（定时任务触发时为任务 scope；手动启动无 scope → 全平台不限量）
     const scopeText = (() => {
@@ -872,6 +884,22 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             });
             break;
           }
+          // 活跃时段（与 Workbench.precheckDelivery 同一权威，见 activityWindow.ts）：
+          // 卡片虽挂在「自动沟通」页，但保护对象是**账号** —— 两个引擎必须同口径，
+          // 否则「关掉工作台、只跑自动沟通」就能在凌晨 3 点持续作业。
+          // 与工作台同样采取「中止本轮 + 告知恢复时刻」而非等待（最长要等十几小时，不能阻塞界面）。
+          {
+            const gate = checkDeliveryGate(nowCfg.activeHours, nowCfg.pausedUntil);
+            if (!gate.ok) {
+              const resumeAt = gate.nextAllowedAt ? new Date(gate.nextAllowedAt).toLocaleString('zh-CN') : '活跃时段开始后';
+              useRuntimeLogsStore.getState().addChatLog({
+                level: 'warn',
+                stage: 'risk',
+                msg: `${gate.reason}。预计 ${resumeAt} 自动恢复（可在「设置 → 自动沟通 → 防封号节奏限制」中调整或关闭）。`,
+              });
+              break;
+            }
+          }
           if (dailySentCount(useDataStore.getState().pending) >= effectiveDailyCap(nowCfg)) {
             useRuntimeLogsStore.getState().addChatLog({
               level: 'warn',
@@ -914,6 +942,20 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           run.processedIds.add(item.id);
           set({ activeChatId: item.id, progress: { index: run.processedIds.size, total: run.processedIds.size + eligible.length } });
           try {
+            // 批次休息（分钟级中断）——与 Workbench.awaitDeliveryGap 同口径：
+            // 秒级岗位间隔打断不了 24h 活动曲线的直线性，只有分钟级中断才行。
+            chatDeliveredSinceRest += 1;
+            const restMs = batchRestDelayMs(nowCfg.batchRest, chatDeliveredSinceRest);
+            if (restMs > 0) {
+              useRuntimeLogsStore.getState().addChatLog({
+                level: 'info',
+                stage: 'system',
+                msg: `已连续沟通 ${chatDeliveredSinceRest} 个岗位，按防封号策略休息约 ${Math.round(restMs / 60000)} 分钟（模拟真人作业中断，降低风控风险）`,
+              });
+              await sleep(restMs);
+              chatDeliveredSinceRest = 0;
+              useRuntimeLogsStore.getState().addChatLog({ level: 'info', stage: 'system', msg: '批次休息结束，继续自动沟通' });
+            }
             await pacer.waitForSlot();
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
             await sleep(baseSec * 1000 * (0.7 + Math.random() * 0.6));

@@ -20,7 +20,7 @@ import {
   UsergroupAddOutlined, FieldTimeOutlined,
   ThunderboltOutlined, HourglassOutlined, PlusOutlined, CodeOutlined,
   RobotOutlined, SyncOutlined,
-  ClockCircleOutlined, CoffeeOutlined,
+  ClockCircleOutlined, CoffeeOutlined, InfoCircleOutlined, DesktopOutlined,
 } from '@ant-design/icons';
 import { ChevronDown } from '@/components/ChevronDown';
 import GreetingEditor from '@/components/GreetingEditor';
@@ -697,6 +697,22 @@ export default function AutoChat() {
                 message={`账号处于冷却期，剩余约 ${Math.ceil(cooldownRemaining(config) / 60000)} 分钟`}
               />
             )}
+            {/*
+              生效范围声明（用户反馈「不知道设置是自动沟通生效还是工作台一起生效」）。
+              这不是临时提示而是**字段级语义**：卡片挂在「自动沟通」页，容易被误读成只作用于本页 ——
+              实际上这五项都是**账号级**限制，工作台投递与自动沟通共用同一套配置与同一套判定。
+              故必须常驻（不适用 AGENTS.md 的「说明类文案走顶部 notification」），且只写一次（不逐卡重复）。
+            */}
+            <div className="sic-scope" style={{ marginBottom: 10, fontSize: 12 }}>
+              <InfoCircleOutlined />
+              <span>
+                生效范围：<DesktopOutlined style={{ margin: '0 2px' }} /><b>工作台投递</b>
+                <span style={{ margin: '0 6px' }}>+</span>
+                <MessageOutlined style={{ marginRight: 2 }} /><b>自动沟通</b>
+                <span style={{ marginLeft: 6 }}>—— 两者共用同一套限制，改一处两边同时生效</span>
+              </span>
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
               <div className="stat-input-card">
                 <span className="sic-label">
@@ -739,7 +755,7 @@ export default function AutoChat() {
                 </span>
                 <div className="sic-input-wrap">
                   <InputNumber
-                    min={5}
+                    min={30}
                     max={720}
                     value={config.autoCooldownMinutes}
                     onChange={(v) => setConfig({ autoCooldownMinutes: v ?? 30 })}
@@ -747,6 +763,10 @@ export default function AutoChat() {
                   />
                   <span className="sic-unit">分钟</span>
                 </div>
+                {/* 下界锁 30 分钟而不是 5：冷却遵循「只放大、不缩短」（safety.ts::resolveCooldownMs）——
+                    低于 30 分钟对各风险码的预设保护时长没有任何效果，给这个区间只会造成
+                    「调了但看不出变化」的误解。 */}
+                <span className="sic-scope">调大可延长；不会缩短各风险码的保护下限</span>
               </div>
             </div>
 
@@ -756,7 +776,14 @@ export default function AutoChat() {
               但「24 小时无睡眠」「连续上百次投递不中断」这类作息异常骗不过时间序列分析。
               详见 activityWindow.ts。
             */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginTop: 10 }}>
+            {/*
+              自适应列宽（原来是固定 repeat(2, 1fr)）：容器约 620px 时每列只有 ~283px 可用，
+              而「批次休息」一行有 8 个控件（开关 + 4 个数字 + 3 个单位）约需 334px
+              → 右侧内容被裁掉（用户截图里「个休息」之后的区间整段消失）。
+              改用 auto-fit + 340px 下限：窄容器自动退化为单列（每项整宽），宽容器才并排两列。
+              `.sic-input-wrap` 同时放开 flex-wrap 兜底，避免将来再加控件时重现同类裁切。
+            */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 10, marginTop: 10 }}>
               <div className="stat-input-card">
                 <span className="sic-label">
                   <ClockCircleOutlined className="sic-icon" />

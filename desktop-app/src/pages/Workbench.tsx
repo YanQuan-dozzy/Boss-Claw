@@ -44,7 +44,7 @@ import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearch
 import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
   ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
-  cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS,
+  cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS, resolveCooldownMs,
 } from '@/lib/bossclaw/safety';
 // 活跃时段 / 批次休息（**唯一权威**，详见模块头注释）：
 // 操作时间戳是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」「连续上百次不中断」
@@ -1058,7 +1058,9 @@ export default function Workbench() {
     const signal = classifyRiskCode(code);
     const msg = String(rawMessage || signal?.message || '检测到平台风控信号');
     const severity = signal?.severity || 'challenge';
-    const cooldownMs = signal?.cooldownMs ?? SAFETY_LIMITS.DEFAULT_COOLDOWN_MS;
+    // 唯一权威解析：按「设置页的风控冷却（autoCooldownMinutes）」× 风险级别比例，
+    // 并受该级别绝对下限约束（详见 safety.ts::resolveCooldownMs）。
+    const cooldownMs = resolveCooldownMs(useSettingsStore.getState().config, signal);
     if (activeId) {
       updatePending(activeId, { status: 'failed', error: msg, retryable: signal?.retryable === true, riskBlocked: severity === 'banned' });
     }
@@ -1706,7 +1708,7 @@ export default function Workbench() {
           if (collectFaultScope(lastCode) === 'queue') queueAborted = true;
           if (isCamoufoxStopCode(lastCode)) {
             addLog('error', `隐身采集命中风控码 ${lastCode}：${result.message || ''}。立即停止并进入冷却，请人工处理。`);
-            useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+            useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(lastCode)) });
             markCollectRun(runId, baseRun, {
               status: 'failed', stage: 'failed', stageLabel: `风控码 ${lastCode}`, error: errMsg,
               progress: Math.round(((qi + 1) / queue.length) * 100),
@@ -2040,7 +2042,7 @@ export default function Workbench() {
       if (isCamoufoxStopCode(code)) {
         updatePending(candidate.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
         addLog('error', `Camoufox 投递命中风控码 ${code}：${msg}。立即暂停并进入冷却，请人工处理，切勿重复重试。`);
-        useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + SAFETY_LIMITS.DEFAULT_COOLDOWN_MS });
+        useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
         setApplyStage(null);
         recomputeStats();
         pauseAssist(`${msg}。已强制暂停并进入冷却，请人工核对处理。`);

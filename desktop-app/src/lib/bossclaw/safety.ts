@@ -227,3 +227,56 @@ export function cooldownRemaining(config: AppConfig, now = Date.now()): number {
 export function isLockedOut(config: AppConfig, now = Date.now()): boolean {
   return cooldownRemaining(config, now) > 0;
 }
+
+/**
+ * 基础风控冷却时长（毫秒）—— 唯一权威。
+ *
+ * 背景（2026-10-03 修复）：设置页「风控冷却」的输入框绑的是 `config.autoCooldownMinutes`，
+ * 但**全仓从未读取过该字段**，冷却恒为 `SAFETY_LIMITS.DEFAULT_COOLDOWN_MS`（30 分钟）——
+ * 也就是说这个设置改了没有任何效果。本函数把它接上真线。
+ *
+ * 硬下限 5 分钟：冷却期是**保护性**的，不允许被调到接近关闭（用户把它设成 0/1 会让账号
+ * 在命中风控后立刻继续作业，正是最危险的行为）。上限 720 分钟（12 小时）。
+ */
+export function baseCooldownMs(config: Pick<AppConfig, 'autoCooldownMinutes'> | null | undefined): number {
+  const raw = Number(config?.autoCooldownMinutes);
+  const minutes = Number.isFinite(raw) && raw > 0 ? raw : SAFETY_LIMITS.DEFAULT_COOLDOWN_MS / 60_000;
+  return Math.min(720, Math.max(5, minutes)) * 60_000;
+}
+
+/**
+ * 解析一次风控命中的**实际冷却时长**（毫秒）—— 唯一权威，所有冷却写入点都必须走它。
+ *
+ * 语义（**只放大、不缩短**）：
+ *   · 无风险信号（未知码）→ 用基础冷却 `baseCooldownMs`；
+ *   · 预设 `cooldownMs` 为 0（如未登录）→ 不进入冷却，保持原语义；
+ *   · 其余：`max(预设, 预设 × 基础冷却 / 默认冷却)`。
+ *     即基础冷却 ≤ 30 分钟时结果恒等于原始预设；> 30 分钟时按比例延长。
+ *
+ * 为什么不做「往下缩」：每个码的预设值都是按封号升级链路
+ * （限速 1006 → 滑块 35 → 账户异常 36 → 封禁 32）标定的保护性时长，
+ * 允许用户把它们调短，等于把「限速」推向「封禁」—— 这正是本软件的防御目标。
+ * UI 侧相应把可调下限设为 30 分钟，避免出现「调了但看不出效果」的区间。
+ *
+ * 关键性质（回归脚本 scripts/cooldown-regression.mjs 守住）：
+ *   1) `autoCooldownMinutes` = 30（默认）时，返回值与修复前**逐位一致**
+ *      （32→120 分、36→60 分、35/37/38→30 分、1006/5002-5004→10 分、31→0）；
+ *   2) 对基础冷却单调不减；
+ *   3) 结果永不短于该码的原始预设。
+ *
+ * ⚠️ 曾有过的错误实现：按 severity 设「绝对下限表」。它会因为
+ * `CODE_MAP` 里同一 severity 混着两种紧迫度（`env` 同时含 37/38 的 30 分 与
+ * 5002-5004 的 10 分）而把 10 分钟**拉长**到 30 分钟 —— 属于「顺手改变了既有安全行为」，
+ * 被回归脚本第 B 组当场拦住。**不要再用 severity 下限表。**
+ */
+export function resolveCooldownMs(
+  config: Pick<AppConfig, 'autoCooldownMinutes'> | null | undefined,
+  signal: RiskSignal | null | undefined,
+): number {
+  const base = baseCooldownMs(config);
+  if (!signal) return base;
+  const preset = Number(signal.cooldownMs) || 0;
+  if (!preset) return 0;
+  const scaled = (preset / SAFETY_LIMITS.DEFAULT_COOLDOWN_MS) * base;
+  return Math.round(Math.max(preset, scaled));
+}

@@ -5233,7 +5233,29 @@ html[data-theme='dark'] .skill-chip-gap:hover {
 .stat-input-card .sic-input-wrap {
   display: flex;
   align-items: center;
+  /* 允许换行：多控件行（如「批次休息」有开关 + 4 个数字 + 3 个单位）在窄列里
+     原来会被 nowrap 裁掉右侧内容（用户可见「个休息」后面的区间直接消失）。
+     换行只影响多控件行；单控件行（输入框 + 单位）不会触发。 */
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+/* 「生效范围」说明：它不是临时提示而是**字段级语义**，必须常驻
+   （否则用户无法判断该设置管不管自动沟通/工作台），故不走顶部 notification。
+   选择器写成 `.sic-scope`（不限祖先）以便同一个类同时用于：卡片内部的小字说明、
+   以及卡片顶部的整卡生效范围横幅（后者不在 .stat-input-card 内）。 */
+.sic-scope {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-subtle);
+}
+.sic-scope .anticon {
+  font-size: 12px;
+  color: var(--brand);
 }
 .stat-input-card .sic-unit {
   font-size: 12px;
