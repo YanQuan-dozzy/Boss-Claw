@@ -35,14 +35,15 @@
 //   - 目标样本的 Sec-CH-UA **不含 Google Chrome 品牌**（仅 grease + Chromium）。
 //     早先版本凭推断补 Google Chrome 是错的 —— 该样本才是平台接受的形态。
 //
-// ⚠️ 已知取舍：目标样本 Chrome 主版本为 146，而本应用 Electron 31 的内核是 Chromium 126。
-//   对齐版本号 = 声明值与这台已验证可用的浏览器一致；代价是「声明版本 vs 内核真实特性集合」
-//   存在可被高级检测的差异。要去根只有升级 Electron（详见 docs 报告 §13）。
+// ⚠️ **升级内核时必须同步下面两个字段**（uaChromeVersion / brands）：
+//   它们必须等于**当前内核的真实形态**，否则就是"伪造版本"，会与原生 navigator.userAgentData 矛盾。
+//   实测参考：Electron 31 = Chromium 126 → grease `Not/A)Brand/8`；Electron 42 = Chromium 148 → `Not/A)Brand/99`。
+//   grease 品牌名与版本号**随 Chromium 主版本轮换**，不能跨版本复用；resolveProfile() 会在启动时自检并告警。
 const DEFAULT_PROFILE = {
-  uaChromeVersion: '146.0.0.0',
+  uaChromeVersion: '148.0.7778.280',   // = Electron 42 内核（Chromium 148）
   brands: [
-    { brand: 'Not-A.Brand', version: '24', full: '24.0.0.0' },
-    { brand: 'Chromium', version: '146', full: '146.0.0.0' },
+    { brand: 'Not/A)Brand', version: '99', full: '99.0.0.0' },          // grease，随主版本轮换
+    { brand: 'Chromium', version: '148', full: '148.0.7778.280' },
   ],
   secChUaMobile: '?0',
   secChUaPlatform: '"Windows"',
@@ -64,6 +65,20 @@ function resolveProfile() {
   if (process.env.BOSSCLAW_PROFILE_JSON) {
     try { Object.assign(p, JSON.parse(process.env.BOSSCLAW_PROFILE_JSON)); } catch (e) { /* 忽略非法 JSON */ }
   }
+  // 自检：profile 版本必须与内核一致，否则即"伪造版本"（见文件头注释）。
+  // 升级内核后若忘了同步 TARGET_PROFILE，这里立刻告警，避免 UA/UA-CH 悄悄与内核真实值不符。
+  try {
+    const kernelVer = String(process.versions.chrome || '');
+    const profileVer = String(p.uaChromeVersion || '');
+    if (kernelVer && profileVer) {
+      const km = kernelVer.split('.').slice(0, 2).join('.');
+      const pm = profileVer.split('.').slice(0, 2).join('.');
+      if (km !== pm) {
+        console.warn('[stealth] PROFILE-VERSION-MISMATCH profile=' + profileVer + ' kernel=' + kernelVer +
+          ' —— 升级内核后未同步 TARGET_PROFILE.uaChromeVersion / brands，UA 与 UA-CH 将与内核真实值不一致');
+      }
+    }
+  } catch (e) { /* 自检失败不影响主流程 */ }
   return p;
 }
 
@@ -108,7 +123,12 @@ const PATCH_KEYS = [
 //   对应 navigator.languages 应为 ['zh-CN','zh']，而 Electron 实测为 ['zh-CN','zh-Hans-CN']
 //   —— 有对照依据，故启用（默认值取 TARGET_PROFILE.languages）。
 // 教训：静态推断的 3 项高风险里有 2 项实测证伪；「等对照再改」比「先改了再说」安全得多。
-const DEFAULT_OFF = ['webdriver', 'plugins'];
+//
+// uaCh 于 2026-10-03（升级 Electron 42）移入本列表：profile 与内核版本对齐后，
+//   navigator.userAgentData 的**原生值就是正确值**，无需再改写 —— 少一层注入即少一层自曝风险。
+//   仅当 profile 与内核不一致（未来升级内核后忘了同步）才需要它，
+//   届时可用 BOSSCLAW_STEALTH=only=uaCh,toStringGuard 临时打开。
+const DEFAULT_OFF = ['webdriver', 'plugins', 'uaCh'];
 
 const STEALTH_VERSION = 1;
 const STEALTH_MARK = '__bossclawStealth';

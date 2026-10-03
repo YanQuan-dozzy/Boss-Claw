@@ -47,6 +47,23 @@ function safeStringify(obj) {
   try { return JSON.stringify(obj); } catch { return String(obj); }
 }
 
+/**
+ * 兼容解析 webContents 的 console-message 事件参数。
+ *
+ * - Electron 31 及以前：(event, level, message, line, sourceId)
+ * - Electron 42 起：首参已变为携带字段的对象 { frame, level, message, lineNumber, sourceId, _level }，
+ *   同时仍会传入位置参数（实测 argCount=5）。旧的 (level, message) 取法在 42 下碰巧仍可用，
+ *   但官方已标注 "arguments are deprecated and will be removed"，故此处统一收敛，避免将来断裂。
+ *
+ * 返回 { level, message, line, sourceId }。
+ */
+function parseConsoleMessage(a, b, c, d, e) {
+  if (a && typeof a === 'object' && typeof a.message === 'string') {
+    return { level: a.level, message: a.message, line: a.lineNumber, sourceId: a.sourceId || '' };
+  }
+  return { level: b, message: c, line: d, sourceId: e || '' };
+}
+
 // ===== 全局异常兜底：避免单点崩溃让主进程整体退出 =====
 process.on('uncaughtException', (err) => {
   dlog('error', 'uncaughtException', { message: err?.message, stack: err?.stack });
@@ -805,7 +822,7 @@ async function createMainWindow() {
       catch { diagPath = path.join(__dirname, '..', 'debug-render.log'); }
       const diagLog = (m) => { try { fs.appendFileSync(diagPath, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
       diagLog('createMainWindow: isDev=' + isDev + ' target=' + (isDev ? '(dev url resolved)' : 'dist/index.html'));
-      mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => { diagLog('CONSOLE level=' + level + ' msg=' + message + ' @' + (sourceId || '') + ':' + line); });
+      mainWindow.webContents.on('console-message', (...args) => { const m = parseConsoleMessage(...args); diagLog('CONSOLE level=' + m.level + ' msg=' + m.message + ' @' + (m.sourceId || '') + ':' + m.line); });
       mainWindow.webContents.on('did-fail-load', (ev, errorCode, errorDescription, validatedURL) => { diagLog('FAIL-LOAD code=' + errorCode + ' desc=' + errorDescription + ' url=' + validatedURL); });
       mainWindow.webContents.on('crashed', () => diagLog('WEBVIEW CRASHED'));
       mainWindow.webContents.on('did-finish-load', () => {
@@ -1185,10 +1202,11 @@ async function createMainWindow() {
     //   （真机实测 584/584 全为误报，同期 preload-error 为 0，preload 自报标记正常）。
     // 权威信号 = preload 顶层输出的 `BOSS-CLAW-PRELOAD-INJECTED` console 标记（本 guest 捕获）。
     let preloadSeen = false;
-    wc.on('console-message', (_ev, level, msg) => {
-      const m = String(msg || '');
+    wc.on('console-message', (...args) => {
+      const cm = parseConsoleMessage(...args);
+      const m = String(cm.message || '');
       if (m.includes('BOSS-CLAW-PRELOAD-INJECTED')) preloadSeen = true;
-      if (/preload|uncaught|referenceerror|typeerror|is not|BOSS-CLAW/i.test(m)) webviewDiag('CONSOLE[' + level + '] ' + m.slice(0, 300));
+      if (/preload|uncaught|referenceerror|typeerror|is not|BOSS-CLAW/i.test(m)) webviewDiag('CONSOLE[' + cm.level + '] ' + m.slice(0, 300));
     });
     wc.on('dom-ready', async () => {
       webviewDiag('DOM-READY url=' + (wc.getURL?.() || ''));
@@ -1969,9 +1987,22 @@ app.whenReady().then(async () => {
     // session.setPreloads 是官方机制，对 persist:bossclaw 会话内每个页面（含 webview guest）注入 preload。
     // webview.cjs 内部有防重复注入保护（window.__bossclawWebviewPreload），双路径同时生效也不会重复注册。
     const preloadPath = path.join(__dirname, 'preload', 'webview.cjs');
-    bossclawSession.setPreloads([preloadPath]);
-    const applied = (typeof bossclawSession.getPreloads === 'function') ? JSON.stringify(bossclawSession.getPreloads()) : 'n/a';
-    console.log('SET-PRELOADS preload=' + preloadPath + ' applied=' + applied);
+    // Electron 42 起 setPreloads / getPreloads 已弃用（官方标注 "will be removed"），
+    // 替代品为 registerPreloadScript（参数 { type, id?, filePath }，filePath 须绝对路径，返回 script id）。
+    // 这里做双版本兼容：新 API 存在则优先用，否则回落旧 API —— 便于在升级分支与 main 之间来回切换。
+    try {
+      if (typeof bossclawSession.registerPreloadScript === 'function') {
+        const preloadId = bossclawSession.registerPreloadScript({ type: 'frame', id: 'bossclaw-webview-preload', filePath: preloadPath });
+        const applied = (typeof bossclawSession.getPreloadScripts === 'function') ? JSON.stringify(bossclawSession.getPreloadScripts()) : 'n/a';
+        console.log('REGISTER-PRELOAD-SCRIPT id=' + preloadId + ' file=' + preloadPath + ' applied=' + applied);
+      } else {
+        bossclawSession.setPreloads([preloadPath]);
+        const applied = (typeof bossclawSession.getPreloads === 'function') ? JSON.stringify(bossclawSession.getPreloads()) : 'n/a';
+        console.log('SET-PRELOADS preload=' + preloadPath + ' applied=' + applied);
+      }
+    } catch (e) {
+      dlog('error', 'preload 注册失败', { message: e?.message });
+    }
 
     // ===== 目标浏览器画像：UA + 请求头 + JS 层三处同源（唯一权威 = stealth.cjs）=====
     // 画像来源 = 用户抓包得到的「真机浏览器 → www.zhipin.com」请求头样本（2026-10-03）。
