@@ -471,7 +471,7 @@ export default function Home() {
             strokeColor={{ from: '#14B8A6', to: '#0D9488' }}
           />
           <Text type="secondary" style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
-            建议分时段投递（早 / 午 / 晚），避免触发平台风控。
+            已按真人作息分时段投递（默认 8:00–23:00 带每日抖动），非活跃时段自动暂停 —— 可在「自动沟通 → 防封号节奏」调整或关闭。
           </Text>
         </div>
       </div>

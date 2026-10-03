@@ -20,6 +20,7 @@ import {
   UsergroupAddOutlined, FieldTimeOutlined,
   ThunderboltOutlined, HourglassOutlined, PlusOutlined, CodeOutlined,
   RobotOutlined, SyncOutlined,
+  ClockCircleOutlined, CoffeeOutlined,
 } from '@ant-design/icons';
 import { ChevronDown } from '@/components/ChevronDown';
 import GreetingEditor from '@/components/GreetingEditor';
@@ -36,6 +37,8 @@ import { electronApi } from '@/lib/electronApi';
 import {
   isLockedOut, cooldownRemaining,
 } from '@/lib/bossclaw/safety';
+// 活跃时段 / 批次休息默认值（唯一权威在 activityWindow.ts；此处仅作 UI 兜底，避免 `??` 处写字面量）
+import { DEFAULT_ACTIVE_HOURS, DEFAULT_BATCH_REST } from '@/lib/bossclaw/activityWindow';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { cleanTitle, cleanSalary, formatMetaLine } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
@@ -741,6 +744,88 @@ export default function AutoChat() {
                     value={config.autoCooldownMinutes}
                     onChange={(v) => setConfig({ autoCooldownMinutes: v ?? 30 })}
                     style={{ width: '100%' }}
+                  />
+                  <span className="sic-unit">分钟</span>
+                </div>
+              </div>
+            </div>
+
+            {/*
+              作息与批次休息。
+              为什么值得单独一栏：操作时间戳是**服务端可见的账号级长期统计** —— 指纹可以伪装，
+              但「24 小时无睡眠」「连续上百次投递不中断」这类作息异常骗不过时间序列分析。
+              详见 activityWindow.ts。
+            */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginTop: 10 }}>
+              <div className="stat-input-card">
+                <span className="sic-label">
+                  <ClockCircleOutlined className="sic-icon" />
+                  活跃时段
+                </span>
+                <div className="sic-input-wrap" style={{ gap: 6 }}>
+                  <Switch
+                    size="small"
+                    checked={config.activeHours?.enabled !== false}
+                    onChange={(v) => setConfig({ activeHours: { ...(config.activeHours ?? DEFAULT_ACTIVE_HOURS), enabled: v } })}
+                  />
+                  <InputNumber
+                    min={0}
+                    max={23}
+                    style={{ width: 62 }}
+                    disabled={config.activeHours?.enabled === false}
+                    value={config.activeHours?.startHour ?? DEFAULT_ACTIVE_HOURS.startHour}
+                    onChange={(v) => setConfig({ activeHours: { ...(config.activeHours ?? DEFAULT_ACTIVE_HOURS), startHour: v ?? DEFAULT_ACTIVE_HOURS.startHour } })}
+                  />
+                  <span className="sic-unit">至</span>
+                  <InputNumber
+                    min={0}
+                    max={23}
+                    style={{ width: 62 }}
+                    disabled={config.activeHours?.enabled === false}
+                    value={config.activeHours?.endHour ?? DEFAULT_ACTIVE_HOURS.endHour}
+                    onChange={(v) => setConfig({ activeHours: { ...(config.activeHours ?? DEFAULT_ACTIVE_HOURS), endHour: v ?? DEFAULT_ACTIVE_HOURS.endHour } })}
+                  />
+                  <span className="sic-unit">点</span>
+                </div>
+              </div>
+
+              <div className="stat-input-card">
+                <span className="sic-label">
+                  <CoffeeOutlined className="sic-icon" />
+                  批次休息
+                </span>
+                <div className="sic-input-wrap" style={{ gap: 6 }}>
+                  <Switch
+                    size="small"
+                    checked={config.batchRest?.enabled !== false}
+                    onChange={(v) => setConfig({ batchRest: { ...(config.batchRest ?? DEFAULT_BATCH_REST), enabled: v } })}
+                  />
+                  <span className="sic-unit">每</span>
+                  <InputNumber
+                    min={3}
+                    max={200}
+                    style={{ width: 62 }}
+                    disabled={config.batchRest?.enabled === false}
+                    value={config.batchRest?.everyNJobs ?? DEFAULT_BATCH_REST.everyNJobs}
+                    onChange={(v) => setConfig({ batchRest: { ...(config.batchRest ?? DEFAULT_BATCH_REST), everyNJobs: v ?? DEFAULT_BATCH_REST.everyNJobs } })}
+                  />
+                  <span className="sic-unit">个休息</span>
+                  <InputNumber
+                    min={1}
+                    max={60}
+                    style={{ width: 62 }}
+                    disabled={config.batchRest?.enabled === false}
+                    value={config.batchRest?.minMinutes ?? DEFAULT_BATCH_REST.minMinutes}
+                    onChange={(v) => setConfig({ batchRest: { ...(config.batchRest ?? DEFAULT_BATCH_REST), minMinutes: v ?? DEFAULT_BATCH_REST.minMinutes } })}
+                  />
+                  <span className="sic-unit">–</span>
+                  <InputNumber
+                    min={1}
+                    max={60}
+                    style={{ width: 62 }}
+                    disabled={config.batchRest?.enabled === false}
+                    value={config.batchRest?.maxMinutes ?? DEFAULT_BATCH_REST.maxMinutes}
+                    onChange={(v) => setConfig({ batchRest: { ...(config.batchRest ?? DEFAULT_BATCH_REST), maxMinutes: v ?? DEFAULT_BATCH_REST.maxMinutes } })}
                   />
                   <span className="sic-unit">分钟</span>
                 </div>

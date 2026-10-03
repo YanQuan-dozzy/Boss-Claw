@@ -4,6 +4,8 @@
 // 岗位适配档位（类型定义在 fitLevel.ts，与档位→分数/决策的映射放在一起，便于离线回归测试）。
 // 这里只做 type-only 引用，编译期擦除，不构成运行时循环依赖。
 import type { FitLevel } from './fitLevel';
+// 活跃时段 / 批次休息配置（实现与默认值在 activityWindow.ts —— 纯函数模块，无运行时循环依赖）
+import type { ActiveHoursConfig, BatchRestConfig } from './activityWindow';
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -69,6 +71,14 @@ export interface AppConfig {
   sendResumeImage: boolean;
   sendOnlineResume: boolean;
   betweenJobsSeconds: number;
+  /**
+   * 活跃时段（模拟真人作息）：时段外**自动暂停投递**。
+   * 服务端的操作时间戳统计是账号维度的长期特征，**无法靠指纹补丁掩盖** —— 详见 activityWindow.ts。
+   * 默认 8:00–23:00，每日边界带 ±25 分钟抖动（按日期确定性生成，同日多次判断结果一致）。
+   */
+  activeHours: ActiveHoursConfig;
+  /** 批次休息：连续投递 N 个岗位后长休息一次（避免「连续上百次不中断」这种机器特征） */
+  batchRest: BatchRestConfig;
   attachmentDelaySeconds: number;
   /** 沟通阶段卡住超时（秒）：投递进入「沟通」阶段（打开岗位/打开沟通窗口/核对 HR 与岗位）超过该时长且无进展时，跳过当前岗位转投下一个 */
   commStuckTimeoutSec: number;

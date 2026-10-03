@@ -44,6 +44,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   sendResumeImage: true,
   sendOnlineResume: false,
   betweenJobsSeconds: 20,
+  // 活跃时段（模拟真人作息）：时段外自动暂停投递。
+  // 依据：操作时间戳分布是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」；
+  // 且「每天精确同一分钟开始/结束」本身也是机器特征，故默认带每日 ±25 分钟确定性抖动。
+  activeHours: { enabled: true, startHour: 8, endHour: 23, jitterMinutes: 25 },
+  // 批次休息：连续投递 15 个后长休息 8–15 分钟（真人不会连续上百次不中断）。
+  batchRest: { enabled: true, everyNJobs: 15, minMinutes: 8, maxMinutes: 15 },
   attachmentDelaySeconds: 4,
   // 沟通阶段卡住超时（秒）：默认 60s（1 分钟，09-16 由 180s 收紧）。
   // 投递常「立即沟通/继续沟通」整页跳转聊天页，聊天窗口渲染慢时留给它时间；

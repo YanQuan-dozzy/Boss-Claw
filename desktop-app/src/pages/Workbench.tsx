@@ -46,6 +46,9 @@ import {
   ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
   cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS,
 } from '@/lib/bossclaw/safety';
+// 活跃时段 / 批次休息（**唯一权威**，详见模块头注释）：
+// 操作时间戳是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」「连续上百次不中断」
+import { isWithinActiveWindow, nextActiveStartMs, formatActiveWindow, batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
 import { resolveCityCode, loadBossCityCodes } from '@/lib/bossclaw/searchUrl';
 import { camoufoxSearch, camoufoxSend, camoufoxStatus, isCamoufoxStopCode, isCamoufoxEnvCode, type CamoufoxJob } from '@/lib/bossclaw/camoufox';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
@@ -378,6 +381,8 @@ export default function Workbench() {
   // ===== 防封号：限速器 + 投递节奏 =====
   const pacerRef = useRef<ActionPacer>(new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE));
   const lastDeliveryAt = useRef(0);
+  /** 本轮连续投递计数（批次休息用）：命中 batchRest.everyNJobs 边界即长休息一次并归零 */
+  const deliveredSinceRestRef = useRef(0);
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   useEffect(() => { recomputeStats(); }, [pending, recomputeStats]);
@@ -841,6 +846,18 @@ export default function Workbench() {
       pauseAssist(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟），已暂停投递，请勿重复启动以免升级封禁`);
       return false;
     }
+    // 活跃时段检查（模拟真人作息）。放在统一预检里 → 三条投递通道（BOSS DOM / 非 BOSS DOM / Camoufox）
+    // 全部受它约束，无需各写一遍。
+    // 为什么不「等」：非活跃时段可能要等数小时，阻塞界面不可接受 —— 只能中止本轮并明确告知何时恢复。
+    if (!isWithinActiveWindow(cfg.activeHours)) {
+      const nextAt = nextActiveStartMs(cfg.activeHours);
+      pauseAssist(
+        `当前不在活跃时段（今日投递窗口 ${formatActiveWindow(cfg.activeHours)}）。` +
+        `按真人作息在非活跃时段停止投递，可显著降低「账号活动时间异常」的风控风险；` +
+        `预计 ${new Date(nextAt).toLocaleString('zh-CN')} 自动恢复（可在设置中调整或关闭该限制）`,
+      );
+      return false;
+    }
     // 工作台「一键投递」只处理 BOSS 岗位 → 上限按 BOSS 平台独立适配
     // （effectiveDailyCapFor：min(该平台每日目标, 平台侧上限, MAX_SAFE_DAILY=150)）
     const cap = effectiveDailyCapFor(cfg, 'boss');
@@ -864,6 +881,18 @@ export default function Workbench() {
    */
   const awaitDeliveryGap = async (): Promise<void> => {
     const cfg = useSettingsStore.getState().config;
+    // ===== 批次休息（真人不会连续上百次投递而不中断）=====
+    // 与「岗位间隔」是两个量级：岗位间隔是秒级抖动，批次休息是分钟级中断，后者才是打断
+    // 「连续高强度作业」曲线的关键 —— 只做秒级抖动的账号，其 24h 活动曲线上仍是一条直线。
+    deliveredSinceRestRef.current += 1;
+    const restMs = batchRestDelayMs(cfg.batchRest, deliveredSinceRestRef.current);
+    if (restMs > 0) {
+      const restMin = Math.round(restMs / 60000);
+      addLog('info', `已连续投递 ${deliveredSinceRestRef.current} 个岗位，按防封号策略休息约 ${restMin} 分钟（模拟真人作业中断，降低风控风险）`);
+      await sleep(restMs);
+      deliveredSinceRestRef.current = 0;
+      addLog('info', '批次休息结束，继续投递');
+    }
     await pacerRef.current.waitForSlot();
     const baseSec = Math.max(Number(cfg.betweenJobsSeconds) || SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
     const gapMs = humanDelayMs(baseSec * 1000, 0.35);
