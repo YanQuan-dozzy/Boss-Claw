@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.5**（2026-09-22 发布，Windows）。`main` 已包含 v2.5.5 之后**尚未打包**的新功能（猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、投递漏斗、旧版 `.doc` 解析等），功能表按当前实现标注。
+> **版本口径**：本文以 `main` 分支当前实现为准；**当前代码版本为 v2.5.6**（2026-10-03，尚未打包发布）；**最新正式安装包为 v2.5.5**（2026-09-22 发布，Windows）。`main` 已包含 v2.5.6 的全部改动（内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析等），功能表按当前实现标注。
 
 ## 下载安装
 
@@ -184,7 +184,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.5）
+├── desktop-app/               当前主应用（Electron + React，v2.5.6）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs + preload/（app / webview / platform-adapters）
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 7 项）· React 渲染进程（store / components / pages / lib）
@@ -218,7 +218,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 反馈与联系
 
-遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.5.5）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
+遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.5.6）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
 
 ## 开源许可与署名
 

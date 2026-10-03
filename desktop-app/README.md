@@ -323,7 +323,10 @@ release/
 
 ## 变更记录
 
-* **`main`（v2.5.5 之后，尚未打包发布）** — 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听：
+* **v2.5.6（2026-10-03，尚未打包发布）** — 内置浏览器反检测增强 + 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听：
+  * **内置浏览器「主世界」反检测补丁**（新增 `electron/preload/stealth.cjs`）：`<webview>` 的 preload 与 `session.setPreloads` 均运行在**隔离世界**，改不了主世界 `navigator` —— 故补丁以源码字符串导出，由主进程 `executeJavaScript` 注入**主世界**（`did-start-loading` + `dom-ready` 双时机、内建幂等守卫）。补丁项 `uaCh` / `languages` / `notification` / `chromeObject` / `toStringGuard` 可用环境变量 `BOSSCLAW_STEALTH`（`off` / `only=a,b` / `skip=a,b`）单项开关；`webdriver` / `plugins` 经实测原生即正常，默认不改（盲改反会引入新破绽）。内置 11 类指纹自检探针 + 不变量断言（改补丁后必跑，防「修一个洞、开两个洞」）。
+  * **请求头层与真机画像对齐**：一份 `TARGET_PROFILE` 同时驱动 `setUserAgent` / `webRequest.onBeforeSendHeaders` / 主世界补丁三处（**禁止各写一份**，否则产生「JS 说一套、请求头说另一套」的新矛盾）。依据真机抓包样本对齐 `Sec-CH-UA` / `Sec-CH-UA-Mobile` / `Sec-CH-UA-Platform` / `Accept-Language` / UA —— 实测原生导航请求**完全不发送 `Sec-CH-UA` 系列头**，而 JS 层 `navigator.userAgentData` 却存在，属服务端直接可见的自相矛盾，现已补齐。
+  * **JD 学历解析修正**（`jobMatch.ts`）：「本科及以上」不再被升档成「要求硕士」，「X 优先」等语气词不计入要求，薪酬福利句不再被误采信；`score-regression.mjs` 扩至 44 项。
   * **猎聘 / 前程无忧全链路补齐**：`platformUrls.ts` 新增猎聘筛选码表与 `appendLiepinCriteria`（经验 / 学历 / 规模 / 公司性质 / HR 活跃度 / 融资阶段）、前程无忧 `buildJob51SearchUrl`；`liepin.py` / `job51.py` / `filters.py` / `common.py` / `base.py` 收敛「搜索 · 投递 · 登录」三段差异声明；新增三支回归 `scripts/liepin-url-regression.mjs`（筛选码值 ↔ `filters.py` 双源同步守卫）· `liepin-jd-regression.mjs`（详情页 HTML → 字段补齐，JD 保真保留分段）· `liepin-apply-regression.mjs`（「聊一聊」`a.btn-main[data-selector="chat-chat"]` + IM 就绪信号 `#im-c-entry` 等，纠正旧错误的 `.__im_basic__*` 命名）。
   * **岗位过期判定**：新增 `jobExpiry.ts`（纯函数、零依赖、可离线回归）—— 仅当 JD **显式写出**截止日期时判定，过期即硬性排除、无信号一律放行；设置项 `excludeExpiredJobs` 默认仅猎聘开启（`PLATFORM_EXPIRY_DEFAULT`），`ingestJob` 与「加入任务」两条入口同口径拦截。
   * **AI 跟聊监听**：Camoufox 新增常驻 `/chat-watch`（单一常驻浏览器停在 BOSS 会话页；`start` / `scan` / `open` / `send` / `stop`），渲染层 `useAutoChatStore` 新增监听循环（2 分钟一轮、每轮 ≤6 会话、最小间隔 20s、批量投递让路、代际 token 防串台）；HR 明确拒绝则收口会话，回复类发送不计入单日投递上限；自动沟通页新增「AI 跟聊监听」开关与「沟通信息（AI 跟聊引用）」输入卡。
