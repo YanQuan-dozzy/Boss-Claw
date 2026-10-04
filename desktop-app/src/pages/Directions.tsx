@@ -445,7 +445,7 @@ export default function Directions() {
       ) : (
         // 子模块：方向卡片网格（开关/名称/来源/优先级，编辑与删除）
         <div className="directions-grid">
-          {sortedItems.map((it) => (
+          {sortedItems.map((it, idx) => (
             <Card
               key={it.id}
               size="small"
@@ -611,7 +611,7 @@ export default function Directions() {
                     type="text"
                     icon={<ArrowUpOutlined />}
                     onClick={() => onPriority(it.id, -1)}
-                    disabled={it.priority <= 1}
+                    disabled={idx === 0}
                     aria-label="提升优先级"
                     title="提升优先级"
                     className="direction-card__prio-btn"
@@ -621,7 +621,7 @@ export default function Directions() {
                     type="text"
                     icon={<ArrowDownOutlined />}
                     onClick={() => onPriority(it.id, 1)}
-                    disabled={it.priority >= sortedItems.length}
+                    disabled={idx === sortedItems.length - 1}
                     aria-label="降低优先级"
                     title="降低优先级"
                     className="direction-card__prio-btn"

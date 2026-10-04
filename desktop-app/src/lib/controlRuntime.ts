@@ -62,8 +62,10 @@ interface ControlResult {
   [key: string]: unknown;
 }
 
-/** 禁止通过 patchConfig 直接改写的字段（走专用动作或会破坏安全语义） */
-const CONFIG_DENY = new Set(['model', 'pausedUntil', 'platforms']);
+/** 禁止通过 patchConfig 直接改写的字段（走专用动作或会破坏安全语义）。
+ *  `executionMode` 列入的原因：`deliverySendNow` 以「用户已开启全自动」为护栏判据，
+ *  任何能改写该字段的控制桥动作都会使护栏被自证绕过（见审查 #21）。 */
+const CONFIG_DENY = new Set(['model', 'pausedUntil', 'platforms', 'executionMode']);
 
 /** agent 代答长轮询上限：agent 一次调用最多等这么久（避免客户端工具超时） */
 const AGENT_TASKS_MAX_WAIT_MS = 55_000;
@@ -482,12 +484,18 @@ const handlers: Record<string, Handler> = {
   },
 
   // ---- 投递（半自动 / 全自动，跟随 executionMode）----
-  deliverySetMode: ({ mode }) => {
-    if (mode !== 'auto' && mode !== 'review') return { applied: false, message: 'mode 必须是 auto 或 review' };
-    const prev = useSettingsStore.getState().config.executionMode;
-    useSettingsStore.getState().setConfig({ executionMode: mode } as never);
-    return { applied: true, message: `投递模式已切换为 ${mode === 'auto' ? '全自动' : '人工确认(半自动)'}`, previous: prev, next: mode };
-  },
+  deliverySetMode: ({ mode }) => ({
+    // 安全护栏：执行模式**不允许经控制桥切换**（动作保留仅为兼容旧调用，行为已改为拒绝）。
+    // 原因：`deliverySendNow` 用 `executionMode === 'auto'` 判定「用户已开启全自动」；
+    // 若同一白名单里还存在能改该字段的动作，护栏的开关就由被护栏约束的一方自己掌握
+    // —— agent 可先 deliverySetMode(auto) 再 deliverySendNow，护栏被自证绕过（见审查 #21）。
+    // 该字段已列入 CONFIG_DENY，只能由用户在应用设置页手动切换。
+    applied: false,
+    message:
+      `执行模式（全自动/人工确认）不允许经控制桥切换（收到 ${String(mode)}）；` +
+      '该字段受保护，请在应用「设置页」手动切换。半自动场景请用 deliveryDraft 预填后由用户发送。',
+    previous: useSettingsStore.getState().config.executionMode,
+  }),
   deliveryDraft: async ({ greeting }) => {
     const g = String(greeting ?? '');
     if (!g.trim()) return { applied: false, message: '缺少招呼语 greeting' };

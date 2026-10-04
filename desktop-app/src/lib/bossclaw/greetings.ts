@@ -9,8 +9,8 @@ import { prepareContextText } from './oversizedContext';
 
 /** 打招呼语目标字数（字符数，含标点）：生成目标约 150 字。 */
 export const GREETING_TARGET_CHARS = 150;
-/** 打招呼语硬上限（字符数，含标点）：不得超过 200 字。 */
-export const GREETING_MAX_CHARS = 200;
+/** 打招呼语硬上限（字符数，含标点）：不得超过 250 字（2026-10-04 用户拍板口径）。 */
+export const GREETING_MAX_CHARS = 250;
 /** 打招呼语合格下限（字符数）：低于此值信息量不足，触发再生成。 */
 export const GREETING_MIN_CHARS = 120;
 /** 打招呼语「长度不符合 → 再生成」的最大重试次数（到达后仅做最终安全兜底）。 */
@@ -18,8 +18,8 @@ export const GREETING_MAX_RETRY = 3;
 /** 归一化截断上限（比常规硬上限更紧）：用于多来源文本合并等需要更保守的场景（normalizeGreetingText）。 */
 export const GREETING_NORMALIZE_MAX_CHARS = 160;
 /**
- * 提示词统一引用口径（P6-06）：供各提示词插值，避免「提示词手写 250 与校验 200 互相拆台」——
- * AI 按提示词写 210~250 字是合规的，但 isGreetingLengthOk 判不合规 → 触发再生成 → 截断。
+ * 提示词统一引用口径（P6-06）：供各提示词插值，避免「提示词写的字数与校验字数互相拆台」。
+ * 统一口径 = 全文 120-250 字（建议约 150 字）；上限 250 为硬上限（2026-10-04 用户拍板，此前被误收敛为 200）。
  * 需要同步的位置：prompts.ts / skills.ts / jobAssistant.ts / 5 个 SKILL.md。
  */
 export const GREETING_LENGTH_RULE = `全文 ${GREETING_MIN_CHARS}-${GREETING_MAX_CHARS} 字（含标点，建议约 ${GREETING_TARGET_CHARS} 字），单行不换行`;

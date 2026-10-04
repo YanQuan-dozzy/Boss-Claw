@@ -146,6 +146,16 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
   }
 }
 
+/**
+ * 作废脏检查基线：令下一次备份心跳强制全量核对。
+ * 用于**绕过 persistSafe 写哨兵直写 localStorage** 的场景（如导入数据）——否则备份快路径会因
+ * 「自上次备份后写哨兵未变化」而跳过这次变更，导入的数据最长要等 FULL_CHECK_EVERY 次心跳才入备份。
+ */
+export function invalidateLocalBackupBaseline(): void {
+  baselineEpochs = null;
+  skipChecks = 0;
+}
+
 /** 删除本地备份文件（配合「清空全部数据」） */
 export async function clearLocalBackup(): Promise<boolean> {
   lastBackupJson = null;

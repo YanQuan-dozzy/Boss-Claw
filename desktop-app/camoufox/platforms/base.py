@@ -331,7 +331,12 @@ class CollectorBase:
                 return self._fail(31, f'未登录{self.label}，请先扫码登录', page)
 
             if url and self.detail_markers and any(m in url for m in self.detail_markers):
-                page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                try:
+                    page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                except Exception as e:
+                    # 导航失败不再让异常逃逸（原先会跳过 cookie 落盘与 _fail，HTTP 层只回 500）：
+                    # 按既有「页面加载失败」口径返回 37（环境/页面异常），由 _fail 统一落 cookie。
+                    return self._fail(37, f'详情页加载失败：{str(e)[:60]}', page)
                 human_sleep(DETAIL_SETTLE_SECONDS, 0.35, 2.0)
             risk = risk_text_hit(page)
             if risk:

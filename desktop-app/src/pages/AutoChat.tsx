@@ -35,7 +35,7 @@ import {
 } from '@/lib/bossclaw/camoufox';
 import { electronApi } from '@/lib/electronApi';
 import {
-  isLockedOut, cooldownRemaining,
+  isLockedOut, cooldownRemaining, SAFETY_LIMITS,
 } from '@/lib/bossclaw/safety';
 // 活跃时段 / 批次休息默认值（唯一权威在 activityWindow.ts；此处仅作 UI 兜底，避免 `??` 处写字面量）
 import { DEFAULT_ACTIVE_HOURS, DEFAULT_BATCH_REST } from '@/lib/bossclaw/activityWindow';
@@ -739,9 +739,9 @@ export default function AutoChat() {
                 <div className="sic-input-wrap">
                   <InputNumber
                     min={1}
-                    max={15}
+                    max={SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE}
                     value={config.maxActionsPerMinute}
-                    onChange={(v) => setConfig({ maxActionsPerMinute: v ?? 6 })}
+                    onChange={(v) => setConfig({ maxActionsPerMinute: Math.min(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE, Math.max(1, v ?? 6)) })}
                     style={{ width: '100%' }}
                   />
                   <span className="sic-unit">次/分</span>

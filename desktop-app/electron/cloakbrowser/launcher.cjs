@@ -185,6 +185,13 @@ async function stop() {
 
 // ===== Page 管理 =====
 // tabId 是渲染层分配的稳定 ID，BrowserView 的 tabId 即 pageId；Playwright Page 由 launcher 内部映射，保证 tabId == pageId 一一对应
+/** 同 tabId 并发创建去重（见审查 #78）：`state.pages.has()` 与 `state.pages.set()` 之间隔着
+ *  `await state.context.newPage()`，并发调用会各自建出一个真实窗口 —— 后到者覆盖映射，
+ *  先建者成孤儿；且孤儿的 `close` 监听会 `state.pages.delete(tabId)` 误删存活页的映射
+ *  （表现为后续操作 "tab not found"）。 */
+const inflightNewPage = new Map();
+
+/** 创建标签页（对外入口，负责同 tabId 并发去重）。 */
 async function newPage(tabId, url) {
   if (!state.context) return { ok: false, error: 'engine not started' };
   if (!tabId) return { ok: false, error: 'tabId required' };
@@ -192,6 +199,19 @@ async function newPage(tabId, url) {
     const existing = state.pages.get(tabId);
     return { ok: true, tabId, url: existing.url, title: existing.title, reused: true };
   }
+  const inflight = inflightNewPage.get(tabId);
+  if (inflight) return inflight;
+  const task = createPage(tabId, url);
+  inflightNewPage.set(tabId, task);
+  try {
+    return await task;
+  } finally {
+    inflightNewPage.delete(tabId);
+  }
+}
+
+/** 实际创建（不做并发去重，只由 newPage 调用）。 */
+async function createPage(tabId, url) {
   try {
     const page = await state.context.newPage();
     // 通过 preInitScript / cloakPreload.cjs 以 page.addInitScript 方式注入

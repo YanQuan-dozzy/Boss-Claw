@@ -147,6 +147,41 @@ const sig = (code) => S.classifyRiskCode(code);
   ok('封禁(32) 的冷却严格长于安全验证(35)', S.resolveCooldownMs(cfg(30), sig(32)) > S.resolveCooldownMs(cfg(30), sig(35)));
 }
 
+// ===== G. 冷却写入必须是**单调合并**（mergeCooldownUntil / nextCooldownUntil）=====
+// 六处风控写入统一走 nextCooldownUntil：并发下轻码不得覆盖重码已生效的更长时间
+// （原实现是 `pausedUntil: Date.now() + resolveCooldownMs(...)` 绝对覆盖，可被砍短）。
+{
+  const NOW = 1_700_000_000_000;
+  eq('merge[无既有] = now + 预设', S.mergeCooldownUntil(0, 10 * MIN, NOW), NOW + 10 * MIN);
+  eq('merge[既有更长] 不被缩短', S.mergeCooldownUntil(NOW + 120 * MIN, 10 * MIN, NOW), NOW + 120 * MIN);
+  eq('merge[既有更短] 放大到 now+预设', S.mergeCooldownUntil(NOW + MIN, 120 * MIN, NOW), NOW + 120 * MIN);
+  eq('merge[add=0] 保持既有（绝不清零）', S.mergeCooldownUntil(NOW + 30 * MIN, 0, NOW), NOW + 30 * MIN);
+  eq('merge[add=0 且无既有] = 0', S.mergeCooldownUntil(0, 0, NOW), 0);
+  eq('merge[NaN 既有] 视为 0', S.mergeCooldownUntil(NaN, 10 * MIN, NOW), NOW + 10 * MIN);
+  eq('merge[负数 add] 保持既有', S.mergeCooldownUntil(NOW + 5 * MIN, -1, NOW), NOW + 5 * MIN);
+
+  const withPaused = (pausedUntil) => ({ autoCooldownMinutes: 30, pausedUntil });
+  const afterHeavy = S.nextCooldownUntil(withPaused(0), sig(32), NOW); // 重码 120 分
+  eq('next[32] = 120 分', afterHeavy, NOW + 120 * MIN);
+  eq('next[重码后遇轻码(1006)] 不被砍短', S.nextCooldownUntil(withPaused(afterHeavy), sig(1006), NOW), afterHeavy);
+
+  // 单调性：对任意 (A,B) 组合，「先 A 后 B」的结果 ≥ 「单项 B」的结果
+  const codes = [32, 36, 35, 37, 38, 1006, 5002, 5003, 5004];
+  let mono = true;
+  const badPair = [];
+  for (const a of codes) {
+    for (const b of codes) {
+      const onlyB = S.nextCooldownUntil(withPaused(0), sig(b), NOW);
+      const aThenB = S.nextCooldownUntil(withPaused(S.nextCooldownUntil(withPaused(0), sig(a), NOW)), sig(b), NOW);
+      if (aThenB < onlyB) { mono = false; badPair.push([a, b]); }
+    }
+  }
+  ok('单调性：先 A 后 B ≥ 单项 B（' + codes.length * codes.length + ' 组合）', mono, JSON.stringify(badPair.slice(0, 3)));
+  // 并发生效的正面用例：重码先写入后，轻码不得把保护期缩短到轻码自身长度
+  const lightOnly = S.nextCooldownUntil(withPaused(0), sig(1006), NOW);
+  ok('并发布局：重码保护期严格长于轻码自身长度', afterHeavy > lightOnly, `heavy=${afterHeavy} lightOnly=${lightOnly}`);
+}
+
 cleanup();
 
 console.log('[风控冷却回归] 通过 ' + pass + ' 项，失败 ' + fails.length + ' 项');

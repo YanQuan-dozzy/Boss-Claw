@@ -11,6 +11,7 @@
 
 import type { AppConfig, JobPlatform, PendingItem } from './types';
 import { PLATFORM_IDS, platformDailyCap, platformEnabled } from './platforms';
+import { SAFETY_LIMITS } from './limits';
 
 // ===== 风险严重级别 =====
 export type RiskSeverity = 'login' | 'rate_limited' | 'challenge' | 'env' | 'banned';
@@ -28,19 +29,10 @@ export interface RiskSignal {
   cooldownMs: number;
 }
 
-// ===== 安全上限（默认值，可被用户调低但不可被轻易突破） =====
-export const SAFETY_LIMITS = {
-  /** 单日投递硬上限：超过则强制暂停（dailyTarget 的封顶保护）。按用户要求保持 150 不变 */
-  MAX_SAFE_DAILY: 150,
-  /** 每分钟动作硬上限：远低于平台约 30 次/分钟 的阈值 */
-  MAX_ACTIONS_PER_MINUTE: 8,
-  /** 岗位间隔最小秒数（人类化抖动的基数下限） */
-  MIN_BETWEEN_JOBS_MS: 15_000,
-  /** 触发风控后的默认冷却时长 */
-  DEFAULT_COOLDOWN_MS: 30 * 60 * 1000,
-  /** 限速（1006）后的默认退避冷却 */
-  RATE_LIMIT_COOLDOWN_MS: 10 * 60 * 1000,
-} as const;
+// ===== 安全上限 =====
+// 定义已下沉到**零依赖叶子模块** `limits.ts`（platforms.ts 也需引用它做封顶，若留在本文件会与
+// platforms.ts 形成循环依赖）。此处 re-export，既有 `from './safety'` 的导入路径全部不变。
+export { SAFETY_LIMITS };
 
 // ===== 错误码 → 风险信号 =====
 const CODE_MAP: Record<number, Omit<RiskSignal, 'code'>> = {
@@ -279,4 +271,29 @@ export function resolveCooldownMs(
   if (!preset) return 0;
   const scaled = (preset / SAFETY_LIMITS.DEFAULT_COOLDOWN_MS) * base;
   return Math.round(Math.max(preset, scaled));
+}
+
+/**
+ * 把一次风控冷却**合并**进已有的 pausedUntil（单调不减，返回绝对时间戳）。
+ *
+ * 为什么必须有它：原实现 6 处冷却写入都是 `pausedUntil: Date.now() + resolveCooldownMs(...)`
+ * 的**绝对覆盖**，没有任何与既有值的 max 合并。而投递引擎与 AI 跟聊监听可以并发运行 ——
+ * 一方命中重码（如 32/36 → 120 分）后，另一方的在途请求返回轻码（如 1006 → 10 分）会**后写覆盖**，
+ * 把已生效的保护时长砍短，直接击穿 resolveCooldownMs 所声明的「只放大不缩短」不变量。
+ * **所有风控冷却写入必须走本函数（或 nextCooldownUntil），不得再写裸 `Date.now() + …`。**
+ */
+export function mergeCooldownUntil(existing: number, cooldownMs: number, now: number = Date.now()): number {
+  const prev = Number(existing) || 0;
+  const add = Number(cooldownMs) || 0;
+  if (add <= 0) return prev; // 该码无冷却语义：保持既有冷却，绝不清零
+  return Math.max(prev, now + add);
+}
+
+/** 由风险码解析冷却并合并进既有 pausedUntil —— 风控冷却写入的唯一入口。 */
+export function nextCooldownUntil(
+  config: Pick<AppConfig, 'autoCooldownMinutes' | 'pausedUntil'> | null | undefined,
+  signal: RiskSignal | null | undefined,
+  now: number = Date.now(),
+): number {
+  return mergeCooldownUntil(config?.pausedUntil ?? 0, resolveCooldownMs(config, signal), now);
 }

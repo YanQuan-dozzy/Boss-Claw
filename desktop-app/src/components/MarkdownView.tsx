@@ -177,6 +177,15 @@ function renderBlocks(md: string): React.ReactNode[] {
         buf.push(lines[i]);
         i += 1;
       }
+      // 防御（P-死循环）：该行非空、却命中了块级排除正则而没有任何块规则接手 —— 例如
+      // 「#### 四级标题」（标题正则只认 #{1,3}）、「#无空格标题」（标题要求 # 后有空格）、
+      // 孤立「|」行（下一行不是 |---| 分隔行）。此时 while 一次都不执行、buf 为空且 i 不前进，
+      // 会在外层 while 原地打转 → 同步死循环、挂死渲染进程。此处按普通文本渲染该行并前进一位。
+      if (buf.length === 0) {
+        push(<p className="md-p">{renderInline(line, key)}</p>);
+        i += 1;
+        continue;
+      }
       push(<p className="md-p">{renderInline(buf.join('\n'), key)}</p>);
       continue;
     }

@@ -1,7 +1,9 @@
 // 全局定时任务调度器（模块级单例）
 // ---------------------------------------------------------
-// 心跳每 15s 检查一次。对启用的条目：命中「当前 HH:mm == 设定 time 且星期匹配（空=每天）」，
-// 并在 90s 容差窗口内、按设定时刻去重（lastRunStamp 记录目标时刻 epoch），触发一次动作：
+// 心跳每 15s 检查一次。对启用的条目：只要落在「设定时刻 ~ 设定时刻 + GRACE_MS(90s)」窗口内
+// 且星期匹配（空=每天）即触发，并按目标时刻去重（lastRunStamp 记录目标时刻 epoch）：
+//   ⚠️ 判据**只看容差窗口，不再额外要求「当前分钟 == 设定分钟」** —— 后者会让 90s 容差形同虚设：
+//   主线程被长任务/GC 阻塞跨过目标分钟、或笔记本休眠唤醒跨分钟时，触发会被静默丢弃且无留痕（见审查 #46）。
 //   deliver → useAutoChatStore.start(scope)（按条目平台范围/单轮上限，内部保留冷却/每日上限/
 //             首条验收/风控等安全守卫；引擎已在运行则跳过本次触发）
 //   collect → useScheduleStore.setCollectRequest({platforms})（由常驻工作台组件按平台消费触发采集）
@@ -109,15 +111,15 @@ function tick(): void {
     const s = useScheduleStore.getState();
     if (!s.entries) return;
     const now = new Date();
-    const nowMinute = now.getHours() * 60 + now.getMinutes();
     for (const entry of s.entries) {
       try {
         if (!entry.enabled) continue;
         const targetMinute = parseMinute(entry.time);
         if (targetMinute < 0) continue;
-        if (nowMinute !== targetMinute) continue; // 只在本分钟匹配
         if (!weekdayMatches(entry, now)) continue;
         const targetMs = targetMsForMinute(now, targetMinute);
+        // 落在容差窗口内即触发（不再额外要求「当前分钟 == 设定分钟」，见文件头注释）；
+        // 窗口之外（含应用启动时的历史目标时刻）一律跳过，不做补触发。
         if (now.getTime() < targetMs || now.getTime() >= targetMs + GRACE_MS) continue;
         if (entry.lastRunStamp === targetMs) continue; // 已在本目标时刻触发过 → 去重
         // 先生成新 lastRunStamp 再触发，避免异步动作期间重复进入

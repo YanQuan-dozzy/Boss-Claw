@@ -494,7 +494,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         }
         case 'page-read-result':
         case 'page-status-result':
-        case 'prefill-greeting-result': {
+        case 'prefill-greeting-result':
+        // ui-eval-result：通用 UI 接管（query/click/type/scroll）的回执。此前 preload 侧
+        // webview.cjs 会 notify('ui-eval-result')，但此处漏了该 case → cmdOnce('ui-eval') 的
+        // seq 永不 resolve、必然超时，导致控制桥对内置浏览器的 UI 接管全链路失效（一并修复）。
+        case 'ui-eval-result': {
           const resolve = apiResolvers.current.get(String(payload?.seq));
           if (resolve) {
             apiResolvers.current.delete(String(payload?.seq));

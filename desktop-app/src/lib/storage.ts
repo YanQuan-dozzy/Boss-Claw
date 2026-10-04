@@ -63,14 +63,21 @@ export function exportData(): string {
 }
 
 export function importData(json: string): { ok: boolean; error?: string } {
-  // P30：先丢弃 persist 防抖窗口内残留的待写值，避免 reload 前的 pagehide flush 覆盖刚导入的数据
+  // 顺序很重要：**先解析、再丢弃**。原实现先 discardPendingPersistWrites() 再 JSON.parse——
+  // 一旦解析失败，防抖窗口内的合法待写值已被丢掉，等于「一次失败的导入顺带丢了最近的编辑」（见审查 #45）。
+  let data: Record<string, string | null>;
+  try {
+    data = JSON.parse(json);
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  // 解析成功：丢弃 persist 防抖窗口内残留的待写值，避免 reload 前的 pagehide flush 覆盖刚导入的数据
   discardPendingPersistWrites();
   try {
-    const data = JSON.parse(json);
     for (const k of EXPORT_KEYS) {
       if (k in data) {
         if (data[k] == null) localStorage.removeItem(k);
-        else localStorage.setItem(k, data[k]);
+        else localStorage.setItem(k, data[k] as string);
       }
     }
     return { ok: true };

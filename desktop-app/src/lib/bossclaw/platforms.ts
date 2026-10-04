@@ -3,6 +3,7 @@
 // 口径来源：GitHub 调研 get_jobs(loks666, 8.3k★) / Auto-JobHunter(jolie-z) / AgentMesh-JobAgent，
 // 对齐 AGENTS.md 安全不变量：外部网申跳过、未确认不计成功、不绕过验证码。
 import type { JobPlatform, TaskStage } from './types';
+import { SAFETY_LIMITS } from './limits';
 
 export type { JobPlatform } from './types';
 
@@ -177,8 +178,10 @@ export const PLATFORM_DEFAULT_DAILY_TARGET: Record<JobPlatform, number> = {
 /** 平台每日投递上限展示用（最小收窄后值）：无平台侧限制的平台 = MAX_SAFE_DAILY(150) */
 export function platformDailyCap(platform: JobPlatform): number {
   const side = PLATFORM_DAILY_CAPS[platform];
-  const cap = side && side > 0 ? side : 150; // 150 = SAFETY_LIMITS.MAX_SAFE_DAILY（见 safety.ts）
-  return Math.max(1, Math.min(cap, 150));
+  // 封顶一律引用 SAFETY_LIMITS.MAX_SAFE_DAILY（**不得再写字面量**）——否则将来调低该上限时，
+  // 这里的 150 会静默突破硬上限，形成「改了 safety.ts 却看不出效果」的假设置（见审查 #82）。
+  const cap = side && side > 0 ? side : SAFETY_LIMITS.MAX_SAFE_DAILY;
+  return Math.max(1, Math.min(cap, SAFETY_LIMITS.MAX_SAFE_DAILY));
 }
 
 /** 按 URL hostname 解析平台（未知域名回退 boss，保持存量兼容） */

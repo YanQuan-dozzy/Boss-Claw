@@ -251,7 +251,7 @@ function alignToBoundary(text: string, cut: number): number {
  * @param share 该段占「可用输入预算」的份额（0~1），默认 1（独占全部预算）。
  *
  * 语义边界：这是**给模型的上下文投喂量**，不是业务字段的长度约束。
- * 业务侧的长度红线（招呼语 200 字、gaps ≤3 条等）一律由各自权威模块负责，不得走本函数。
+ * 业务侧的长度红线（招呼语 250 字、gaps ≤3 条等）一律由各自权威模块负责，不得走本函数。
  */
 export function fitContext(
   text: string,

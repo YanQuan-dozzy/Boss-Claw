@@ -163,13 +163,30 @@ export default function Tasks() {
     };
   }, [pending]);
 
+  // 终态守卫：已投递(sent) / 投递中(approved_queue) 不允许被打回「待确认」或标记忽略 / 跳过，
+  // 否则会造成状态机倒流、污染投递漏斗与统计口径（Workbench 侧已对 sent 做同类防御，此处对齐）。
+  const isTerminalForActions = (status: string) => status === 'sent' || status === 'approved_queue';
+
   const onRetry = (id: string) => {
-    updatePending(id, { status: 'pending', retryCount: (pending.find((p) => p.id === id)?.retryCount || 0) + 1, error: '' });
+    const cur = pending.find((p) => p.id === id);
+    if (cur && isTerminalForActions(cur.status)) {
+      message.warning('该岗位已投递或正在投递，不能重置为「待确认」');
+      return;
+    }
+    updatePending(id, { status: 'pending', retryCount: (cur?.retryCount || 0) + 1, error: '' });
     addLog('info', '已重置岗位，可重新分析/投递');
     recomputeStats();
   };
-  const onIgnore = (id: string) => { updatePending(id, { status: 'ignored' }); recomputeStats(); };
-  const onSkip = (id: string) => { updatePending(id, { status: 'skipped' }); recomputeStats(); };
+  const onIgnore = (id: string) => {
+    const cur = pending.find((p) => p.id === id);
+    if (cur && isTerminalForActions(cur.status)) { message.warning('该岗位已投递或正在投递，不能忽略'); return; }
+    updatePending(id, { status: 'ignored' }); recomputeStats();
+  };
+  const onSkip = (id: string) => {
+    const cur = pending.find((p) => p.id === id);
+    if (cur && isTerminalForActions(cur.status)) { message.warning('该岗位已投递或正在投递，不能跳过'); return; }
+    updatePending(id, { status: 'skipped' }); recomputeStats();
+  };
   const onApprove = (id: string) => {
     const next = rerankPending(pending.map((p) => p.id === id ? { ...p, status: 'approved' as const, approvedAt: p.approvedAt || Date.now() } : p), useSettingsStore.getState().config);
     setPending(next); message.success('已确认岗位，等待「一键投递」'); recomputeStats();
@@ -637,13 +654,13 @@ export default function Tasks() {
                   <Button size="small" className="task-ghost-btn" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
                     查看详情
                   </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>
+                  <Button size="small" className="task-ghost-btn" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)} disabled={isTerminalForActions(p.status)}>
                     重试
                   </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<StopOutlined />} onClick={() => onIgnore(p.id)}>
+                  <Button size="small" className="task-ghost-btn" icon={<StopOutlined />} onClick={() => onIgnore(p.id)} disabled={isTerminalForActions(p.status)}>
                     忽略
                   </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)}>
+                  <Button size="small" className="task-ghost-btn" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)} disabled={isTerminalForActions(p.status)}>
                     跳过
                   </Button>
                 </div>

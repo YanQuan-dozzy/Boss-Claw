@@ -373,18 +373,41 @@ async function resetDataForVersion() {
     // 1) 清空 BOSS 登录态会话（persist:bossclaw 的 wt2 等 cookie）
     //    **必须 await**：clearStorageData 是异步的，旧实现「发起即返回」会让它与 createMainWindow 并发——
     //    用户在新装的 exe 首次启动后立刻在内置浏览器登录时，刚写入的 wt2 会被这次清理一并删掉，
-    //    表现为「明明登录了却一直显示未登录、采集被登录墙拦下」。加上限兜底：清理异常缓慢时也不阻塞启动。
+    //    表现为「明明登录了却一直显示未登录、采集被登录墙拦下」。下界保留兜底上限（不阻塞启动），
+    //    但**上限触发时必须记 warn**，否则「清理被提前放行」这一风险情形会被静默吞掉（见审查 #76）。
     try {
-      await Promise.race([
-        session.fromPartition('persist:bossclaw').clearStorageData(),
-        new Promise((r) => setTimeout(r, 5000)),
+      let clearTimer = null;
+      const cleared = await Promise.race([
+        session.fromPartition('persist:bossclaw').clearStorageData().then(() => true),
+        new Promise((r) => { clearTimer = setTimeout(() => r(false), 15_000); }),
       ]);
+      if (clearTimer) clearTimeout(clearTimer);
+      if (!cleared) {
+        dlog('warn', 'clear boss session storage exceeded 15s; proceeding without waiting');
+      }
     } catch (e) { dlog('warn', 'clear boss session storage failed', { message: e?.message }); }
-    // 2) 清空 Camoufox 隐身引擎 cookie
+    // 2) 清空 Camoufox 隐身引擎在 ~/.bossclaw 下的登录态与运行态文件。
+    //    原实现只删 `camoufox-cookies.json` 一个文件，漏掉：分平台 cookie（camoufox-cookies-{platform}.json）、
+    //    引擎探测态（engine-state.json）、采集断点（collection-progress.json）、本地桥数据（data.json）
+    //    —— v3「从零重建」后仍残留旧登录态/旧断点，会出现错误续跑或「虚假就绪」（见审查 #76）。
+    //    这里按白名单清理：cookie 一律按 `camoufox-cookies*.json` 通配（覆盖未来新增平台），
+    //    其余文件显式列举，避免误删用户放在同目录的其它文件。
     try {
-      const camCookie = path.join(app.getPath('home'), '.bossclaw', 'camoufox-cookies.json');
-      if (fs.existsSync(camCookie)) fs.unlinkSync(camCookie);
-    } catch (e) { dlog('warn', 'clear camoufox cookie failed', { message: e?.message }); }
+      const camDir = path.join(app.getPath('home'), '.bossclaw');
+      if (fs.existsSync(camDir)) {
+        for (const f of fs.readdirSync(camDir)) {
+          if (/^camoufox-cookies.*\.json$/i.test(f)) {
+            try { fs.unlinkSync(path.join(camDir, f)); } catch {}
+          }
+        }
+        for (const f of ['engine-state.json', 'collection-progress.json', 'data.json']) {
+          try {
+            const p = path.join(camDir, f);
+            if (fs.existsSync(p)) fs.unlinkSync(p);
+          } catch {}
+        }
+      }
+    } catch (e) { dlog('warn', 'clear camoufox files failed', { message: e?.message }); }
     // 3) 清空 CloakBrowser 隐身浏览器持久 profile
     try {
       const cloakProfile = path.join(app.getPath('userData'), 'cloakbrowser-profile');
@@ -792,26 +815,49 @@ async function createMainWindow() {
     },
   });
 
+  // 加载失败兜底（见审查 #87）：`loadURL` / `loadFile` 在失败时返回 reject 的 Promise；
+  // 不 catch 会落到全局 unhandledRejection（只记日志），窗口停在白屏且没有任何解释。
+  // 这里 catch 后换成一句可读的提示页，并把失败原因带上，便于定位（Vite 退出 / dist 缺失等）。
+  const loadWithFallback = (p, label) => {
+    Promise.resolve(p).catch((e) => {
+      const msg = String((e && e.message) || e || '未知错误');
+      dlog('error', 'main window load failed', { label, message: msg });
+      try {
+        mainWindow.loadURL(
+          'data:text/html;charset=utf-8,' +
+            encodeURIComponent(
+              '<html><body style="font-family:sans-serif;padding:40px"><h2>BossClaw 界面加载失败</h2>' +
+                '<p>' + msg.replace(/[<>&"]/g, '') + '</p>' +
+                '<p>请重启应用；若持续出现，请在 desktop-app 目录执行 <code>npm run build</code> 后重试。</p></body></html>'
+            )
+        );
+      } catch { /* 兜底页再失败则保持现状 */ }
+    });
+  };
+
   if (isDev) {
     const url = await resolveDevUrl();
     if (url) {
-      mainWindow.loadURL(url);
+      loadWithFallback(mainWindow.loadURL(url), 'dev-url');
     } else if (fs.existsSync(DIST_INDEX)) {
       // Vite 未就绪：回退加载最后一次构建产物，避免白屏
-      mainWindow.loadFile(DIST_INDEX);
+      loadWithFallback(mainWindow.loadFile(DIST_INDEX), 'dev-fallback-dist');
     } else {
       // 既无 dev 服务器也无构建产物：给出一句可读的提示，而非白屏
-      mainWindow.loadURL(
-        'data:text/html;charset=utf-8,' +
-          encodeURIComponent(
-            '<html><body style="font-family:sans-serif;padding:40px"><h2>BossClaw 启动失败</h2>' +
-              '<p>开发服务器未启动，且未找到构建产物 <code>dist/index.html</code>。</p>' +
-              '<p>请在 desktop-app 目录执行 <code>npm run build</code> 或 <code>npm run dev</code> 后重试。</p></body></html>'
-          )
+      loadWithFallback(
+        mainWindow.loadURL(
+          'data:text/html;charset=utf-8,' +
+            encodeURIComponent(
+              '<html><body style="font-family:sans-serif;padding:40px"><h2>BossClaw 启动失败</h2>' +
+                '<p>开发服务器未启动，且未找到构建产物 <code>dist/index.html</code>。</p>' +
+                '<p>请在 desktop-app 目录执行 <code>npm run build</code> 或 <code>npm run dev</code> 后重试。</p></body></html>'
+            )
+        ),
+        'dev-no-build'
       );
     }
   } else {
-    mainWindow.loadFile(DIST_INDEX);
+    loadWithFallback(mainWindow.loadFile(DIST_INDEX), 'prod-dist');
   }
 
   // === 白屏诊断日志（仅 BOSSCLAW_DEBUG=1 时启用，写入 debug-render.log）===
@@ -1337,6 +1383,20 @@ safeHandle('jc:clipboard-write', (_event, text) => {
   try { clipboard.writeText(String(text ?? '')); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
+/**
+ * 给 Promise 加超时（毫秒）：`printToPDF` / 隐藏窗口 `loadURL` 偶发挂死时 Promise 永不 settle，
+ * 会让渲染层「导出中」永久卡住、隐藏打印窗口不被回收（见审查 #77）。超时即 reject，由既有 catch 收口。
+ */
+function withTimeout(promise, ms, label) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} 超时（${ms}ms）`)), ms);
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 // 保存定制简历 PDF：渲染进程传 A4 打印 HTML → 隐藏窗口 printToPDF → 系统保存对话框 → 写盘。
 // 排版完全由 HTML/CSS 控制（resumePdf.ts 的 moderncv 风格模板），@page 控制页边距，
 // printToPDF 传 margins:'none' 避免与 CSS 边距叠加。零额外依赖、中文由系统字体渲染。
@@ -1367,14 +1427,14 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
   try {
-    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
+    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '打印页加载');
     // 等待字体与样式渲染稳定（系统字体加载 + 布局）
     await new Promise((r) => setTimeout(r, 400));
-    const pdf = await printWin.webContents.printToPDF({
+    const pdf = await withTimeout(printWin.webContents.printToPDF({
       pageSize: 'A4',
       printBackground: true,
       margins: { marginType: 'none' },
-    });
+    }), 30_000, 'PDF 生成');
     if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
     await fs.promises.writeFile(filePath, pdf);
     return { ok: true, filePath };
@@ -1451,14 +1511,14 @@ safeHandle('jc:save-report-pdf', async (_event, defaultName, html) => {
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
   try {
-    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
+    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '报表页加载');
     await new Promise((r) => setTimeout(r, 400));
-    const pdf = await printWin.webContents.printToPDF({
+    const pdf = await withTimeout(printWin.webContents.printToPDF({
       pageSize: 'A4',
       landscape: true,
       printBackground: true,
       margins: { marginType: 'none' },
-    });
+    }), 30_000, '报表 PDF 生成');
     if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
     await fs.promises.writeFile(filePath, pdf);
     return { ok: true, filePath };

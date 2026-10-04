@@ -2742,7 +2742,7 @@ async function enrichJobDetail(job) {
     }
     return false;
   }
-  jdFillState.streak = 0;
+  // 注意：请求成功**不代表这批 JD 可用** —— 连续失败计数只在「载荷可解析」后才重置（见下方）。
   await sleep(JD_FILL_GAP_MS + Math.random() * 220);
 
   const parsed = JD_FILL_CHANNEL === 'liepin-html'
@@ -2751,15 +2751,19 @@ async function enrichJobDetail(job) {
   if (!parsed) {
     // 通道通了但载荷结构不符（平台改版 / 登录墙 HTML / 该岗位没写 JD）→ 计入失败，连续多次即熔断
     jdFillState.failed += 1;
+    jdFillState.streak += 1;
     jdFillState.lastError = JD_FILL_CHANNEL === 'liepin-html'
       ? '详情页未解析出 JD 正文（页面结构变更或登录墙）'
       : '详情接口载荷结构不符（无 detailedPosition）';
-    if (jdFillState.failed >= JD_FILL_FAIL_STREAK_LIMIT && !jdFillState.stopped) {
-      jdFillState.stopped = `连续 ${jdFillState.failed} 次载荷不可解析`;
+    // 熔断判据必须是**连续**失败（streak），不能用累计 failed —— 否则一批岗位里零星几条
+    // 「平台本就没写 JD / 载荷缺字段」就足以把整批补 JD 提前熔断，后续岗位 JD 全缺（见审查 #80）。
+    if (jdFillState.streak >= JD_FILL_FAIL_STREAK_LIMIT && !jdFillState.stopped) {
+      jdFillState.stopped = `连续 ${jdFillState.streak} 次载荷不可解析`;
       notifyJdFillStop(jdFillState.stopped, job);
     }
     return false;
   }
+  jdFillState.streak = 0; // 载荷成功解析：重置连续失败计数
   const jd = String(parsed.description || '').trim().slice(0, JD_FILL_DESCRIPTION_MAX);
   if (jd) job.description = jd;
   // 技能 / 福利 / HR 只在详情确实给到时覆盖（DOM 侧这些字段本为空，不存在覆盖掉有效值的风险）

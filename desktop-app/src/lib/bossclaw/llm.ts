@@ -132,25 +132,42 @@ function escapeControlCharsInStrings(text: string): string {
   return out;
 }
 
-/** 单次修复尝试：对候选文本依次套用各确定性修复变体并解析。 */
-function tryParseVariants(raw: string): { ok: boolean; value?: any } {
-  const variants = [
+/**
+ * 单次修复尝试：对候选文本依次套用各确定性修复变体并解析。
+ * `completed` = 命中的变体**补过右括号**，即原文括号未闭合（多为被截断）——这类结果可能字段缺失，
+ * 调用方不得当完整 JSON 使用（见 extractJsonWithMeta）。**截断被静默接受的真正入口就在这里**：
+ * 原实现把「补括号」变体混在普通变体里，命中也返回成功，导致 step 3 的截尾标记永远不会触发。
+ */
+function tryParseVariants(raw: string): { ok: boolean; value?: any; completed: boolean } {
+  // 前 4 个变体不改结构（只做尾逗号 / 裸控制字符清理）：命中等价于「原文基本完整」
+  const plain = [
     raw,
     stripTrailingCommas(raw),
     escapeControlCharsInStrings(raw),
     stripTrailingCommas(escapeControlCharsInStrings(raw)),
-    closeBrackets(stripTrailingCommas(escapeControlCharsInStrings(raw))),
   ];
-  for (const variant of variants) {
-    try { return { ok: true, value: JSON.parse(variant) }; } catch { /* next */ }
+  for (const variant of plain) {
+    try { return { ok: true, value: JSON.parse(variant), completed: false }; } catch { /* next */ }
   }
-  return { ok: false };
+  // 最后一个变体补右括号：命中即说明原文括号未闭合 → 标 completed（可疑截断）
+  try {
+    const filled = closeBrackets(stripTrailingCommas(escapeControlCharsInStrings(raw)));
+    return { ok: true, value: JSON.parse(filled), completed: true };
+  } catch { /* next */ }
+  return { ok: false, completed: false };
 }
 
 // 从模型返回文本中提取 JSON（兼容 ```json 代码块或前缀噪声），
 // 并对常见 malformed / 截断 JSON 做有界自动修复
 // （不可见字符 / 尾逗号 / 字符串内裸控制字符 / 缺右括号 / 尾随说明文字 / 尾部残留垃圾）。
-export function extractJson(text: string): any {
+/**
+ * 同 extractJson，但额外回报「是否走了渐进截尾兜底」（`tailCut`）。
+ *
+ * 走到第 3 步（补括号 / 截尾）说明 JSON **无法完整直接解析**（多为被截断或括号未闭合），
+ * 此时补出来的对象**可能字段缺失**。调用方必须把 `tailCut === true` 当作可疑截断处理
+ * ——不得仅凭 `finish_reason` 判定（第三方网关可能把截断响应标成 `stop` 或省略该字段）。
+ */
+export function extractJsonWithMeta(text: string): { value: any; tailCut: boolean } {
   const cleaned = stripInvisible(String(text || '')).trim();
   const fence = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const base = (fence ? fence[1].trim() : cleaned).replace(/^json\s*\n/i, '');
@@ -163,7 +180,7 @@ export function extractJson(text: string): any {
   for (const raw of candidates) {
     // 1) 直接解析 + 确定性修复变体
     const direct = tryParseVariants(raw);
-    if (direct.ok) return direct.value;
+    if (direct.ok) return { value: direct.value, tailCut: direct.completed };
 
     // 2) 定位完整 JSON 值末端（去掉尾随说明文字），再尝试修复变体
     const end = balancedJsonEnd(raw);
@@ -171,29 +188,34 @@ export function extractJson(text: string): any {
       const trimmed = raw.slice(0, end + 1);
       if (trimmed !== raw) {
         const cut = tryParseVariants(trimmed);
-        if (cut.ok) return cut.value;
+        if (cut.ok) return { value: cut.value, tailCut: cut.completed };
       }
     }
 
     // 3) 渐进截尾兜底：先从「未补括号」的原文取真实结构边界（} / ]，最多 8 个从后往前），
     //    截断后补括号再解析 —— 注意 closeBrackets 会把缺失括号全补到串尾，若在其结果上找边界
-    //    边界会全部汇聚在末尾导致截尾失效（P1-05）
+    //    边界会全部汇聚在末尾导致截尾失效（P1-05）。此路径产出一律标 tailCut=true。
     const base2 = stripTrailingCommas(escapeControlCharsInStrings(raw));
     const tryClosed = (s: string) => {
       try { return JSON.parse(closeBrackets(s)); } catch { return undefined; }
     };
     const whole = tryClosed(closeBrackets(base2));
-    if (whole !== undefined) return whole;
+    if (whole !== undefined) return { value: whole, tailCut: true };
     const positions: number[] = [];
     const boundary = /[}\]]/g;
     let bm: RegExpExecArray | null;
     while ((bm = boundary.exec(base2))) positions.push(bm.index + 1);
     for (const end of positions.slice(-8).reverse()) {
       const v = tryClosed(base2.slice(0, end));
-      if (v !== undefined) return v;
+      if (v !== undefined) return { value: v, tailCut: true };
     }
   }
   throw new Error('无法解析 JSON');
+}
+
+/** 兼容包装：只取解析结果（不关心是否走了截尾兜底）。 */
+export function extractJson(text: string): any {
+  return extractJsonWithMeta(text).value;
 }
 
 /** 在结果对象上挂非枚举 _repaired 标记（供消费方区分「AI 修复过」与「原生输出」）；失败不影响主流程 */
@@ -580,16 +602,23 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   // ---- JSON 模式：确定性解析修复 → 二次 AI 补齐 ----
   // 截断场景不做「宽松截尾修复」：那会拿到字段缺失的半截对象（静默错值比报错更危险），
   // 直接交二次补齐（带原始 schema 重问）或抛 AI_TRUNCATED 让上层走既定降级（如画像的精简重试）。
-  const truncatedFinal = finishReason === 'length';
+  // ⚠️ 「是否截断」不能只看 finish_reason：第三方网关可能把截断响应标成 `stop` 或省略该字段。
+  // 因此把「只能经渐进截尾兜底才解析出对象」（tailCut）也视为可疑截断 —— 同样走二次补齐 / 抛错。
+  const truncatedByFinish = finishReason === 'length';
   let parsed: any;
   let repaired = false;
-  if (!truncatedFinal) {
+  let tailCut = false;
+  if (!truncatedByFinish) {
     try {
-      parsed = extractJson(content);
+      const ex = extractJsonWithMeta(content);
+      parsed = ex.value;
+      tailCut = ex.tailCut;
     } catch {
       parsed = undefined;
     }
   }
+  const truncatedFinal = truncatedByFinish || tailCut;
+  if (tailCut) parsed = undefined; // 半截对象不作数：交二次补齐，禁止当成功返回
   if (parsed === undefined) {
     const viaModel = await repairJsonViaModel(url, content, payload, apiKey, timeoutMs, {
       maxTokens: truncatedFinal ? Math.min(baseMaxTokens * 2, MODEL_MAX_OUTPUT_TOKENS) : baseMaxTokens,

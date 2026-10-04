@@ -87,6 +87,7 @@ import {
   writeLocalBackup,
   restoreFromLocalBackup,
   clearLocalBackup,
+  invalidateLocalBackupBaseline,
 } from '@/lib/localBackup';
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
@@ -638,6 +639,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
       const json = await file.text();
       const r = importData(json);
       if (!r.ok) { message.error('导入失败：' + (r.error || '格式错误')); return; }
+      // 导入是绕过 persist 写哨兵的直写：必须作废备份基线，否则备份快路径会判「无变化」而跳过，
+      // 导入的数据要等数次心跳才落进备份（见审查 #45）。
+      invalidateLocalBackupBaseline();
       message.success('导入成功，正在刷新数据…');
       setTimeout(() => window.location.reload(), 600);
     } catch (err: any) {

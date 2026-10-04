@@ -110,8 +110,19 @@ class ProgressStore:
         self._loaded = True
         try:
             payload = json.loads(self._path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError, ValueError):
+        except FileNotFoundError:
             payload = {}
+        except (OSError, json.JSONDecodeError, ValueError):
+            # 读失败 ≠ 没有数据：直接当空会在下一次 _flush() 时把磁盘上的断点**整文件覆盖掉**
+            # （_flush 用 self._combos 全量覆写，见审查 #109）。这里先把疑似损坏/被占用的文件
+            # 改名备份，再以空状态继续 —— 原始数据留在 ~/.bossclaw 下待人工恢复，绝不静默销毁。
+            payload = {}
+            try:
+                if self._path.exists():
+                    backup = self._path.with_name(self._path.name + '.corrupt-%d' % int(time.time()))
+                    os.replace(str(self._path), str(backup))
+            except Exception:
+                pass
         combos = payload.get('combos') if isinstance(payload, dict) else None
         self._combos = combos if isinstance(combos, dict) else {}
 
@@ -231,13 +242,21 @@ class ProgressStore:
             return removed
 
     def snapshot(self) -> dict:
-        """只读快照（诊断 / 设置页展示）。"""
+        """只读快照（诊断 / 设置页展示）：只返回 **TTL 内仍然有效** 的条目。
+
+        原先直接 `dict(self._combos)`，会把已过 TTL 的条目也回给 UI —— 设置页「已采组合数」虚高，
+        与 `completed_combo()` 的实际跳过行为不一致，排查时会误以为断点仍在生效（见审查 #55）。
+        """
         with self._lock:
             self._load()
+            valid = {
+                k: v for k, v in self._combos.items()
+                if self._valid(k, fresh=False) is not None
+            }
             return {
                 'version': PROGRESS_VERSION,
                 'ttlHours': self._ttl_hours,
                 'path': str(self._path),
-                'comboCount': len(self._combos),
-                'combos': dict(self._combos),
+                'comboCount': len(valid),
+                'combos': valid,
             }

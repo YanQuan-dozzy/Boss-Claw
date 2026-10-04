@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useMemo } from 'react';
 import type { ThemeMode } from '../theme';
 import { effectiveTheme } from '../theme';
 import { useAppStore } from '../store/useAppStore';
@@ -31,8 +31,11 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode; effective?: 'l
     }
   }, [effective]);
 
+  // value 必须 memo：否则每次 Provider 重渲染都产生新对象引用，所有 useTheme() 消费者都会被连带重渲染
+  const value = useMemo(() => ({ mode, effective, setTheme }), [mode, effective, setTheme]);
+
   return (
-    <ThemeContext.Provider value={{ mode, effective, setTheme }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   );

@@ -18,7 +18,7 @@ export interface AnalysisQueue {
   getStats(): AnalysisQueueStats;
   /** 订阅统计变化（注册时立刻回调一次当前值），返回取消订阅函数 */
   onChange(listener: (stats: AnalysisQueueStats) => void): () => void;
-  /** 停止接受新任务（已入队任务继续跑完） */
+  /** 停止接受新任务；**正在执行**的任务跑完，**排队中**的任务会被 reject（不留永不 settle 的悬挂 Promise） */
   dispose(): void;
 }
 
@@ -86,6 +86,10 @@ export function createAnalysisQueue(limit: number): AnalysisQueue {
     dispose() {
       disposed = true;
       listeners.clear();
+      // 排队中的任务必须**显式 reject**：原实现只置位并清监听，这些任务的 Promise 既不 resolve
+      // 也不 reject（永久悬挂）—— 调用方 `await` 会卡死，且与本方法的语义承诺不符（见审查 #84）。
+      const queued = pending.splice(0, pending.length);
+      for (const item of queued) item.reject(new Error('analysis queue disposed'));
     },
   };
 }

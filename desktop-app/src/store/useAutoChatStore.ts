@@ -16,9 +16,10 @@ import {
   type CamoufoxChatResult, type ChatHistoryEntry, type ChatWatchConversation,
 } from '@/lib/bossclaw/camoufox';
 import {
-  ActionPacer, effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
-  isLockedOut, cooldownRemaining, SAFETY_LIMITS, classifyRiskCode, resolveCooldownMs,
+  effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
+  isLockedOut, cooldownRemaining, SAFETY_LIMITS, classifyRiskCode, nextCooldownUntil,
 } from '@/lib/bossclaw/safety';
+import { sharedPacer, markDelivered, resetDeliveredSinceRest } from '@/lib/bossclaw/deliveryThrottle';
 import { checkDeliveryGate, batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
 import { cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
@@ -66,11 +67,9 @@ interface EngineRun {
 }
 let nextRunToken = 0;                    // 单调递增：每次 start()/chatOne() 取新 token
 let currentRun: EngineRun | null = null; // 单一真值：null = 空闲（替代原 busy 互斥量 + ownerRun 归属）
-let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE); // 跨 run 共享的动作节流器（预算重置在 start()）
-// 本轮连续沟通计数（批次休息用）：与 Workbench 的 deliveredSinceRestRef 同口径。
-// 为什么自动沟通也必须算它：设置页「防封号节奏限制」是账号级保护，
-// 若只有工作台投递受约束，则「只跑自动沟通」就成了绕过作息/批次保护的路径。
-let chatDeliveredSinceRest = 0;
+// pacer 与「连续投递计数」都**不在本模块持有**：二者是账号级保护，必须与「工作台一键投递」
+// 共享同一实例（见 deliveryThrottle.ts / 审查 #73）。本模块只经 pacerNow() 取共享 pacer。
+const pacerNow = () => sharedPacer(useSettingsStore.getState().config.maxActionsPerMinute);
 
 // =====「AI 跟聊监听」常驻循环（对齐觅星小臣的单一串行 worker）=====
 // 持续巡检「已投递（sent）」的 BOSS 会话，发现 HR 发了新消息就带多轮上下文生成回复并发送。
@@ -445,7 +444,7 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     const isRiskStop = isCamoufoxStopCode(code) || code === 35;
     if (isRiskStop) {
       updatePending(item.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
-      useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
+      useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, classifyRiskCode(code)) });
       addChatLog({
         level: 'error',
         stage: 'risk',
@@ -547,7 +546,7 @@ function handleWatchStopCode(
   const jobTitle = conv?.name || '';
   const company = conv?.company || '';
   if (isCamoufoxStopCode(code) || code === 35) {
-    useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
+    useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, classifyRiskCode(code)) });
     addChatLog({
       level: 'error', stage: 'risk', jobTitle, company,
       msg: `命中安全风控警示码 [Code ${code}]：${message}。跟聊监听已停止并进入保护性冷却！`,
@@ -607,11 +606,11 @@ async function watchCycle(run: WatchRun): Promise<void> {
     // ⚠️ 本循环（跟聊监听巡检）**不做批次休息**，原因有二（2026-10-03 纠正）：
     //   1) 语义不符：`batchRest` 的口径是「每 N 个**岗位**休息」，而这里处理的是**会话巡检**，
     //      计数口径不同，混用会让「连续投递数」虚高；
-    //   2) 会双重计数：同一变量 `chatDeliveredSinceRest` 已被批量投递循环使用，
+    //   2) 会双重计数：同一账号级计数已被批量投递循环使用，
     //      两个循环各自 +1 → 批次边界提前命中，休息次数与设置值不符。
-    // 批次休息的唯一落点是批量投递循环（见下方 `chatDeliveredSinceRest += 1`）。
+    // 批次休息的唯一落点是批量投递循环（见下方 `markDelivered()`）。
     try {
-      await pacer.waitForSlot();
+      await pacerNow().waitForSlot();
       const open = await camoufoxChatWatch('open', { os: c0.camoufox?.os, name: convName, company: convCompany });
       if (handleWatchStopCode(run, open.code, open.message || '', conv)) return;
       if (!open.ok) {
@@ -806,9 +805,10 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
     const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
     currentRun = run; // 建立互斥（busy）：单一真值，null = 空闲
     const cfg = useSettingsStore.getState().config;
-    const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
-    if (pacer.budget !== pacerMax) pacer = new ActionPacer(pacerMax);
-    chatDeliveredSinceRest = 0; // 批次休息计数随本轮重新起算（与 Workbench 每轮重置同口径）
+    // 预算同步到共享 pacer（内部夹到 SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE 硬上限；见审查 #22/#73）。
+    // 注意：批次休息计数**不再随本轮重置** —— 它是跨引擎的账号级累计，只在真正休息完成后归零，
+    // 否则任一引擎起跑都会把另一引擎的累计清零（原「每轮重置」在双引擎并行下必然互相踩）。
+    sharedPacer(cfg.maxActionsPerMinute);
     set({ chatRunning: true, activeChatId: null, progress: { index: 0, total: 0 } });
     // 范围描述（定时任务触发时为任务 scope；手动启动无 scope → 全平台不限量）
     const scopeText = (() => {
@@ -944,19 +944,19 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           try {
             // 批次休息（分钟级中断）——与 Workbench.awaitDeliveryGap 同口径：
             // 秒级岗位间隔打断不了 24h 活动曲线的直线性，只有分钟级中断才行。
-            chatDeliveredSinceRest += 1;
-            const restMs = batchRestDelayMs(nowCfg.batchRest, chatDeliveredSinceRest);
+            const sinceRest = markDelivered();
+            const restMs = batchRestDelayMs(nowCfg.batchRest, sinceRest);
             if (restMs > 0) {
               useRuntimeLogsStore.getState().addChatLog({
                 level: 'info',
                 stage: 'system',
-                msg: `已连续沟通 ${chatDeliveredSinceRest} 个岗位，按防封号策略休息约 ${Math.round(restMs / 60000)} 分钟（模拟真人作业中断，降低风控风险）`,
+                msg: `已连续沟通 ${sinceRest} 个岗位，按防封号策略休息约 ${Math.round(restMs / 60000)} 分钟（模拟真人作业中断，降低风控风险）`,
               });
               await sleep(restMs);
-              chatDeliveredSinceRest = 0;
+              resetDeliveredSinceRest();
               useRuntimeLogsStore.getState().addChatLog({ level: 'info', stage: 'system', msg: '批次休息结束，继续自动沟通' });
             }
-            await pacer.waitForSlot();
+            await pacerNow().waitForSlot();
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
             await sleep(baseSec * 1000 * (0.7 + Math.random() * 0.6));
 

@@ -206,7 +206,7 @@ export const controlTools = [
       'agentTasks{waitMs?,includeMessages?,limit?}｜agentSubmit{id,content}｜agentCancel{id,reason?}\n' +
       '  - 浏览器只读探索（webview 引擎可用）：browserSearch{query,city?,page?,pageSize?}｜browserOpenJob{url,tabId?}｜' +
       'browserReadPage{tabId?}｜browserReadJob{encryptJobId}｜browserDomDump{tabId?}\n' +
-      '  - 投递：deliverySetMode{mode:"auto"|"review"}｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
+      '  - 投递：deliverySetMode（**已禁用**：执行模式受保护，只能由用户在应用设置页切换）｜deliveryDraft{greeting}（半自动，预填不发送）｜' +
       'deliverySendNow{greeting?}（仅 executionMode==\'auto\' 且复用安全引擎）\n' +
       '  - 通用 UI 接管（scope:"app" 操作应用界面 / "webview" 操作右栏 BOSS 页；禁止任意脚本与跳转）：uiSnapshot{scope?,selector?,limit?}｜' +
       'uiClick{scope?,selector?,label?,index?}｜uiType{scope?,selector?/into?,value,clear?}（contenteditable 聊天框请用 deliveryDraft）｜' +

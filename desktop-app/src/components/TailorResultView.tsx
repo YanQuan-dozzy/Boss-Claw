@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -61,6 +61,11 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
   onImportMaterials,
 }) => {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  /** 「已复制」提示的复位定时器（单一实例，卸载时清理） */
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+  }, []);
   /** 岗位要点详情弹窗当前查看的要点（null = 关闭） */
   const [detailPoint, setDetailPoint] = useState<TailorJdPoint | null>(null);
 
@@ -69,7 +74,10 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
     navigator.clipboard?.writeText(text);
     setCopiedKey(key);
     message.success(`已复制${label}`);
-    setTimeout(() => {
+    // 复用单一 timer 并在卸载时清理：原实现每次复制都新排一个 2s 定时器、卸载不取消，
+    // 连续复制会叠加多个定时器，且组件卸载后仍会 setState（见审查 #95）。
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => {
       setCopiedKey((prev) => (prev === key ? null : prev));
     }, 2000);
   };

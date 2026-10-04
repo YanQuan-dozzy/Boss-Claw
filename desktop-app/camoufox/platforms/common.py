@@ -170,6 +170,7 @@ def detect_kernel(force: bool = False) -> dict:
     return _KERNEL_CACHE
 
 
+@contextmanager
 def open_browser(os_name: str | None = None, headless: bool = False):
     """按检测到的内核打开浏览器，yield page；退出时自动关闭。仅 Camoufox 原生内核可用。
 

@@ -43,9 +43,10 @@ import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
 import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
 import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
-  ActionPacer, effectiveDailyCapFor, dailySentCountFor, isLockedOut,
-  cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS, resolveCooldownMs,
+  effectiveDailyCapFor, dailySentCountFor, isLockedOut,
+  cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS, resolveCooldownMs, nextCooldownUntil,
 } from '@/lib/bossclaw/safety';
+import { sharedPacer, markDelivered, resetDeliveredSinceRest } from '@/lib/bossclaw/deliveryThrottle';
 // 活跃时段 / 批次休息（**唯一权威**，详见模块头注释）：
 // 操作时间戳是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」「连续上百次不中断」
 import { isWithinActiveWindow, nextActiveStartMs, formatActiveWindow, batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
@@ -379,10 +380,9 @@ export default function Workbench() {
   }, [config, searchPlatforms]);
 
   // ===== 防封号：限速器 + 投递节奏 =====
-  const pacerRef = useRef<ActionPacer>(new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE));
+  // 限速器（pacer）与「连续投递计数」**不在本组件持有一份**：二者都是账号级保护，必须与
+  // 「自动沟通」引擎共享同一实例，否则并行运行时速率上限翻倍、批次休息间隔翻倍（见审查 #73）。
   const lastDeliveryAt = useRef(0);
-  /** 本轮连续投递计数（批次休息用）：命中 batchRest.everyNJobs 边界即长休息一次并归零 */
-  const deliveredSinceRestRef = useRef(0);
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
   useEffect(() => { recomputeStats(); }, [pending, recomputeStats]);
@@ -866,8 +866,8 @@ export default function Workbench() {
       pauseAssist(`今日 BOSS 已投递 ${sentToday} 条，达到该平台上限 ${cap} 条，投递已暂停（避免账号受限）`);
       return false;
     }
-    const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
-    if (pacerRef.current.budget !== pacerMax) pacerRef.current = new ActionPacer(pacerMax);
+    // 预算同步到共享 pacer（其内部夹到 SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE 硬上限；见审查 #22/#73）
+    sharedPacer(cfg.maxActionsPerMinute);
     return true;
   };
 
@@ -884,16 +884,16 @@ export default function Workbench() {
     // ===== 批次休息（真人不会连续上百次投递而不中断）=====
     // 与「岗位间隔」是两个量级：岗位间隔是秒级抖动，批次休息是分钟级中断，后者才是打断
     // 「连续高强度作业」曲线的关键 —— 只做秒级抖动的账号，其 24h 活动曲线上仍是一条直线。
-    deliveredSinceRestRef.current += 1;
-    const restMs = batchRestDelayMs(cfg.batchRest, deliveredSinceRestRef.current);
+    const sinceRest = markDelivered();
+    const restMs = batchRestDelayMs(cfg.batchRest, sinceRest);
     if (restMs > 0) {
       const restMin = Math.round(restMs / 60000);
-      addLog('info', `已连续投递 ${deliveredSinceRestRef.current} 个岗位，按防封号策略休息约 ${restMin} 分钟（模拟真人作业中断，降低风控风险）`);
+      addLog('info', `已连续投递 ${sinceRest} 个岗位，按防封号策略休息约 ${restMin} 分钟（模拟真人作业中断，降低风控风险）`);
       await sleep(restMs);
-      deliveredSinceRestRef.current = 0;
+      resetDeliveredSinceRest();
       addLog('info', '批次休息结束，继续投递');
     }
-    await pacerRef.current.waitForSlot();
+    await sharedPacer(cfg.maxActionsPerMinute).waitForSlot();
     const baseSec = Math.max(Number(cfg.betweenJobsSeconds) || SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
     const gapMs = humanDelayMs(baseSec * 1000, 0.35);
     const elapsed = Date.now() - lastDeliveryAt.current;
@@ -1068,10 +1068,10 @@ export default function Workbench() {
     setApplyStage(null);
     recomputeStats();
     if (severity === 'banned') {
-      useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + cooldownMs });
+      useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, signal) });
       pauseAssist(`${msg}。已强制暂停并进入冷却 ${Math.ceil(cooldownMs / 60000)} 分钟，请人工处理，切勿重复重试以免升级封禁。`);
     } else if (severity === 'rate_limited') {
-      useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + cooldownMs });
+      useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, signal) });
       pauseAssist(`${msg}。已暂停并进入退避冷却 ${Math.ceil(cooldownMs / 60000)} 分钟，之后可重新投递。`);
     } else {
       pauseAssist(`${msg}。已暂停投递：若右侧浏览器出现安全验证，请人工完成后再点"重新投递"。`);
@@ -1708,7 +1708,7 @@ export default function Workbench() {
           if (collectFaultScope(lastCode) === 'queue') queueAborted = true;
           if (isCamoufoxStopCode(lastCode)) {
             addLog('error', `隐身采集命中风控码 ${lastCode}：${result.message || ''}。立即停止并进入冷却，请人工处理。`);
-            useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(lastCode)) });
+            useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, classifyRiskCode(lastCode)) });
             markCollectRun(runId, baseRun, {
               status: 'failed', stage: 'failed', stageLabel: `风控码 ${lastCode}`, error: errMsg,
               progress: Math.round(((qi + 1) / queue.length) * 100),
@@ -2042,7 +2042,7 @@ export default function Workbench() {
       if (isCamoufoxStopCode(code)) {
         updatePending(candidate.id, { status: 'failed', error: msg, retryable: false, riskBlocked: true });
         addLog('error', `Camoufox 投递命中风控码 ${code}：${msg}。立即暂停并进入冷却，请人工处理，切勿重复重试。`);
-        useSettingsStore.getState().setConfig({ pausedUntil: Date.now() + resolveCooldownMs(useSettingsStore.getState().config, classifyRiskCode(code)) });
+        useSettingsStore.getState().setConfig({ pausedUntil: nextCooldownUntil(useSettingsStore.getState().config, classifyRiskCode(code)) });
         setApplyStage(null);
         recomputeStats();
         pauseAssist(`${msg}。已强制暂停并进入冷却，请人工核对处理。`);

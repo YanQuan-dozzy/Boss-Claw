@@ -273,7 +273,7 @@ export function buildReviewSystemPrompt(schoolRule = ''): string {
 2. ATS 关键词覆盖：JD 高权重关键词（技能/工具/领域术语）是否被真实覆盖？候选人在相关领域确有真实背景时，允许把其真实掌握或相近的泛化能力按 JD 规范名编写为「适配技能」并前置入摘要/经历/技能；与候选人背景毫无交集的关键词不得硬塞，应归入 skillGaps 或在 jdPoints 中记为 missing。
 3. 结构与可排版性：resume 模块齐全且**没有编造出来的空壳模块**（没内容的模块必须是空数组/空对象，不得出现「暂无」「待补充」等占位文字）；bullets 是否按岗位相关性从高到低、每条不超过 80 字。
 4. STAR 与一页适配：tailoredSummary 120-150 字、开头点明身份；tailoredExperiences 2-4 条、一条不超过 80 字；量化只提炼简历已有数字，严禁编造或推算。
-5. 求职信口吻：coverLetter 必须求职者第一人称（以「您好，我想应聘贵公司的{岗位名}」开头），全文 120-200 字（含标点，建议约 150 字，与 greetings.ts::GREETING_LENGTH_RULE 同口径）、单行不换行；项目亮点必须精炼（只挑 1-2 个与岗位最相关的真实项目/技能、禁止罗列技术栈清单）；严禁招聘方口吻（「看到你的简历」「你的经历很匹配我们」「欢迎进一步沟通」「我们团队」「候选人」等），不得承诺薪资、到岗时间、面试时间。**校名披露（只约束 coverLetter，简历正文 resume 中的学校名照抄原文不受此限）**：${schoolRule ? schoolRule.trim() : '院校名称只有简历院校属于 985/211 时才允许写出，其余院校一律不出现任何院校名称或层级字样，只写学历/专业/年级。'}
+5. 求职信口吻：coverLetter 必须求职者第一人称（以「您好，我想应聘贵公司的{岗位名}」开头），全文 120-250 字（含标点，建议约 150 字，与 greetings.ts::GREETING_LENGTH_RULE 同口径）、单行不换行；项目亮点必须精炼（只挑 1-2 个与岗位最相关的真实项目/技能、禁止罗列技术栈清单）；严禁招聘方口吻（「看到你的简历」「你的经历很匹配我们」「欢迎进一步沟通」「我们团队」「候选人」等），不得承诺薪资、到岗时间、面试时间。**校名披露（只约束 coverLetter，简历正文 resume 中的学校名照抄原文不受此限）**：${schoolRule ? schoolRule.trim() : '院校名称只有简历院校属于 985/211 时才允许写出，其余院校一律不出现任何院校名称或层级字样，只写学历/专业/年级。'}
 6. 建议可执行性：suggestions 3-5 条、基于简历与 JD 的真实差距、每条不超过 40 字。
 7. **能力描述语保真（重点复查项）**：逐条比对 resume.skills 与各模块 bullet 的 text / 同条 source，**原文中的「精通 / 熟练 / 熟悉 / 掌握 / 擅长 / 了解 / 具备…能力 / 沉淀」等描述语是否被保留**？凡是「原文有描述语、text 里却压成了无修饰的技能罗列」（如 source「前端：熟悉 React、TypeScript，沉淀通用组件库」被改成 text「前端：React、TypeScript、通用组件库」），**必须在 resume 中把描述语按 source 原文补回**（可同义替换，不得升级为「精通」），并在 reviewNote 里说明补回了哪几条；同时检查有没有反向错误——把原文的「了解」写成「精通」这类**凭空升级**，也要改回原文强度。
 
@@ -776,9 +776,23 @@ export async function tailorForJob(
       };
       // 摘要守卫：review 修订后仍须非空（草稿已验证为非空）
       const finalTailored = { ...merged, tailoredSummary: merged.tailoredSummary.slice(0, 300) || draft.tailoredSummary };
-      // 结构化文档：review 返回了非空 resume 才替换（替换内容同样经规范化，脏数据进不来）
+      // 结构化文档：**逐模块合并** —— 仅当 review 返回的对应模块非空时才覆盖草稿，否则保留草稿。
+      // （本块上方注释已声明「逐字段合并」，但原实现对 reviewedDoc 整体替换：normalizeTailorDoc 会把
+      //   缺失 / 为 null 的模块规范化为空数组，于是 Reviewer 只回填部分模块时，草稿的教育 / 实习 /
+      //   工作 / 项目会被整段清空并写进 PDF —— 违反保真红线；且提示词明确「null 表示保留草稿」。）
       const reviewedDoc = review?.resume ? normalizeTailorDoc(review.resume) : null;
-      if (reviewedDoc) finalDoc = reviewedDoc;
+      if (reviewedDoc) {
+        const keep = <T>(next: T[], prev: T[]): T[] => (next && next.length > 0 ? next : prev);
+        finalDoc = {
+          education: keep(reviewedDoc.education, finalDoc.education),
+          internships: keep(reviewedDoc.internships, finalDoc.internships),
+          works: keep(reviewedDoc.works, finalDoc.works),
+          projects: keep(reviewedDoc.projects, finalDoc.projects),
+          skills: keep(reviewedDoc.skills, finalDoc.skills),
+          honors: keep(reviewedDoc.honors, finalDoc.honors),
+          selfEval: reviewedDoc.selfEval?.text ? reviewedDoc.selfEval : finalDoc.selfEval,
+        };
+      }
       // 收集实际被修订字段的中文名（面板只展示一行结论，不再展示逐字段 before/after）
       const revisedFields: string[] = [];
       if (finalTailored.tailoredSummary !== draft.tailoredSummary) revisedFields.push('定制个人摘要');
