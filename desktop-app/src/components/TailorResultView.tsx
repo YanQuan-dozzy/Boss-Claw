@@ -277,8 +277,10 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
                 message={`检测到 ${tailor.qualifierLoss.length} 条改写把能力描述语抹平或降级了（精通 / 熟练 / 熟悉 / 沉淀 等）——导出前建议把描述语补回，否则会抹平你的真实水平。`}
                 description={
                   <ul className="tailor-qualifier-list">
-                    {tailor.qualifierLoss.map((q, i) => (
-                      <li key={i}>
+                    {tailor.qualifierLoss.map((q) => (
+                      // 审查 §四表 24：用「模块 + 丢失词 + 改写后」组合作 key（内容即身份），
+                      // 不用下标 —— 列表按不同筛选/材料重算时下标会串位。
+                      <li key={`${q.module}|${q.words.join(',')}|${q.after}`}>
                         <span className="tailor-unmatched-module">{q.module}</span>
                         丢失「<b>{q.words.join('、')}</b>」→ {q.after}
                         <div className="tailor-qualifier-before">原文：{q.before}</div>
@@ -291,8 +293,9 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
 
             {rewrites.length > 0 && (
               <div className="tailor-diff-list">
-                {rewrites.map((d, i) => (
-                  <div key={i} className="tailor-diff-row">
+                {rewrites.map((d) => (
+                  // 审查 §四表 24：改写条目用「模块 + 原文」组合作 key
+                  <div key={`${d.module}|${d.before}`} className="tailor-diff-row">
                     <div className="tailor-diff-label">
                       {d.module}
                       {d.from === 'extra' && (
@@ -328,8 +331,9 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
                   </span>
                 </div>
                 <ul className="tailor-unmatched-list">
-                  {unmatched.map((u, i) => (
-                    <li key={i}>
+                  {unmatched.map((u) => (
+                    // 审查 §四表 24：未匹配条目用「模块 + 改写后」组合作 key
+                    <li key={`${u.module}|${u.after}`}>
                       <span className="tailor-unmatched-module">{u.module}</span>
                       {u.after}
                     </li>
@@ -421,7 +425,8 @@ export const TailorResultView: React.FC<TailorResultViewProps> = ({
             </div>
             <div className="tailor-sug-list">
               {tailor.suggestions.map((s, i) => (
-                <div key={i} className="tailor-sug-row">
+                // 审查 §四表 24：建议是纯文本、内容即身份 → key 用文本（下标仍用于序号展示）
+                <div key={s} className="tailor-sug-row">
                   <span className="tailor-sug-idx">{i + 1}</span>
                   <span className="tailor-sug-txt">{s}</span>
                 </div>

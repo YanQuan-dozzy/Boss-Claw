@@ -13,7 +13,11 @@ export interface DesensitizeOptions {
 }
 
 const PHONE_RE = /(?<!\d)1[3-9]\d{9}(?!\d)/g;
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// 邮箱匹配分两份（审查 #43）：带 /g 的正则用 `.test()` 会推进 `lastIndex`，连续调用时
+// 奇偶交替命中（same 字符串第二次返回 false）→ 孤立邮箱行漏删、隐私残留。
+// 故 `.test()` 一律用不带 /g 的 EMAIL_SRC，`replace` 全域替换才用带 /g 的 EMAIL_RE。
+const EMAIL_SRC = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+const EMAIL_RE = new RegExp(EMAIL_SRC.source, 'g');
 const IDCARD_RE = /(?<!\d)\d{17}[\dXx](?!\d)/g;
 // 「标签:值」整行标签（命中即剔除整行，连同标签一起消失）
 const STRIP_LEAD_RE =
@@ -29,7 +33,7 @@ function isBareContactLine(line: string): boolean {
   if (!s) return false;
   return (
     /^(?<!\d)1[3-9]\d{9}(?!\d)$/.test(s) ||
-    EMAIL_RE.test(s) ||
+    EMAIL_SRC.test(s) ||
     /^(?<!\d)\d{17}[\dXx](?!\d)$/.test(s) ||
     /^(?:微|微信)[A-Za-z0-9_-]{2,32}$/i.test(s)
   );

@@ -40,12 +40,24 @@ function clip(s: string, n = 40): string {
 }
 
 // 判定优先级：明确的「每周 N 天 / 月休 N 天」数字 > 行业俗语（大小周 / 单休 / 双休）。
-// 理由：数字是硬事实；俗语在 JD 里常被「非双休」「周末双休」等措辞包裹，放在数字之后更稳。
+// 理由：数字是硬事实；俗语在 JD 里常被「非双休」「周末双休」等措辞包裹，放在数字之后更稳
+// （否定/排除型措辞的处理见下方 ⑤ 前的守卫，审查 #44）。
 const RE_WEEKLY_DAYS = /(?:每|一)\s*周\s*(?:工作|上班|出勤)?\s*(\d(?:\.\d)?)\s*天|(\d(?:\.\d)?)\s*天\s*(?:工作|上班)?制|(五天半|5\.5\s*天)/;
 const RE_MONTHLY_REST = /月\s*休\s*(\d{1,2})\s*天|每月\s*(?:休息|休)\s*(\d{1,2})\s*天/;
 const RE_BIG_SMALL_WEEK = /大小周|大小休|单双休|单双轮休/;
 const RE_SINGLE_REST = /做六休一|单休|六天制|六天工作制|周休一天|每周休一天|六日制/;
 const RE_DOUBLE_REST = /周末双休|做五休二|双休|五天制|五天工作制|周末休息/;
+/**
+ * 「否认双休」的表述（审查 #44）：「非双休 / 不是双休 / 无双休 / 没有双休 / 不双休 / 非周末双休」——
+ * 这类句子**含「双休」字样**，旧实现会让 ⑤ 直接命中并判成双休（22 天/月），
+ * 使「月薪 → 日薪」的折算基数偏小、日薪偏高（`jobMatch.ts` 的 `(range.low*1000)/monthlyWorkDays`），
+ * 也把「未说明」的工作制度冒充成确定值。
+ *
+ * ⚠️ 刻意**不做**「排除型」逆向解读（如把「非双休勿投」读成"本岗是双休"）：这类措辞两种读法都成立
+ * （"本岗非双休，勿投" vs "非双休者勿投"），据它反向断言"是双休"等于替用户下结论 ——
+ * 与项目「不猜测」约定冲突，且会给出**偏乐观的绿色双休标签**。统一按「未说明」处理。
+ */
+const RE_DOUBLE_REST_NEGATION = /(?:非|不是|没有|无|不)\s*(?:周末)?\s*双休/;
 
 /**
  * 识别岗位的工作制度。未命中任何信号 → 标准双休（5 天/周、22 天/月）兜底且 `detected=false`。
@@ -97,6 +109,12 @@ export function detectWorkSchedule(input?: Partial<JobMeta> | null): WorkSchedul
     return { weeklyDays: 6, monthlyWorkDays: monthlyWorkDaysOf(6), label: '单休', detected: true, evidence: clip(single[0]) };
   }
   // ⑤ 双休系 → 5 天/周
+  //    先排除「否认双休」的表述（审查 #44）：「非双休 / 不是双休 / 无双休」≠ 双休，
+  //    落兜底「未说明」（detected=false），**不猜**单休/大小周（JD 只说了"不是双休"，
+  //    推断具体制度属于猜测，按项目「不猜测」约定取未知）。
+  //    注意顺序：①②③④ 均在此前，故「非双休 + 每周5.5天」「非双休 + 月休6天」这类
+  //    带硬数字/俗语的句子仍由前面的确定性信号裁决，不受本守卫影响。
+  if (RE_DOUBLE_REST_NEGATION.test(text)) return fallback();
   const double = text.match(RE_DOUBLE_REST);
   if (double) {
     return { weeklyDays: 5, monthlyWorkDays: monthlyWorkDaysOf(5), label: '双休', detected: true, evidence: clip(double[0]) };

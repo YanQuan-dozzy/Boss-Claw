@@ -16,11 +16,10 @@ import {
   type CamoufoxChatResult, type ChatHistoryEntry, type ChatWatchConversation,
 } from '@/lib/bossclaw/camoufox';
 import {
-  effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor,
-  isLockedOut, cooldownRemaining, SAFETY_LIMITS, classifyRiskCode, nextCooldownUntil,
+  isLockedOut, SAFETY_LIMITS, classifyRiskCode, nextCooldownUntil, checkDeliveryGuards,
 } from '@/lib/bossclaw/safety';
 import { sharedPacer, markDelivered, resetDeliveredSinceRest } from '@/lib/bossclaw/deliveryThrottle';
-import { checkDeliveryGate, batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
+import { batchRestDelayMs } from '@/lib/bossclaw/activityWindow';
 import { cleanTitle } from '@/lib/bossclaw/jobDisplay';
 import { getErrorMessage } from '@/lib/bossclaw/helpers';
 import { generateReply } from '@/lib/bossclaw/greetings';
@@ -426,13 +425,23 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       });
 
       if (cfg.sendOnlineResume || cfg.sendResumeImage) {
+        // 审查 #64：这条日志原先恒写「已触发在线简历/图片简历打包同步」——**未判 canAttach 就断言完成**，
+        // 在平台不支持附件（canAttach=false，如非 BOSS 平台）或附件未真正附上时属虚假陈述，
+        // 会误导用户以为简历已随招呼语发出。现按能力矩阵区分「已按设置请求」与「平台不支持」，
+        // 并明确成功与否以聊天窗气泡为准（发送结果不在此处可判定）。
+        const requested = [
+          cfg.sendOnlineResume ? '在线简历' : '',
+          cfg.sendResumeImage ? '图片简历' : '',
+        ].filter(Boolean).join(' + ');
         addChatLog({
-          level: 'info',
+          level: canAttach ? 'info' : 'warn',
           stage: 'resume',
           jobId,
           jobTitle: title,
           company,
-          msg: '附件状态：已触发在线简历/图片简历打包同步',
+          msg: canAttach
+            ? `附件状态：已按设置请求同步「${requested}」（是否真正附上以聊天窗气泡为准）`
+            : `附件设置：平台 ${String(item.job?.platform || 'boss')} 不支持简历附件同步，本次沟通未附带「${requested}」（可在设置页关闭该平台附件项）`,
         });
       }
       addLog('success', `自动沟通成功：${title}`);
@@ -749,7 +758,8 @@ function watchLoop(run: WatchRun): void {
         }
       }
     } finally {
-      if (currentWatch === run) currentWatch = null;
+      const stillMine = currentWatch === run;
+      if (stillMine) currentWatch = null;
       // 仅当代际未变（没有新的 setWatch(true) 接手）时才关闭常驻会话
       if (started && watchSeq === run.seq) {
         try {
@@ -758,8 +768,17 @@ function watchLoop(run: WatchRun): void {
           /* 忽略关闭异常 */
         }
       }
-      watchHandled.clear();
-      useAutoChatStore.setState({ watchRunning: false, watchActiveId: null });
+      // 审查 #32：下面两行**同样必须按代际守卫**（同块前两行有守卫、这两行原本没有）。
+      // 旧 run 的 finally 若无条件清空，会把**新 run** 的共享状态一起抹掉：
+      //   ① `watchHandled` 是「已回复过这条 HR 消息」的内存去重表（无对应 pending 项时是唯一防线）
+      //      → 清掉后新 run 可能重复回复同一条消息；
+      //   ② `watchRunning:false` 会让 UI 显示「已停止」而循环实际在跑，且 `setWatch(true)` 的
+      //      互斥判断（currentWatch || watchRunning）此后形同虚设。
+      // 正常停止路径（setWatch(false)）已自行置位这两项状态，无需旧 run 再兜底。
+      if (stillMine) {
+        watchHandled.clear();
+        useAutoChatStore.setState({ watchRunning: false, watchActiveId: null });
+      }
     }
   })();
 }
@@ -876,50 +895,25 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           const nowCfg = useSettingsStore.getState().config;
           // B1：冷却/每日上限/首条验收/风控这些内部退出路径不置空 currentRun，
           //    直接 break 由 finally 正常复位 chatRunning（否则 chatRunning 卡死、start() 被拦死）。
-          if (isLockedOut(nowCfg)) {
-            useRuntimeLogsStore.getState().addChatLog({
-              level: 'warn',
-              stage: 'risk',
-              msg: `账号处于安全冷却期，后台沟通已暂停（剩余约 ${Math.ceil(cooldownRemaining(nowCfg) / 60000)} 分钟）。点击「停止」后可稍后重试。`,
-            });
-            break;
-          }
-          // 活跃时段（与 Workbench.precheckDelivery 同一权威，见 activityWindow.ts）：
-          // 卡片虽挂在「自动沟通」页，但保护对象是**账号** —— 两个引擎必须同口径，
-          // 否则「关掉工作台、只跑自动沟通」就能在凌晨 3 点持续作业。
-          // 与工作台同样采取「中止本轮 + 告知恢复时刻」而非等待（最长要等十几小时，不能阻塞界面）。
+          // 审查 #23：判定收敛到 safety.checkDeliveryGuards，与单条「沟通」(chatOne) 共用同一实现 ——
+          // 活跃时段权威在 activityWindow.ts（保护对象是**账号**，两个引擎必须同口径，
+          // 否则「关掉工作台、只跑自动沟通」就能在凌晨 3 点持续作业）；与工作台同样采取
+          // 「中止本轮 + 告知恢复时刻」而非等待（最长要等十几小时，不能阻塞界面）。
           {
-            const gate = checkDeliveryGate(nowCfg.activeHours, nowCfg.pausedUntil);
-            if (!gate.ok) {
-              const resumeAt = gate.nextAllowedAt ? new Date(gate.nextAllowedAt).toLocaleString('zh-CN') : '活跃时段开始后';
-              useRuntimeLogsStore.getState().addChatLog({
-                level: 'warn',
-                stage: 'risk',
-                msg: `${gate.reason}。预计 ${resumeAt} 自动恢复（可在「设置 → 自动沟通 → 防封号节奏限制」中调整或关闭）。`,
-              });
+            const guard = checkDeliveryGuards(
+              nowCfg,
+              (item.job?.platform || 'boss') as JobPlatform,
+              useDataStore.getState().pending,
+            );
+            if (!guard.ok) {
+              useRuntimeLogsStore.getState().addChatLog({ level: 'warn', stage: 'risk', msg: guard.msg });
+              if (guard.kind === 'platform-cap') {
+                // 多平台适配：平台每日上限命中后整组跳过该平台岗位（不再逐条告警/预占），
+                // 转交下一优先级平台，不中断整批
+                for (const e of eligible) run.processedIds.add(e.id);
+                continue;
+              }
               break;
-            }
-          }
-          if (dailySentCount(useDataStore.getState().pending) >= effectiveDailyCap(nowCfg)) {
-            useRuntimeLogsStore.getState().addChatLog({
-              level: 'warn',
-              stage: 'risk',
-              msg: `今日沟通数已触及安全上限 ${effectiveDailyCap(nowCfg)} 条，后台沟通已暂停。`,
-            });
-            break;
-          }
-          // 多平台适配：平台每日投递上限（min(该平台每日目标, 平台侧上限如智联 100/日, 150)）
-          // 命中后整组跳过该平台岗位（不再逐条告警/预占），转交下一优先级平台，不中断整批
-          {
-            const itemPlatform = (item.job?.platform || 'boss') as 'boss' | 'liepin' | 'zhaopin' | 'job51';
-            if (dailySentCountFor(useDataStore.getState().pending, itemPlatform) >= effectiveDailyCapFor(nowCfg, itemPlatform)) {
-              useRuntimeLogsStore.getState().addChatLog({
-                level: 'warn',
-                stage: 'risk',
-                msg: `平台 ${itemPlatform} 今日投递已达上限 ${effectiveDailyCapFor(nowCfg, itemPlatform)} 条，该平台剩余岗位本轮跳过（可在「设置 → 招聘平台」调整每日目标）。`,
-              });
-              for (const e of eligible) run.processedIds.add(e.id);
-              continue;
             }
           }
           // 单轮上限（定时投递任务限定）：成功沟通达到 scope.maxCount 即结束本次运行
@@ -1002,11 +996,45 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
 
   chatOne: (item) => {
     if (currentRun || useAutoChatStore.getState().chatRunning) return;
+    // 审查 #23：单条「沟通」（工作台单卡按钮 / 控制桥 auto.chatOne）原先**只做重入保护** ——
+    // 冷却期内、活跃时段外、已达当日或平台上限时点它仍会真实发送，账号级保护被整条绕过。
+    // 现复用批量路径的同一守卫（safety.checkDeliveryGuards，唯一权威），命中即记录原因并中止本次发送。
+    const preCfg = useSettingsStore.getState().config;
+    const guard = checkDeliveryGuards(
+      preCfg,
+      (item.job?.platform || 'boss') as JobPlatform,
+      useDataStore.getState().pending,
+    );
+    if (!guard.ok) {
+      useRuntimeLogsStore.getState().addChatLog({
+        level: 'warn',
+        stage: 'risk',
+        jobTitle: item.job?.title,
+        msg: `单条沟通已拦截：${guard.msg}`,
+      });
+      return;
+    }
     const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
     currentRun = run;
     set({ chatRunning: true, activeChatId: item.id, progress: { index: 0, total: 1 } });
     void (async () => {
       try {
+        // 账号级节流：单条发送与批量发送共用同一 sharedPacer 与同一「连续投递计数」
+        // （deliveryThrottle 单例，禁止绕过速率限制；批次休息量级为分钟，故同样在发送前判定）。
+        const cfg = useSettingsStore.getState().config;
+        const sinceRest = markDelivered();
+        const restMs = batchRestDelayMs(cfg.batchRest, sinceRest);
+        if (restMs > 0) {
+          useRuntimeLogsStore.getState().addChatLog({
+            level: 'info',
+            stage: 'system',
+            jobTitle: item.job?.title,
+            msg: `已连续沟通 ${sinceRest} 个岗位，按防封号策略休息约 ${Math.round(restMs / 60000)} 分钟（模拟真人作业中断，降低风控风险）`,
+          });
+          await sleep(restMs);
+          resetDeliveredSinceRest();
+        }
+        await pacerNow().waitForSlot();
         await chatJob(item);
       } finally {
         if (currentRun === run) {

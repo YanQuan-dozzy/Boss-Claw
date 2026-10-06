@@ -128,6 +128,10 @@ export default function CloakView(props: Props) {
   useEffect(() => { engineRef.current = engine; }, [engine]);
   // 启动锁：异步入口并发去重（多按钮同时点只触发一次 cloakStart）
   const startingRef = useRef(false);
+  // 挂载标记（审查 #91）：轮询等待类循环必须在组件卸载后立即退出 ——
+  // 否则切页/关标签后仍会继续每 200ms 轮询（最长 90s），并向已卸载组件写状态。
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
 
   // ===== 核心封装：所有用户级入口都先调它 =====
   // 行为：
@@ -166,7 +170,7 @@ export default function CloakView(props: Props) {
     // —— 阶段 2：启动 / 重启 ——
     if (startingRef.current) {
       const t0 = Date.now();
-      while (Date.now() - t0 < ENGINE_BOOT_TIMEOUT_MS) {
+      while (aliveRef.current && Date.now() - t0 < ENGINE_BOOT_TIMEOUT_MS) {
         await new Promise((r) => setTimeout(r, 200));
         if (engineRef.current.ready) return true;
         if (engineRef.current.lastError && !startingRef.current) return false;
@@ -317,6 +321,11 @@ export default function CloakView(props: Props) {
   }, []);
 
   const closeTab = useCallback((id: string) => {
+    // 审查 #90：IPC（关闭 launcher 侧页面）**不得放在 setState 更新器内**——
+    //  ① React 18 StrictMode 会双调用更新器 → 同一页面被 close 两次；
+    //  ② 并发渲染下更新器可能被丢弃/重放 → 出现「页面关了但标签还在」（或反之）的 UI 与实际不一致。
+    // 改为：更新器保持**纯函数**（只算新状态），IPC 在更新器之外、以「已提交状态」的镜像 tabsRef 做前置判断。
+    if (!tabsRef.current.some((t) => t.id === id)) return;
     setState((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
       if (idx < 0) return s;
@@ -327,10 +336,10 @@ export default function CloakView(props: Props) {
       }
       let activeId = s.activeId;
       if (activeId === id) activeId = tabs[Math.min(idx, tabs.length - 1)].id;
-      e.cloakPageClose?.(id);
-      syncedRef.current.delete(id);
       return { tabs, activeId };
     });
+    e.cloakPageClose?.(id);
+    syncedRef.current.delete(id);
   }, []);
 
   const closeTabById = useCallback((id?: string) => {
@@ -340,21 +349,27 @@ export default function CloakView(props: Props) {
 
   const createTab = useCallback((url: string, title: string, activate: boolean): string => {
     const tab = makeTab(url, title);
+    // 审查 #90：超限淘汰的「待关闭页面」必须先算出来（基于已提交状态镜像），
+    // IPC 放在更新器之外 —— 理由同 closeTab。
+    const cur = tabsRef.current;
+    let victimId: string | null = null;
+    if (cur.length >= MAX_TABS) {
+      const candidates = cur.filter((_, i) => i > 0);
+      if (candidates.length > 0) {
+        victimId = candidates.reduce((a, b) => (a.lastUsed <= b.lastUsed ? a : b)).id;
+      }
+    }
     setState((s) => {
       let tabs = s.tabs;
-      if (tabs.length >= MAX_TABS) {
-        const candidates = tabs.filter((_, i) => i > 0);
-        if (candidates.length > 0) {
-          const victim = candidates.reduce((a, b) => (a.lastUsed <= b.lastUsed ? a : b));
-          tabs = tabs.filter((t) => t.id !== victim.id);
-          e.cloakPageClose?.(victim.id);
-          syncedRef.current.delete(victim.id);
-        }
-      }
+      if (victimId) tabs = tabs.filter((t) => t.id !== victimId);
       let activeId = activate ? tab.id : s.activeId;
       if (!tabs.some((t) => t.id === activeId)) activeId = tabs[0]?.id ?? tab.id;
       return { tabs: [...tabs, tab], activeId };
     });
+    if (victimId) {
+      e.cloakPageClose?.(victimId);
+      syncedRef.current.delete(victimId);
+    }
     // 若引擎已就绪，立即推到 launcher；否则交给 syncedRef effect 在 ready 后兜底
     if (engineRef.current.ready) {
       e.cloakPageNew?.(tab.id, url).catch(() => {

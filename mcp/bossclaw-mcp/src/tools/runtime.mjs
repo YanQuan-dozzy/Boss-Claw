@@ -1,6 +1,6 @@
 // src/tools/runtime.mjs —— 运行控制工具组（启动 / 停止 / 状态）
 import path from 'node:path';
-import { PATHS, DESKTOP_DIR, MODE, ok, fail, statSafe, probePort, tailTextFile, spawnDetached, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
+import { PATHS, DESKTOP_DIR, MODE, ok, fail, statSafe, probePort, tailTextFile, spawnDetached, waitForSpawn, killTree, isPidAlive, controlCall, resolveInstalledExe } from '../context.mjs';
 import { obj, str, num, bool, arr, WRITE_LOCAL, READ_ONLY } from '../schema.mjs';
 import { listBossclawProcesses } from '../procs.mjs';
 
@@ -81,7 +81,14 @@ export const runtimeTools = [
         mode === 'installed'
           ? [...(args.noGpu ? ['--no-sandbox'] : []), ...(args.control !== false ? ['--control-bridge'] : []), ...(args.extraArgs || [])]
           : ['.', ...(args.dev ? ['--dev'] : []), ...(args.noGpu ? ['--no-sandbox'] : []), ...(args.extraArgs || [])];
-      const { pid, cmd } = spawnDetached(exePath, argv, { cwd, env });
+      const { pid, cmd, child } = spawnDetached(exePath, argv, { cwd, env });
+
+      // 审查 #20：先确认 spawn 真的成功（ENOENT/EPERM 只在异步 'error' 事件里体现），
+      // 否则后续 probePort/日志会对着一个不存在的 pid 忙活，而真正的原因（路径不对/无权限）被吞掉。
+      const spawned = await waitForSpawn(child);
+      if (!spawned.ok) {
+        return fail(`启动失败：无法创建进程（${spawned.error}）。可执行文件：${exePath}`);
+      }
 
       const waitSec = Math.min(Math.max(Number(args.waitSec) || 8, 1), 60);
       await sleep(waitSec * 1000);

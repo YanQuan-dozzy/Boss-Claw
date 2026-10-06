@@ -67,8 +67,24 @@ export function gatherBundle(): BackupBundle {
  * 快路径：自上次成功写盘后所有 key 均无 persist 新写入 → 内容必然未变，直接零开销返回；
  * 每 FULL_CHECK_EVERY 次快路径跳过后强制一次全量复核（兜底 persist 之外对 localStorage 的直写）。
  * force=true（设置页「立即备份」）跳过全部快路径与复核计数，始终全量执行。
+ *
+ * ⚠️ 并发串行化（审查 #29）：函数体内含 `await`（IPC 写盘），而调用点有两类 —— 5 分钟心跳的
+ * idle 回调与设置页「立即备份」；两者可能重叠，重叠时两个写盘会各自收集/拼接并先后落到**同一个**
+ * 备份文件上（主进程侧原用固定 `.tmp` 名 + rename），最坏结果是两次写交叉、备份文件内容错乱。
+ * 这里用一条 Promise 链把调用排成队列（不做「在飞就提前返回」，否则用户点「立即备份」会被
+ * 心跳的在飞写静默吞掉、看不到任何反馈）。
  */
-export async function writeLocalBackup(force = false): Promise<{ wrote: boolean; error?: string }> {
+let writeChain: Promise<unknown> = Promise.resolve();
+
+export function writeLocalBackup(force = false): Promise<{ wrote: boolean; error?: string }> {
+  const run = () => doWriteLocalBackup(force);
+  const next = writeChain.then(run, run);
+  // 队列本身不因单次失败而中断（结果由调用方各自的 next 拿到）
+  writeChain = next.catch(() => undefined);
+  return next;
+}
+
+async function doWriteLocalBackup(force = false): Promise<{ wrote: boolean; error?: string }> {
   try {
     if (!electronApi.backup || !electronApi.backup.write) {
       return { wrote: false, error: 'backup API 不可用（仅 Electron 可用）' };

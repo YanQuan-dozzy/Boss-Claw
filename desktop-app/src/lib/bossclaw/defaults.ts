@@ -171,7 +171,16 @@ export const DEFAULT_WORKFLOW: Workflow = {
   activeRunId: null,
 };
 
-export const today = () => new Date().toISOString().slice(0, 10);
+/**
+ * 本地日历日（`YYYY-MM-DD`）。
+ * ⚠️ 不能用 `new Date().toISOString().slice(0, 10)`（审查 §四·25）—— `toISOString()` 取的是
+ * **UTC** 日期，东八区 00:00–08:00 会得到「昨天」，使每日统计/重置基准错位一天。
+ */
+export const today = () => {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 export const uniq = (items: (string | undefined | null)[] = []) =>
   [...new Set(items.filter(Boolean))] as string[];

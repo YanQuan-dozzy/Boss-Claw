@@ -996,6 +996,35 @@ export function getAICacheStats(): { entries: number; totalBytes: number; hits: 
 const aiCacheInFlight = new Map<string, Promise<any>>();
 
 /**
+ * 结构克隆一次模型返回值（缓存存/取两侧都必须过它）——审查 #2。
+ *
+ * 背景：缓存条目按**引用**保存、命中时又返回**同一引用**，而消费方（`matching.ts::analyzeJob`）
+ * 会就地对返回值改写：
+ *   `result.greeting = …`、`result.dimensions = fusedDimensions`、`delete result.dimensionScores`。
+ * 于是**首次分析就把缓存条目改坏**（`dimensionScores` 被删、`dimensions` 被覆写）：
+ * 第二次相同输入命中缓存时 AI 维度分已不存在 → `mergeAiDimensions` 全量回退本地 →
+ * 走「纯整体分」而非 60/40 维度融合 → 同岗位两次分析可能落在不同档位/分数，
+ * 违背「同岗位重复分析落同一档」的产品承诺。
+ *
+ * 处置：生产者写入缓存前克隆一份（缓存不再被调用方改写），命中/返回时再克隆一份
+ * （调用方拿到的永远是自己的副本）。`_repaired` 是**非枚举**属性、克隆会丢，故单独还原。
+ */
+function cloneCallResult<T>(value: T): T {
+  if (value == null || typeof value !== 'object') return value;
+  let out: T;
+  try {
+    out = typeof structuredClone === 'function'
+      ? structuredClone(value)
+      : (JSON.parse(JSON.stringify(value)) as T);
+  } catch {
+    // 含不可克隆值（函数 / DOM 节点等）时退回原引用——AI JSON 结果恒为纯数据，正常不会走到这里
+    out = value;
+  }
+  if ((value as { _repaired?: boolean })._repaired) markRepaired(out);
+  return out;
+}
+
+/**
  * 带缓存的模型调用：相同输入命中本地缓存直接返回（不重复计费）。
  * 缓存 key = scope + provider + model + temperature + maxTokens + jsonMode + 完整 messages。
  * 任何输入（简历/画像/岗位/提示词/模型参数）变化都会产生新 key，保证命中结果与当前输入严格一致。
@@ -1040,20 +1069,24 @@ export async function cachedCallModel(
     // 高频命中会造成渲染主线程阻塞、卡顿）。实际缓存条目仍在其写入时持久化，不受影响。
     bumpCacheStats(1, 0);
     // P1-06：命中时把「曾修复」标记挂回结果（非枚举 _repaired 过不了 JSON.stringify，须由 entry 字段承载）
-    if (hit.repaired) markRepaired(hit.value);
-    return hit.value;
+    // 审查 #2：返回**克隆**而非缓存引用——调用方会就地改写返回值（见 cloneCallResult 注释）。
+    const value = cloneCallResult(hit.value);
+    if (hit.repaired) markRepaired(value);
+    return value;
   }
   if (map[key]) delete map[key]; // 已过期：清理
 
   const inFlight = aiCacheInFlight.get(key);
-  if (inFlight) return inFlight;
+  // 并发等待同一在飞请求时同样返回克隆：否则多个调用方共用同一个对象、互相改写（审查 #2）
+  if (inFlight) return inFlight.then((v) => cloneCallResult(v));
 
   const task = (async () => {
     const result = await callModel(messages, config, { ...options, purpose: options.purpose ?? AI_SCOPE_LABELS[scope] });
     // P1-06：把「是否经二次补齐修复」落进缓存 entry（_repaired 非枚举属性会丢，须显式字段）
     map[key] = {
       key,
-      value: result,
+      // 审查 #2：写入缓存的是**克隆**，调用方后续对返回值的就地改写不会污染缓存条目
+      value: cloneCallResult(result),
       ts: Date.now(),
       ttlMs,
       hits: 0,
@@ -1078,7 +1111,8 @@ export async function cachedCallModel(
   });
   aiCacheInFlight.set(key, guarded);
   try {
-    return await guarded;
+    // 审查 #2：调用方拿到的永远是副本，缓存条目/生产者对象都不可被外部改写
+    return cloneCallResult(await guarded);
   } finally {
     if (aiCacheInFlight.get(key) === guarded) aiCacheInFlight.delete(key);
   }

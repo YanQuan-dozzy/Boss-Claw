@@ -484,8 +484,8 @@ export default function Tasks() {
                           <Tooltip
                             title={
                               <div style={{ maxWidth: 360, fontSize: 12 }}>
-                                {p.analysis.hardBlocks.map((b, i) => (
-                                  <div key={i}>· {b}</div>
+                                {p.analysis.hardBlocks.map((b) => (
+                                  <div key={b}>{b}</div>
                                 ))}
                               </div>
                             }
@@ -584,8 +584,9 @@ export default function Tasks() {
                         <CheckOutlined /> 优势匹配
                       </span>
                       <div className="task-prop-chips">
-                        {p.analysis.matchedEvidence.slice(0, 3).map((e, i) => (
-                          <Tooltip key={i} title={e}>
+                        {p.analysis.matchedEvidence.slice(0, 3).map((e) => (
+                          // 审查 §四表 24：条目文案唯一 → 用文本作 key
+                          <Tooltip key={e} title={e}>
                             <span className="task-prop-chip">{e}</span>
                           </Tooltip>
                         ))}
@@ -607,11 +608,11 @@ export default function Tasks() {
                         <WarningOutlined /> 缺口与提醒
                       </span>
                       <div className="task-prop-chips">
-                        {p.analysis.gaps?.slice(0, 4).map((g, i) => {
+                        {p.analysis.gaps?.slice(0, 4).map((g) => {
                           const { name, note } = splitGapWithNote(g);
                           return (
                             <Tooltip
-                              key={i}
+                              key={g}
                               title={
                                 <div style={{ maxWidth: 320 }}>
                                   <div>{g}</div>
@@ -722,7 +723,8 @@ export default function Tasks() {
         {detailModal && detailModal.kind === 'match' && (
           <ul className="detail-modal-list">
             {(detailModal.item.analysis?.matchedEvidence || []).map((e, i) => (
-              <li key={i} className="detail-modal-item detail-modal-item--match">
+              // 审查 §四表 24：条目为唯一文案 → 用文本作 key（`i` 仅用于展示序号）
+              <li key={e} className="detail-modal-item detail-modal-item--match">
                 <span className="detail-modal-idx">{i + 1}</span>
                 <span className="detail-modal-text">{e}</span>
               </li>
@@ -735,7 +737,8 @@ export default function Tasks() {
               {(detailModal.item.analysis?.gaps || []).map((g, i) => {
                 const { name, note } = splitGapWithNote(g);
                 return (
-                  <li key={i} className="detail-modal-item">
+                  // 审查 §四表 24：缺口原文（g）在同一条目内唯一 → 用它作 key（`i` 仅用于序号）
+                  <li key={g} className="detail-modal-item">
                     <span className="detail-modal-idx">{i + 1}</span>
                     <div className="detail-modal-gap">
                       <span className={'detail-modal-gap-name' + (g.startsWith('表达缺口') ? ' detail-modal-gap-name--expr' : '')}>{name}</span>
@@ -752,7 +755,8 @@ export default function Tasks() {
                 </div>
                 <ul className="detail-modal-list">
                   {(detailModal.item.analysis.risks || []).map((r, i) => (
-                    <li key={i} className="detail-modal-item detail-modal-item--risk">
+                    // 审查 §四表 24：风险文案唯一 → 用文本作 key（`i` 仅用于序号）
+                    <li key={r} className="detail-modal-item detail-modal-item--risk">
                       <span className="detail-modal-idx">{i + 1}</span>
                       <span className="detail-modal-text">{r}</span>
                     </li>

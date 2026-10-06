@@ -168,10 +168,18 @@ export function createServer({ tools, instructions }) {
         return;
       }
       inFlight += 1;
-      void dispatch(msg).finally(() => {
-        inFlight -= 1;
-        maybeExit();
-      });
+      // 审查 #13：`dispatch` 内 `reply()` → `process.stdout.write` 在客户端断开（EPIPE）时会抛错，
+      // 使这个 Promise 进入 rejected 状态；原实现只有 `.finally`、没有 `.catch` → 产生
+      // **unhandledRejection**（Node 15+ 默认直接终止进程，MCP 服务被一个断开的客户端打崩）。
+      // 这里显式吞掉并记一行 stderr 日志，保证「单个请求失败」不会升级为「服务退出」。
+      void dispatch(msg)
+        .catch((e) => {
+          log(`请求处理异常（已捕获，不影响服务）：${e?.stack || e?.message || e}`);
+        })
+        .finally(() => {
+          inFlight -= 1;
+          maybeExit();
+        });
     });
     rl.on('close', () => {
       stdinClosed = true;

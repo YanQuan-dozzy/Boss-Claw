@@ -245,23 +245,38 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // 所有“隐藏遮罩”的定时器到期后先校验序号——期间若发生新导航（序号变化）
   // 则该定时器自动失效，避免旧导航残留的定时器误清新导航的 loading 态（遮罩提前消失/闪烁）。
   const loadSeqRef = useRef<Record<string, number>>({});
+  // 遮罩定时器统一登记 + 卸载清理（审查 #92）：原实现每个导航排的 setTimeout 既不记录也不清理，
+  // 卸载后仍会触发 setState（浪费 + 潜在告警），长会话里还会积累大量已失效的定时器。
+  const overlayTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const trackTimeout = useCallback((fn: () => void, ms: number) => {
+    const t = setTimeout(() => {
+      overlayTimersRef.current.delete(t);
+      fn();
+    }, ms);
+    overlayTimersRef.current.add(t);
+    return t;
+  }, []);
+  useEffect(() => () => {
+    for (const t of overlayTimersRef.current) clearTimeout(t);
+    overlayTimersRef.current.clear();
+  }, [trackTimeout]);
   // 立即进入淡出阶段，FADE_MS 后真正卸载节点（带序号校验）
   const hideLoading = useCallback((id: string, seq: number) => {
     setFadingTabs((prev) => { if (prev.has(id)) return prev; const s = new Set(prev); s.add(id); return s; });
-    setTimeout(() => {
+    trackTimeout(() => {
       if ((loadSeqRef.current[id] || 0) !== seq) return; // 期间已有新导航：放弃本次隐藏
       setLoadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
       setFadingTabs((prev) => { if (!prev.has(id)) return prev; const s = new Set(prev); s.delete(id); return s; });
     }, LOADING_FADE_MS);
-  }, []);
+  }, [trackTimeout]);
   // 定时淡出（快照当前序号，到期校验）；被更新的导航接管时自动失效
   const scheduleHide = useCallback((id: string, afterMs: number) => {
     const seq = loadSeqRef.current[id] || 0;
-    setTimeout(() => {
+    trackTimeout(() => {
       if ((loadSeqRef.current[id] || 0) !== seq) return;
       hideLoading(id, seq);
     }, afterMs);
-  }, [hideLoading]);
+  }, [hideLoading, trackTimeout]);
 
   const markLoading = useCallback((id: string, loading: boolean) => {
     if (loading) {
@@ -276,6 +291,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // 事件回调统一经本 ref 取最新版计时函数
   const loadingCtlRef = useRef({ markLoading, hideLoading, scheduleHide });
   loadingCtlRef.current = { markLoading, hideLoading, scheduleHide };
+
+  // 挂载标记（审查 #91）：投递前就绪探测循环（最长 ~25s、每 300ms 一轮）必须在卸载/关标签后立即退出，
+  // 否则切页后仍在后台空转、并对已卸载组件写状态。
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
 
   // 确保 activeId 与 tabs 同步
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeId) ?? tabs[0] ?? null, [tabs, activeId]);
@@ -945,8 +965,9 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           let lastProbe: any = null;
           let preloadFlag = false;
           let overlay = false;
-          while (Date.now() - startedAt < APPLY_PAGE_READY_MS) {
+          while (aliveRef.current && Date.now() - startedAt < APPLY_PAGE_READY_MS) {
             await sleep(300);
+            if (!aliveRef.current) break;
             preloadFlag = isPreloadReady(tabId);
             overlay = isLoading(tabId);
             if (preloadFlag && !overlay) { start(); return; } // 快路径：宿主标记齐全，不额外探测
@@ -963,7 +984,9 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           resolve({
             ok: false,
             stage: 'failed',
-            error: `详情页加载超时（preload ${preloadFlag ? '就绪' : '未就绪'}，加载遮罩 ${overlay ? '未收敛' : '已隐藏'}${describeApplyProbe(lastProbe)}）`,
+            error: aliveRef.current
+              ? `详情页加载超时（preload ${preloadFlag ? '就绪' : '未就绪'}，加载遮罩 ${overlay ? '未收敛' : '已隐藏'}${describeApplyProbe(lastProbe)}）`
+              : '组件已卸载 / 标签页已关闭，投递探测中止',
             tabId,
           });
         })();

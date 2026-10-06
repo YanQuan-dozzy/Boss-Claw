@@ -24,7 +24,7 @@
 
 * **任务进度**：中栏任务级进度条 + 阶段标签（整理 / 匹配 / 排序 / 沟通 / 投递），日志流实时滚动；失败可重试 / 忽略 / 跳过。
 
-* **简历中心**：PDF / DOCX / DOC / TXT 本地解析（渲染进程内完成，无需桥接）：PDF 用自研解析器（Flate / ASCIIHex / ASCII85 / RunLength + ToUnicode / CMap），DOCX 用 mammoth 浏览器版 + 自研 ZIP/XML 双通道兜底，**旧版 `.doc` 用自研解析器**（OLE2/CFB 容器 + FIB/CLX 分片表，兼容「实为 RTF / HTML」的 `.doc`），失败再走桥接转档；「工作台定制」打招呼语提示词可编辑（留空用系统默认，统一驱动工作台岗位招呼语 / 定制简历求职信 / JD 预览）。
+* **简历中心**：PDF / DOCX / DOC / MD / TXT 本地解析（渲染进程内完成，无需桥接）：PDF 用自研解析器（Flate / ASCIIHex / ASCII85 / RunLength + ToUnicode / CMap），DOCX 用 mammoth 浏览器版 + 自研 ZIP/XML 双通道兜底，**旧版 `.doc` 用自研解析器**（OLE2/CFB 容器 + FIB/CLX 分片表，兼容「实为 RTF / HTML」的 `.doc`），**Markdown 走 `mdParser.ts`**，失败再走桥接转档；「工作台定制」打招呼语提示词可编辑（留空用系统默认，统一驱动工作台岗位招呼语 / 定制简历求职信 / JD 预览）。
 
 * **AI 能力**：职业画像（AI 完整画像 → 精简重试 → 本地规则三级降级）；岗位匹配（**AI 五维评估 + 档位制裁决，AI 分即最终分**，本地多维评分仅作展示与兜底；评分 / 决策 / 硬条件拦截 / 沟通草稿）；**打招呼语（求职信）提示词优先级**：① greetings 技能（含用户自定义技能）→ ② 简历中心「打招呼语提示词」输入框内容 → ③ 本地规则；投递方向支持 **AI 生成/校准关键词**，并新增 **薪资校准模块** 与 **工作时间偏好** 供 AI 判断匹配与约束沟通内容；AI 生成 + 求职者口吻校验，失败回退本地规则。
 
@@ -64,7 +64,7 @@
 
 * **岗位过期判定**（`main` 新增，`jobExpiry.ts` 唯一权威）：JD 中**显式写出**投递截止日期（猎聘 JD 常见「截止日期：YYYY年MM月DD日」，也认 `2027-07-16` / `2027/7/16` / 缺年份的「07月16日」）的岗位做纯本地**确定性**判定 —— **截止日当天仍有效**，早于今天即判过期并硬性排除，不消耗 AI Token 与投递配额；**未写截止日期、写成「长期有效 / 招满即止」、或日期不可解析一律放行**（大多数岗位不写该字段 ⇒ 对其它平台零副作用）。判定输入为标题 + 描述 + 卡片文本，**不做全页扫描**；`ingestJob` 与「加入任务」两条入口同口径拦截。设置项 `excludeExpiredJobs` 默认按平台取值（`PLATFORM_EXPIRY_DEFAULT`：**仅猎聘默认开启**），用户在设置页的显式开关**优先于**平台默认值。回归：`scripts/liepin-jd-regression.mjs`。
 
-* **外部 Agent 通道**（默认关闭）：应用内控制桥（`electron/control-bridge.cjs`，仅监听 `127.0.0.1:17650`，除 `/health` 外要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json`）+ 零依赖 stdio MCP 服务器 `mcp/bossclaw-mcp`（**8 工具 / 3 组**：运行控制 3 · 应用控制 2 · agent 代答 3）。动作由渲染层白名单 `controlRuntime.ts` 强制，**不提供发消息 / 批量投递 / 绕过验证码 / 改安全参数的能力**。
+* **外部 Agent 通道**（默认关闭）：应用内控制桥（`electron/control-bridge.cjs`，仅监听 `127.0.0.1:17650`，除 `/health` 外要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json`）+ 零依赖 stdio MCP 服务器 `mcp/bossclaw-mcp`（**9 工具 / 3 组**：运行控制 3 · 应用控制 2 · agent 代答 4）。动作由渲染层白名单 `controlRuntime.ts` 强制，**不提供发消息 / 批量投递 / 绕过验证码 / 改安全参数的能力**。
 
 * **Agent 代答**（`main` 新增）：用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）由 `agentAnswer.ts` 挂入本地待答队列并等待，在线外部 Agent 经 `bossclaw_agent_tasks`（长轮询，**领取即心跳**）领取、用自有模型生成、`bossclaw_agent_submit` 回填；超时 / 取消 / 无心跳则回落应用内本地规则。心跳窗口 90s，单任务等待 30~240s，JSON 纠错最多 1 次。**只搬运「提示词 ↔ 生成文本」**，回填仍走应用既有校验链。
 
@@ -210,11 +210,14 @@ npm run package:all        # 打包 Windows + Linux
 
 ```
 release/
-├── BossClaw-2.5.5-x64.exe           # Windows NSIS 安装包（推荐发行）
-├── BossClaw-2.5.5-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
-├── BossClaw-2.5.5-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
+├── BossClaw-<version>-x64.exe           # Windows NSIS 安装包（推荐发行）
+├── BossClaw-<version>-portable.exe      # Windows 绿色便携版（无需安装、解压即用）
+├── BossClaw-<version>-x64.exe.blockmap  # NSIS 增量更新 blockmap（electron-builder 自动生成）
 └── win-unpacked/                     # Windows 解压目录（可手工分发的文件夹）
 ```
+
+> `<version>` 取 `desktop-app/package.json` 的 `version`（单一来源；安装包名由 electron-builder 按同一字段生成）。
+> 示例：`version` = `2.5.6` → `BossClaw-2.5.6-x64.exe`。
 
 ### Linux（`npm run package:linux` 或 `package:all`）
 

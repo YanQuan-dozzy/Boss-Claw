@@ -226,19 +226,27 @@ class ZhaopinCollector(CollectorBase):
     def dom_cards_js(self) -> str:
         return JS_DOM_CARDS
 
-    def after_navigate(self, page, query: str, page_num: int) -> None:
-        """路径式 URL 不带关键词 → 第 1 页在页内搜索框输入并回车。"""
+    def after_navigate(self, page, query: str, page_num: int) -> bool | None:
+        """路径式 URL 不带关键词 → 第 1 页在页内搜索框输入并回车。
+
+        返回 True 表示**已切换视图**：骨架（base.py 的 `if self.after_navigate(...): captured.clear()`）
+        据此丢弃切换前捕获的响应。智联第 1 页的页内搜索会整体替换结果列表，若不返回 True，
+        首屏**未筛选**列表的响应会残留并与新关键词结果一起交给 `format_jobs`
+        （结果串词、`sourceKeyword` 归属错误）。与 job51.py 页内跳页返回 True 同口径（审查 #9）。
+        """
         if page_num != 1:
-            return
+            return None
         q = str(query or '').strip()
         if not q:
-            return
+            return None
         try:
             if page.evaluate(JS_TYPE_KEYWORD, q):
                 page.keyboard.press('Enter')
                 human_sleep(2.2, 0.3, 1.2)
+                return True
         except Exception as e:
             log('⚠️', f'[{self.platform}] 搜索框输入失败：{e}')
+        return None
 
     # ---------- 投递差异 ----------
     def find_action_button(self, page):

@@ -512,7 +512,7 @@ export default function Home() {
             const go = () => (s.tab ? openSettings(s.tab as SettingsTabKey) : setRoute(s.key as any));
             return (
               <div
-                key={i}
+                key={s.label}
                 className={'step-item is-' + st}
                 role="button"
                 tabIndex={0}
@@ -575,7 +575,11 @@ export default function Home() {
         ) : (
           <div>
             {logs.slice(-5).reverse().map((l, i) => (
-              <div className="timeline-item" key={i}>
+              // 审查 §四表 24：key 用日志的稳定 id（批次 7 #96 已为 LogEntry 引入），
+              // 不用 map 下标 —— 窗口 `slice(-5).reverse()` 每来一条新日志整体位移，
+              // 下标 key 会让所有行错位复用（动画/悬停态串到别的行）。
+              // 兼容历史持久化数据：缺 id 的旧条目回落 `time-i`（时间戳 + 当前下标，仍比裸下标稳定）。
+              <div className="timeline-item" key={l.id ?? `${l.time}-${i}`}>
                 <span className={'tl-dot ' + (l.level === 'error' ? 'error' : l.level === 'warn' ? 'warn' : l.level === 'success' ? 'success' : 'info')} />
                 <span className="tl-time">{new Date(l.time).toLocaleTimeString()}</span>
                 <span className="tl-msg">{l.msg}</span>

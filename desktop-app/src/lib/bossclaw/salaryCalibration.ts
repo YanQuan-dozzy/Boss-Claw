@@ -9,6 +9,16 @@
 //      需要「薪资不达标就不投递」时，请走硬性过滤 → 最低日薪（minSalaryPerDay）这条确定性硬约束。
 // 注意：所有 AI 薪资提及统一折算到「千元/月」再比对（日薪按岗位工作制度的月工作日折算）。
 
+import { DEFAULT_WEEKLY_DAYS, monthlyWorkDaysOf } from './workSchedule';
+
+/**
+ * 缺省月工作日（双休口径）——**唯一权威来自 workSchedule**（周天数 × 52/12）。
+ * ⚠️ 不得写 `22` 字面量（铁律：月工作日 = 周天数 × 52/12，禁 22 —— 见 AGENTS/项目记忆）。
+ * 此处默认值仅在调用方未传 `monthlyWorkDays` 时兜底；正常链路都从
+ * `detectWorkSchedule(job).monthlyWorkDays` 传入真实制度折算值。
+ */
+const DEFAULT_MONTHLY_WORK_DAYS = monthlyWorkDaysOf(DEFAULT_WEEKLY_DAYS);
+
 export interface SalaryLocalView {
   /** 本地薪资区间是否解析成功 */
   valid: boolean;
@@ -49,9 +59,9 @@ function relDiff(a: number, b: number): number {
  * 支持形态：元/天、元/小时、元/月、15-25K、1.5-2万；带「年薪」语境时按 12 个月折算。
  * 裸数字（无单位）不提取，避免把「3 年经验」误判为薪资。
  */
-export function extractSalaryMentions(text: string, monthlyWorkDays = 22): SalaryMention[] {
+export function extractSalaryMentions(text: string, monthlyWorkDays = DEFAULT_MONTHLY_WORK_DAYS): SalaryMention[] {
   const t = String(text || '');
-  const days = Math.max(20, Math.min(31, Number(monthlyWorkDays) || 22));
+  const days = Math.max(20, Math.min(31, Number(monthlyWorkDays) || DEFAULT_MONTHLY_WORK_DAYS));
   const out: SalaryMention[] = [];
   const mid = (m: RegExpExecArray): number => {
     const a = Number(m[1]);

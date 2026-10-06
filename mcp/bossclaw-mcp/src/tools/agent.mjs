@@ -11,18 +11,8 @@
 // 「全自动」（executionMode==='auto'）时对 agent 开放，走 webview 链路并复用应用自带
 // 安全投递引擎（domApply：招呼语非空 / 外部网申跳过 / 气泡确认 / 风控即停），
 // 门控与实现都在渲染层 controlRuntime.ts 的 deliverySendNow（唯一权威），此处只透传。
-import { controlCall, truncate, PATHS, ok, fail } from '../context.mjs';
+import { controlCall, truncate, PATHS, ok, fail, bridgeHint } from '../context.mjs';
 import { obj, str, bool, num, READ_ONLY, WRITE_LOCAL } from '../schema.mjs';
-
-async function bridgeHint() {
-  return [
-    `应用内控制桥当前不可用。启用方式（三选一）：`,
-    `  1) 用 bossclaw_app_start 启动（默认带 BOSSCLAW_CONTROL=1），或`,
-    `  2) 让用户运行仓库根的 start-bossclaw.cmd（本地启动器默认已开启 agent 桥），或`,
-    `  3) 手动以 BOSSCLAW_CONTROL=1 启动 Electron。`,
-    `桥信息文件：${PATHS.controlBridgeFile}`,
-  ].join('\n');
-}
 
 /** 渲染层动作名 → 长超时（长轮询动作按 waitMs 放宽） */
 function timeoutFor(action, params) {

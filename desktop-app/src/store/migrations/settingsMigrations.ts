@@ -110,9 +110,16 @@ const MIGRATIONS: SettingsMigration[] = [
   },
 ];
 
-/** 顺序执行全部迁移，返回各迁移补丁的合并（纯函数，不改写入参；pc 由调用方展开进最终 config）。 */
+/** 顺序执行全部迁移，返回各迁移补丁的合并（纯函数，不改写入参；pc 由调用方展开进最终 config）。
+ *
+ * ⚠️ 迁移必须**链式**执行（审查 #6）：每个迁移要看到**前序迁移已修补后的结果**（`{ ...pc, ...acc }`），
+ * 而不是原始 `pc`。原实现只传 `pc`，于是 `2026-08-28` 把顶层 `dailyTarget` 30→120 后，
+ * 紧随其后的 `2026-09-09-platforms-normalize` 读到的仍是 `pc.dailyTarget = 30`，
+ * 据此写入 `platforms.boss.dailyTarget = 30` → 这批老用户（正是 30 默认值的目标人群）
+ * 平台日上限被钉死在 30，与升级意图相反，且属安全相关的静默行为回归。
+ * 各迁移的 apply 均为幂等「返回补丁片段」，链式传入不会重复生效。 */
 export function applyMigrations(pc: Partial<AppConfig>, base: MigrationBase): Partial<AppConfig> {
-  return MIGRATIONS.reduce<Partial<AppConfig>>((acc, m) => ({ ...acc, ...m.apply(pc, base) }), {});
+  return MIGRATIONS.reduce<Partial<AppConfig>>((acc, m) => ({ ...acc, ...m.apply({ ...pc, ...acc }, base) }), {});
 }
 
 /** 剥离退役字段 batchDelivery（纯函数，返回新副本而非 delete 入参）：

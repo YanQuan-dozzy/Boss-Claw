@@ -130,7 +130,31 @@ export const HOME_DIR = os.homedir();
 /** 引擎/登录态数据目录（camoufox cookies、engine-state.json） */
 export const BOSSCLAW_HOME = path.join(HOME_DIR, '.bossclaw');
 
-export const CONTROL_BRIDGE_FILE = path.join(USERDATA_DIR, 'control-bridge.json');
+/**
+ * 控制桥信息文件的**候选路径**（读取顺序即优先级）。
+ *
+ * 审查 #66：应用侧 `electron/control-bridge.cjs:117-121` 在 `app.getPath('userData')` 抛错时
+ * （userData 不可写 / 早期启动 / 权限受限）会把信息文件**改写到 `os.tmpdir()`**，
+ * 而 MCP 侧原先只认 `<userData>/control-bridge.json` —— 一旦应用走回退分支，
+ * 桥其实**已经在监听**，MCP 却报「控制桥当前不可用」，且提示里的路径指向一个不存在的文件，
+ * 排查时被误导（这正是 §四表 26 提示文案里印的那个「桥信息文件」）。
+ *
+ * 另外 `BOSSCLAW_CONTROL_BRIDGE_FILE` 允许应用与 MCP 显式对齐同一路径（自定义部署/多实例隔离时用），
+ * 与应用程序 `resolveUserData()` 读取的 `BOSSCLAW_USERDATA` 对称。
+ */
+function controlBridgeCandidates() {
+  const list = [];
+  const explicit = process.env.BOSSCLAW_CONTROL_BRIDGE_FILE;
+  if (explicit) list.push(explicit);
+  list.push(path.join(USERDATA_DIR, 'control-bridge.json'));
+  list.push(path.join(os.tmpdir(), 'bossclaw-control-bridge.json'));
+  // 去重（BOSSCLAW_CONTROL_BRIDGE_FILE 恰好等于标准路径时）
+  return [...new Set(list)];
+}
+
+export const CONTROL_BRIDGE_FILES = controlBridgeCandidates();
+/** 主路径（提示文案用；实际读取依次尝试 CONTROL_BRIDGE_FILES） */
+export const CONTROL_BRIDGE_FILE = CONTROL_BRIDGE_FILES[0];
 
 export const PATHS = {
   repoRoot: REPO_ROOT,
@@ -250,7 +274,10 @@ export function sanitizedEnv(extra = {}) {
 // 进程执行
 // ===========================================================================
 
-/** 分离式启动（用于 Electron 主进程这种需要长驻的进程），返回 pid */
+/** spawn 失败原因登记（键为进程句柄；句柄常驻，条目数等于启动次数，量级可忽略） */
+const spawnErrors = new Map();
+
+/** 分离式启动（用于 Electron 主进程这种需要长驻的进程），返回 pid 与进程句柄 */
 export function spawnDetached(cmd, args = [], opts = {}) {
   const { cwd = DESKTOP_DIR, env = {}, stdio = 'ignore' } = opts;
   const child = spawn(cmd, args, {
@@ -261,8 +288,38 @@ export function spawnDetached(cmd, args = [], opts = {}) {
     shell: false,
     stdio,
   });
+  // 审查 #20：spawn 失败（ENOENT / EPERM / 路径不存在）**不会同步抛出**，而是异步 emit 'error'。
+  // 原实现没有任何监听 → 失败被全局 uncaughtException 吞掉，调用方仍拿到一个**无效 pid**，
+  // 之后 probePort / killTree 全对着空气操作（症状：「启动成功」但应用一直没起来、且无原因可查）。
+  // 这里挂一个兜底监听（并把 child 一并返回，供调用方用 waitForSpawn 精确等待失败）。
+  child.on('error', (e) => {
+    spawnErrors.set(child, String(e?.message || e));
+  });
   child.unref();
-  return { pid: child.pid, cmd: [cmd, ...args].join(' ') };
+  return { pid: child.pid, cmd: [cmd, ...args].join(' '), child };
+}
+
+/** 子进程句柄 → 启动失败原因（供 waitForSpawn 读取） */
+export function spawnErrorOf(child) {
+  return child ? spawnErrors.get(child) || null : null;
+}
+
+/**
+ * 等待 spawn 结果：区分「真的起来了」与「spawn 失败」。
+ * `error` 先到 → `{ok:false}`；`spawn` 先到 → `{ok:true}`；两者都没到（事件已错过）→ 超时后按成功返回
+ * （pid 存在即认为句柄有效，后续 probePort 会给出真实结论）。
+ */
+export function waitForSpawn(child, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    if (!child) return resolve({ ok: false, error: 'spawn 未返回进程句柄' });
+    const known = spawnErrors.get(child);
+    if (known) return resolve({ ok: false, error: known });
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    child.once('error', (e) => done({ ok: false, error: String(e?.message || e) }));
+    child.once('spawn', () => done({ ok: true, pid: child.pid }));
+    setTimeout(() => done(child.pid ? { ok: true, pid: child.pid } : { ok: false, error: 'spawn 未产生 pid' }), timeoutMs);
+  });
 }
 
 export function killTree(pid) {
@@ -416,12 +473,36 @@ export function getPath(obj, dotted) {
 // ===========================================================================
 
 export async function readControlBridgeInfo() {
-  const parsed = await readJsonSafe(CONTROL_BRIDGE_FILE);
-  if (!parsed.ok) return null;
-  const info = parsed.data;
-  if (!info?.port || !info?.token) return null;
-  if (info.pid && !isPidAlive(info.pid)) return { ...info, stale: true };
-  return info;
+  // 依次尝试候选路径（审查 #66）：应用可能在 userData 不可用时把信息文件写到 tmpdir。
+  // 返回首个「文件存在且含 port+token」的条目；都不存在则返回 null。
+  for (const file of CONTROL_BRIDGE_FILES) {
+    const parsed = await readJsonSafe(file);
+    if (!parsed.ok) continue;
+    const info = parsed.data;
+    if (!info?.port || !info?.token) continue;
+    if (info.pid && !isPidAlive(info.pid)) return { ...info, stale: true, infoFile: file };
+    return { ...info, infoFile: file };
+  }
+  return null;
+}
+
+/**
+ * 「控制桥不可用」提示（**唯一实现**，供 control.mjs / agent.mjs 共用）。
+ *
+ * 审查 §四表 26：原实现有两份逐字复制，且两份**已经漂移** —— `control.mjs` 带「关闭方式」一行，
+ * `agent.mjs` 漏了。收敛到本模块后，agent 系工具的错误提示也一并拿到关闭方式。
+ * 后续修文案只改这一处。
+ */
+export function bridgeHint() {
+  return [
+    `应用内控制桥当前不可用。启用方式（三选一）：`,
+    `  1) 用 bossclaw_app_start 启动（默认带 BOSSCLAW_CONTROL=1），或`,
+    `  2) 让用户运行仓库根的 start-bossclaw.cmd（本地启动器默认已开启 agent 桥），或`,
+    `  3) 手动以 BOSSCLAW_CONTROL=1 启动 Electron。`,
+    `关闭方式：start-bossclaw.cmd --no-agent，或 BOSSCLAW_CONTROL=0 / --no-control-bridge。`,
+    `已查找桥信息文件（依次）：`,
+    ...CONTROL_BRIDGE_FILES.map((f, i) => `  ${i + 1}) ${f}`),
+  ].join('\n');
 }
 
 export function bridgeRequest(info, method, urlPath, body, timeoutMs = 15_000) {
@@ -499,7 +580,8 @@ export async function controlCall(method, urlPath, body, timeoutMs) {
     };
   }
   if (info.stale) {
-    return { ok: false, unavailable: true, error: `控制桥记录已失效（pid ${info.pid} 不在运行）：${CONTROL_BRIDGE_FILE}` };
+    // 报出**实际读取到的那份**信息文件（审查 #66）：可能有多个候选路径，报主路径会误导排查。
+    return { ok: false, unavailable: true, error: `控制桥记录已失效（pid ${info.pid} 不在运行）：${info.infoFile || CONTROL_BRIDGE_FILE}` };
   }
   return bridgeRequest(info, method, urlPath, body, timeoutMs);
 }

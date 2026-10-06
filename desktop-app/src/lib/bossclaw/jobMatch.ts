@@ -707,7 +707,10 @@ function computeDirectionScore(ctx: LocalMatchContext, evidence: string[]): numb
     const dirKeywordKeys = (rule?.keywords || []).map((kw) => normalizeDirectionKeyForMatch(String(kw))).filter((k) => k && k.length >= 2);
     const titleHitByDir = dirKey.length >= 2 && titleKey && (titleKey.includes(dirKey) || dirKey.includes(titleKey));
     const titleHitByRule = Boolean(rule && rule.test.test(titleKey));
-    const titleHitByKw = dirKeywordKeys.some((k) => titleKey.includes(k) || k.includes(titleKey));
+    // ⚠️ 必须要求 titleKey 非空：`k.includes('')` 恒为 true → 岗位无标题（cleanTitle 后为空串）时
+    // 每一个方向都会被判「标题命中」并给满分（审查：空标题恒真的方向维误判）。
+    // 上游 titleHitByDir 已有 `titleKey &&` 守卫，此处同口径补齐。
+    const titleHitByKw = Boolean(titleKey) && dirKeywordKeys.some((k) => titleKey.includes(k) || k.includes(titleKey));
     if (titleHitByDir || titleHitByRule || titleHitByKw) {
       titleHits += 1;
       evidence.push(`方向命中：岗位「${ctx.title.trim() || '未知'}」匹配方向「${dir}」`);

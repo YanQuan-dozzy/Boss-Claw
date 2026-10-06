@@ -22,20 +22,36 @@ export function useInterval(fn: () => void | Promise<void>, delayMs: number | nu
   const fnRef = useRef(fn);
   fnRef.current = fn;
   const immediate = Boolean(opts?.immediate);
-  // P30：in-flight 守卫——上一轮回调尚未结束（如网络慢导致心跳请求挂起）时跳过本轮，
-  // 避免慢网络下心跳逐次重叠堆积（请求积压 → 卡顿/内存增长）。
-  const busyRef = useRef(false);
 
   useEffect(() => {
     if (delayMs == null || delayMs <= 0) return undefined;
     let cancelled = false;
+    // P30：in-flight 守卫——上一轮回调尚未结束（如网络慢导致心跳请求挂起）时跳过本轮，
+    // 避免慢网络下心跳逐次重叠堆积（请求积压 → 卡顿/内存增长）。
+    let busy = false;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
     const run = () => {
-      if (cancelled || busyRef.current) return;
-      busyRef.current = true;
+      if (cancelled || busy) return;
+      busy = true;
+      // 审查 #31：**必须**有看门狗。原实现只在 `finally` 里解锁 busy，只要有一次回调永不 settle
+      // （IPC 无响应、Promise 被吞、await 了一个不会 resolve 的握手），busy 就永久为真 →
+      // 该轮询**永久停摆且无任何日志**（表现：心跳/登录态/桥状态再也不刷新）。
+      // 看门狗按「3×间隔、下限 10s」超时解锁，并留一条 warn 便于定位。
+      const limitMs = Math.max(10_000, delayMs * 3);
+      watchdog = setTimeout(() => {
+        watchdog = null;
+        if (cancelled) return;
+        busy = false;
+        console.warn(`[useInterval] 回调超过 ${Math.round(limitMs / 1000)}s 未结束，已解锁等待下一轮（防永久停摆）`);
+      }, limitMs);
       Promise.resolve(fnRef.current())
         .catch(() => {})
         .finally(() => {
-          busyRef.current = false;
+          if (watchdog) {
+            clearTimeout(watchdog);
+            watchdog = null;
+          }
+          busy = false;
         });
     };
     if (immediate) run();
@@ -43,6 +59,10 @@ export function useInterval(fn: () => void | Promise<void>, delayMs: number | nu
     return () => {
       cancelled = true;
       clearInterval(t);
+      if (watchdog) {
+        clearTimeout(watchdog);
+        watchdog = null;
+      }
     };
   }, [delayMs, immediate]);
 }

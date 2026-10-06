@@ -2176,7 +2176,11 @@ async function visualCollect(opts = {}) {
   collectCtl.paused = false;
   collectCtl.stopped = false;
   collectCtl.settleMs = Math.max(400, Number(opts.settleMs) || 1200);
-  const settleMs = collectCtl.settleMs;
+  // 审查 #10：采集节奏（ms/步）必须**每步实时读取** —— collect-control 的 speed（加速/减速）
+  // 写的是 collectCtl.settleMs，而原实现把它在采集开始时捕获为函数内局部常量，
+  // 运行期没有任何读者改读 collectCtl.settleMs → 用户点「加速/减速」是**死控制**。
+  // 现改为每次使用都取当前值（保留 400ms 下限，与 collect-control 的写入口径一致）。
+  const settleMsNow = () => Math.max(400, Number(collectCtl.settleMs) || 1200);
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 软上限；本机 1000 兜底防止失控）
   const maxJobs = Math.max(1, Number(opts.maxJobs) || 1000);
   // 设置约束（由宿主 Workbench 传入，见 Settings → 搜索采集范围控制）：
@@ -2221,7 +2225,7 @@ async function visualCollect(opts = {}) {
       }
     } catch (e) {
       notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: 0, maxJobs, status: `列表查询异常：${String(e?.message || e).slice(0, 80)}` });
-      await sleep(settleMs);
+      await sleep(settleMsNow());
     }
     // 登录墙优先于「选择器失效」判定：页面已加载完、等了足够久仍一张岗位卡都没有，
     // 且命中登录特征（URL 命中登录页 或「页面无任何岗位链接 + 正文命中登录文案」）
@@ -2262,7 +2266,7 @@ async function visualCollect(opts = {}) {
       const state = String(document.readyState);
       notify('collect-progress', { phase: 'waiting-list', index: 0, total: 0, processed: 0, maxJobs, status: `等待列表渲染（已 ${waitedSec}s / 上限 ${Math.round(listTimeoutMs / 1000)}s，页面 ${state}）` });
     }
-    await sleep(settleMs * 0.6);
+    await sleep(settleMsNow() * 0.6);
   }
 
     while (!collectCtl.stopped) {
@@ -2272,13 +2276,13 @@ async function visualCollect(opts = {}) {
     let cards = [];
     try { cards = collectCards(); } catch (e) {
       notify('collect-progress', { phase: 'collect-error', index, total: 0, processed: processedCount, maxJobs, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
-      await sleep(settleMs);
+      await sleep(settleMsNow());
       continue;
     }
     if (cards.length === 0 && processedCount === 0 && emptyRounds === 0) {
       // 首轮 cards 仍为空（列表还没出来）— 主动滚一次促加载（关闭自动下拉时仅等待列表渲染，不滚动）
-      if (autoScroll) await scrollJobListLoadMore(processed, { settleMs });
-      await sleep(settleMs * 1.5);
+      if (autoScroll) await scrollJobListLoadMore(processed, { settleMs: settleMsNow() });
+      await sleep(settleMsNow() * 1.5);
       emptyRounds += 1;
       continue;
     }
@@ -2308,7 +2312,7 @@ async function visualCollect(opts = {}) {
         break;
       }
       scrollRoundsUsed += 1;
-      const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs });
+      const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs: settleMsNow() });
       if (atBottom) {
         // 已滚到列表物理底部且无新卡 → 本搜索组合加载完毕，直接停止
         notify('collect-progress', { phase: 'list-bottom', index, total: cards.length, processed: processedCount, maxJobs, status: '已滚动到列表底部，加载完毕' });
@@ -2337,16 +2341,16 @@ async function visualCollect(opts = {}) {
     }
     // 1) 平滑滚动到卡片并高亮（可视化动画）
     await smoothScrollIntoView(card);
-    highlightElement(card, settleMs);
+    highlightElement(card, settleMsNow());
     notify('collect-progress', { phase: 'scroll', index, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: '滚动中' });
-    await sleep(settleMs);
+    await sleep(settleMsNow());
     if (collectCtl.stopped) break;
     await waitWhilePaused();
     if (processedCount >= maxJobs) break;
     // 2) 点击展开详情
     notify('collect-progress', { phase: 'click', index, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: '点击中' });
     await openCardDetail(card);
-    await sleep(Math.max(500, Math.round(settleMs * 0.6)));
+    await sleep(Math.max(500, Math.round(settleMsNow() * 0.6)));
     if (collectCtl.stopped) break;
     // 3) 提取岗位信息并回传
     const job = extractJobDetail(card);
@@ -2383,7 +2387,7 @@ async function visualCollect(opts = {}) {
     } catch (e) {}
     processedCount += 1;
     notify('collect-progress', { phase: 'done', index, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
-    await sleep(settleMs);
+    await sleep(settleMsNow());
   }
   notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
 }
@@ -2799,7 +2803,11 @@ async function visualCollectListOnly(opts = {}) {
   collectCtl.paused = false;
   collectCtl.stopped = false;
   collectCtl.settleMs = Math.max(400, Number(opts.settleMs) || 1200);
-  const settleMs = collectCtl.settleMs;
+  // 审查 #10：采集节奏（ms/步）必须**每步实时读取** —— collect-control 的 speed（加速/减速）
+  // 写的是 collectCtl.settleMs，而原实现把它在采集开始时捕获为函数内局部常量，
+  // 运行期没有任何读者改读 collectCtl.settleMs → 用户点「加速/减速」是**死控制**。
+  // 现改为每次使用都取当前值（保留 400ms 下限，与 collect-control 的写入口径一致）。
+  const settleMsNow = () => Math.max(400, Number(collectCtl.settleMs) || 1200);
   const maxJobs = Math.max(1, Number(opts.maxJobs) || 1000);
   const autoScroll = opts.autoScroll !== false;
   const scrollRounds = Math.max(0, Number(opts.scrollRounds) || 0);
@@ -2841,7 +2849,7 @@ async function visualCollectListOnly(opts = {}) {
     if (initialWaitCount === 1 || initialWaitCount % 4 === 0) {
       notify('collect-progress', { phase: 'waiting-list', index: 0, total: 0, processed: 0, maxJobs, status: `等待列表渲染（已 ${Math.round((Date.now() - listWaitStartedAt) / 1000)}s / 上限 ${Math.round(listTimeoutMs / 1000)}s，页面 ${String(document.readyState)}）` });
     }
-    await sleep(settleMs * 0.6);
+    await sleep(settleMsNow() * 0.6);
   }
 
   // 主循环：逐卡滚动 + 高亮 + 回传（**不点击卡片** —— 见函数头注释）
@@ -2853,7 +2861,7 @@ async function visualCollectListOnly(opts = {}) {
     let cards = [];
     try { cards = collectCards(); } catch (e) {
       notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: processedCount, maxJobs, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
-      await sleep(settleMs);
+      await sleep(settleMsNow());
       continue;
     }
     const pending = cards.filter((c) => {
@@ -2871,7 +2879,7 @@ async function visualCollectListOnly(opts = {}) {
         break;
       }
       scrollRoundsUsed += 1;
-      const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs });
+      const { grew, atBottom } = await scrollJobListLoadMore(processed, { settleMs: settleMsNow() });
       if (atBottom) {
         notify('collect-progress', { phase: 'list-bottom', index: 0, total: cards.length, processed: processedCount, maxJobs, status: '已滚动到列表底部，加载完毕' });
         break;
@@ -2889,9 +2897,9 @@ async function visualCollectListOnly(opts = {}) {
     processed.add(key);
     const identity = cardIdentity(card);
     await smoothScrollIntoView(card);
-    highlightElement(card, settleMs);
+    highlightElement(card, settleMsNow());
     notify('collect-progress', { phase: 'scroll', index: processedCount + 1, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: '滚动中' });
-    await sleep(settleMs);
+    await sleep(settleMsNow());
     if (collectCtl.stopped) break;
     await waitWhilePaused();
     const job = extractJobFromCardOnly(card);
@@ -2900,7 +2908,7 @@ async function visualCollectListOnly(opts = {}) {
     await enrichJobDetail(job);
     processedCount += 1;
     notify('collect-progress', { phase: 'done', index: processedCount, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
-    await sleep(settleMs);
+    await sleep(settleMsNow());
   }
   reportJdFillSummary();
   notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });

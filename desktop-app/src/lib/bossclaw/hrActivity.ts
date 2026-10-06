@@ -6,11 +6,19 @@
 //   在线(7) > 刚刚活跃(6) > 今日活跃(5) > 3日内活跃(4) > 本周活跃(3) > 本月活跃(2) > 半年前活跃(1)
 import type { HrActivityFilter } from './types';
 
+// 「在线」必须**整段就是在线状态**，不能是含「在线」二字的其它语义（审查 #98）。
+// 旧实现 `if (/在线/.test(s)) return 7;` 置于所有判断之前 —— 卡片文本里的「在线简历」「在线沟通」
+// 「在线咨询」等都会被判成最高活跃度，使「仅在线」筛选放行长期不活跃的岗位（浪费每日配额）。
+// 允许的形态：整段 == 在线 / 在线中 / 当前在线 / 正在在线，或「在线」作为独立词元出现
+// （前后为分隔符或字符串边界，如「张女士 · 在线」）。
+const ONLINE_LABEL_RE = /(?:^|[^\u4e00-\u9fa5A-Za-z0-9])在线(?:[^\u4e00-\u9fa5A-Za-z0-9]|$)/;
+const ONLINE_PHRASE_RE = /^(?:当前在线|正在在线|在线中|在线状态)$/;
+
 // 将活跃度文本映射为等级（越高越活跃）；0 表示「未识别」（不参与过滤，避免误杀）
 export function hrActivityRank(hrActive: string | null | undefined): number {
   const s = String(hrActive || '').trim();
   if (!s) return 0;
-  if (/在线/.test(s)) return 7;
+  if (ONLINE_LABEL_RE.test(s) || ONLINE_PHRASE_RE.test(s)) return 7;
   if (/刚刚活跃|刚活跃|几分钟前活跃/.test(s)) return 6;
   if (/今日活跃|今天活跃/.test(s)) return 5;
   const days = s.match(/(\d+)\s*日内活跃/);

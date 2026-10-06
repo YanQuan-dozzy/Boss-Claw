@@ -245,7 +245,18 @@ export default function Resume() {
 
   // 外部（如 agent 经 MCP dataSetResume 写过简历）更新 store 后，同步到本地输入框 state，
   // 否则输入框仍显示旧原文。用户手动输入时 store 不变，不会打断编辑。
+  //
+  // 审查 #16：原实现无条件 `setText(resumeText)` —— 只要 store 侧发生变化（外部写入、导入简历、
+  // 清空数据后重建），**用户正在编辑、尚未保存的文本会被静默覆盖**。现只在「本地无未保存编辑」时
+  // 才用外部值刷新输入框；有未保存编辑时保留用户输入（保存时以本页内容为准），避免丢字。
+  const lastSyncedTextRef = useRef(resumeText);
+  const textRef = useRef(text);
+  textRef.current = text;
   useEffect(() => {
+    if (resumeText === lastSyncedTextRef.current) return; // 值未变（含本页自己回写）：不动输入框
+    const dirty = textRef.current !== lastSyncedTextRef.current; // 本地有未保存编辑
+    lastSyncedTextRef.current = resumeText;
+    if (dirty) return; // 不覆盖用户正在编辑的文本
     setText(resumeText);
   }, [resumeText]);
 
@@ -431,7 +442,8 @@ export default function Resume() {
           message="解析提示"
           description={
             <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {warnings.map((w, i) => <li key={i}>{w}</li>)}
+              {/* 审查 §四表 24：解析提示是纯文本、内容即身份 → 用文本作 key（比下标稳定） */}
+              {warnings.map((w) => <li key={w}>{w}</li>)}
             </ul>
           }
         />

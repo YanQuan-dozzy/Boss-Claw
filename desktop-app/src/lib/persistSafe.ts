@@ -131,9 +131,13 @@ export function createSafePersistStorage<S = unknown>(options: SafeStorageOption
     }
     if (pending.size === 0) return;
     const store = read();
+    // 审查 #28：**先判存储可用、再清 pending** —— 原顺序（先 clear 再判 store）在 localStorage
+    // 不可用（隐私模式 / 存储被禁用 / 测试注入返回 null）时会把待写值直接从缓冲里抹掉：
+    // 之后即便存储恢复可用，这些变更也再无机会落盘（静默丢写）。保留 pending 则可由下一次
+    // set/flush 一并写出；缓冲体积受「每键保留最新值」约束，不会无限增长。
+    if (!store) return;
     const batch = Array.from(pending.entries());
     pending.clear();
-    if (!store) return; // 无可用存储：静默丢弃（内存态不受影响）
     for (const [name, value] of batch) {
       if (writeWithFallback(store, name, value)) {
         // 防抖合批后在此刻才真正写盘 → 内容确实变化 → 递增写哨兵，

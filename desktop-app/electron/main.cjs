@@ -16,13 +16,23 @@ const stealth = require('./preload/stealth.cjs');
 // ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
 // 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
 let _debugLogEnabled = null;
-// P4-12：jc:webview-input 频率兜底的滑动窗口（近 60s 时间戳）
-let inputWindow = [];
+// P4-12 / 审查 #14：jc:webview-input 频率兜底的滑动窗口（近 60s 时间戳）——**按 guest webContents 分桶**。
+// 原实现是模块级单一数组，所有标签页共用 60 条/分钟额度：一个标签页的高频动作会耗尽额度，
+// 使另一标签页的正常投递被误判「输入风暴」拒绝（表现为对端标签页莫名失败、日志显示 rate limited）。
+const inputWindows = new Map(); // senderId(number) -> number[]（时间戳）
+function inputWindowFor(id) {
+  let arr = inputWindows.get(id);
+  if (!arr) { arr = []; inputWindows.set(id, arr); }
+  return arr;
+}
 function isDebugEnabled() {
   if (_debugLogEnabled !== null) return _debugLogEnabled;
   // process.env 在 require 阶段即可访问；app.isPackaged 仅在 app 已 require 后才可用，
   // 这里延后到首次 dlog 调用时判定（此时 main.cjs 已被 Electron 主进程加载，app 必然就绪）。
-  _debugLogEnabled = process.env.BOSSCLAW_DEBUG === '1' || (() => {
+  // BOSSCLAW_DEBUG=0 为**显式硬关**（优先于「未打包即开」），便于在开发机上验证「正式包不写盘」的行为。
+  const envVal = process.env.BOSSCLAW_DEBUG;
+  if (envVal === '0' || envVal === 'false') { _debugLogEnabled = false; return _debugLogEnabled; }
+  _debugLogEnabled = envVal === '1' || (() => {
     try { return !app.isPackaged; } catch { return false; }
   })();
   return _debugLogEnabled;
@@ -860,8 +870,11 @@ async function createMainWindow() {
     loadWithFallback(mainWindow.loadFile(DIST_INDEX), 'prod-dist');
   }
 
-  // === 白屏诊断日志（仅 BOSSCLAW_DEBUG=1 时启用，写入 debug-render.log）===
-  if (process.env.BOSSCLAW_DEBUG === '1') {
+  // === 白屏诊断日志（与 dlog 同一开关：BOSSCLAW_DEBUG=1 或未打包版；写入 debug-render.log）===
+  // 审查 #12 同源修正：原判据只认 `BOSSCLAW_DEBUG === '1'`，而 dlog / webviewDiag 用 isDebugEnabled()
+  // （`BOSSCLAW_DEBUG=1` **或** `!app.isPackaged`）→ 未打包开发版「主日志开、渲染诊断关」，
+  // 排查白屏时恰好缺最关键的一份日志。统一到 isDebugEnabled()。仍需硬关时置 BOSSCLAW_DEBUG=0。
+  if (isDebugEnabled()) {
     try {
       let diagPath;
       try { diagPath = path.join(app.getPath('userData'), 'debug-render.log'); }
@@ -1193,10 +1206,19 @@ async function createMainWindow() {
     });
   });
 
-  // ===== webview 诊断（无条件写 userData/bossclaw-webview-diag.log；排查 preload 注入/IPC 失效）=====
+  // ===== webview 诊断（写 userData/bossclaw-webview-diag.log；排查 preload 注入/IPC 失效）=====
+  // ⚠️ 落盘受 isDebugEnabled() 门控（审查 #12，见下方 webviewDiag）：仅 BOSSCLAW_DEBUG=1 或未打包版写盘。
   let webviewDiagPath = null;
   try { webviewDiagPath = path.join(app.getPath('userData'), 'bossclaw-webview-diag.log'); } catch {}
-  const webviewDiag = (m) => { if (!webviewDiagPath) return; try { fs.appendFileSync(webviewDiagPath, `[${new Date().toISOString()}] ${m}\n`); } catch {} };
+  // 审查 #12：诊断落盘必须**与 dlog 同一开关门控**。原实现无条件 appendFileSync，且 console-message
+  // 命中正则（preload|uncaught|typeerror|is not 等常见字样）就调用 —— 报错频繁的站点会每秒大量同步写盘，
+  // **用同步磁盘 IO 阻塞主进程事件循环**（窗口卡顿），而该文件对正式包用户无价值。
+  // 需要诊断时置 BOSSCLAW_DEBUG=1（或跑未打包版本）即可恢复完整落盘。
+  // 注意：渲染层的 'jc:webview-diag' IPC 不受影响（应用内诊断面板仍可见）。
+  const webviewDiag = (m) => {
+    if (!webviewDiagPath || !isDebugEnabled()) return;
+    try { fs.appendFileSync(webviewDiagPath, `[${new Date().toISOString()}] ${m}\n`); } catch {}
+  };
   mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
     let wpref = 'n/a';
     try {
@@ -1730,7 +1752,11 @@ safeHandle('jc:backup-write', async (_event, bundle) => {
   const ctl = backupCtl();
   const dir = ctl.readPointer();
   const filep = ctl.fileIn(dir);
-  const tmp = filep + '.tmp';
+  // 审查 #29：临时文件名必须**每次唯一**。固定 `filep + '.tmp'` 时，两次并发写（心跳与
+  // 「立即备份」重叠、或多实例同时写同一目录）会写到同一个 tmp 再各自 rename ——
+  // writeFile 截断 + 交叉写入 → rename 后可能得到一个内容残缺的备份文件（而它会被当作
+  // 「完好备份」，直接毁掉恢复源）。唯一名 + rename 保证「要么旧文件、要么新文件」。
+  const tmp = `${filep}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await fs.promises.mkdir(dir, { recursive: true });
     // 渲染层已按 '{"updatedAt":N,"keys":…}' 拼好文本直传；旧对象格式仍兼容（手动兜底序列化）
@@ -1936,7 +1962,19 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
     for (const c of all) {
       const name = String(c.name || '').toLowerCase();
       const domain = String(c.domain || '').toLowerCase();
-      const matchHint = hints.some((h) => name.includes(h));
+      // 与 jc:boss-login 的 hasAuth 同口径（审查 #100）：
+      //   · `=name` → 精确匹配（短名如 at/rt 只能精确，防子串误伤其它平台）；
+      //   · 数组 → 数组内**任一**命中即可（退出登录的语义是「尽量清干净」，不像登录那样要求成对）；
+      //   · 其余 → 子串匹配（沿用历史候选的宽松语义）。
+      // 原实现直接 `name.includes(h)`：当 h 是数组时 `String(['=at','=rt']) === '=at,=rt'` **永不命中**，
+      // 智联的短名 cookie 只能靠域名兜底 —— 而域名兜底又会连带清掉同域其它 cookie。
+      const matchHint = hints.some((h) => {
+        const pats = Array.isArray(h) ? h : [h];
+        return pats.some((p) => {
+          const pat = String(p);
+          return pat.startsWith('=') ? name === pat.slice(1) : name.includes(pat);
+        });
+      });
       const matchDomain = domainHint && domain.includes(domainHint);
       if (matchHint || matchDomain) {
         try {
@@ -1967,17 +2005,24 @@ ipcMain.on('jc:webview-input', (event, payload) => {
   //   收口到真事件通道后，一次投递 = 立即沟通点击 + insertText + 发送点击（＋偶发弹窗确认）
   //   ≈ 3~4 条消息；ActionPacer 允许 8 动作/分钟 → 峰值约 32 条/分钟。
   //   旧阈值 16 是按「1 动作 ≈ 1~2 消息」定的，收口后会**把正常投递误判为输入风暴**，故同步上调。
-  // 双层判定：60 条/60s（均值）+ 20 条/10s（突发）。
+  // 双层判定：60 条/60s（均值）+ 20 条/10s（突发）；**按发送方标签页独立计数**（审查 #14）。
   // 目标是拦「渲染层 bug 引发的输入风暴」（量级是数百/分钟），而非给正常业务动作设卡。
   const now = Date.now();
-  inputWindow = inputWindow.filter((t) => t > now - 60_000);
-  const burst = inputWindow.filter((t) => t > now - 10_000).length;
-  if (inputWindow.length >= 60 || burst >= 20) {
+  // 按发送方（guest webContents）分桶计数（审查 #14）：跨标签页互不挤占额度。
+  const window60 = inputWindowFor(wc.id);
+  if (!wc.isDestroyed()) {
+    // 标签销毁时清理自己的桶（once 幂等；桶本身很小，但避免长会话里 Map 无限增长）
+    try { wc.once('destroyed', () => inputWindows.delete(wc.id)); } catch {}
+  }
+  const live = window60.filter((t) => t > now - 60_000);
+  if (live.length !== window60.length) { window60.length = 0; window60.push(...live); }
+  const burst = window60.filter((t) => t > now - 10_000).length;
+  if (window60.length >= 60 || burst >= 20) {
     try { wc.send('jc:webview-input-done', { seq: String((payload && payload.seq) || ''), ok: false, action: String((payload && payload.action) || ''), error: 'rate limited' }); } catch {}
-    dlog('warn', 'webview-input rate limited（主进程兜底）', { perMinute: inputWindow.length, perTenSec: burst });
+    dlog('warn', 'webview-input rate limited（主进程兜底）', { senderId: wc.id, perMinute: window60.length, perTenSec: burst });
     return;
   }
-  inputWindow.push(now);
+  window60.push(now);
   // ⚠️ 严禁 Number() 强转：preload 的 seq 是 "时间戳_随机数" 字符串，Number() 后变 NaN→0，
   // 回执 seq 与请求不匹配，preload 的 trustedInput 会每 4s 超时一次（3 次=13s）且永远配对不上。
   const seq = String((payload && payload.seq) || '');

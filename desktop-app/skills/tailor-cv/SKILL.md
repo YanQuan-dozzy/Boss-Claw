@@ -1,11 +1,10 @@
-***
-
+---
 name: tailor-cv
 title: 岗位定制简历
 description: 根据岗位 JD 定制简历：匹配技能 / 量化经历 / 摘要 / 求职信 / 优化建议
 scope: assistant
 defaultEnabled: true
---------------------
+---
 
 # AI 技能 · 岗位定制简历
 

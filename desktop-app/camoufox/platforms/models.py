@@ -148,6 +148,9 @@ class JobCandidate:
             'industry': self.industry,
             'url': self.url,
             'sourceKeyword': self.sourceKeyword,
+            # 页级溯源（审查 #56）：JobCandidate.sourcePage 原本在出口被丢弃，
+            # 渲染层/AI 看不到「这条 JD 来自第几页」，无法据此做采集完整性核对与分页去重排查。
+            'sourcePage': int(self.sourcePage or 0),
             'recruitmentType': self.recruitmentType,
         }
 

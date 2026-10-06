@@ -196,6 +196,10 @@ function renderBlocks(md: string): React.ReactNode[] {
   return out;
 }
 
-export default function MarkdownView({ text }: { text: string }) {
+/**
+ * 审查 #93：`memo` 包裹 —— 无它时 Home 每次渲染（采集/投递期间高频）都会重新解析整篇文档
+ * 生成 React 节点树。props 只有一个 `text: string`，浅比较即可完全防住无效重解析。
+ */
+export default React.memo(function MarkdownView({ text }: { text: string }) {
   return <div className="md-view">{renderBlocks(text)}</div>;
-}
+});

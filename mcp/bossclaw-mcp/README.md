@@ -131,6 +131,7 @@ MCP (stdio)  ──HTTP/127.0.0.1 + token──▶  electron/control-bridge.cjs�
 | 鉴权 | 除 `/health` 外都要求 `x-bossclaw-token`；token 随机生成，写入 `<userData>/control-bridge.json` |
 | 端点 | `GET /health`、`GET /state[?path=a.b]`、`POST /action` |
 | 端口回退 | 17650 被占用时依次尝试 +1…+9（多实例并存时不至于整个桥不可用），实际端口写入 info 文件 |
+| info 文件查找 | MCP 依次尝试：① `BOSSCLAW_CONTROL_BRIDGE_FILE`（显式指定）② `<userData>/control-bridge.json` ③ `<系统临时目录>/bossclaw-control-bridge.json`。应用在 `userData` 不可写时会**回退写临时目录**，MCP 同步兼容该分支（否则会出现「桥已在监听、MCP 却报不可用」） |
 | 竞态处理 | 冷启动 / 渲染层重载期间，桥内部最多等 25s 等 `window.__bossclawControl` 就绪后再执行 |
 | 关闭 | 应用退出（`window-all-closed`）时关闭并删除 info 文件，避免留下 stale 记录 |
 

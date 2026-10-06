@@ -56,6 +56,13 @@ process.on('SIGTERM', () => process.exit(0));
 process.on('uncaughtException', (e) => {
   process.stderr.write(`[bossclaw-mcp] 未捕获异常：${e?.stack || e}\n`);
 });
+// 审查 #13：必须同时兜住 unhandledRejection —— 本服务所有 I/O（stdout 协议写、控制桥 HTTP）
+// 都在 Promise 里，客户端断开产生 EPIPE 时若无兜底，Node 15+ 会**直接终止进程**
+// （症状：客户端偶发「MCP server 已退出」、需手动重连）。兜底策略是记日志后继续服务，
+// 不为单个请求的失败付整个进程的代价。
+process.on('unhandledRejection', (e) => {
+  process.stderr.write(`[bossclaw-mcp] 未处理的 Promise 拒绝（继续运行）：${e?.stack || e}\n`);
+});
 
 // 启动时探测一次控制桥，便于日志定位
 readControlBridgeInfo()

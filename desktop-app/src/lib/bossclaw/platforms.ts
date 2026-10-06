@@ -250,13 +250,6 @@ export function sortedEnabledPlatforms(
   });
 }
 
-/** 外部网申文本检测（安全不变量：命中即跳过）——按平台口径 */
-export function isExternalApplyText(text: string, platform: JobPlatform = 'boss'): boolean {
-  const t = String(text || '').replace(/\s+/g, '');
-  const meta = PLATFORM_META[platform] || PLATFORM_META.boss;
-  return meta.externalApplyHints.some((h) => t.includes(h.replace(/\s+/g, '')));
-}
-
 /**
  * 平台是否支持指定动作能力（唯一判定入口，避免业务代码硬编码 `platform === 'boss'`）。
  * 口径与 Python 侧 `camoufox/platforms/capabilities.py::platform_supports` 完全一致。
@@ -287,14 +280,24 @@ export function platformSupports(platform: JobPlatform, capability: PlatformCapa
  */
 export type CollectFaultScope = 'platform' | 'queue';
 
+// 队列级 = 账号/环境级故障：继续跑其它平台没有意义，必须整批中止交人工。
+// 平台级 = 单平台故障：只收口当前平台，后续平台继续。
 const QUEUE_FAULT_CODES = new Set([32, 35, 36, 37, 38]);
-const PLATFORM_FAULT_CODES = new Set([31, 400, 403, 404, 500, 501, 600]);
+const PLATFORM_FAULT_CODES = new Set([31, 400, 403, 404, 500, 501, 600, 1006]);
 
-/** 采集失败码 → 影响范围（无码/0 视为无故障，返回 'platform' 不影响后续平台） */
+/**
+ * 采集失败码 → 影响范围（无码/0 视为无故障，返回 'platform' 不影响后续平台）。
+ *
+ * ⚠️ **1006（限速）必须归平台级**（审查 #83）：其语义是「平台侧临时退避、可重试」
+ * （见 `safety.ts::CODE_MAP[1006]`：`retryable: true`，冷却 10 分钟）。原实现两侧集合都没有它
+ * → 落到末尾的 `return 'queue'` 兜底 → **一次偶发限速就中止全部平台的采集批次**（过度阻断：
+ * 明明是单平台限速，却把其它平台的正常采集一起停掉）。归平台级后只收口当前平台，其余平台继续。
+ */
 export function collectFaultScope(code?: number | null): CollectFaultScope {
   if (code == null || code === 0) return 'platform';
   if (QUEUE_FAULT_CODES.has(code)) return 'queue';
   if (PLATFORM_FAULT_CODES.has(code)) return 'platform';
+  // 未知码 fail-safe 按队列级处理（宁停不错），但已知码必须在上面显式分类，不要依赖这条兜底。
   return 'queue';
 }
 

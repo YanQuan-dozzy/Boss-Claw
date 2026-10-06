@@ -119,6 +119,7 @@ export const LogConsole = memo<LogConsoleProps>(function LogConsole({
           </div>
         ) : (
           filteredLogs.map((item, idx) => (
+            // 优先用调用方给的稳定 id（审查 #96：窗口下标作 key 会让 memo 化的 LogItem 全量重挂载）
             <LogItem key={item.id || `${item.time}-${idx}`} log={item} />
           ))
         )}

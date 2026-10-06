@@ -148,8 +148,12 @@ const BOSS_RESUME_URL = 'https://www.zhipin.com/web/geek/resume';
 const LogStream = memo(function LogStream() {
   const logs = useRuntimeLogsStore((s) => s.logs);
   const formattedLogs = useMemo(() => {
+    // 审查 #96：key 必须用**稳定 id**（store 在写入时生成）。原实现用 `${l.time}-${i}`，
+    // 而 i 是 slice(-80) 窗口内的下标 —— 每来一条新日志整个窗口位移、所有 key 变化，
+    // 使已 memo 的 LogItem 全量重挂载（大列表下可见的滚动卡顿 + 丢失 DOM 复用）。
+    // 历史持久化数据可能缺 id（旧版本写入），此时才回落 `时间-窗口下标`。
     return logs.slice(-80).map((l, i) => ({
-      id: `${l.time}-${i}`,
+      id: l.id || `${l.time}-${i}`,
       time: typeof l.time === 'number' ? new Date(l.time).toLocaleTimeString() : String(l.time),
       level: l.level || 'info',
       msg: l.msg,

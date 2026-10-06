@@ -1,12 +1,19 @@
 // electron/preload/stealth.cjs —— 内置浏览器「主世界」反检测补丁 + 指纹自检
 //
 // ===== 为什么独立成模块、以「源码字符串」形式导出 =====
-// <webview preload> 与 session.setPreloads 注册的脚本都运行在**隔离世界**
-// （contextIsolation: true 时），在隔离世界改 navigator 对页面完全无效。
-// 补丁必须在**主世界**执行，因此本模块只产出字符串，由两条通道各自注入：
-//   通道①（早，preload 阶段）：webview.cjs 里 require 本模块后 webFrame.executeJavaScript(code)
-//   通道②（兜底）：main.cjs 在 did-start-loading / dom-ready 上 wc.executeJavaScript(code)
-// 两条通道都幂等（注入脚本内有 __bossclawStealth 标记守卫），先后顺序无妨。
+// <webview preload> 运行在**隔离世界**（contextIsolation: true），在隔离世界改 navigator 对页面
+// 完全无效，补丁必须送**主世界**执行；因此本模块只产出字符串，由调用方注入。
+//
+// ⚠️ 注入通道**只有一条**（2026-10-02 实测后收敛，勿再写成两条）：
+//   main.cjs 的 injectStealth —— did-start-loading + dom-ready 双时机执行
+//     （`wc.executeJavaScript(stealth.buildStealthScript(...))`）
+// 曾计划让 webview.cjs 在 preload 阶段用 webFrame.executeJavaScript 抢更早的时机，**已放弃**：
+//   实测其执行时机**仍晚于页面第一段内联脚本**（head 采样时补丁标记为 null），与主进程通道等价
+//   却多一层依赖；另实测 preload 内 require 向上跳出目录会 module not found（仅同目录相对路径可用）。
+// 详见 webview.cjs 顶部注释、docs/内置浏览器反检测评估报告-2026-10-02.md §5。
+//   唯一能抢在文档创建前注入主世界的是 CDP Page.addScriptToEvaluateOnNewDocument（路线 B，见报告 §6）。
+//
+// 注入脚本自身幂等（脚本内有 __bossclawStealth 标记守卫），重复执行无副作用。
 //
 // ===== 开关（便于二分定位副作用）=====
 // 环境变量 BOSSCLAW_STEALTH：
@@ -131,7 +138,24 @@ const PATCH_KEYS = [
 const DEFAULT_OFF = ['webdriver', 'plugins', 'uaCh'];
 
 const STEALTH_VERSION = 1;
+/**
+ * 幂等标记的**键名**（Symbol 描述符）。保留导出仅为兼容既有引用与日志。
+ *
+ * 审查 #42：原实现把它作为**字符串属性**挂在 `window` 上
+ * （`Object.defineProperty(window, '__bossclawStealth', { enumerable: false })`）——
+ * `enumerable:false` 挡不住 `Object.getOwnPropertyNames(window)` 扫描，等于把「本页被注入了
+ * BossClaw 反检测补丁」写在了脸上，且 `configurable:false` 让页面永远擦不掉这个标记。
+ * 现改为：① 用 `Symbol.for()` 键（字符串属性枚举、`getOwnPropertyNames` 都看不到它）；
+ * ② 挂在 `document` 而非 `window`（探测器扫 `window` 自有属性时不可见；标记只需在**同一文档**
+ * 内跨两次注入幂等，导航后新文档自然重置，无需挂在 window 上）。
+ *
+ * 残留下限（如实记录）：`Object.getOwnPropertySymbols(document)` + `Symbol.keyFor()` 仍能取到它——
+ * 常规指纹探针（枚举 window 字符串属性）已看不到。彻底消除需改由主进程按「webContents + 导航代际」
+ * 去重、页面内不落任何标记（路线 B / 见 docs/内置浏览器反检测评估报告-2026-10-02.md）。
+ */
 const STEALTH_MARK = '__bossclawStealth';
+/** 注入脚本里求值该标记的表达式（Symbol 键，避免字符串属性暴露） */
+const STEALTH_MARK_EXPR = `Symbol.for(${JSON.stringify(STEALTH_MARK)})`;
 
 /**
  * 解析环境变量得到启用的补丁项。
@@ -174,10 +198,13 @@ function buildStealthScript(opts) {
   });
   return `(function(){
   'use strict';
-  if (window.${STEALTH_MARK}) return;
+  // 幂等守卫（审查 #42）：Symbol 键挂在 document 上 —— 字符串属性枚举 / getOwnPropertyNames(word)
+  // 都看不到它；同一文档内的两次注入（did-start-loading + dom-ready）仍能正确去重。
+  var MARK = ${STEALTH_MARK_EXPR};
+  if (document[MARK]) return;
   try {
-    Object.defineProperty(window, '${STEALTH_MARK}', { value: ${STEALTH_VERSION}, enumerable: false, configurable: false });
-  } catch (e) { window.${STEALTH_MARK} = ${STEALTH_VERSION}; }
+    Object.defineProperty(document, MARK, { value: ${STEALTH_VERSION}, enumerable: false, configurable: false });
+  } catch (e) { try { document[MARK] = ${STEALTH_VERSION}; } catch (e2) {} }
 
   var ON = ${flags};
   var PROFILE = ${profileLiteral};
@@ -551,7 +578,7 @@ const PROBE_SCRIPT = `(async function () {
           return d ? { hasGetter: !!d.get, hasSetter: !!d.set, enumerable: d.enumerable, configurable: d.configurable } : null;
         } catch (e) { return { error: String((e && e.message) || e) }; }
       })(),
-      stealthMark: window.${STEALTH_MARK} || null
+      stealthMark: document[${STEALTH_MARK_EXPR}] || null
     };
   });
 
@@ -619,7 +646,7 @@ const PROBE_SCRIPT = `(async function () {
 
   out.__meta = {
     probeVersion: ${PROBE_VERSION},
-    stealthVersion: window.${STEALTH_MARK} || null,
+    stealthVersion: document[${STEALTH_MARK_EXPR}] || null,
     electron: (navigator.userAgent.match(/Electron\\/([0-9.]+)/) || [])[1] || null,
     href: (location.href || '').slice(0, 120),
     origin: location.origin

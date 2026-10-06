@@ -65,7 +65,7 @@ Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目�
 | AI 技能 | 标准 SKILL.md 技能体系（内置 7 项），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词 |
 | 定时任务 / 备份 | 按 HH:mm + 星期自动触发投递 / 采集 / 备份，可圈定目标平台与单轮上限；本地每 5 分钟脏检查写盘、缺失自动回签恢复；支持开机自启动 |
 | 数据统计 | 投递量 / 沟通量 / 成功率看板 + **投递漏斗**（采集入队 → 已投递 → 已打开沟通 → 已回复 → 面试）；支持导出岗位明细 CSV / 统计汇总 CSV / 统计报表 PDF（A4 横版） |
-| 外部 Agent | 内置控制桥（白名单动作、本地令牌、默认关闭）+ 零依赖 MCP 服务器（8 工具 / 3 组）；未配置 API Key 时可交由在线外部 Agent 代答 |
+| 外部 Agent | 内置控制桥（白名单动作、本地令牌、默认关闭）+ 零依赖 MCP 服务器（9 工具 / 3 组）；未配置 API Key 时可交由在线外部 Agent 代答 |
 | 可选桥接 / 增强 | OpenClaw 本地 Node 桥接（扫描版 PDF 的 OCR、求职日报、任务状态恢复与日志，可选）；隐身引擎（Camoufox）/ 隐身浏览器（CloakBrowser），设置页默认关闭，**不绕过**验证码与账户验证 |
 
 > 端口协议、目录结构、回归脚本与排障细节见 [`desktop-app/README.md`](desktop-app/README.md) 与 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki)。
@@ -189,7 +189,7 @@ Boss-claw/
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 7 项）· React 渲染进程（store / components / pages / lib）
 │   └── resources/  package.json   应用图标与随包文档 · 依赖、scripts 与 electron-builder 打包目标
-├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（8 工具 / 3 组）
+├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（9 工具 / 3 组）
 ├── docs/                      **本地内部文档，未随仓库分发**（`.gitignore` 忽略）
 ├── install-deps.cmd           一键安装依赖（Node + Electron，可选 Python 隐身引擎）
 ├── start-bossclaw.cmd         一键启动脚本（默认开启控制桥，`--dev` / `--visible` 可选）

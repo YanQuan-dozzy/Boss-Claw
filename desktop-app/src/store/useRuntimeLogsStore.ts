@@ -15,9 +15,23 @@ import { createSafePersistStorage } from '@/lib/persistSafe';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'success';
 export interface LogEntry {
+  /**
+   * 稳定唯一 id（审查 #96）：渲染列表的 key 用它。
+   * 旧实现用 `\`${time}-${index}\``，而 index 取自 `logs.slice(-80)` 的窗口下标 ——
+   * 每来一条新日志整个窗口位移，所有 key 都变 → 即便 `LogItem` 已 `memo` 也会全量重挂载。
+   * 兼容历史持久化数据：缺该字段时读取侧回落旧口径。
+   */
+  id?: string;
   time: number;
   level: LogLevel;
   msg: string;
+}
+
+/** 稳定 id 生成：时间戳(36) + 单调序号(36)，同毫秒内连续 addLog 也不会撞 */
+let logSeq = 0;
+function nextLogId(): string {
+  logSeq = (logSeq + 1) % 0xffffff;
+  return `log_${Date.now().toString(36)}_${logSeq.toString(36)}`;
 }
 
 export type ChatLogStage =
@@ -62,7 +76,8 @@ export const useRuntimeLogsStore = create<RuntimeLogsState>()(
       logs: [],
       chatLogs: [],
 
-      addLog: (level, msg) => set((s) => ({ logs: [...s.logs, { time: Date.now(), level, msg }].slice(-500) })),
+      addLog: (level, msg) =>
+        set((s) => ({ logs: [...s.logs, { id: nextLogId(), time: Date.now(), level, msg }].slice(-500) })),
       clearLogs: () => set({ logs: [] }),
       addChatLog: (entry) =>
         set((s) => ({

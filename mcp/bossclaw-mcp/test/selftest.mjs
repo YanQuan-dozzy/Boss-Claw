@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.resolve(__dirname, '..', 'bin', 'bossclaw-mcp.mjs');
 import { runWhitelistParity } from './whitelist-parity.mjs';
+import { runBridgePath } from './bridge-path.mjs';
 
 const spawnEnv = process.env.BOSSCLAW_REPO
   ? { ...process.env }
@@ -77,6 +78,10 @@ try {
   // 0) 白名单双源一致性（H10 / P6-08）：MCP RENDERER_ACTIONS ⊆ controlRuntime.ts::handlers
   const parityExit = runWhitelistParity();
   record('白名单双源一致性', parityExit === 0, parityExit === 0 ? 'MCP ⊆ TS（差集仅豁免项 state）' : '发现 TS 侧不存在的幽灵动作');
+
+  // 0b) 桥信息文件多路径查找（审查 #66 / 批次 10）：应用回退 tmpdir 时 MCP 仍能命中
+  const bridgePathExit = await runBridgePath();
+  record('桥信息路径解析', bridgePathExit === 0, bridgePathExit === 0 ? 'userData + tmpdir 双候选，回退分支可命中' : '多候选查找或 infoFile 标注异常');
 
   // 1) initialize
   const init = await rpc('initialize', {

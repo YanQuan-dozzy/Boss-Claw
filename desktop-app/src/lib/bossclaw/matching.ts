@@ -20,6 +20,17 @@ import { allocateContextBudget, fitContextToTokens } from './contextBudget';
 import { prepareContextText } from './oversizedContext';
 import type { Decision } from './types';
 
+/**
+ * 启用「AI 整体分 × AI 维度加权分」融合所需的**最小 AI 维度覆盖度**（审查 #3）。
+ *
+ * 覆盖度 = AI 实际给出的维度权重 / AI 五维总权重（skill .34 / direction .28 / salary .14 /
+ * education .08 / experience .06）。取 0.6 的语义：AI 必须给出覆盖 ≥60% 权重的维度
+ * （实际等价于「技能 + 方向」两个主维都在，或至少三个次级维齐全）才允许维度分以 40% 权重
+ * 参与总分；否则退化为纯整体分 —— 避免「AI 只回一维、且那一维恰好偏高/偏低」时，
+ * 这单一维度独占 40% 权重把总分拽偏。
+ */
+const AI_DIM_FUSION_MIN_COVERAGE = 0.6;
+
 // P3-06：旧版本地匹配 localMatchScore 已删除——它基于「标题命中×3/描述命中×1」的旧口径，
 // 与现口径（computeLocalMatch 按维度命中映射 + 缺口惩罚）分叉，且「供 AI 分轻微平滑兜底」
 // 的用途已不存在（本地分仅 AI 不可用时出场）。现无任何调用方，直接移除。
@@ -578,8 +589,13 @@ ${untrustedJobSection(parts.jobJson)}${localAnchorSection}`,
   }
   // 3.6 AI 语义评估维度分（dimensionScores）解析与本地兜底（见 mergeAiDimensions）：
   //     AI 每维输出 {score, evidence}（提示词要求逐维语义评估、纠正本地逐词误报）；
-  //     每维以 AI 为准、AI 缺失时本地同维兜底；overall 按 AI 五维权重重算，作为总分融合的「维度加权分」。
-  const { dimensions: fusedDimensions, evidence: dimensionEvidence, aiDimUsed } = mergeAiDimensions(result.dimensionScores, local);
+  //     每维以 AI 为准、AI 缺失时本地同维兜底（仅展示）；overall 只按 **AI 实际给出的维度** 加权，
+  //     本地兜底维不得进入 overall（审查 #3）。
+  //     ⚠️ 下方 `delete result.dimensionScores` 属于**就地改写返回值**：llm.ts 的缓存层已改为
+  //     存/取双向克隆（审查 #2），因此这里不再污染缓存条目 —— 若日后回退该克隆，此处必须同步改为
+  //     构造新对象返回，否则二次命中缓存会退化成「无 AI 维度分」。
+  const { dimensions: fusedDimensions, evidence: dimensionEvidence, aiDimUsed, aiDimCoverage } =
+    mergeAiDimensions(result.dimensionScores, local);
   result.dimensions = fusedDimensions;
   if (Object.keys(dimensionEvidence).length) result.dimensionEvidence = dimensionEvidence;
   delete result.dimensionScores; // AI 原始字段已消化为 dimensions + dimensionEvidence，不再随 JobAnalysis 持久化
@@ -606,11 +622,13 @@ ${untrustedJobSection(parts.jobJson)}${localAnchorSection}`,
   if (Number.isFinite(aiScore)) {
     // AI 有分：以档位为准把分数夹到档内（档位写谨慎、分数给 95 会被夹回谨慎区间）。
     // 总分融合（用户口径：整体裁决分 × 维度加权分融合，档位仍由四层整体裁决 + 技能维错位闸门决定）：
-    // 分数 = 60% AI 整体分 + 40% AI 语义五维加权分（见 3.6），夹回档位区间——
+    // 分数 = 60% AI 整体分 + 40% **AI 语义五维加权分**（见 3.6），夹回档位区间——
     // 权重从 70/30 调到 60/40，让「岗位要求与简历相差大」在分数上扣得更明显（维度分低 → 总分显著下探）。
-    // AI 未输出任何合法维度分（aiDimUsed=false）时退化为纯整体分，避免用本地逐词弱证据拉偏 AI 判断。
+    // AI 未输出任何合法维度分、或 AI 维度覆盖度不足（aiDimCoverage < AI_DIM_FUSION_MIN_COVERAGE，
+    // 见 mergeAiDimensions 注释；审查 #3）时退化为纯整体分：既不用本地逐词弱证据，也不用单一 AI 维
+    // 独占 40% 权重拉偏 AI 的整体裁决。
     const dimOverall = Number(fusedDimensions.overall);
-    if (aiDimUsed && Number.isFinite(dimOverall)) {
+    if (aiDimUsed && aiDimCoverage >= AI_DIM_FUSION_MIN_COVERAGE && Number.isFinite(dimOverall)) {
       score = scoreForFitLevel(level, Math.round(aiScore * 0.6 + dimOverall * 0.4));
       result.fusedWithDimensions = true;
     } else {
@@ -666,22 +684,28 @@ ${untrustedJobSection(parts.jobJson)}${localAnchorSection}`,
  * - 每维以 AI 为准（0-100 夹取为整数），AI 缺失/非法时用本地确定性同维兜底（本地也缺则 null，UI 自动过滤）；
  * - 薪资维度展示仍以 AI 为准，但其打分口径被提示词约束为「以本地校准信息为准」（本地解析仍是最终薪资数据来源）；
  * - location 恒为本地值（不进 AI 五维）；
- * - overall 按 AI 五维权重（34/28/14/8/6，缺失维度剔除后重归一）重算，作为总分融合的「维度加权分」；
- * - aiDimUsed 标记 AI 是否至少给出一个合法维度分（只有它才触发总分融合，避免用本地弱证据去拉偏 AI 总分）。
+ * - **overall 只由 AI 实际给出的维度加权得到**（缺失维剔除后重归一），本地兜底维**不得**进入 overall
+ *   —— 见「禁融合」铁律（本地五维只做 UI 展示 + AI 完全不可用时的兜底，不参与总分）；
+ * - aiDimUsed = AI 至少给出一个合法维度分；aiDimCoverage = AI 给出的维度权重占 AI 五维总权重的比例
+ *   （调用方据此决定是否启用 60/40 维度融合，避免「AI 只给 1 维」就让该维独占 40% 权重）。
  */
 export function mergeAiDimensions(aiRaw: unknown, local: LocalMatchResult): {
   dimensions: MatchDimensions;
   evidence: MatchDimensionEvidence;
   aiDimUsed: boolean;
+  aiDimCoverage: number;
 } {
   // AI 五维权重（Σ=0.90）：由 jobMatch.ts 单一来源 AI_DIM_WEIGHTS 派生（含 experience、无 location，
   // location 恒取本地值）——与本地 LOCAL_DIM_WEIGHTS（Σ=0.94，含 location、无 experience）是
   // 两组刻意不同的集合，共同维度权重数值一致，差异是设计意图（P1-08/P3-05），勿再手写第二份。
   const DIM_META: { key: AIDimKey; weight: number }[] = AI_DIM_WEIGHTS.map(([key, weight]) => ({ key, weight }));
+  const totalWeight = DIM_META.reduce((s, d) => s + d.weight, 0);
   const src = (aiRaw && typeof aiRaw === 'object' ? aiRaw : {}) as Record<string, unknown>;
   const dims: MatchDimensions = { ...local.dimensions };
   const evidence: MatchDimensionEvidence = {};
   let aiDimUsed = false;
+  // 只累计 **AI 实际给出** 的维度（审查 #3：原实现把本地兜底维一并计入 wSum/wTotal，
+  // 使 overall 混入本地逐词弱证据并以其 40% 权重进入最终分，而 scoreSource 仍标 'ai'）
   let wSum = 0;
   let wTotal = 0;
   for (const { key, weight } of DIM_META) {
@@ -690,16 +714,18 @@ export function mergeAiDimensions(aiRaw: unknown, local: LocalMatchResult): {
     if (Number.isFinite(aiScore)) {
       dims[key] = Math.max(0, Math.min(100, Math.round(aiScore)));
       aiDimUsed = true;
-    } else {
-      dims[key] = local.dimensions[key];
-    }
-    const ev = String(item?.evidence ?? '').trim().slice(0, 60);
-    if (ev) evidence[key] = ev;
-    if (dims[key] != null) {
       wSum += Number(dims[key]) * weight;
       wTotal += weight;
+      const ev = String(item?.evidence ?? '').trim().slice(0, 60);
+      if (ev) evidence[key] = ev;
+      continue;
     }
+    // AI 未给该维：展示层用本地同维兜底（UI 会标注「本地确定性维度」），**不进 overall**
+    dims[key] = local.dimensions[key];
+    const ev = String(item?.evidence ?? '').trim().slice(0, 60);
+    if (ev) evidence[key] = ev;
   }
+  // overall = AI 维度的加权分（重归一）；AI 一维未给时退化为本地 overall（仅展示，aiDimUsed=false 不会触发融合）
   dims.overall = wTotal > 0 ? Math.round(wSum / wTotal) : local.dimensions.overall;
-  return { dimensions: dims, evidence, aiDimUsed };
+  return { dimensions: dims, evidence, aiDimUsed, aiDimCoverage: totalWeight > 0 ? wTotal / totalWeight : 0 };
 }

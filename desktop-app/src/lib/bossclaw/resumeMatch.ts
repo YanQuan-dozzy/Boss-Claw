@@ -36,15 +36,26 @@ const JD_STOPWORDS = new Set([
 // 无信息量的通用英文 token（域名/链接等）
 const JD_NOISE_TOKENS = /^(?:https?|www|com|org|net|cn|io|html|css|js|ts)$/i;
 
-/** 词边界命中（纯英文/数字词；中文用子串匹配，避免 Java 误命中 JavaScript） */
+/**
+ * 词边界命中（纯英文/数字词；中文用子串匹配，避免 Java 误命中 JavaScript）。
+ *
+ * ⚠️ 不能用 `new RegExp('\\b' + k + '\\b')`（审查 #41）——`\b` 要求「一侧是 \w 另一侧不是」，
+ * 当关键词首/尾字符本身**不是** \w 时该端恒不成立，方向性错误：
+ *   · `C#`  → `/\bc#\b/`：`#` 后接空格 → 两端都不是单词字符 → **无边界 → 假阴性**（JD 写了 C# 却判未命中）；
+ *   · `C++` → `/\bc\+\+\b/`：`C++abc` 中 `+` 后接 `a` → 有边界 → **假阳性**（把 C++abc 当成 C++）。
+ * 故按首/尾字符分别选择断言：首字符是 \w 时要求左侧非 \w（等价 `\b`）；**不是** \w 时不加左界
+ * （`.NET` 必须能在 `ASP.NET` 里命中）；右界统一为「右侧不能紧跟 \w」，使 `C#` / `C++` 后接字母时不再误命中。
+ */
 export function keywordHit(keyword: string, text: string): boolean {
   const k = String(keyword || '').toLowerCase();
   const t = String(text || '').toLowerCase();
   if (!k) return false;
-  if (/^[\x00-\x7F]+$/.test(k)) {
-    return new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t);
+  if (!/^[\x00-\x7F]+$/.test(k)) {
+    return t.includes(k);
   }
-  return t.includes(k);
+  const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const head = /[a-z0-9_]/.test(k[0]) ? '(?<![\\w])' : '';
+  return new RegExp(`${head}${escaped}(?![\\w])`).test(t);
 }
 
 /** 画像贡献词（技能/搜索词/方向），作为中文关键词与高权重词来源 */

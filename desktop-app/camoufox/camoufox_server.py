@@ -1958,7 +1958,9 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         if token != self.server.token:
             return self._send(403, {"ok": False, "error": "token denied"})
         if parsed.path == '/status':
-            platform = (parse_qs(parsed.query).get('platform', ['boss'])[0] or 'boss').strip()
+            # 平台名归一化口径与 do_POST 一致（审查 #49）：原实现只 .strip() 不 .lower()，
+            # 客户端传 "BOSS" / "Boss " 时 engine_status 拿不到对应注册项，静默回落到默认状态。
+            platform = str(parse_qs(parsed.query).get('platform', ['boss'])[0] or 'boss').strip().lower() or 'boss'
             payload = engine_status(platform)
             return self._send(200, payload)
         return self._send(404, {"ok": False, "error": "not found"})

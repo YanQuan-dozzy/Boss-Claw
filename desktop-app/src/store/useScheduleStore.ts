@@ -80,6 +80,14 @@ export const useScheduleStore = create<ScheduleState>()(
         set((s) => ({ entries: s.entries.map((x) => (x.id === id ? { ...x, lastRunStamp: stamp } : x)) })),
       setCollectRequest: (r) => set({ collectRequest: r }),
     }),
-    { name: 'bossclaw-schedule', storage: createSafePersistStorage() }
+    {
+      name: 'bossclaw-schedule',
+      storage: createSafePersistStorage(),
+      // 审查 #7：`collectRequest` 是「待执行的瞬时请求」（调度器置位、常驻工作台消费后清除），
+      // 不是可恢复状态 —— 进程若在消费前退出，落盘会让下次启动时工作台挂载 effect 读到并执行，
+      // 变成**非用户预期的开机自动采集**（真实网络动作，进入风控口径）。
+      // 故只持久化定时任务表 entries，请求永远以 null 冷启动。
+      partialize: (s) => ({ entries: s.entries }),
+    }
   )
 );

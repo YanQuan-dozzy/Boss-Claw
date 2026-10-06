@@ -11,6 +11,7 @@
 
 import type { AppConfig, JobPlatform, PendingItem } from './types';
 import { PLATFORM_IDS, platformDailyCap, platformEnabled } from './platforms';
+import { checkDeliveryGate } from './activityWindow';
 import { SAFETY_LIMITS } from './limits';
 
 // ===== 风险严重级别 =====
@@ -133,18 +134,32 @@ export class ActionPacer {
     this.timestamps.push(now);
   }
 
-  /** 等待直到有空位，然后记录一次动作 */
+  /**
+   * 等待直到有空位，然后记录一次动作。
+   *
+   * ⚠️ 唤醒后必须**重新竞争**空位（审查 §四·23）：原实现「无空位 → 等最旧一次滑出窗口 → record()」
+   * 在并发下会突破预算 —— N 个并发等待者会在同一时刻被唤醒，各自无条件 record()，
+   * 于是这一分钟内的实际动作数可达 N×budget（限速器形同虚设，直冲平台限速阈值）。
+   * 现在改为循环：每轮睡到「最旧时间戳滑出窗口」后重新 `canAct()` 判定，抢到空位才 record；
+   * 没抢到（被其它等待者先占）就再算一次并继续等。每轮至少睡 300ms，不会空转。
+   */
   async waitForSlot(): Promise<void> {
     // 先抢占（若已有空位则不等待）
     if (this.canAct()) {
       this.record();
       return;
     }
-    // 无空位：等最旧一次动作滑出窗口（+随机抖动 0.3~1.2s，避免限速等待节奏完全一致被识别）
-    const oldest = this.timestamps[0];
-    const wait = 60_000 - (Date.now() - oldest) + Math.round(300 + Math.random() * 900);
-    await new Promise((r) => setTimeout(r, Math.max(300, wait)));
-    this.record();
+    // 无空位：等最旧一次动作滑出窗口（+随机抖动 0.3~1.2s，避免限速等待节奏完全一致被识别）。
+    // 醒来后**不**无条件 record —— 重新竞争，只有拿到空位才算等成功。
+    for (;;) {
+      const oldest = this.timestamps[0] ?? Date.now();
+      const wait = 60_000 - (Date.now() - oldest) + Math.round(300 + Math.random() * 900);
+      await new Promise((r) => setTimeout(r, Math.max(300, wait)));
+      if (this.canAct()) {
+        this.record();
+        return;
+      }
+    }
   }
 
   private prune(now: number): void {
@@ -218,6 +233,62 @@ export function cooldownRemaining(config: AppConfig, now = Date.now()): number {
 
 export function isLockedOut(config: AppConfig, now = Date.now()): boolean {
   return cooldownRemaining(config, now) > 0;
+}
+
+// ===== 投递前置守卫（唯一权威，审查 #23）=====
+export type DeliveryGuardKind = 'cooldown' | 'window' | 'daily-cap' | 'platform-cap';
+export type DeliveryGuardResult = { ok: true } | { ok: false; kind: DeliveryGuardKind; msg: string };
+
+/**
+ * 投递前置守卫：冷却 / 活跃时段 / 账号每日上限 / 平台每日上限 —— **四条投递路径共用的唯一实现**。
+ *
+ * 为什么必须收敛到一处（审查 #23）：单条「沟通」（`useAutoChatStore.chatOne`）原先只做重入保护，
+ * 冷却期、活跃时段外、已达当日上限时点单卡「沟通」仍会真实发送 —— 冷却/上限这类账号级保护
+ * 对单岗位路径形同虚设。批量循环里的检查若在调用方各写一份，必然再次分叉，故下沉到本模块。
+ *
+ * 语义：**只做同步判定，不做任何等待**（非活跃时段可能还要等十几小时，阻塞界面不可接受；
+ * 等待型节流由 deliveryThrottle 的 sharedPacer 负责）。调用方拿到 `ok:false` 后应「记录 msg +
+ * 中止本轮/本次发送」，不要重试。
+ *
+ * @param config 当前配置（冷却 pausedUntil / 活跃时段 activeHours / 平台每日目标都在其中）
+ * @param platform 本次要投递的岗位所属平台
+ * @param pending 当前岗位池（按 sentAt 统计今日已投递数）
+ */
+export function checkDeliveryGuards(
+  config: AppConfig,
+  platform: JobPlatform,
+  pending: PendingItem[],
+): DeliveryGuardResult {
+  const cfg = config || ({} as AppConfig);
+  if (isLockedOut(cfg)) {
+    return {
+      ok: false,
+      kind: 'cooldown',
+      msg: `账号处于安全冷却期，沟通已暂停（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟）。点击「停止」后可稍后重试。`,
+    };
+  }
+  const gate = checkDeliveryGate(cfg.activeHours, cfg.pausedUntil);
+  if (!gate.ok) {
+    const resumeAt = gate.nextAllowedAt ? new Date(gate.nextAllowedAt).toLocaleString('zh-CN') : '活跃时段开始后';
+    return {
+      ok: false,
+      kind: 'window',
+      msg: `${gate.reason}。预计 ${resumeAt} 自动恢复（可在「设置 → 自动沟通 → 防封号节奏限制」中调整或关闭）。`,
+    };
+  }
+  const cap = effectiveDailyCap(cfg);
+  if (dailySentCount(pending) >= cap) {
+    return { ok: false, kind: 'daily-cap', msg: `今日沟通数已触及安全上限 ${cap} 条，沟通已暂停。` };
+  }
+  const platformCap = effectiveDailyCapFor(cfg, platform);
+  if (dailySentCountFor(pending, platform) >= platformCap) {
+    return {
+      ok: false,
+      kind: 'platform-cap',
+      msg: `平台 ${platform} 今日投递已达上限 ${platformCap} 条（可在「设置 → 招聘平台」调整每日目标）。`,
+    };
+  }
+  return { ok: true };
 }
 
 /**
