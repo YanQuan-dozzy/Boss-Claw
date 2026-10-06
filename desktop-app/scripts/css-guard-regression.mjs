@@ -120,6 +120,82 @@ const ok = (name, cond, detail = '') => {
   ok('G6b 用到的 --z-* 均已定义', missing.length === 0, missing.join(', '));
 }
 
+/* ---------- G7（审查 #114）：语义色一律走 --status-* 变量 ---------- */
+{
+  // 语义色的字面值集合（实色 + 深色变体 + 深端）。变量定义行本身豁免。
+  const HEX_LITERALS = ['#10B981', '#F59E0B', '#EF4444', '#16A34A', '#D97706', '#DC2626', '#059669'];
+  const RGBA_TRIPLES = ['16, 185, 129', '245, 158, 11', '239, 68, 68', '34, 197, 94', '234, 179, 8'];
+  const hits = [];
+  for (const [name, txt] of Object.entries(cssText)) {
+    stripCssComments(txt).split('\n').forEach((line, i) => {
+      const isVarDef = /^\s*--status-[\w-]+\s*:/.test(line);
+      if (isVarDef) return; // 变量定义处必须写字面值，豁免
+      for (const hex of HEX_LITERALS) {
+        if (line.includes(hex)) hits.push(`${name}:${i + 1} → ${hex}`);
+      }
+      for (const triple of RGBA_TRIPLES) {
+        if (new RegExp(`rgba\\(\\s*${triple.replace(/,/g, '\\s*,\\s*')}\\s*,`).test(line)) {
+          hits.push(`${name}:${i + 1} → rgba(${triple},…)`);
+        }
+      }
+    });
+  }
+  ok('G7a CSS 无语义色字面值（一律 var(--status-*) / rgba(var(--status-*-rgb),α)）', hits.length === 0, hits.join(' | '));
+
+  // G7b：CSS 用到的 --status-* 变量必须都已定义（防止引用漂移）
+  const usedVars = new Set([...allCss.matchAll(/var\((--status-[\w-]+)\)/g)].map((m) => m[1]));
+  const definedVars = new Set([...allCss.matchAll(/(--status-[\w-]+)\s*:/g)].map((m) => m[1]));
+  const missVars = [...usedVars].filter((v) => !definedVars.has(v));
+  ok('G7b 用到的 --status-* 均已定义', missVars.length === 0, missVars.join(', '));
+
+  // G7c：CSS 变量值 与 theme.ts::STATUS_COLORS 交叉一致（两处色源一对一）
+  let themeOk = true;
+  let themeDetail = '';
+  try {
+    const themeTxt = fs.readFileSync(path.join(SRC, 'theme.ts'), 'utf8');
+    const pairs = [
+      ['--status-success', 'success'],
+      ['--status-warning', 'warning'],
+      ['--status-danger', 'danger'],
+    ];
+    const mismatches = [];
+    for (const [cssVar, key] of pairs) {
+      const cssMatch = allCss.match(new RegExp(`${cssVar}\\s*:\\s*(#[0-9A-Fa-f]{6})`));
+      const tsMatch = themeTxt.match(new RegExp(`${key}\\s*:\\s*'(#[0-9A-Fa-f]{6})'`));
+      if (!cssMatch || !tsMatch) { mismatches.push(`${cssVar}/${key} 未找到定义`); continue; }
+      if (cssMatch[1].toUpperCase() !== tsMatch[1].toUpperCase()) {
+        mismatches.push(`${cssVar}=${cssMatch[1]} ≠ theme.${key}=${tsMatch[1]}`);
+      }
+    }
+    themeOk = mismatches.length === 0;
+    themeDetail = mismatches.join(' | ');
+  } catch (e) {
+    themeOk = false;
+    themeDetail = 'theme.ts 读取失败：' + e.message;
+  }
+  ok('G7c index.css --status-* 与 theme.ts STATUS_COLORS 一致', themeOk, themeDetail);
+
+  // G7d：tsx/ts 中不得再出现语义色字面值（theme.ts 定义处除外）
+  const tsHits = [];
+  for (const f of walkTs(SRC)) {
+    const rel = path.relative(desktopRoot, f).replace(/\\/g, '/');
+    if (rel.endsWith('src/theme.ts')) continue;
+    const txt = fs
+      .readFileSync(f, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+    txt.split('\n').forEach((line, i) => {
+      for (const hex of HEX_LITERALS) {
+        if (line.toUpperCase().includes(hex)) tsHits.push(`${rel}:${i + 1} → ${hex}`);
+      }
+      if (/#13B5AC/i.test(line) && !/MATCH_SCORE_COLOR/.test(line)) {
+        tsHits.push(`${rel}:${i + 1} → #13B5AC（应用 MATCH_SCORE_COLOR）`);
+      }
+    });
+  }
+  ok('G7d TS/TSX 无语义色字面值（统一从 theme.ts / statsAggregate 引用）', tsHits.length === 0, tsHits.join(' | '));
+}
+
 /* ---------- 工具 ---------- */
 /**
  * 剥离 CSS 注释（含跨行块注释与行内注释），避免注释里提到的
@@ -136,6 +212,17 @@ function walkTsx(dir, out = []) {
     const p = path.join(dir, entry.name);
     if (entry.isDirectory()) walkTsx(p, out);
     else if (/\.tsx$/.test(entry.name)) out.push(p);
+  }
+  return out;
+}
+
+/** 收集 .ts 与 .tsx（#114 的语义色字面值在两类文件里都要守）。 */
+function walkTs(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkTs(p, out);
+    else if (/\.tsx?$/.test(entry.name)) out.push(p);
   }
   return out;
 }

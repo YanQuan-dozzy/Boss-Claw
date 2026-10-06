@@ -85,7 +85,8 @@ process.on('unhandledRejection', (reason) => {
 // ===== Chromium 启动开关（必须在 app ready 之前设置）=====
 // 与 stealth.cjs 的补丁配合：该开关保证即使将来附加 CDP debugger（路线 B），
 // navigator.webdriver 也不会被 Chromium 置为 true。
-// 实测：Electron 31.7.7 未附加时 webdriver 已是 false，故本开关属预防性加固。
+// 实测：Electron 42.11.10（Chromium 148）未附加时 webdriver 已是 false，故本开关属预防性加固。
+// （审查 #115：原注释标注的 "Electron 31.7.7" 为升级前版本，已按当前依赖订正；升级后行为未变。）
 try {
   app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 } catch (e) { /* 受限环境可能不允许，忽略即可 */ }
@@ -2165,7 +2166,7 @@ app.whenReady().then(async () => {
     bossclawSession.setUserAgent(realChromeUA);
     dlog('info', 'stealth profile', { ua: realChromeUA, brands: stealthProfile.brands });
 
-    // ===== 请求头对齐：根因是「实测 Electron 126 的导航请求完全不发 Sec-CH-UA 系列头」=====
+    // ===== 请求头对齐：根因是「实测 Electron 42（Chromium 148）的导航请求完全不发 Sec-CH-UA 系列头」=====
     // 而 JS 层 navigator.userAgentData 却存在 → 服务端看到的是「声明有 UA-CH、请求却不带」的自相矛盾。
     // 这里强制把 Sec-CH-UA / Mobile / Platform / Accept-Language / User-Agent 设为画像值（幂等覆盖）。
     // 只改这几个头：accept / sec-fetch-* / upgrade-insecure-requests 实测与目标样本已一致，多改易错。
@@ -2184,7 +2185,7 @@ app.whenReady().then(async () => {
     }
 
     // ===== 磁盘缓存配置：增大缓存上限（默认值偏小，BOSS 首页资源较多）=====
-    // setCacheSize 在 Electron 31+ 中对 persistent session 有效；
+    // setCacheSize 对 persistent session 有效（Electron 42 亦适用；调用前已做 typeof 能力判断）；
     // 256MB 缓存可显著减少二次加载时间（JS/CSS/图片缓存命中），冷启动也因缓存预热而加速。
     if (typeof bossclawSession.setCacheSize === 'function') {
       bossclawSession.setCacheSize(256 * 1024 * 1024)

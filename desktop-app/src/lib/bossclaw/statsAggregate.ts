@@ -35,6 +35,7 @@ import { platformLabel, platformEnabled } from './platforms';
 import { effectiveDailyCap } from './safety';
 import { selectedDirectionItems } from './directions';
 import { fitLevelFromScore, type FitLevel } from './fitLevel';
+import { STATUS_COLORS } from '../../theme';
 
 /* ============================ 时间范围 ============================ */
 
@@ -70,10 +71,10 @@ export const STATS_STATUS_META: { key: PendingStatus; label: string; color: stri
   { key: 'approved', label: '待投递', color: '#3B82F6', hint: '已确认、进入投递队列' },
   { key: 'approved_queue', label: '投递中', color: '#06B6D4', hint: '正在执行投递' },
   { key: 'opened', label: '已打开', color: '#A78BFA', hint: '已打开沟通窗口、尚未发送文字气泡' },
-  { key: 'sent', label: '已投递', color: '#10B981', hint: '投递成功' },
-  { key: 'failed', label: '失败', color: '#EF4444', hint: '投递失败，可重试或忽略' },
+  { key: 'sent', label: '已投递', color: STATUS_COLORS.success, hint: '投递成功' },
+  { key: 'failed', label: '失败', color: STATUS_COLORS.danger, hint: '投递失败，可重试或忽略' },
   { key: 'skipped', label: '已跳过', color: '#CBD5E1', hint: '未投递（外部网申 / 命中过滤条件等）' },
-  { key: 'rejected', label: '不推荐', color: '#F59E0B', hint: 'AI 判定不推荐' },
+  { key: 'rejected', label: '不推荐', color: STATUS_COLORS.warning, hint: 'AI 判定不推荐' },
   { key: 'ignored', label: '已忽略', color: '#E2E8F0', hint: '人工忽略' },
 ];
 
@@ -81,17 +82,20 @@ export const STATS_STATUS_META: { key: PendingStatus; label: string; color: stri
 export const WAITING_STATUSES: PendingStatus[] = ['pending', 'approved', 'approved_queue', 'opened'];
 
 export const STATS_DECISION_META: Record<Decision, { label: string; color: string }> = {
-  recommend: { label: '推荐投递', color: '#10B981' },
-  cautious: { label: '谨慎投递', color: '#F59E0B' },
-  reject: { label: '不推荐', color: '#EF4444' },
+  recommend: { label: '推荐投递', color: STATUS_COLORS.success },
+  cautious: { label: '谨慎投递', color: STATUS_COLORS.warning },
+  reject: { label: '不推荐', color: STATUS_COLORS.danger },
 };
+
+/** 「匹配（65-80）」档的中性青绿 —— 与品牌色系同族但不等于 success，故独立常量（审查 #114）。 */
+export const MATCH_SCORE_COLOR = '#13B5AC';
 
 /** 提示词四档适配度口径（strong >80 / match 65-80 / cautious 50-64 / unfit <50） */
 export const STATS_FIT_LEVEL_META: { key: FitLevel; label: string; scoreRange: string; color: string; hint: string }[] = [
-  { key: 'strong', label: '推荐', scoreRange: '81-100', color: '#10B981', hint: 'AI 整体裁决：高度吻合（81-100分）' },
-  { key: 'match', label: '匹配', scoreRange: '65-80', color: '#13B5AC', hint: 'AI 整体裁决：正常达标（65-80分）' },
-  { key: 'cautious', label: '谨慎', scoreRange: '50-64', color: '#F59E0B', hint: 'AI 整体裁决：存在缺口（50-64分），需人工确认' },
-  { key: 'unfit', label: '不推荐', scoreRange: '<50', color: '#EF4444', hint: 'AI 整体裁决：门槛不符或方向错位（0-49分）' },
+  { key: 'strong', label: '推荐', scoreRange: '81-100', color: STATUS_COLORS.success, hint: 'AI 整体裁决：高度吻合（81-100分）' },
+  { key: 'match', label: '匹配', scoreRange: '65-80', color: MATCH_SCORE_COLOR, hint: 'AI 整体裁决：正常达标（65-80分）' },
+  { key: 'cautious', label: '谨慎', scoreRange: '50-64', color: STATUS_COLORS.warning, hint: 'AI 整体裁决：存在缺口（50-64分），需人工确认' },
+  { key: 'unfit', label: '不推荐', scoreRange: '<50', color: STATUS_COLORS.danger, hint: 'AI 整体裁决：门槛不符或方向错位（0-49分）' },
 ];
 
 export type MatchDimensionKey = 'skill' | 'direction' | 'experience' | 'education' | 'salary' | 'location';

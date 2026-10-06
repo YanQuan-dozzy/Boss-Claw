@@ -123,7 +123,8 @@ const PATCH_KEYS = [
 ];
 
 // ===== 默认关闭项（实测驱动，不是推测）=====
-//   webdriver : Electron 31.7.7 实测 navigator.webdriver === false —— 本来就对，改写只会引入风险
+//   webdriver : Electron 42.11.10（Chromium 148）实测 navigator.webdriver === false —— 本来就对，改写只会引入风险
+//               （审查 #115：原注写 "Electron 31.7.7"，属升级前实测标注；升级后行为未变，已同步版本号）
 //   plugins   : 实测已有 5 项标准 PDF 插件、2 项 mimeTypes、instanceof PluginArray === true —— 完全正常
 //               （首版补丁反而把 isPluginArray 改成了 false，等于自己制造破绽）
 // languages 已移出本列表：2026-10-03 抓到真机样本 Accept-Language = "zh-CN,zh;q=0.9"，

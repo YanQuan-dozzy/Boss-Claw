@@ -29,6 +29,7 @@ import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
 import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
+import { MATCH_SCORE_COLOR } from '@/lib/bossclaw/statsAggregate';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
 import { checkJobExpiry, isExpiryFilterEnabled, PLATFORM_EXPIRY_DEFAULT } from '@/lib/bossclaw/jobExpiry';
 import { makePendingItem, jobUrlKey, sameJobSoft } from '@/store/useDataStore';
@@ -2779,7 +2780,7 @@ export default function Workbench() {
                   size="small"
                   percent={visualItem.total ? Math.round((visualItem.index / visualItem.total) * 100) : 0}
                   style={{ flex: '1 1 0', minWidth: 0, margin: 0 }}
-                  strokeColor={{ from: '#13b5ac', to: '#078A83' }}
+                  strokeColor={{ from: MATCH_SCORE_COLOR, to: '#078A83' }}
                 />
                 {visualCollecting && (
                   <Button
@@ -2814,7 +2815,7 @@ export default function Workbench() {
                   </div>
                   <Tag color="processing" style={{ margin: 0, flex: '0 0 auto' }}>{currentPhase ? currentPhase.label : '投递中'}</Tag>
                 </div>
-                <Progress percent={currentPhase ? currentPhase.progress : 0} size="small" strokeColor={{ from: '#13b5ac', to: '#078A83' }} status="active" />
+                <Progress percent={currentPhase ? currentPhase.progress : 0} size="small" strokeColor={{ from: MATCH_SCORE_COLOR, to: '#078A83' }} status="active" />
                 <div className="delivery-task-meta">
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {currentPhase ? currentPhase.label : '准备中'} · {currentPhase ? currentPhase.progress : 0}%

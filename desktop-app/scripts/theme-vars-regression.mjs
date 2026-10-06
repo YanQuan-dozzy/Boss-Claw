@@ -10,13 +10,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const css = fs.readFileSync(path.join(desktopRoot, 'src', 'index.css'), 'utf8');
+const cssRaw = fs.readFileSync(path.join(desktopRoot, 'src', 'index.css'), 'utf8');
+// 先剥离 CSS 注释：注释里出现的 `var(--status-*-rgb)` 这类「示意写法」不能被当成真实引用
+// （审查 #114 批次踩到：通配写法 `--status-*` 被正则截成 `--status-` → 误报悬空变量）。
+const css = cssRaw.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
 const ts = fs.readFileSync(path.join(desktopRoot, 'src', 'theme.ts'), 'utf8');
 
 // index.css 中引用的全部 var(--x)
 const cssRefs = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]));
-// index.css 中自身定义的变量（--name: value；选择器块内）
-const cssDefined = new Set([...css.matchAll(/(?:^|[;{]\s*)(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+// index.css 中自身定义的变量（--name: value）。
+// 前导边界允许：行首、`;`、`{`、`}`、块注释结束 `*/`（本脚本曾漏掉「紧跟在注释块之后」的定义，
+// 导致 --brand / --status-*-rgb / --z-* 等被误判为「无来源」—— 见审查 #114 批次）。
+const cssDefined = new Set(
+  [...css.matchAll(/(?:^|[;{}\n]|\*\/)\s*(--[a-z0-9-]+)\s*:/gm)].map((m) => m[1])
+);
 
 // cssVars 函数体（结构：`? { …keys… }` 为 dark 分支、`: { …keys… }` 为 light 分支）
 const fnBody = ts.match(/export const cssVars = \(mode: ThemeMode\) => \{[\s\S]*?\n\};/)?.[0];

@@ -425,7 +425,7 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
   transition: background 0.15s ease, color 0.15s ease;
 }
 .resume-page .ant-select-multiple .ant-select-selection-item-remove:hover {
-  background: rgba(239, 68, 68, 0.12);
+  background: rgba(var(--status-danger-rgb), 0.12);
   color: var(--status-danger);
 }
 
@@ -692,10 +692,10 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
   background: var(--brand-gradient);
 }
 .metric-card--success-rate:hover::before {
-  background: linear-gradient(90deg, #10B981, #059669);
+  background: linear-gradient(90deg, var(--status-success), var(--status-success-deep));
 }
 .metric-card--pending:hover::before {
-  background: linear-gradient(90deg, #F59E0B, #D97706);
+  background: linear-gradient(90deg, var(--status-warning), var(--status-warning-strong));
 }
 .metric-card--remaining:hover::before {
   background: linear-gradient(90deg, #0D9488, #0284C7);
@@ -729,12 +729,12 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
   transform: scale(1.08);
 }
 .metric-card--success-rate .metric-card__icon {
-  background: rgba(16, 185, 129, 0.12);
-  color: #10B981;
+  background: rgba(var(--status-success-rgb), 0.12);
+  color: var(--status-success);
 }
 .metric-card--pending .metric-card__icon {
-  background: rgba(245, 158, 11, 0.12);
-  color: #F59E0B;
+  background: rgba(var(--status-warning-rgb), 0.12);
+  color: var(--status-warning);
 }
 .metric-card--remaining .metric-card__icon {
   background: rgba(13, 148, 136, 0.12);
@@ -800,13 +800,13 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
 
 /* 待确认 / 警告态 */
 .badge-pending {
-  background: rgba(245, 158, 11, 0.10);
-  border-color: rgba(245, 158, 11, 0.28);
-  color: #D97706;
+  background: rgba(var(--status-warning-rgb), 0.10);
+  border-color: rgba(var(--status-warning-rgb), 0.28);
+  color: var(--status-warning-strong);
 }
 html[data-theme='dark'] .badge-pending {
-  background: rgba(245, 158, 11, 0.16);
-  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(var(--status-warning-rgb), 0.16);
+  border-color: rgba(var(--status-warning-rgb), 0.35);
   color: #FBBF24;
 }
 
@@ -837,39 +837,39 @@ html[data-theme='dark'] .badge-queue {
 
 /* 已开窗 */
 .badge-opened {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.22);
-  color: #059669;
+  background: rgba(var(--status-success-rgb), 0.08);
+  border-color: rgba(var(--status-success-rgb), 0.22);
+  color: var(--status-success-deep);
 }
 html[data-theme='dark'] .badge-opened {
-  background: rgba(16, 185, 129, 0.14);
-  border-color: rgba(16, 185, 129, 0.30);
+  background: rgba(var(--status-success-rgb), 0.14);
+  border-color: rgba(var(--status-success-rgb), 0.30);
   color: #34D399;
 }
 
 /* 投递成功 / 成功态 */
 .badge-success {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.32);
-  color: #059669;
+  background: rgba(var(--status-success-rgb), 0.12);
+  border-color: rgba(var(--status-success-rgb), 0.32);
+  color: var(--status-success-deep);
   font-weight: 600;
 }
 html[data-theme='dark'] .badge-success {
-  background: rgba(16, 185, 129, 0.18);
-  border-color: rgba(16, 185, 129, 0.40);
+  background: rgba(var(--status-success-rgb), 0.18);
+  border-color: rgba(var(--status-success-rgb), 0.40);
   color: #34D399;
 }
 
 /* 失败态 */
 .badge-failed {
-  background: rgba(239, 68, 68, 0.10);
-  border-color: rgba(239, 68, 68, 0.28);
-  color: #DC2626;
+  background: rgba(var(--status-danger-rgb), 0.10);
+  border-color: rgba(var(--status-danger-rgb), 0.28);
+  color: var(--status-danger-strong);
   font-weight: 600;
 }
 html[data-theme='dark'] .badge-failed {
-  background: rgba(239, 68, 68, 0.16);
-  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(var(--status-danger-rgb), 0.16);
+  border-color: rgba(var(--status-danger-rgb), 0.35);
   color: #F87171;
 }
 

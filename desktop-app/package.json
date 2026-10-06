@@ -53,14 +53,6 @@
     ],
     "extraResources": [
       {
-        "from": "camoufox/camoufox_server.py",
-        "to": "camoufox/camoufox_server.py"
-      },
-      {
-        "from": "camoufox/requirements.txt",
-        "to": "camoufox/requirements.txt"
-      },
-      {
         "from": "resources/docs/使用前必读.md",
         "to": "docs/使用前必读.md"
       }

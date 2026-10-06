@@ -31,6 +31,7 @@ import {
 } from '@ant-design/icons';
 import type { JdPointLayer, JdPointVerdict, TailorJdPoint, TailorResult } from '@/lib/bossclaw/jobAssistant';
 import { JD_LAYER_LABEL } from '@/lib/bossclaw/jobAssistant';
+import { STATUS_COLORS } from '@/theme';
 
 const { Text, Paragraph } = Typography;
 
@@ -43,12 +44,12 @@ interface TailorResultViewProps {
   onImportMaterials?: () => void;
 }
 
-const scoreColor = (s: number) => (s >= 80 ? '#10b981' : s >= 60 ? '#f59e0b' : '#ef4444');
+const scoreColor = (s: number) => (s >= 80 ? STATUS_COLORS.success : s >= 60 ? STATUS_COLORS.warning : STATUS_COLORS.danger);
 
 /** JD 要点层级展示顺序（硬门槛 → 优先条件 → 职责信号 → 团队信号） */
 const LAYER_ORDER: JdPointLayer[] = ['must', 'prefer', 'duty', 'team'];
 const VERDICT_META: Record<JdPointVerdict, { label: string; color: string; icon: React.ReactNode }> = {
-  covered: { label: '已体现', color: 'green', icon: <CheckCircleOutlined style={{ color: '#10b981' }} /> },
+  covered: { label: '已体现', color: 'green', icon: <CheckCircleOutlined style={{ color: STATUS_COLORS.success }} /> },
   addable: { label: '可补充', color: 'gold', icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} /> },
   missing: { label: '不具备', color: 'red', icon: <CloseCircleOutlined style={{ color: '#f5222d' }} /> },
 };

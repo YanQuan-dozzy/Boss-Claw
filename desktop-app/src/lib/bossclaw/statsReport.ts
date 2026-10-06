@@ -25,6 +25,7 @@ import {
   type CrossRow,
   type StatsSnapshot,
 } from './statsAggregate';
+import { STATUS_COLORS } from '../../theme';
 
 function esc(text: unknown): string {
   return String(text ?? '')
@@ -41,7 +42,7 @@ const SUBTLE = '#94A3B8';
 const LINE = '#E3E8EF';
 const BAND = '#F5F7FA';
 const ACCENT = '#0D9488';
-const SUCCESS = '#10B981';
+const SUCCESS = STATUS_COLORS.success;
 const SCORE = '#6366F1';
 
 const BASE_CSS = `
@@ -200,8 +201,8 @@ export function buildStatsReportHtml(snapshot: StatsSnapshot, appVersion?: strin
 
   const scoreBandBars =
     hbar('高（70 及以上）', s.scoreBands.high, s.scoreBands.total, SUCCESS) +
-    hbar('中（40-69）', s.scoreBands.mid, s.scoreBands.total, '#F59E0B') +
-    hbar('低（40 以下）', s.scoreBands.low, s.scoreBands.total, '#EF4444') +
+    hbar('中（40-69）', s.scoreBands.mid, s.scoreBands.total, STATUS_COLORS.warning) +
+    hbar('低（40 以下）', s.scoreBands.low, s.scoreBands.total, STATUS_COLORS.danger) +
     hbar('未分析', s.scoreBands.none, s.scoreBands.total, '#CBD5E1');
 
   return `<!DOCTYPE html>

@@ -7,12 +7,31 @@ export const BRAND_LIGHT = '#14B8A6'; // 亮青绿
 export const BRAND_DARK = '#0F766E'; // 深青绿
 
 // 投递专属扩展状态色
+// ⚠️ 单一色源（审查 #114）：TS 侧语义色**唯一权威**。
+//    与 `index.css` 的 `--status-*` 变量必须逐值一致（`scripts/css-guard-regression.mjs` G7 交叉校验），
+//    页面/报表**禁止再写字面色值**，一律从此处引用。
 export const STATUS_COLORS = {
   success: '#10B981', // 翠绿
   warning: '#F59E0B', // 琥珀
   danger: '#EF4444',  // 红色
   info: '#0D9488',    // 主色
-};
+  // 深色文字变体（浅色底上保证对比度）
+  successStrong: '#16A34A',
+  warningStrong: '#D97706',
+  dangerStrong: '#DC2626',
+  // 渐变深端
+  successDeep: '#059669',
+  warningDeep: '#D97706',
+} as const;
+
+/** CSS `rgba()` 用三元组（与 `--status-*-rgb` 变量一致） */
+export const STATUS_RGB = {
+  success: '16, 185, 129',
+  warning: '245, 158, 11',
+  danger: '239, 68, 68',
+  successStrong: '34, 197, 94',
+  warningStrong: '234, 179, 8',
+} as const;
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 

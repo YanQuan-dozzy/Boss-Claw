@@ -53,6 +53,7 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { electronApi } from '@/lib/electronApi';
 import {
+  MATCH_SCORE_COLOR,
   STATS_DIMENSION_META,
   STATS_FIT_LEVEL_META,
   STATS_RANGES,
@@ -69,6 +70,7 @@ import {
 } from '@/lib/bossclaw/statsAggregate';
 import { buildDetailRows, buildSummaryRows, exportFilename, toCsv, type ExportKind } from '@/lib/bossclaw/statsExport';
 import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
+import { STATUS_COLORS } from '@/theme';
 import { revealFile, saveCsvFile, saveReportPdf, type ExportOutcome } from '@/lib/bossclaw/statsExportRun';
 
 const { Text } = Typography;
@@ -111,12 +113,12 @@ function DimensionBar({ label, score, hint }: { label: string; score: number | n
   const color = !hasScore
     ? 'var(--border-strong)'
     : score >= 80
-      ? '#10B981'
+      ? STATUS_COLORS.success
       : score >= 65
-        ? '#13b5ac'
+        ? MATCH_SCORE_COLOR
         : score >= 50
-          ? '#F59E0B'
-          : '#EF4444';
+          ? STATUS_COLORS.warning
+          : STATUS_COLORS.danger;
 
   return (
     <div className="ai-dim-row">
@@ -560,9 +562,9 @@ export default function Stats() {
                     <Text type="secondary" style={{ fontSize: 12 }}>尚无匹配分数</Text>
                   ) : (
                     <>
-                      <HBar label="高（70 及以上）" value={snapshot.scoreBands.high} total={snapshot.scoreBands.total} color="#10B981" />
-                      <HBar label="中（40-69）" value={snapshot.scoreBands.mid} total={snapshot.scoreBands.total} color="#F59E0B" />
-                      <HBar label="低（40 以下）" value={snapshot.scoreBands.low} total={snapshot.scoreBands.total} color="#EF4444" />
+                      <HBar label="高（70 及以上）" value={snapshot.scoreBands.high} total={snapshot.scoreBands.total} color={STATUS_COLORS.success} />
+                      <HBar label="中（40-69）" value={snapshot.scoreBands.mid} total={snapshot.scoreBands.total} color={STATUS_COLORS.warning} />
+                      <HBar label="低（40 以下）" value={snapshot.scoreBands.low} total={snapshot.scoreBands.total} color={STATUS_COLORS.danger} />
                       <HBar label="未分析" value={snapshot.scoreBands.none} total={snapshot.scoreBands.total} color="#CBD5E1" />
                     </>
                   )}
@@ -595,7 +597,7 @@ export default function Stats() {
                 <div className="ai-insight-box">
                   <div>
                     <div className="ai-insight-sub">
-                      <CheckCircleFilled style={{ color: '#10B981', fontSize: 11 }} />
+                      <CheckCircleFilled style={{ color: STATUS_COLORS.success, fontSize: 11 }} />
                       <span>高频优势亮点</span>
                     </div>
                     <InsightTags
@@ -607,7 +609,7 @@ export default function Stats() {
 
                   <div>
                     <div className="ai-insight-sub">
-                      <AlertOutlined style={{ color: '#F59E0B', fontSize: 11 }} />
+                      <AlertOutlined style={{ color: STATUS_COLORS.warning, fontSize: 11 }} />
                       <span>关注风险与门槛</span>
                     </div>
                     <InsightTags
@@ -639,9 +641,9 @@ export default function Stats() {
             >
               <div className="status-hbar-list">
                 <HBar label="采集入队" hint="已入队（时间范围内）" value={snapshot.funnel.discovered} total={snapshot.funnel.discovered || 1} color="#3B82F6" />
-                <HBar label="已投递" hint={snapshot.funnel.sent > 0 ? `占采集 ${pct(snapshot.funnel.sent, snapshot.funnel.discovered)}%` : '尚未投递'} value={snapshot.funnel.sent} total={snapshot.funnel.discovered || 1} color="#10B981" />
+                <HBar label="已投递" hint={snapshot.funnel.sent > 0 ? `占采集 ${pct(snapshot.funnel.sent, snapshot.funnel.discovered)}%` : '尚未投递'} value={snapshot.funnel.sent} total={snapshot.funnel.discovered || 1} color={STATUS_COLORS.success} />
                 <HBar label="已打开沟通" hint={snapshot.funnel.opened > 0 ? `占采集 ${pct(snapshot.funnel.opened, snapshot.funnel.discovered)}%` : '尚未打开沟通窗'} value={snapshot.funnel.opened} total={snapshot.funnel.discovered || 1} color="#A78BFA" />
-                <HBar label="已回复" hint={snapshot.funnel.replied > 0 ? `AI 回复成功，占采集 ${pct(snapshot.funnel.replied, snapshot.funnel.discovered)}%` : '暂无回复'} value={snapshot.funnel.replied} total={snapshot.funnel.discovered || 1} color="#F59E0B" />
+                <HBar label="已回复" hint={snapshot.funnel.replied > 0 ? `AI 回复成功，占采集 ${pct(snapshot.funnel.replied, snapshot.funnel.discovered)}%` : '暂无回复'} value={snapshot.funnel.replied} total={snapshot.funnel.discovered || 1} color={STATUS_COLORS.warning} />
                 <HBar label="面试" hint="暂无采集来源" value={snapshot.funnel.interviewCount} total={snapshot.funnel.discovered || 1} color="#CBD5E1" />
               </div>
               <p className="stats-note">
@@ -703,7 +705,7 @@ export default function Stats() {
                   type="circle"
                   size={72}
                   percent={snapshot.goalPct}
-                  strokeColor={{ from: '#13b5ac', to: '#078A83' }}
+                  strokeColor={{ from: MATCH_SCORE_COLOR, to: '#078A83' }}
                 />
                 <div>
                   <div className="quality-goal-value">
