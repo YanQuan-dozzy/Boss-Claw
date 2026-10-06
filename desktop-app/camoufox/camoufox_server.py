@@ -1908,20 +1908,44 @@ def _watch_dispatch(cmd: str, payload: dict) -> dict:
 
 
 def chat_watch_command(cmd: str, payload: dict, timeout: float = 90.0) -> dict:
-    """把会话监听命令投递到单线程执行器并等待结果（HTTP 处理线程不直接碰浏览器）。"""
+    """把会话监听命令投递到单线程执行器并等待结果（HTTP 处理线程不直接碰浏览器）。
+
+    ⚠️ 超时必须 teardown（审查 #36 · 批次 12）：
+    执行器是 `max_workers=1` 的**单线程**池，且浏览器操作对线程有亲和性（Playwright 对象
+    只能在创建它的线程里用），因此**卡住的那次调用会永久占住这唯一的工作线程** ——
+    之后所有 chat-watch 命令（scan/open/send/stop）都会排队后各自超时，
+    AI 跟聊彻底瘫痪且用户只能重启应用；更糟的是常驻浏览器与 Page 一直不释放。
+    原实现只 `log + return`，未做任何清理（Exception 分支才 teardown），故此处补齐：
+    超时即提交 `_watch_teardown`，释放常驻浏览器并让后续命令能重新 `start`。
+    注意 teardown **不能**在超时分支同步等待（工作线程仍被卡住，同步等会再卡一次），
+    只能投递后不等待（submit 不阻塞）——真正释放由卡住的那次调用最终抛错后完成。
+    """
     try:
         fut = _chat_watch_executor.submit(_watch_dispatch, cmd, payload or {})
         return fut.result(timeout=timeout)
     except FutureTimeoutError:
         log('❌', f'会话监听命令超时：{cmd}')
-        return {"ok": False, "error": f"会话监听命令超时（{cmd}）"}
+        # 超时 → 立刻释放常驻资源并让执行器恢复可用（不等待，避免二次卡死）
+        _watch_teardown_async()
+        return {"ok": False, "error": f"会话监听命令超时（{cmd}），已重置常驻会话监听"}
     except Exception as e:
         log('❌', f'会话监听命令异常：{cmd} / {e}')
+        _watch_teardown_async()
+        return {"ok": False, "error": str(e)}
+
+
+def _watch_teardown_async() -> None:
+    """把 teardown 投递到执行器（不等待）—— 供超时/异常分支调用，避免二次阻塞。"""
+    try:
+        _chat_watch_executor.submit(_watch_teardown)
+    except RuntimeError:
+        # 执行器已关闭：直接同步清理一次（此时线程已空闲，不会再卡）
         try:
-            _chat_watch_executor.submit(_watch_teardown)
+            _watch_teardown()
         except Exception:
             pass
-        return {"ok": False, "error": str(e)}
+    except Exception:
+        pass
 
 
 # ============================================================

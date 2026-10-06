@@ -276,10 +276,15 @@ export function checkDeliveryGuards(
       msg: `${gate.reason}。预计 ${resumeAt} 自动恢复（可在「设置 → 自动沟通 → 防封号节奏限制」中调整或关闭）。`,
     };
   }
-  const cap = effectiveDailyCap(cfg);
-  if (dailySentCount(pending) >= cap) {
-    return { ok: false, kind: 'daily-cap', msg: `今日沟通数已触及安全上限 ${cap} 条，沟通已暂停。` };
-  }
+  // ⚠️ **顺序即语义，不可对调**（审查 #23 后续 · 批次 12）：
+  // 平台级上限必须**先于**账号级判 —— 因为账号级是各启用平台的**合计**（`effectiveDailyCap`）。
+  // 二者互含关系：
+  //   · 单平台场景：账号级 == 平台级（合计即该平台），谁先判都等价；
+  //   · 多平台场景：某平台先跑满自身额度时，账号级合计往往**尚未**触顶 —— 若账号级先判，
+  //     此时会返回 `daily-cap`，而调用方对 `daily-cap` 的处理是 **break 整批**（终止整轮运行），
+  //     于是「一个平台跑满」会**错误地停掉其它仍有额度的平台**；且 `platform-cap` 分支
+  //     （调用方据此 `continue` 跳过该平台、转下一优先级平台）**永远不可达**，成为死代码。
+  // 先判平台级 → 超限平台被单独跳过，其余平台继续；账号级作为最终总额兜底。
   const platformCap = effectiveDailyCapFor(cfg, platform);
   if (dailySentCountFor(pending, platform) >= platformCap) {
     return {
@@ -287,6 +292,10 @@ export function checkDeliveryGuards(
       kind: 'platform-cap',
       msg: `平台 ${platform} 今日投递已达上限 ${platformCap} 条（可在「设置 → 招聘平台」调整每日目标）。`,
     };
+  }
+  const cap = effectiveDailyCap(cfg);
+  if (dailySentCount(pending) >= cap) {
+    return { ok: false, kind: 'daily-cap', msg: `今日沟通数已触及安全上限 ${cap} 条，沟通已暂停。` };
   }
   return { ok: true };
 }
