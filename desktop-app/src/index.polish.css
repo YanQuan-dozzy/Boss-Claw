@@ -70,10 +70,10 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
 .ant-progress .ant-progress-success-bg { border-radius: 999px !important; }
 
 /* ---------- 3. 数据数字排版：统一 tabular / 等宽族 ---------- */
+/* 审查 #118：`.ss-value`（死类）已从本共享组移除，其余仍在用。 */
 .ant-statistic-content,
 .stat-value,
 .wb-stat-num,
-.ss-value,
 .metric-card__value {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -288,7 +288,7 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
   align-items: center;
   justify-content: center;
   text-align: center;
-  transition: all 0.25s ease;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease, color 0.25s ease;
 }
 .resume-preview-result .ant-empty:hover {
   border-color: var(--brand);
@@ -788,7 +788,7 @@ h1, h2, h3, h4, h5, p { text-wrap: balance; }
   white-space: nowrap;
   user-select: none;
   font-variant-numeric: tabular-nums;
-  transition: all 0.18s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
 }
 .status-badge__icon {
   display: inline-flex;
@@ -1041,7 +1041,7 @@ html[data-theme='dark'] .badge-failed {
   font-weight: 600;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: all 0.16s ease;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
 }
 .log-console__filter-btn:hover {
   border-color: var(--border-brand);
@@ -1104,7 +1104,7 @@ html[data-theme='dark'] .badge-failed {
   font-weight: 600;
   box-shadow: var(--shadow-md);
   cursor: pointer;
-  z-index: 10;
+  z-index: var(--z-local);
   transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease;
 }
 .log-console__scroll-btn:hover,
@@ -1141,8 +1141,8 @@ html[data-theme='dark'] .badge-failed {
   padding: 12px 14px;
 }
 
-/* ---------- 7. 岗位卡片与列表项 (Workbench & Tasks Job Cards) ---------- */
-.job-item,
+/* ---------- 7. 岗位卡片与列表项 (Tasks Job Cards) ---------- */
+/* 审查 #118：`.job-item` 已删除（tsx 零引用），此处保留仍用的 `.job-card--tasks`。 */
 .job-card--tasks {
   border-radius: var(--radius-card);
   border: 1px solid var(--border);
@@ -1151,7 +1151,6 @@ html[data-theme='dark'] .badge-failed {
   transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
     box-shadow 0.2s ease, border-color 0.2s ease;
 }
-.job-item:hover,
 .job-card--tasks:hover {
   border-color: var(--border-brand);
   box-shadow: var(--shadow-sm);
@@ -1296,6 +1295,32 @@ html[data-theme='dark'] .badge-failed {
   border-color: var(--border-brand);
   box-shadow: var(--shadow-sm);
 }
+
+/* ---------- 8. 无障碍：prefers-reduced-motion 兜底（审查 #119） ----------
+   本层是**最后加载**的样式（main.tsx 中在 index.css 之后引入），故兜底放这里才能覆盖全库。
+   现状：全库原有 6 处 `infinite` 动画（loader 旋转 / 雷达扫描 / 脉冲 / LED 呼吸 / pulse-ring）
+   与大量 transition，此前**无任何 reduced-motion 降级** —— 对前庭敏感用户是持续的位移与闪烁刺激。
+   策略分两层：
+     1) 全局：动画与过渡压到近乎瞬时（0.01ms），状态变化仍可见（颜色/显隐照常切换），只是不再"动"；
+     2) 例外：**功能性加载指示**（`.browser-loading-ring` spinner）不能完全静止，否则用户会误判为卡死 ——
+        改为**降速**（2s 线性）而非禁用，仍保留"正在加载"的语义。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 功能性 spinner 例外：降速保留，避免「静止 = 卡死」的误判 */
+  .browser-loading-ring {
+    animation-duration: 2s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 
 
 

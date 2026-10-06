@@ -223,7 +223,7 @@ export default function ScheduleTasks() {
 
       <Card
         size="small"
-        className="mb-16"
+        style={{ marginBottom: 16 }}
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <ThunderboltOutlined style={{ color: 'var(--brand)' }} />

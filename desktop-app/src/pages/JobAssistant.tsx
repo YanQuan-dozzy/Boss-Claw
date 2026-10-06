@@ -459,7 +459,7 @@ export default function JobAssistant() {
         </div>
       </div>
 
-      <Card size="small" className="mb-16" title={<Space><FileTextOutlined style={{ color: 'var(--brand)' }} />岗位信息</Space>}>
+      <Card size="small" style={{ marginBottom: 16 }} title={<Space><FileTextOutlined style={{ color: 'var(--brand)' }} />岗位信息</Space>}>
         <Space size={12} style={{ marginBottom: 12 }}>
           <Select
             placeholder={importableJobs.length ? '（可选）从已批准 / 已投递岗位导入' : '暂无已批准 / 已投递岗位，请先在工作台批准'}
@@ -559,7 +559,8 @@ export default function JobAssistant() {
       {/* 经历补充材料：简历里没写的真实经历，可导入后参与定制与要点判定 */}
       <Card
         size="small"
-        className="mb-16 tailor-materials-card"
+        className="tailor-materials-card"
+        style={{ marginBottom: 16 }}
         title={
           <Space>
             <UploadOutlined style={{ color: 'var(--brand)' }} />

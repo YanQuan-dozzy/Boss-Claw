@@ -125,7 +125,9 @@ export default function OpenClaw() {
         </div>
       </div>
 
-      <Card size="small" className="mb-12">
+      {/* 审查 #112：原 `className="mb-12"` 是死类（index.css 从未定义 → 静默无间距效果）。
+          本页其余间距/字号一律走内联 style，此处保持一致显式写出。 */}
+      <Card size="small" style={{ marginBottom: 12 }}>
         <Space wrap>
           <Button icon={<ApiOutlined />} onClick={refresh} loading={loading}>刷新状态</Button>
           <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => control('start')}>启动</Button>

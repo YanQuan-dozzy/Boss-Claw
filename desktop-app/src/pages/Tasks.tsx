@@ -289,7 +289,7 @@ export default function Tasks() {
             <span>执行任务列表</span>
           </div>
         }
-        className="mb-16"
+        style={{ marginBottom: 16 }}
         extra={<Text type="secondary" style={{ fontSize: 12 }}>采集任务自动生成 · 投递任务基于已确认的投递方向</Text>}
       >
         {taskRuns.length === 0 ? (

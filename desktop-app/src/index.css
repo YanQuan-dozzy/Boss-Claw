@@ -60,6 +60,19 @@ body {
   --radius-modal: 16px;
   --radius-lg: 20px;
 
+  /* 层级体系（审查 #120）：原全库 z-index 字面值 0/1/2/10/30/40/100/1000/1200 混用、
+     无统一语义（1000 出现两次、1200 凭空跳跃）。此处建立唯一变量表，**新增 z-index 一律取变量**。
+     数值刻意拉开间隙（各档 ×10 级差），便于未来在档内插入而不必重排。 */
+  --z-base: 0;        /* 背景 / 强制下沉（如工作台 background 态、webview 兜底层） */
+  --z-raised: 1;      /* 同容器内抬升一级（小徽标、覆盖文字） */
+  --z-content: 2;     /* 内容覆盖层（如分数参考线） */
+  --z-local: 10;      /* 局部提升：激活的工作台实例、卡片内加载遮罩、浮动按钮 */
+  --z-card-pop: 30;   /* 卡片自身需要越出同级卡片的浮层（如搜索词候选面板展开） */
+  --z-panel: 40;      /* 绝对定位下拉面板 */
+  --z-header: 100;    /* 固定顶栏 / 标题栏 */
+  --z-overlay: 1000;  /* 全局浮层：自定义右键菜单、Tooltip */
+  --z-tooltip-top: 1200; /* 标题栏内下弹提示（需高于 header 且不被裁剪） */
+
   /* 滚动条（中性灰，深浅两套分别取值） */
   --scrollbar: rgba(100, 116, 139, 0.35);
   --scrollbar-hover: rgba(100, 116, 139, 0.60);
@@ -124,7 +137,7 @@ html[data-theme='dark'],
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   user-select: none;
-  z-index: 100;
+  z-index: var(--z-header);
 }
 .title-bar-drag {
   flex: 1;
@@ -191,7 +204,7 @@ html[data-theme='dark'],
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .theme-seg-item .anticon {
   font-size: 13px;
@@ -224,7 +237,7 @@ html[data-theme='dark'],
   line-height: 1;
   cursor: pointer;
   user-select: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .title-pin-btn:hover {
   color: var(--fg);
@@ -246,7 +259,7 @@ html[data-theme='dark'],
 }
 .ant-segmented .ant-segmented-item {
   border-radius: 9999px !important;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 .ant-segmented .ant-segmented-item-selected {
   border-radius: 9999px !important;
@@ -354,7 +367,7 @@ html[data-theme='dark'],
   color: var(--fg-muted);
   cursor: pointer;
   font-size: 14px;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .rail-collapse-btn:hover {
   background: var(--hover-bg);
@@ -373,7 +386,7 @@ html[data-theme='dark'],
   cursor: pointer;
   font-size: 14px;
   text-align: left;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
   white-space: nowrap;
 }
 .side-rail.is-collapsed .nav-btn {
@@ -408,7 +421,9 @@ html[data-theme='dark'],
 .nav-btn.is-active .nav-icon { color: var(--brand); }
 
 .rail-spacer { flex: 1; }
-.bridge-status,
+/* 审查 #118：原 `.bridge-status` 族已删除（tsx 零引用）。
+   `.action-status` 为**动态拼接**使用（Sidebar.tsx:113/118 `'action-status' + (isActive ? ' online' : '')`），
+   属活类，予以保留 —— 故此处把原共享组拆为仅剩 .action-status。 */
 .action-status {
   display: flex;
   align-items: center;
@@ -420,19 +435,15 @@ html[data-theme='dark'],
   border-radius: var(--radius-card);
   background: var(--card-bg);
   white-space: nowrap;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
-.bridge-status.is-collapsed,
 .action-status.is-collapsed {
   justify-content: center;
   padding: 8px 0;
   gap: 0;
 }
-.bridge-status .dot,
 .action-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-subtle); flex-shrink: 0; }
-.bridge-status.online,
 .action-status.online { border-style: solid; border-color: rgba(16, 185, 129, 0.4); }
-.bridge-status.online .dot { background: var(--status-success); }
 
 /* 侧边栏底部「当前动作」为运行中时，点用品牌色强调（与 StatusBar 的 OpenClaw 状态视觉区分） */
 .action-status.online .dot { background: var(--brand); }
@@ -480,7 +491,7 @@ html[data-theme='dark'],
   height: 100% !important;
   visibility: hidden;                /* 后台态：不绘制、不接收事件（默认态即后台态） */
   pointer-events: none;
-  z-index: 0;                         /* 🆕 后台态：强制降到背景层，让前台的 .page（z-index:auto）显示在上 */
+  z-index: var(--z-base);                         /* 🆕 后台态：强制降到背景层，让前台的 .page（z-index:auto）显示在上 */
   opacity: 0;                         /* 🆕 后台态：彻底透明，兜底 webview GPU 合成层残留的可见像素 */
   overflow: hidden;
   /* 背景化时：先淡出再隐藏，避免突然消失产生闪烁 */
@@ -489,7 +500,7 @@ html[data-theme='dark'],
 .workbench-host.is-active {
   visibility: visible;
   pointer-events: auto;
-  z-index: 10 !important;             /* 🆕 前台态：提至最高层，保证内置浏览器正常显示与交互 */
+  z-index: var(--z-local) !important;             /* 🆕 前台态：提至最高层，保证内置浏览器正常显示与交互 */
   opacity: 1;                         /* 🆕 前台态：完全可见 */
   /* 激活时：立即可见再渐显，无延迟 */
   transition: opacity 0.2s ease, visibility 0s linear 0s;
@@ -499,7 +510,7 @@ html[data-theme='dark'],
 .workbench-host.is-background {
   visibility: hidden;
   pointer-events: none;
-  z-index: 0 !important;
+  z-index: var(--z-base) !important;
   opacity: 0 !important;
 }
 /* 后台态兜底：即使标签页激活样式（.browser-pane.is-active）把子级 visibility 置为 visible，
@@ -647,7 +658,7 @@ html[data-theme='dark'],
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   text-align: center;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
 .wb-stat.is-on {
@@ -736,7 +747,7 @@ html[data-theme='dark'],
   padding: 8px 12px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
-  z-index: 1;
+  z-index: var(--z-raised);
 }
 
 /* ===== 浏览器 viewport 区域与 webview 布局约束（核心不变量，切勿改动） ===== */
@@ -760,13 +771,13 @@ html[data-theme='dark'],
   flex-direction: column !important;
   visibility: hidden;
   pointer-events: none;
-  z-index: 0;
+  z-index: var(--z-base);
   overflow: hidden !important;
 }
 .browser-pane.is-active {
   visibility: visible !important;
   pointer-events: auto !important;
-  z-index: 1 !important;
+  z-index: var(--z-raised) !important;
 }
 
 /* ⚠️ 核心红线约束：<webview> 元素必须保持 display: flex !important 与 flex: 1 !important！
@@ -881,7 +892,7 @@ html[data-theme='dark'],
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-xs);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .browser-newtab-card:hover {
   border-color: var(--border-brand);
@@ -913,7 +924,7 @@ html[data-theme='dark'],
 .browser-loading-overlay {
   position: absolute !important;
   inset: 0 !important;
-  z-index: 10 !important;
+  z-index: var(--z-local) !important;
   display: flex !important;
   flex-direction: column !important;
   align-items: center !important;
@@ -1545,7 +1556,7 @@ html[data-theme='dark'] .direction-card__count.is-gap {
 /* ===== 投递方向 · 搜索词字段（第一行关键词单行可折叠 / 第二行输入新增） ===== */
 /* 候选面板展开时把整张卡片抬到同级卡片之上，避免被下一张卡片盖住 */
 .direction-card.is-suggesting {
-  z-index: 30;
+  z-index: var(--z-card-pop);
 }
 
 /* 第一行：已有关键词标签（中性灰阶，精致胶囊，右侧 × 删除）。
@@ -1577,7 +1588,7 @@ html[data-theme='dark'] .direction-card__count.is-gap {
   color: var(--fg);
   font-size: 12px;
   line-height: 22px;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 html[data-theme='dark'] .direction-tag {
   background: rgba(255, 255, 255, 0.03);
@@ -1684,7 +1695,7 @@ html[data-theme='dark'] .direction-tag {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 40;
+  z-index: var(--z-panel);
   display: flex;
   flex-direction: column;
   max-height: 240px;
@@ -1893,7 +1904,7 @@ html[data-theme='dark'] .direction-tag {
   font-size: 13px !important;
   padding: 8px 16px !important;
   border-radius: 8px !important;
-  transition: all 0.2s ease !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease !important;
 }
 
 .settings-tabs .ant-tabs-tab-active {
@@ -2064,31 +2075,10 @@ html[data-theme='dark'] .direction-tag {
   justify-content: center !important;
 }
 
-/* ===== 统计摘要 Horizontal Chip Bar (Tasks 页与 Stats 页) ===== */
-.stat-strip {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.ss-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-xs);
-}
-
-.ss-label { font-size: 12px; color: var(--fg-muted); }
-.ss-value { font-size: 14px; font-weight: 700; color: var(--fg); font-family: SFMono-Regular, Consolas, monospace; }
-.ss-value.em-warn { color: var(--status-warning); }
-.ss-value.em-brand { color: var(--brand); }
-.ss-value.em-danger { color: var(--status-danger); }
+/* 审查 #118：原「统计摘要 Horizontal Chip Bar」死类组已删除 ——
+   `.stat-strip` / `.ss-item` / `.ss-label` / `.ss-value`(+`.em-warn/.em-brand/.em-danger`)
+   经全仓复核（含动态拼接）tsx/ts **零引用**；摘要条现由 antd 组件直接渲染。
+   注意：`.ss-*` 的 grep 曾命中 `task-progress-label` 等**子串同名**，复核时须按词边界确认。 */
 
 /* ===== 通用 Block 容器 ===== */
 .soft-block {
@@ -2439,7 +2429,7 @@ html[data-theme='dark'] .direction-tag {
   font-weight: 600;
   border: none;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .ctrl-btn:active { transform: scale(0.97); }
 
@@ -2557,7 +2547,7 @@ html[data-theme='dark'] .direction-tag {
 /* ===== ContextMenu & Tooltip ===== */
 .custom-context-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-overlay);
   width: 160px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -2593,7 +2583,7 @@ html[data-theme='dark'] .direction-tag {
 .custom-tooltip-wrapper { position: relative; display: inline-block; }
 .custom-tooltip {
   position: absolute;
-  z-index: 1000;
+  z-index: var(--z-overlay);
   padding: 6px 10px;
   background: rgba(15, 23, 42, 0.92);
   color: #FFFFFF;
@@ -2607,7 +2597,7 @@ html[data-theme='dark'] .direction-tag {
 .custom-tooltip--top { bottom: 100%; left: 50%; transform: translateX(-50%) translateY(-6px); }
 .custom-tooltip--bottom { top: 100%; left: 50%; transform: translateX(-50%) translateY(6px); }
 /* 标题栏内向下弹出的提示：给流内占位，避免被标题栏 overflow/层级裁剪 */
-.title-bar .custom-tooltip--bottom { top: calc(100% + 2px); z-index: 1200; }
+.title-bar .custom-tooltip--bottom { top: calc(100% + 2px); z-index: var(--z-tooltip-top); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* ===== 工作台 Filter & Toolbar 区域 ===== */
@@ -2988,65 +2978,10 @@ html[data-theme='dark'] .job-fit-tag {
 .job-info-chip--blue   { background: rgba(37, 99, 235, 0.13); color: #2563EB; }
 .job-info-chip--purple { background: rgba(139, 92, 246, 0.14); color: #7C3AED; }
 
-/* 展开卡片：岗位「更多信息」详情区块（采集到的岗位描述 + 关键字段） */
-.job-detail-block {
-  padding: 10px 12px;
-  margin-bottom: 10px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.job-detail-block__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-  margin-bottom: 8px;
-  letter-spacing: 0.02em;
-}
-.job-detail-rows {
-  display: grid;
-  grid-template-columns: 52px 1fr;
-  gap: 4px 10px;
-  margin-bottom: 6px;
-}
-.job-detail-row {
-  display: contents;
-}
-.job-detail-k {
-  font-size: 12px;
-  color: var(--fg-muted);
-  line-height: 1.6;
-  white-space: nowrap;
-}
-.job-detail-v {
-  font-size: 12px;
-  color: var(--fg);
-  line-height: 1.6;
-  word-break: break-word;
-}
-.job-desc {
-  margin-top: 0;
-  padding-top: 0;
-}
-.job-desc-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-  margin-bottom: 4px;
-}
-.job-desc-text {
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 260px;
-  overflow-y: auto;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-}
+/* 审查 #118：原「展开卡片：岗位更多信息详情区块」整段死代码已删除 ——
+   `.job-detail-block` / `.job-detail-block__title` / `.job-detail-rows` / `.job-detail-row`
+   / `.job-detail-k` / `.job-detail-v` / `.job-desc` / `.job-desc-title` / `.job-desc-text`
+   经全仓复核（含动态拼接）tsx/ts **零引用**。岗位详情现由 antd Collapse/Descriptions 直接渲染。 */
 
 /* 展开区块 & 招呼语编辑器 */
 .job-body {
@@ -3137,8 +3072,13 @@ html[data-theme='dark'] .job-fit-tag {
 .status-dot.is-off { background: var(--status-danger); }
 
 /* Ant Design Override for Theme Sync */
-.ant-btn { transition: all 0.2s ease !important; }
-.ant-btn:active { transform: scale(0.97) !important; }
+/* 审查 #107：此处原为 `.ant-btn { transition: transform 0.2s ease !important }` +
+   `.ant-btn:active { transform: scale(0.97) !important }` —— `!important` 无视源码顺序，
+   会**永久压制**后置精修层 index.polish.css:40-56 设计的过渡（0.18s cubic-bezier）与
+   按压缩放（0.985），使整个 polish 层的「按压/过渡统一」静默失效。
+   这两条已删除：精修层在 main.tsx 中**于本文件之后**引入（同特异性靠源码顺序接管），
+   且 theme.ts 未向 antd 声明 transition（无 cssinjs 反向覆盖）→ 删后由 polish 层生效。
+   ⚠️ 勿再加回 `!important`（守卫脚本 css-guard-regression.mjs 会红）。 */
 .ant-input:focus, .ant-input-affix-wrapper-focused {
   border-color: var(--brand) !important;
   box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.20) !important;
@@ -3444,7 +3384,7 @@ html[data-theme='dark'] .task-schedule-tag,
   background: var(--pf-primary-bg);
   color: var(--pf-primary);
   letter-spacing: -0.01em;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .task-score-dot {
   width: 6px;
@@ -3770,7 +3710,7 @@ html[data-theme='dark'] .task-prop-chip--risk,
   white-space: nowrap;
   cursor: help;
   flex: 0 1 auto;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .task-prop-chip:hover {
   border-color: #CBD5E1;
@@ -3832,7 +3772,7 @@ html[data-theme='dark'] .job-actions--tasks,
   font-weight: 500 !important;
   height: 34px !important;
   padding: 0 14px !important;
-  transition: all 0.15s ease !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease !important;
 }
 .task-ghost-btn:hover {
   background: #F8FAFC !important;
@@ -3870,7 +3810,7 @@ html[data-theme='dark'] .task-ghost-btn:hover,
   border-radius: 8px !important;
   padding: 0 18px !important;
   box-shadow: 0 4px 14px rgba(var(--pf-primary-rgb), 0.32) !important;
-  transition: all 0.15s ease !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease !important;
 }
 .task-approve-btn:hover {
   filter: brightness(1.08);
@@ -4220,7 +4160,7 @@ html[data-theme='dark'] .task-ghost-btn:hover,
   line-height: 18px;
   border-radius: 4px;
   white-space: nowrap;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .ai-insight-tag.strength {
   background: rgba(16, 185, 129, 0.08);
@@ -4326,7 +4266,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
   position: absolute;
   left: 0;
   right: 0;
-  z-index: 2;
+  z-index: var(--z-content);
   border-top: 1px dashed var(--border-strong);
   pointer-events: none;
 }
@@ -4344,7 +4284,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
 }
 .score-cols {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-raised);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -4827,7 +4767,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   transition: transform 0.2s ease;
-  z-index: 10;
+  z-index: var(--z-local);
 }
 
 .chat-log-panel__scroll-btn:hover {
@@ -4998,7 +4938,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
   padding: 2px 10px;
   border-radius: 9999px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
   font-family: monospace;
   flex: 1 1 0;
   text-align: center;
@@ -5037,7 +4977,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
   border-radius: var(--radius-card);
   background: var(--hover-bg);
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   text-align: center;
 }
 .modern-dropzone:hover, .modern-dropzone.is-dragging {
@@ -5103,7 +5043,7 @@ html[data-theme='dark'] .ai-insight-tag.caution {
   background: rgba(13, 148, 136, 0.07) !important;
   color: #0F766E !important;
   border: 1px solid rgba(13, 148, 136, 0.22) !important;
-  transition: all 0.15s ease !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease !important;
 }
 .skill-chip-matched:hover {
   background: rgba(13, 148, 136, 0.12) !important;
@@ -5132,7 +5072,7 @@ html[data-theme='dark'] .skill-chip-matched:hover {
   background: rgba(15, 23, 42, 0.025) !important;
   color: var(--fg-muted) !important;
   border: 1px dashed rgba(15, 23, 42, 0.18) !important;
-  transition: all 0.15s ease !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease !important;
 }
 .skill-chip-gap:hover {
   background: rgba(15, 23, 42, 0.05) !important;
@@ -5209,7 +5149,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .stat-input-card:hover {
   border-color: var(--border-brand);
@@ -5279,7 +5219,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   background: var(--bg-elevated);
   color: var(--fg-muted);
   box-shadow: var(--shadow-xs);
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .status-pill .led-dot {
   width: 7px;
@@ -5365,7 +5305,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   color: #FFFFFF !important;
   font-weight: 600 !important;
   box-shadow: 0 4px 14px rgba(13, 148, 136, 0.35) !important;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 .btn-start-batch:hover:not(:disabled) {
   transform: translateY(-1px) !important;
@@ -5461,7 +5401,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .image-resume-card:hover {
   border-color: var(--brand);
@@ -5513,7 +5453,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   gap: 4px;
   cursor: pointer;
   color: var(--fg-muted);
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 .image-resume-upload-card:hover {
   border-color: var(--brand);
@@ -5521,32 +5461,14 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   color: var(--brand);
 }
 
-/* 岗位卡片动态高亮 */
-.job-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  padding: 14px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.job-card:hover {
-  border-color: var(--border-brand);
-  box-shadow: var(--shadow-xs);
-}
-.job-card.is-active {
-  border-color: var(--brand) !important;
-  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-sm) !important;
-  position: relative;
-  overflow: hidden;
-}
-.job-card.is-active::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; bottom: 0;
-  width: 4px;
-  background: var(--brand);
-  box-shadow: 0 0 10px var(--brand);
-}
+/* 岗位卡片动态高亮 —— 审查 #108：此处原为 `.job-card` 的**第二组重复定义**
+   （本文件 :2758 已有唯一权威定义），其 `border: 1px solid` 简写会把 :2758 的
+   `border-left: 3px` 状态色条**压回 1px**（后置简写重置 border-left-width），
+   hover 阴影也从 `--shadow-md` 被削弱为 `--shadow-xs`；`.is-active::before` 的 4px 品牌条
+   又与 :2781-2787 的 border-left-color 体系机制重复。已删除该重复块，
+   卡片外观统一由上方 :2758 组（含状态色条）负责。
+   ⚠️ 勿再加回重复 `.job-card` 本体（守卫脚本 css-guard-regression.mjs 会红）。 */
+
 .job-salary-tag {
   font-weight: 700;
   color: var(--brand);
@@ -5747,7 +5669,7 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   background: var(--hover-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
 }
 
 .tailor-block:hover {
