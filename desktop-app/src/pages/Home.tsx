@@ -44,7 +44,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { createTasks } from '@/lib/bossclaw/tasks';
 import { MetricCard } from '@/components/MetricCard';
 import { electronApi } from '@/lib/electronApi';
-import { effectiveDailyCap, dailySentCount } from '@/lib/bossclaw/safety';
+import { effectiveDailyCap, enabledSentCount } from '@/lib/bossclaw/safety';
 import { PLATFORM_IDS, platformLabel, type JobPlatform } from '@/lib/bossclaw/platforms';
 import type { PendingItem } from '@/lib/bossclaw/types';
 import MarkdownView from '@/components/MarkdownView';
@@ -150,10 +150,13 @@ export default function Home() {
   const llmReady = isLLMConfigured();
   // 今日目标 = 各「已启用」平台每日目标合计（每平台上限于平台侧/防封号收窄；仅 BOSS 时即原 120）
   const dailyGoal = effectiveDailyCap(config);
-  // 「今日投递」必须按 sentAt 过滤当天，与每日上限（dailySentCountFor / paceDelivery）同口径。
+  // 「今日投递」必须按 sentAt 过滤当天，**且与每日上限（dailyGoal = effectiveDailyCap）同源**：
+  // 每日上限只累加「已启用」平台的额度，故分子也必须只统计「已启用」平台的今日投递，
+  // 否则用户关闭某平台后，该平台的历史投递仍计入分子、却不贡献分母 → 进度条显示
+  // 「今日 150 / 目标 120」这类越界值。（与批次 13 守卫口径对称，同一条规则）
   // 注意：store 的 stats.sent 是**累计**已投递总数（无日期过滤），直接拿来当「今日」会把
   // 昨天乃至更早投递的岗位也算进来（表现为「昨天投的显示成今日投递」）。
-  const sentToday = dailySentCount(pending);
+  const sentToday = enabledSentCount(config, pending);
   const [progress, setProgress] = useState(0);
   // 使用前必读文档抽屉
   const [docOpen, setDocOpen] = useState(false);

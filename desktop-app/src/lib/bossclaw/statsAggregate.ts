@@ -8,6 +8,8 @@
 //      岗位会被算进上周的柱子。这里改用 `PendingItem.sentAt`（真实投递成功时间）。
 //   3) 原实现「今日目标达成」用累计已投递当分子，与「每日上限」语义倒错。这里改用
 //      今日 sentAt 计数，与 `effectiveDailyCap`（每日上限）对齐。
+//      口径对称要求（批次 14 补）：`effectiveDailyCap` 只累加**已启用**平台的额度，故今日
+//      已投递的分子也**只统计已启用平台**，否则关闭平台后会显示「今日 150 / 目标 120」越界值。
 //   4) 原实现的状态分布漏了 `opened`（已打开沟通窗未发送），导致各状态占比合计不足 100%。
 //      这里 STATUS_META 覆盖全部 PendingStatus 成员。
 //
@@ -16,7 +18,7 @@
 //     是否落在所选时间范围内筛选。
 //   - 趋势图「新增」按 createdAt 归桶；「已投递」按 sentAt 归桶（两者样本不受对方范围影响，
 //     因此趋势柱合计与已投递卡片可能不等 —— 这是时间序列与存量指标的固有差异，UI 已注明）。
-//   - 「今日目标」独立于时间范围，按 sentAt 统计今日已投递数。
+//   - 「今日目标」独立于时间范围，按 sentAt 统计今日已投递数；**分子分母均只计已启用平台**（口径对称）。
 //   - 平均匹配分只统计有 `analysis.score` 的记录，未分析的不计入分母（图上标注样本数）。
 
 import type {
@@ -29,7 +31,7 @@ import type {
   TaskRun,
 } from './types';
 import { cleanCompanyName } from './jobDisplay';
-import { platformLabel } from './platforms';
+import { platformLabel, platformEnabled } from './platforms';
 import { effectiveDailyCap } from './safety';
 import { selectedDirectionItems } from './directions';
 import { fitLevelFromScore, type FitLevel } from './fitLevel';
@@ -600,10 +602,19 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
   }
 
   /* ---- 今日投递（独立于时间范围，按 sentAt） ---- */
+  // ⚠️ 口径必须与 `dailyTarget`（= effectiveDailyCap，只累加**已启用**平台的额度）**同源**：
+  // 分子若统计全部平台（含已关闭的），则用户关闭某平台后今日进度会显示越界值
+  // （如「今日 150 / 目标 120」），PDF 报表的 hbar 也会溢出。
+  // 这正是批次 13「额度/用量口径不对称」在**统计与展示路径**的漏网处 —— 与 enforcement
+  // 路径（checkDeliveryGuards / controlRuntime.autochatStep）同一条规则。
+  // 已启用平台的判定与 `effectiveDailyCap` 共用 `platformEnabled`，确保两侧永远同源。
+  const cfgForStats = input.config || ({} as AppConfig);
   let todaySent = 0;
   for (const p of pending) {
     const sentAt = safeTs(p.sentAt);
-    if (sentAt !== null && sentAt >= todayStart) todaySent += 1;
+    if (sentAt === null || sentAt < todayStart) continue;
+    const pf = (p.job?.platform ?? 'boss') as JobPlatform;
+    if (platformEnabled(cfgForStats, pf)) todaySent += 1;
   }
 
   /* ---- 任务维度（现有口径：任务数量与方向 Top 仍按 taskRuns） ---- */
@@ -616,7 +627,8 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     if (name) directionMap.set(name, (directionMap.get(name) || 0) + 1);
   });
 
-  const dailyTarget = Math.max(1, effectiveDailyCap(input.config || ({} as AppConfig)));
+  // 与上面的 todaySent 同源：分母只累加**已启用**平台，分子亦然（见 todaySent 处注释）。
+  const dailyTarget = Math.max(1, effectiveDailyCap(cfgForStats));
 
   const snapshot: StatsSnapshot = {
     range,

@@ -16,7 +16,7 @@ import { useAutoChatStore } from '@/store/useAutoChatStore';
 import { writeLocalBackup, restoreFromLocalBackup } from '@/lib/localBackup';
 import { electronApi } from '@/lib/electronApi';
 import { PLATFORM_IDS, platformEnabled, type JobPlatform } from '@/lib/bossclaw/platforms';
-import { SAFETY_LIMITS, isLockedOut, effectiveDailyCap, dailySentCount, cooldownRemaining } from '@/lib/bossclaw/safety';
+import { SAFETY_LIMITS, isLockedOut, effectiveDailyCap, enabledSentCount, cooldownRemaining } from '@/lib/bossclaw/safety';
 import { analyzeJob } from '@/lib/bossclaw/matching';
 import { tailorForJob } from '@/lib/bossclaw/jobAssistant';
 import { buildProfile } from '@/lib/bossclaw/profile';
@@ -627,7 +627,9 @@ const handlers: Record<string, Handler> = {
     const cfg = useSettingsStore.getState().config;
     const data = useDataStore.getState();
     if (isLockedOut(cfg)) return { applied: false, message: `冷却期内不可投递（剩余约 ${Math.ceil(cooldownRemaining(cfg) / 60000)} 分钟）` };
-    if (dailySentCount(data.pending) >= effectiveDailyCap(cfg)) return { applied: false, message: `今日已达上限 ${effectiveDailyCap(cfg)} 条` };
+    // 审查 #23 后续 · 批次 13：账号级「已用」必须与额度（effectiveDailyCap，只累加**已启用**平台）
+    // 同源 —— 用 enabledSentCount 而非 dailySentCount（后者含已关闭平台的历史投递，会把账号误判为已满）。
+    if (enabledSentCount(cfg, data.pending) >= effectiveDailyCap(cfg)) return { applied: false, message: `今日已达上限 ${effectiveDailyCap(cfg)} 条` };
     let item: PendingItem | undefined;
     if (id) {
       item = data.pending.find((p) => p.id === String(id));

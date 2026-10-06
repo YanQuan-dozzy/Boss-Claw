@@ -176,7 +176,15 @@ function isSameDay(ts: number | null | undefined, now = Date.now()): boolean {
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
 }
 
-/** 今日已成功投递数量（以 sentAt 为准） */
+/**
+ * 今日已成功投递数量（以 sentAt 为准，**统计全部平台**）。
+ *
+ * ⚠️ **不要用它做账号级额度判定**：账号级上限 `effectiveDailyCap` 只累加**已启用**平台的额度，
+ * 而本函数把已关闭平台的今日投递也算进来 —— 两侧口径不对称，会导致「一个已关闭平台的昨日
+ * 战绩压死今天所有平台」（见 `enabledSentCount` 的实测注释，审查 #23 后续 · 批次 13/14）。
+ * 账号级判定请用 `enabledSentCount(config, pending)`；本函数仅供「全平台累计」类**展示/趋势**
+ * 语义（如统计页趋势图按真实历史计，不区分启用与否）。
+ */
 export function dailySentCount(pending: PendingItem[], now = Date.now()): number {
   return (pending || []).filter((p) => p.status === 'sent' && isSameDay(p.sentAt, now)).length;
 }
@@ -185,6 +193,25 @@ export function dailySentCount(pending: PendingItem[], now = Date.now()): number
 export function dailySentCountFor(pending: PendingItem[], platform: JobPlatform, now = Date.now()): number {
   return (pending || []).filter(
     (p) => p.status === 'sent' && isSameDay(p.sentAt, now) && ((p.job?.platform ?? 'boss') === platform),
+  ).length;
+}
+
+/**
+ * 今日**已启用平台**的成功投递总数 —— 账号级上限的对称口径（审查 #23 后续 · 批次 13）。
+ *
+ * 为什么不能直接用 `dailySentCount`：账号级上限 `effectiveDailyCap` 只累加**已启用**平台的额度，
+ * 若「已用」统计了全部平台（含已关闭的），则用户关闭某平台后其历史投递会**白占额度** ——
+ * 实测：平台 B 投 150 条后关闭、仅启用 A（A 今日 0 条）→ 全量计数 150 ≥ cap 120 →
+ * 对 A 的投递被 `daily-cap` 误拦（`break` 停掉整批），账号被一个「已经关掉的平台」卡死。
+ *
+ * 额度（分母）与用量（分子）必须同源：**都只看已启用平台**。
+ */
+export function enabledSentCount(config: AppConfig, pending: PendingItem[], now = Date.now()): number {
+  return (pending || []).filter(
+    (p) =>
+      p.status === 'sent' &&
+      isSameDay(p.sentAt, now) &&
+      platformEnabled(config || ({} as AppConfig), (p.job?.platform ?? 'boss') as JobPlatform),
   ).length;
 }
 
@@ -293,8 +320,15 @@ export function checkDeliveryGuards(
       msg: `平台 ${platform} 今日投递已达上限 ${platformCap} 条（可在「设置 → 招聘平台」调整每日目标）。`,
     };
   }
+  // ⚠️ 账号级必须用 **enabledSentCount** 而非 `dailySentCount`（审查 #23 后续 · 批次 13）：
+  // 账号级上限 `effectiveDailyCap` 只累加**已启用**平台的额度，因此「已用」也必须只统计
+  // 已启用平台的投递 —— 两侧口径必须对称。若用 `dailySentCount`（统计**全部**平台的今日
+  // 已投递），则用户**关闭某平台**后，该平台的历史投递仍被计入、却不贡献任何额度：
+  //   实测（平台 B 投 150 条后关闭，仅启用 A 且 A 今日 0 条）→ `dailySentCount`=150 ≥ cap=120
+  //   → 对 A 投递被 `daily-cap` **误拦**，A 明明一条没投也发不出去，且 `break` 会停掉整批。
+  // 这正是「一个已关闭平台的昨日战绩，压死今天所有平台」的静默卡死。
   const cap = effectiveDailyCap(cfg);
-  if (dailySentCount(pending) >= cap) {
+  if (enabledSentCount(cfg, pending) >= cap) {
     return { ok: false, kind: 'daily-cap', msg: `今日沟通数已触及安全上限 ${cap} 条，沟通已暂停。` };
   }
   return { ok: true };

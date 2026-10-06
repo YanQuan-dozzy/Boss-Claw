@@ -29,8 +29,9 @@ async function load() {
     stdin: {
       contents: [
         "export * from './src/lib/bossclaw/deliveryThrottle.ts';",
-        "export { SAFETY_LIMITS, ActionPacer, checkDeliveryGuards, effectiveDailyCap, effectiveDailyCapFor } from './src/lib/bossclaw/safety.ts';",
+        "export { SAFETY_LIMITS, ActionPacer, checkDeliveryGuards, effectiveDailyCap, effectiveDailyCapFor, dailySentCount, dailySentCountFor, enabledSentCount } from './src/lib/bossclaw/safety.ts';",
         "export { PLATFORM_IDS } from './src/lib/bossclaw/platforms.ts';",
+        "export { buildStatsSnapshot } from './src/lib/bossclaw/statsAggregate.ts';",
       ].join('\n'),
       resolveDir: root, loader: 'ts',
     },
@@ -199,21 +200,39 @@ const CAP = T.SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE;
     eq('账号级=平台级 时 → kind=platform-cap（更精确，先判）', r.ok === false ? r.kind : null, 'platform-cap');
   }
 
-  // F3b daily-cap（多平台合计兜底）：其它平台已用掉额度 → 本轮平台虽未满，但账号合计已触顶
+  // F3b daily-cap（多平台合计兜底）
+  //
+  // 数学事实（值得固化的口径）：账号级 cap = Σ(各启用平台额度)。要把「合计」推满，
+  // 只能由**这些平台自己**的投递累计 —— 因此当合计触顶时，**判定平台自身必然也已满**
+  // （否则合计 < Σ ≤ cap）。故在**多平台**下，`platform-cap` 总是先命中，`daily-cap`
+  // 在结构上**不可能**先于它触发。`daily-cap` 的真实价值是**单平台**场景（两者同值）的
+  // 等义兜底，以及未来若出现「不参与平台级判定的投放来源」时的总额闸门。
+  //
+  // 本用例固化上述事实：三平台各 10，全部投满 → 合计 30 触顶，但返回的是 platform-cap。
   {
-    const other = T.PLATFORM_IDS.find((p) => p !== pf);
-    if (other) {
-      const totalCap = T.effectiveDailyCap(baseCfg);
-      // 让「本轮平台」只占 1 条，其余额度全被另一个平台占满 → 合计触顶
+    const [p1, p2, p3] = T.PLATFORM_IDS;
+    const others = [p2, p3].filter(Boolean);
+    if (others.length === 2) {
+      const cfg3 = {
+        ...baseCfg,
+        platforms: {
+          [p1]: { enabled: true, dailyTarget: 10 },
+          [others[0]]: { enabled: true, dailyTarget: 10 },
+          [others[1]]: { enabled: true, dailyTarget: 10 },
+        },
+      };
+      const tot3 = T.effectiveDailyCap(cfg3);
+      eq('三平台合计 = 30', tot3, 30);
       const rows = [
-        { id: 'a', status: 'sent', sentAt: NOW, job: { platform: pf } },
-        ...Array.from({ length: totalCap - 1 }, (_, i) => ({
-          id: 'o' + i, status: 'sent', sentAt: NOW, job: { platform: other },
-        })),
+        ...Array.from({ length: 10 }, (_, i) => ({ id: 'a' + i, status: 'sent', sentAt: NOW, job: { platform: p1 } })),
+        ...Array.from({ length: 10 }, (_, i) => ({ id: 'x' + i, status: 'sent', sentAt: NOW, job: { platform: others[0] } })),
+        ...Array.from({ length: 10 }, (_, i) => ({ id: 'y' + i, status: 'sent', sentAt: NOW, job: { platform: others[1] } })),
       ];
-      const r = T.checkDeliveryGuards(baseCfg, pf, rows);
-      eq('账号合计触顶（多平台）→ ok:false', r.ok, false);
-      eq('账号合计触顶（多平台）→ kind=daily-cap（最终兜底）', r.ok === false ? r.kind : null, 'daily-cap');
+      eq('三平台投满 → 合计达上限 30', T.enabledSentCount(cfg3, rows) >= tot3, true);
+      const r = T.checkDeliveryGuards(cfg3, p1, rows);
+      eq('三平台投满 → kind=platform-cap（平台级先判且更精确）', r.ok === false ? r.kind : null, 'platform-cap');
+      // 反证：合计触顶时判定平台自身必已满（故 daily-cap 不可能先触发）
+      eq('合计触顶 ⟹ 判定平台自身亦已满', T.dailySentCountFor(rows, p1) >= T.effectiveDailyCapFor(cfg3, p1), true);
     }
   }
 
@@ -248,6 +267,88 @@ const CAP = T.SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE;
     }));
     eq('非 sent 状态不占额度 → 放行', T.checkDeliveryGuards(baseCfg, pf, notSent).ok, true);
   }
+
+  // F7 已关闭平台的投递**不得**占用账号级额度（审查 #23 后续 · 批次 13）
+  // 反例（修复前）：平台 B 投 150 条后关闭、仅启用 A（A 今日 0 条）→ 全量计数 150 ≥ cap 120
+  //   → 对 A 的投递被 daily-cap 误拦（且调用方 break 停掉整批），账号被「已关闭的平台」卡死。
+  {
+    const other = T.PLATFORM_IDS.find((p) => p !== pf);
+    if (other) {
+      const cap = T.effectiveDailyCap(baseCfg); // 只算已启用平台（默认全部启用 → 合理基线）
+      // 构造：仅启用本轮平台；另一平台关闭，但它在今日有大量投递记录
+      const cfg = {
+        ...baseCfg,
+        platforms: { [pf]: { enabled: true, dailyTarget: 120 }, [other]: { enabled: false, dailyTarget: 120 } },
+      };
+      const capOnlyA = T.effectiveDailyCap(cfg);
+      const rows = Array.from({ length: capOnlyA }, (_, i) => ({
+        id: 'x' + i, status: 'sent', sentAt: NOW, job: { platform: other },
+      }));
+      // 全量计数（旧口径）会 ≥ cap；已启用计数应为 0
+      eq('已关闭平台的投递 → 全量计数 >= cap（旧口径会误拦）', T.dailySentCount(rows) >= capOnlyA, true);
+      eq('已关闭平台的投递 → enabledSentCount == 0', T.enabledSentCount(cfg, rows), 0);
+      const r = T.checkDeliveryGuards(cfg, pf, rows);
+      eq('已关闭平台的战绩不占额度 → 本轮平台仍放行', r.ok, true);
+    }
+  }
+
+  // F8 已启用平台的投递**必须**占额度（防止把 F7 改过头、放行所有情况）
+  {
+    const cap = T.effectiveDailyCap(baseCfg);
+    const allEnabled = Array.from({ length: cap }, (_, i) => ({
+      id: 'e' + i, status: 'sent', sentAt: NOW, job: { platform: pf },
+    }));
+    eq('已启用平台达上限 → 仍拦截', T.checkDeliveryGuards(baseCfg, pf, allEnabled).ok, false);
+    eq('已启用平台达上限 → kind 非空', T.enabledSentCount(baseCfg, allEnabled), cap);
+  }
+}
+
+// ===== G. 统计/展示路径的额度口径对称（审查 #23 后续 · 批次 14）=====
+//
+// 批次 13 修的是 **enforcement** 路径（checkDeliveryGuards / controlRuntime.autochatStep）：
+// 账号级「已用」必须与额度（effectiveDailyCap，只累加已启用平台）同源。
+// 本组守住同一规则在 **统计与展示** 路径（statsAggregate 今日进度）的落地：
+// 关闭某平台后，其历史投递**不得**计入今日分子，否则统计页/CSV/PDF 会显示「今日 150 / 目标 120」
+// 越界值、goalPct 溢出、PDF hbar 宽度 > 100%。
+{
+  const NOW = Date.now();
+  const pf = T.PLATFORM_IDS[0]; // 主平台（boss）
+  const other = T.PLATFORM_IDS.find((p) => p !== pf);
+
+  // cfg：仅启用主平台；另一平台关闭（但今日有大量投递）
+  const cfg = {
+    pausedUntil: 0,
+    activeHours: { enabled: false, startHour: 8, endHour: 23, jitterMinutes: 25 },
+    platforms: { [pf]: { enabled: true, dailyTarget: 120 }, [other]: { enabled: false, dailyTarget: 120 } },
+  };
+  const capOnlyA = T.effectiveDailyCap(cfg); // 只算已启用的 pf → 120
+
+  const closedRows = Array.from({ length: capOnlyA }, (_, i) => ({
+    id: 'c' + i, status: 'sent', sentAt: NOW, createdAt: NOW,
+    job: { platform: other, company: 'X', title: 'T' },
+  }));
+
+  const snap = T.buildStatsSnapshot({
+    pending: closedRows, taskRuns: [], directionPlan: null, config: cfg, range: '7d', now: NOW,
+  });
+
+  // 修复前：todaySent 统计全部平台 → = capOnlyA(120)，goalPct = 100%
+  // 修复后：分子只算已启用平台 → pf 今日 0 条 → todaySent = 0
+  eq('统计：已关闭平台的今日投递 → 分子 todaySent = 0', snap.todaySent, 0);
+  eq('统计：分母 dailyTarget = 仅已启用平台额度', snap.dailyTarget, Math.max(1, capOnlyA));
+  eq('统计：goalPct 不再溢出（无越界进度）', snap.todaySent <= snap.dailyTarget, true);
+  eq('统计：goalPct 恰为 0（今日实际未投）', snap.goalPct, 0);
+
+  // 反向守卫：已启用平台**必须**照常计入（防止改过头、把今日进度恒置 0）
+  const enabledRows = Array.from({ length: 3 }, (_, i) => ({
+    id: 'e' + i, status: 'sent', sentAt: NOW, createdAt: NOW,
+    job: { platform: pf, company: 'X', title: 'T' },
+  }));
+  const snap2 = T.buildStatsSnapshot({
+    pending: enabledRows, taskRuns: [], directionPlan: null, config: cfg, range: '7d', now: NOW,
+  });
+  eq('统计：已启用平台的今日投递仍计入（反向守卫）', snap2.todaySent, 3);
+  eq('统计：已启用平台 goalPct 正常（3/120）', snap2.goalPct, Math.round((3 / Math.max(1, capOnlyA)) * 100));
 }
 
 cleanup();
@@ -257,3 +358,6 @@ if (fails.length) {
   for (const f of fails) console.log('  FAIL  ' + f);
   process.exit(1);
 }
+// 显式退出：本脚本 bundle 了 statsAggregate 模块，跑完后进程仍有残留句柄（esbuild service
+// / Socket），不主动 exit 会挂住、且退出码变成超时码而非 0 —— CI / 门禁无法据此判成败。
+process.exit(0);
