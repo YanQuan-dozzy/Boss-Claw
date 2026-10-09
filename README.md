@@ -8,8 +8,8 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.5-078A83)
-![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
+![Version](https://img.shields.io/badge/version-v2.5.6-078A83)
+![Electron](https://img.shields.io/badge/Electron-%5E42-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
 ![Storage](https://img.shields.io/badge/data-local--first-2AA66A)
@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文以 `main` 分支当前实现为准；**当前代码版本为 v2.5.6**（2026-10-03，尚未打包发布）；**最新正式安装包为 v2.5.5**（2026-09-22 发布，Windows）。`main` 已包含 v2.5.6 的全部改动（内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析等），功能表按当前实现标注。
+> **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.6**（2026-10-09 发布，Windows x64）；上一正式版为 v2.5.5（2026-09-22）。本条目的改动主轴是**内核升级 Electron 31 → 42（Chromium 126 → 148）**，另含内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析、代码审查修复批次与 PDF 解析卡死修复；功能表按当前实现标注。
 
 ## 下载安装
 
@@ -26,8 +26,8 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.5-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.5-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.5-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.5-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.6-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.6-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.6-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.6-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目前仍为 **v2.5.3**，见 [Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases) 对应版本页；也可从源码自行打包（`npm run package:linux` / `package:mac`，macOS 的 dmg 只能在 macOS 上构建）。
 

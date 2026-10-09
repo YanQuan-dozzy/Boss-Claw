@@ -326,7 +326,7 @@ release/
 
 ## 变更记录
 
-* **v2.5.6（2026-10-03，尚未打包发布）** — 内置浏览器反检测增强 + 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听：
+* **v2.5.6（2026-10-09 发布）** — 内核升级 Electron 31 → 42 + 内置浏览器反检测增强 + 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听 + 代码审查修复：
   * **内置浏览器「主世界」反检测补丁**（新增 `electron/preload/stealth.cjs`）：`<webview>` 的 preload 与 `session.setPreloads` 均运行在**隔离世界**，改不了主世界 `navigator` —— 故补丁以源码字符串导出，由主进程 `executeJavaScript` 注入**主世界**（`did-start-loading` + `dom-ready` 双时机、内建幂等守卫）。补丁项 `uaCh` / `languages` / `notification` / `chromeObject` / `toStringGuard` 可用环境变量 `BOSSCLAW_STEALTH`（`off` / `only=a,b` / `skip=a,b`）单项开关；`webdriver` / `plugins` 经实测原生即正常，默认不改（盲改反会引入新破绽）。内置 11 类指纹自检探针 + 不变量断言（改补丁后必跑，防「修一个洞、开两个洞」）。
   * **请求头层与真机画像对齐**：一份 `TARGET_PROFILE` 同时驱动 `setUserAgent` / `webRequest.onBeforeSendHeaders` / 主世界补丁三处（**禁止各写一份**，否则产生「JS 说一套、请求头说另一套」的新矛盾）。依据真机抓包样本对齐 `Sec-CH-UA` / `Sec-CH-UA-Mobile` / `Sec-CH-UA-Platform` / `Accept-Language` / UA —— 实测原生导航请求**完全不发送 `Sec-CH-UA` 系列头**，而 JS 层 `navigator.userAgentData` 却存在，属服务端直接可见的自相矛盾，现已补齐。
   * **JD 学历解析修正**（`jobMatch.ts`）：「本科及以上」不再被升档成「要求硕士」，「X 优先」等语气词不计入要求，薪酬福利句不再被误采信；`score-regression.mjs` 扩至 44 项。
@@ -337,7 +337,11 @@ release/
   * **统计与首页**：`Stats` 页新增**投递漏斗**（采集入队 → 已投递 → 已打开沟通 → 已回复 → 面试 + 打开率 / 回复率）；首页补齐投递步骤归因（进度不再无声停在 80%）。
   * **岗位发布时间透传**：`camoufox_server.py` / `webview.cjs` / `camoufox.ts` 贯通 `publishTime`，修复「新鲜度」维度恒失效。
   * **界面**：新增 `index.polish.css` 组件级 polish 样式层与组件级主题 token；设置页「硬性过滤 / 求职偏好」栅格改零留白排布（开关类字段内联同行）；修复工作台事件回调被冻结导致 `apply-stage` 全量丢弃。
-  * 门禁：`tsc -b` + `vite build` 通过。
+  * **内核升级 Electron 31 → 42**（Chromium 126 → 148，`electron-builder` 24 → 26）：真机实测 `<webview>` 四项关键能力（`did-attach-webview` 触发 / preload 注入 / `sendToHost` 路由 / 主进程 `executeJavaScript` 往返）全部可用，`display:flex` 渲染未受影响（「改 block 会缩到约 150px」这个坑未被破坏）。两处 API 适配：`console-message` 首参在 42 起变为对象（统一 `parseConsoleMessage()` 收敛，旧位置参数取法虽仍可用但已 deprecated）、`session.setPreloads` / `getPreloads` 弃用（改 `registerPreloadScript`，双版本兼容）。升级后 UA / UA-CH 版本号由内核真实产生，反检测补丁从「伪造版本」退化为「只补真实缺口」。
+  * **输入通道收口（第一期）**：BOSS 聊天链路改**真实事件优先** + 人类化鼠标轨迹 —— 把 `isTrusted:false` 的 `el.click()` / `dispatchEvent` 迁往真事件通道（`isTrusted:true`）的第一步；新增**活跃时段与批次休息**，按真人作息分布安排投递节奏（**不改变**速率上限与安全不变量）。
+  * **代码审查修复（批次 1-14）**：AI 管线缓存污染与画像前置（`aiAnalyzeJob` 前必须 `dataSetProfile`）、安全不变量（投递守卫判定顺序纠偏 / 账号级额度与用量口径**同源收敛** / 风控冷却改**单调合并**写入，禁裸 `Date.now() + cooldownMs`）、并发限速（双引擎共享同一 `ActionPacer` 与计数）、主进程通道分桶与诊断日志门控、`chat-watch` 超时与 stdio 背压、设置页「节奏设置」三处修正（含**风控冷却实为死设置**）；新增静态守卫 `scripts/css-guard-regression.mjs`（12 项，拦截未定义 `className` 工具类等）与 `scripts/theme-vars-regression.mjs`（主题变量悬空）。
+  * **修复简历中心 PDF 解析卡死**：根因三层 —— ① 解析器无差别解码所有 `stream` 对象，**字体程序二进制**被当作文本候选；② 回退扫描仅凭「含 `BT`」判断像内容流（随机二进制常含该字节）；③ 数组文本算子正则在 `<` / `(` 上存在多条可覆盖同一字符的回溯路径 → **灾难性回溯**（实测 329KB 字体流单次分词 **81,281ms**，1MB 以上卡死渲染进程）。处置：正则消歧（单字符类排除 `<` `(`，退化为线性）、字体 / 图像 / 元数据 / 交叉引用流一律不解码、新增内容流**形状闸门**（尺寸上限 + 文本算子存在 + 可读字符占比）。1MB 字体流 4603ms → 48ms，2MB 从置死 → 86ms；并修正「扫描件 PDF 把字体垃圾当简历正文」的内容质量缺陷。新增 `scripts/pdf-parse-regression.mjs`（31 项，含反向自证）。
+  * 门禁：`tsc -b` + `vite build` 通过；`scripts/` 全量静态回归通过。
 
 * **v2.5.5（2026-09-22 发布）** — 智联招聘全链路接入 + 多平台基础求职条件扩展 + MCP 全自动投递：
   * **智联招聘全链路接入（筛选 / 搜索 / 投递）**：`camoufox/platforms/zhaopin.py` 按差异声明补齐筛选参数拼接与投递链路；递送 `filters.py` ↔ `platformUrls.ts` 双源同步，六大筛选维度（职位类型 et / 学历 el / 经验 we / 公司性质 ct / 融资阶段 fs / 规模 cs）码值**按实测链接逐档校准**（公司性质：中外合资=4 / 港澳台=16 / 机关事业单位=6;10 / 其他=7;14;15；多值拼接规则 = 同类型 `;` 分隔、跨类型 `,` 分隔）；新增 `companyType` / `financing` 求职条件配置项并接入智联；新增 `scripts/zhaopin-url-regression.mjs`（32 项断言）守护拼接口径。
