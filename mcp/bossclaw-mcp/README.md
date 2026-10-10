@@ -48,6 +48,8 @@
 ```bash
 cd mcp/bossclaw-mcp
 node test/selftest.mjs          # 协议 + 工具自检（不需要应用在运行）
+node test/whitelist-parity.mjs  # MCP 动作清单 ↔ 渲染层白名单一致性守卫
+node test/bridge-path.mjs       # 桥信息文件多路径解析断言
 node test/bridge-e2e.mjs        # 全链路（自动起一个隔离实例，会跑一次 Electron）
 ```
 
@@ -259,6 +261,8 @@ mcp/bossclaw-mcp/
 │   └── tools/                  runtime / control / agent + index.mjs
 └── test/
     ├── selftest.mjs            协议 + 工具自检
+    ├── whitelist-parity.mjs    MCP 动作清单 ↔ 渲染层白名单一致性守卫
+    ├── bridge-path.mjs         桥信息文件多路径解析断言
     ├── bridge-e2e.mjs          全链路端到端（隔离实例，含 HOME 隔离与备份兜底）
     └── live-acceptance.mjs     面向运行中应用的真机验收（含 agent 代答队列）
 ```

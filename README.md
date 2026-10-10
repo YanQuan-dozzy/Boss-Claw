@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.6**（2026-10-09 发布，Windows x64）；上一正式版为 v2.5.5（2026-09-22）。本条目的改动主轴是**内核升级 Electron 31 → 42（Chromium 126 → 148）**，另含内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析、代码审查修复批次与 PDF 解析卡死修复；功能表按当前实现标注。
+> **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.6**（2026-10-09 发布，Windows x64）；上一正式版为 v2.5.5（2026-09-22）。本条目的改动主轴是**内核升级 Electron 31 → 42（Chromium 126 → 148）**，另含内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析、代码审查修复批次与 PDF 解析卡死修复；**v2.5.6 发布后 `main` 另含社区贡献的 Camoufox 聊天上下文隔离修复（PR #5 / Fixes #4）**；功能表按当前实现标注。
 
 ## 下载安装
 
@@ -72,7 +72,7 @@ Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目�
 
 ## 架构与布局
 
-- **技术栈**：Electron `^31` + React 18 + TypeScript + Vite + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
+- **技术栈**：Electron `^42`（Chromium 148）+ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
 - **进程模型**：主进程（CommonJS）+ 预加载脚本（`contextBridge` 安全 IPC）+ React 渲染层；`contextIsolation: true`、`nodeIntegration: false`、`webviewTag: true`。
 - **界面**：顶部标题栏 + 左侧 11 入口侧栏 + 底部状态栏；「工作台」为三栏，其余页面为双栏。
 - **内置浏览器**：Electron `<webview>`，默认加载 BOSS 直聘，可切换各已启用平台首页；登录态按平台本地持久化（免重复登录）。
@@ -131,9 +131,9 @@ BossClaw 自带一条面向外部 Agent 的本地控制通道，供 Claude / Wor
 | --- | --- | --- |
 | 应用内控制桥 | `127.0.0.1:17650`（`electron/control-bridge.cjs`） | 仅监听本机回环；除 `/health` 外全部要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json` |
 | 开启方式 | `BOSSCLAW_CONTROL=1` 或 `--control-bridge` | 仓库根 `start-bossclaw.cmd` 启动默认开启（`--no-agent` 可关）；裸 `electron .` 与打包版默认关闭 |
-| MCP 服务器 | `mcp/bossclaw-mcp`（零依赖 stdio） | **8 个工具 / 3 组**：运行控制 · 应用控制 · agent 代答 |
+| MCP 服务器 | `mcp/bossclaw-mcp`（零依赖 stdio） | **9 个工具 / 3 组**：运行控制（3）· 应用控制（2）· agent 代答（4） |
 
-**动作边界（硬约束）**：动作由渲染层白名单（`src/lib/controlRuntime.ts`）强制，只有状态读取、切页、主题、暂停 / 恢复投递、平台与调度配置、数据写入、AI 生成、浏览器只读 + 白名单操作等；**不提供任何发消息、批量投递、绕过验证码或速率限制的能力**，也不会放开 `SAFETY_LIMITS`。
+**动作边界（硬约束）**：动作由渲染层白名单（`src/lib/controlRuntime.ts`）强制，覆盖状态读取、切页、主题、暂停 / 恢复投递、平台与调度配置、数据写入、AI 生成、浏览器只读 + 白名单操作等。**发送 / 批量投递默认不开放**：仅当用户在应用内开启「全自动」（`executionMode === 'auto'`）后，`deliverySendNow`（及 MCP 代答组 `bossclaw_agent_send`）才可用；自动沟通引擎（`autochatStart` / `autochatStep`）另受冷却期、每日上限、招呼语非空等守卫约束。所有发送都**复用应用自带安全引擎**，且**不提供绕过验证码、绕过速率限制或修改 `SAFETY_LIMITS` 的能力**；`executionMode` / `apiKey` / `pausedUntil` / `platforms` 不可经控制桥改写。
 
 **Agent 代答**：当用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）会把「完整提示词 + 用途 + 是否要 JSON」挂进本地待答队列，由在线外部 Agent 用自有模型回答后回填：
 
@@ -170,7 +170,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 - **首次成功投递一条后必须暂停验收**，让用户核对聊天对象、文字气泡与附件
 - 不得替用户承诺薪资、到岗时间、面试时间或不存在的经历
 - 所有提示词与招呼语必须使用求职者口吻，仅引用真实简历事实
-- 外部 Agent 通道（控制桥 / MCP / agent 代答）**只读写提示词与生成文本**，不得代替用户确认或触发发送、投递，也不得改动安全参数
+- 外部 Agent 通道（控制桥 / MCP / agent 代答）默认**只读写提示词与生成文本**；仅当用户已在应用内开启「全自动」时发送类动作才开放，且一律复用应用自带安全引擎的安全不变量，agent 不得改动安全参数或代替用户确认
 
 > **关于可选增强「隐身引擎 / 隐身浏览器」**：设置页默认关闭，需用户主动启用，且**仅使用 Camoufox 原生隐身内核**（本地 Chrome / Edge 因无法通过反爬识别不可复用），目的是降低「正常操作被误判为机器人（环境异常 code 37）」的概率。它**不绕过**验证码 / 账户验证（code 35/36/32 仍立即停止并交人工），不自动换号，不突破任何平台限制；涉及风控码、首次投递验收、招呼语非空等安全不变量与内置浏览器通道完全一致。
 

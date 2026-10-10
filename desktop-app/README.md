@@ -64,7 +64,7 @@
 
 * **岗位过期判定**（`main` 新增，`jobExpiry.ts` 唯一权威）：JD 中**显式写出**投递截止日期（猎聘 JD 常见「截止日期：YYYY年MM月DD日」，也认 `2027-07-16` / `2027/7/16` / 缺年份的「07月16日」）的岗位做纯本地**确定性**判定 —— **截止日当天仍有效**，早于今天即判过期并硬性排除，不消耗 AI Token 与投递配额；**未写截止日期、写成「长期有效 / 招满即止」、或日期不可解析一律放行**（大多数岗位不写该字段 ⇒ 对其它平台零副作用）。判定输入为标题 + 描述 + 卡片文本，**不做全页扫描**；`ingestJob` 与「加入任务」两条入口同口径拦截。设置项 `excludeExpiredJobs` 默认按平台取值（`PLATFORM_EXPIRY_DEFAULT`：**仅猎聘默认开启**），用户在设置页的显式开关**优先于**平台默认值。回归：`scripts/liepin-jd-regression.mjs`。
 
-* **外部 Agent 通道**（默认关闭）：应用内控制桥（`electron/control-bridge.cjs`，仅监听 `127.0.0.1:17650`，除 `/health` 外要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json`）+ 零依赖 stdio MCP 服务器 `mcp/bossclaw-mcp`（**9 工具 / 3 组**：运行控制 3 · 应用控制 2 · agent 代答 4）。动作由渲染层白名单 `controlRuntime.ts` 强制，**不提供发消息 / 批量投递 / 绕过验证码 / 改安全参数的能力**。
+* **外部 Agent 通道**（默认关闭）：应用内控制桥（`electron/control-bridge.cjs`，仅监听 `127.0.0.1:17650`，除 `/health` 外要求 `x-bossclaw-token`，令牌写入 `<userData>/control-bridge.json`）+ 零依赖 stdio MCP 服务器 `mcp/bossclaw-mcp`（**9 工具 / 3 组**：运行控制 3 · 应用控制 2 · agent 代答 4）。动作由渲染层白名单 `controlRuntime.ts` 强制，**不提供绕过验证码 / 绕过速率限制 / 改安全参数的能力**；**发送类动作默认关闭** —— 仅当用户已在应用内开启「全自动」（`executionMode === 'auto'`）时 `deliverySendNow`（及 MCP 代答组 `bossclaw_agent_send`）才可用，自动沟通引擎 `autochatStart` / `autochatStep` 另受冷却 / 每日上限 / 招呼语非空守卫，所有发送均复用应用自带安全引擎。
 
 * **Agent 代答**（`main` 新增）：用户**未配置 AI API Key** 时，应用内 AI 调用（岗位分析 / 职业画像 / 打招呼语 / 定制简历）由 `agentAnswer.ts` 挂入本地待答队列并等待，在线外部 Agent 经 `bossclaw_agent_tasks`（长轮询，**领取即心跳**）领取、用自有模型生成、`bossclaw_agent_submit` 回填；超时 / 取消 / 无心跳则回落应用内本地规则。心跳窗口 90s，单任务等待 30~240s，JSON 纠错最多 1 次。**只搬运「提示词 ↔ 生成文本」**，回填仍走应用既有校验链。
 
@@ -76,7 +76,7 @@
 
 ## 技术栈
 
-* **Electron** `^31`（主进程 CommonJS：`electron/main.cjs` + `electron/preload/*`）
+* **Electron** `^42`（Chromium 148；主进程 CommonJS：`electron/main.cjs` + `electron/preload/*`）
 
 * **React 18 + TypeScript + Vite 5**（渲染进程：`src/`）
 
@@ -115,6 +115,7 @@ desktop-app/
 │   │   ├── filters.py                # 「基础求职条件」跨平台码值映射唯一权威
 │   │   ├── common.py                 # 公共基座（人类化行为 / Cookie 按平台持久化）
 │   │   └── liepin.py / zhaopin.py / job51.py   # 各平台差异声明（搜索 URL 附加 / 投递 / 登录）
+│   ├── tests/                        # Playwright DOM 回归（test_chat_context.py + fixtures，聊天上下文隔离）
 │   └── requirements.txt
 ├── resources/
 │   ├── icon.ico / icon.png
@@ -325,6 +326,11 @@ release/
 ***
 
 ## 变更记录
+
+* **main（v2.5.6 之后，尚未打包发布）** — 社区贡献修复（PR #5 / Fixes #4）：**Camoufox 聊天上下文隔离，修复搜索框误识别**。
+  * BOSS 沟通链路把搜索 / 筛选控件**硬排除**；聊天就绪判定、身份核验、输入、发送与附件全部限定在同一「**已验证聊天面板**」内，不再把搜索框误当聊天输入框。
+  * 目标不明或冲突时 **fail-closed**（`sent=false`），发送前与附件前**重复核验**；修复 Playwright `evaluate` 单参数调用错位。
+  * 新增真实 Playwright DOM 回归 `camoufox/tests/test_chat_context.py`（含 `tests/fixtures/` 的 `chat.html` / `detail.html`）。
 
 * **v2.5.6（2026-10-09 发布）** — 内核升级 Electron 31 → 42 + 内置浏览器反检测增强 + 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听 + 代码审查修复：
   * **内置浏览器「主世界」反检测补丁**（新增 `electron/preload/stealth.cjs`）：`<webview>` 的 preload 与 `session.setPreloads` 均运行在**隔离世界**，改不了主世界 `navigator` —— 故补丁以源码字符串导出，由主进程 `executeJavaScript` 注入**主世界**（`did-start-loading` + `dom-ready` 双时机、内建幂等守卫）。补丁项 `uaCh` / `languages` / `notification` / `chromeObject` / `toStringGuard` 可用环境变量 `BOSSCLAW_STEALTH`（`off` / `only=a,b` / `skip=a,b`）单项开关；`webdriver` / `plugins` 经实测原生即正常，默认不改（盲改反会引入新破绽）。内置 11 类指纹自检探针 + 不变量断言（改补丁后必跑，防「修一个洞、开两个洞」）。
