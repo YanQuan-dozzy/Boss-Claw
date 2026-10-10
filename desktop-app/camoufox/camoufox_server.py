@@ -539,7 +539,8 @@ def _click_chat_button(page, state_label: str) -> bool:
         marker = 'data-bossclaw-chat-btn'
         # state 是完整词（继续沟通/立即沟通）；'other' 交给宽口径 CHAT_LABEL_RE（打招呼/去沟通/开始沟通…）
         js_pattern = CHAT_LABEL_RE if state_label == 'other' else re.sub(r'\s+', r'\\s*', state_label)
-        ok = page.evaluate("""(pat, marker) => {
+        ok = page.evaluate("""({pat, marker}) => {
+            document.querySelectorAll('[' + marker + ']').forEach(el => el.removeAttribute(marker));
             const all = Array.from(document.querySelectorAll('button, a, [role="button"], span, div, i'));
             const text = (el) => (el.textContent || '').trim().replace(/\\s+/g, ' ');
             const visible = (el) => {
@@ -555,7 +556,7 @@ def _click_chat_button(page, state_label: str) -> bool:
             hits.sort((a, b) => text(a).length - text(b).length);
             hits[0].setAttribute(marker, '1');
             return true;
-        }""", js_pattern, marker)
+        }""", {"pat": js_pattern, "marker": marker})
         if not ok:
             return False
         page.locator(f'[{marker}]').first.click(timeout=8000)
@@ -599,102 +600,112 @@ def _risk_text_hit(page) -> str:
         return ''
 
 
-def _find_chat_input(page):
-    """定位聊天输入框：打分式候选（对齐 job-claw-main chatInput/chatInputScore）。
-    优先 #chat-input / contenteditable / textarea / slate·lexical / role=textbox，
-    排除搜索/筛选输入框，取分最高者；跨主页面与弹出聊天窗口查找。
-    在页面内给最佳输入框打上 `data-bossclaw-chat-input` 标记，返回 Playwright Locator 或 None。"""
-    js = r"""
-    () => {
-      const vas = (el) => {
-        try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; }
-      };
-      const editable = (el) => {
-        if (!el || typeof el.matches !== 'function') return false;
-        const tag = (el.tagName || '').toLowerCase();
-        if (tag === 'textarea') return true;
-        if (tag === 'input') {
-          const t = (el.getAttribute('type') || 'text').toLowerCase();
-          return ['text','search',''].includes(t);
-        }
-        const cm = (el.getAttribute('contenteditable') || '').toLowerCase();
-        return el.isContentEditable || (cm && !['false','inherit','off'].includes(cm))
-          || el.getAttribute('role') === 'textbox'
-          || el.getAttribute('data-slate-editor') === 'true'
-          || el.getAttribute('data-lexical-editor') === 'true';
-      };
-      const selectors = [
-        '#chat-input', 'textarea#chat-input',
-        '[contenteditable]:not([contenteditable="false"])',
-        'textarea', 'input[type="text"]', 'input:not([type])',
-        '[role="textbox"]', '[data-slate-editor="true"]', '[data-lexical-editor="true"]',
-        '[class*="chat-input"]', '[class*="chatInput"]', '[class*="message-input"]', '[class*="messageInput"]'
-      ];
-      const seen = new Set();
-      const cands = [];
-      for (const sel of selectors) {
-        for (const el of Array.from(document.querySelectorAll(sel))) {
-          if (seen.has(el)) continue;
-          seen.add(el);
-          if (!editable(el) || !vas(el)) continue;
-          if (el.disabled || el.readOnly || el.getAttribute('aria-disabled') === 'true') continue;
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 120 || rect.height < 18) continue;
-          cands.push(el);
-        }
-      }
-      if (!cands.length) return { found: false };
-      const vw = window.innerWidth || 1400, vh = window.innerHeight || 900;
-      let best = null, bestScore = -Infinity;
-      for (const el of cands) {
-        const rect = el.getBoundingClientRect();
-        const ph = [el.getAttribute('placeholder')||'', el.getAttribute('data-placeholder')||'', el.getAttribute('aria-label')||''].join(' ');
-        const sem = ph + ' ' + (el.id||'') + ' ' + (el.className||'');
-        const tag = (el.tagName||'').toLowerCase();
-        const cm = (el.getAttribute('contenteditable')||'').toLowerCase();
-        const chatAnc = el.closest('[class*="chat"],[class*="message"],[class*="conversation"],[class*="dialog"],[role="dialog"]');
-        const searchAnc = el.closest('[class*="search"],[class*="filter"],[class*="contact-search"]');
-        let s = 0;
-        if (el.id === 'chat-input') s += 600;
-        if (tag === 'textarea') s += 240;
-        if (el.isContentEditable || (cm && !['false','inherit','off'].includes(cm))) s += 220;
-        if (cm === 'plaintext-only') s += 180;
-        if (el.getAttribute('data-slate-editor')==='true' || el.getAttribute('data-lexical-editor')==='true') s += 200;
-        if (el.getAttribute('role')==='textbox') s += 140;
-        if (/按enter键发送|ctrl\+enter|请输入|输入消息|发送消息|沟通|消息|回复/i.test(sem)) s += 260;
-        if (/chat[-_]?input|message[-_]?input|editor/i.test(sem)) s += 180;
-        if (chatAnc) s += 180;
-        if (rect.top > vh*0.52) s += 160;
-        if (rect.left > vw*0.24) s += 120;
-        if (rect.right > vw*0.55) s += 70;
-        if (rect.width > 320) s += 60;
-        if (searchAnc && !chatAnc && el.id !== 'chat-input') s -= 520;
-        if (rect.top < vh*0.32 && el.id !== 'chat-input') s -= 280;
-        if (rect.left < vw*0.22 && el.id !== 'chat-input') s -= 240;
-        if (s > bestScore) { bestScore = s; best = el; }
-      }
-      if (!best) return { found: false };
-      best.setAttribute('data-bossclaw-chat-input', '1');
-      return { found: true, tag: (best.tagName||'').toLowerCase(), id: best.id || '' };
+# One DOM context shared by input selection and identity reads. Geometry is only
+# a visibility check, never evidence that a generic input is a chat editor.
+_CHAT_CONTEXT_SCRIPT = r"""
+({mark = false, requireMarked = false} = {}) => {
+  const inputMark = 'data-bossclaw-chat-input', panelMark = 'data-bossclaw-chat-panel';
+  if (mark) {
+    for (const el of document.querySelectorAll('[' + inputMark + '],[' + panelMark + ']')) {
+      el.removeAttribute(inputMark);
+      el.removeAttribute(panelMark);
     }
-    """
-    pages = _all_pages(page)
-    for p in pages:
-        try:
-            ok = p.evaluate(js)
-            if ok and ok.get('found'):
-                loc = p.locator('[data-bossclaw-chat-input]').first
-                if loc.count() > 0:
-                    return loc
-        except Exception:
-            continue
+  }
+  const visible = el => {
+    if (!el || !el.isConnected || el.closest('[hidden],[aria-hidden="true"],[inert]')) return false;
+    for (let p = el; p; p = p.parentElement) {
+      const style = getComputedStyle(p);
+      if (style.display === 'none' || style.visibility === 'hidden' ||
+          style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const excluded = '[class*="similar-job"],[class*="recommend"],[class*="user-list"],' +
+    '[class*="friend-list"],[class*="conversation-list"],[class*="contact-list"]';
+  const headers = '.chat-header,[class*="chat-header"],[class*="chatHeader"],.name-box,' +
+    '[class*="chat-title"]';
+  const messages = '.chat-message,.im-list,[class*="chat-message"],[class*="message-list"]';
+  const chatPanel = '.chat-conversation,[class*="chat-conversation"],[class*="chat-panel"],' +
+    '[class*="chat-window"],[class*="chatWindow"],[class*="geek-chat"]';
+  const useful = (root, selector) => [root, ...root.querySelectorAll(selector)]
+    .some(el => el.matches(selector) && visible(el) && !el.closest(excluded));
+  const panelFor = input => {
+    for (let root = input.parentElement; root && !root.matches('body,html'); root = root.parentElement) {
+      if (root.closest(excluded)) return null;
+      const hasHeader = useful(root, headers), hasMessages = useful(root, messages);
+      if ((hasHeader && hasMessages) || (root.matches(chatPanel) && (hasHeader || hasMessages))) return root;
+    }
+    return null;
+  };
+  const candidates = [];
+  const selector = 'input,textarea,[contenteditable],[role="textbox"],' +
+    '[data-slate-editor="true"],[data-lexical-editor="true"]';
+  for (const el of document.querySelectorAll(selector)) {
+    if (!visible(el) || el.matches(':disabled') || el.readOnly ||
+        el.closest('[aria-disabled="true"],[aria-readonly="true"]') || el.closest(excluded)) continue;
+    const tag = el.tagName.toLowerCase(), type = (el.getAttribute('type') || 'text').toLowerCase();
+    if (tag === 'input' && type !== 'text') continue;
+    const native = tag === 'textarea' || (tag === 'input' && type === 'text');
+    if (!native && !el.isContentEditable) continue;
+    const hints = ['placeholder','data-placeholder','aria-label','name']
+      .map(attr => el.getAttribute(attr) || '').join(' ');
+    const sem = hints + ' ' + (el.id || '') + ' ' + (el.className || '');
+    if (type === 'search' || /search|filter|搜索|搜职位|查找|筛选|关键词/i.test(sem) ||
+        el.closest('[role="search"],[class*="search"],[class*="Search"],[class*="filter"],[class*="Filter"]')) continue;
+    const explicitId = el.id === 'chat-input';
+    const explicitClass = /chat[-_]?input|message[-_]?input/i.test(sem);
+    const explicitLabel = /输入消息|发送消息|回复|按\s*enter\s*键发送|ctrl\s*\+\s*enter|type a message|write a message/i.test(hints);
+    if (!explicitId && !explicitClass && !explicitLabel) continue;
+    const panel = panelFor(el);
+    if (!panel) continue;
+    candidates.push({input: el, panel, score: explicitId ? 600 : explicitClass ? 400 : 200});
+  }
+  if (!candidates.length || new Set(candidates.map(c => c.panel)).size !== 1) return {found: false};
+  candidates.sort((a,b) => b.score - a.score);
+  if (candidates.length > 1 && candidates[0].score === candidates[1].score) return {found: false};
+  const {input, panel} = candidates[0];
+  if (requireMarked && (input.getAttribute(inputMark) !== '1' || panel.getAttribute(panelMark) !== '1')) return {found: false};
+  if (mark) {
+    input.setAttribute(inputMark, '1');
+    panel.setAttribute(panelMark, '1');
+  }
+  const identityHeaders = Array.from(panel.querySelectorAll(headers))
+    .filter(el => visible(el) && !el.closest(excluded));
+  if (panel.matches(headers) && visible(panel)) identityHeaders.unshift(panel);
+  const values = selector => {
+    const found = new Set();
+    for (const header of identityHeaders) {
+      for (const el of [header, ...header.querySelectorAll(selector)]) {
+        if (!el.matches(selector) || !visible(el) || el.closest(excluded)) continue;
+        const value = (el.textContent || '').trim();
+        if (value) found.add(value);
+      }
+    }
+    return found.size === 1 ? Array.from(found)[0] : '';
+  };
+  return {found: true, recruiter: values('.name-text,[class*="chat-title"] .name,[class*="friend-name"]'),
+    company: values('.name-box span:nth-child(2),[class*="company-name"]')};
+}
+"""
+
+
+def _find_chat_input(page):
+    """Only return the validated editor on this page; never borrow another tab."""
+    try:
+        result = page.evaluate(_CHAT_CONTEXT_SCRIPT, {"mark": True})
+        if result and result.get('found'):
+            loc = page.locator('[data-bossclaw-chat-input="1"]')
+            if loc.count() == 1 and loc.is_visible():
+                return loc
+    except Exception:
+        pass
     return None
 
 
 def _chat_input_selector():
-    """聊天输入框统一候选选择器：优先打分标记，其次兜底常见 id/可编辑元素。"""
-    return '[data-bossclaw-chat-input], #chat-input, [contenteditable="true"], ' \
-           '[contenteditable="plaintext-only"], div[contenteditable], textarea'
+    """No generic fallback: typing must use the editor validated for this page."""
+    return '[data-bossclaw-chat-input="1"]'
 
 
 def _input_text(page) -> str:
@@ -714,7 +725,7 @@ def _inject_text_via_exec(page, greeting: str) -> bool:
     """兜底注入：execCommand('insertText')（AI-BossJob-plus sendCustomReply 同款，React 受控组件可感知）。"""
     try:
         sel = _chat_input_selector()
-        ok = page.evaluate("""(sel, text) => {
+        ok = page.evaluate("""({sel, text}) => {
             const input = document.querySelector(sel);
             if (!input) return false;
             input.focus();
@@ -731,7 +742,7 @@ def _inject_text_via_exec(page, greeting: str) -> bool:
                 input.dispatchEvent(new Event('change', { bubbles: true }));
             }
             return true;
-        }""", sel, greeting)
+        }""", {"sel": sel, "text": greeting})
         return bool(ok)
     except Exception:
         return False
@@ -742,7 +753,8 @@ def _count_own_messages(page) -> int:
     在 `.chat-message .im-list` 内按候选选择器计数；无法识别任何候选时返回 -1（表示不确定）。"""
     try:
         return int(page.evaluate("""() => {
-            const container = document.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
+            const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+            const container = panel && panel.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
             if (!container) return -1;
             const sels = ['li.message-item.item-self', 'li.message-item.item-me', 'li.message-item.me',
                           'li.message-item.item-own', '.chat-message .message-self', '.im-list li[class*="self"]',
@@ -778,18 +790,21 @@ def _outgoing_message_fingerprints(page) -> set:
     排除「您正在与BOSS…」「竞争者PK」等干扰文本。返回 {class|text|left|top} 之集合。"""
     try:
         res = page.evaluate("""() => {
-            const input = document.querySelector('[data-bossclaw-chat-input]');
+            const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+            if (!panel) return [];
+            const input = panel.querySelector('[data-bossclaw-chat-input="1"]');
             const iRect = input ? input.getBoundingClientRect() : null;
             const selectors = ['.chat-message .im-list li', '.message-item', '.message-content',
               '[class*="message-item"]', '[class*="message-content"]', '[class*="bubble"]',
-              '[class*="chat-message"]', '[class*="messageItem"]', '[data-message-id]'];
+              '[class*="messageItem"]', '[data-message-id]'];
             const all = [];
             for (const sel of selectors) {
-                for (const el of Array.from(document.querySelectorAll(sel))) if (!all.includes(el)) all.push(el);
+                for (const el of Array.from(panel.querySelectorAll(sel))) if (!all.includes(el)) all.push(el);
             }
             const set = {};
             let count = 0;
             for (const el of all) {
+                if (el.closest('.item-friend,.message-friend,[class*="incoming"],[class*="message-received"]')) continue;
                 const t = (el.textContent || '').trim().replace(/[\\u200b-\\u200d\\ufeff\\u2060]/g, ' ').replace(/\\s+/g, ' ');
                 if (t.length < 2 || t.length > 900) continue;
                 const r = el.getBoundingClientRect();
@@ -835,8 +850,7 @@ def _greeting_new_fps(page, greeting: str, before: set, timeout_ms: int = 30000)
             body = '|'.join(parts[1:-2]) if len(parts) >= 4 else fp
             body_norm = ' '.join(body.split())
             if body_norm == needle \
-                    or (needle in body_norm and len(body_norm) <= len(needle) + 32) \
-                    or (body_norm in needle and len(body_norm) >= len(needle) - 12):
+                    or (needle in body_norm and len(body_norm) <= len(needle) + 32):
                 matched.append(fp)
         fingerprint = '||'.join(sorted(matched))
         if fingerprint and (time.time() - started >= 2.2):
@@ -868,19 +882,23 @@ def _find_send_button(page, input_el=None):
     避免误点附件类按钮。命中后打标记返回 Playwright Locator + kind。"""
     js = r"""
     () => {
+      document.querySelectorAll('[data-bossclaw-send]').forEach(el => el.removeAttribute('data-bossclaw-send'));
+      const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+      if (!panel) return { found: false };
       const vas = (el) => {
         try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; }
       };
       const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
       let inputRect = null;
-      const input = document.querySelector('[data-bossclaw-chat-input]');
+      const input = panel.querySelector('[data-bossclaw-chat-input="1"]');
+      if (!input) return { found: false };
       if (input) { try { inputRect = input.getBoundingClientRect(); } catch (e) {} }
       const selectors = ['button', '[role="button"]', '[class*="send-btn"]', '[class*="sendBtn"]',
         '[class*="send-message"]', '[class*="sendMessage"]', '[ka*="chat-send"]',
         '[ka*="send-message"]', '[aria-label*="发送"]'];
       const all = [];
       for (const sel of selectors) {
-        for (const el of Array.from(document.querySelectorAll(sel))) if (!all.includes(el)) all.push(el);
+        for (const el of Array.from(panel.querySelectorAll(sel))) if (!all.includes(el)) all.push(el);
       }
       let best = null, bestScore = -Infinity;
       for (const el of all) {
@@ -940,32 +958,49 @@ def _norm_identity(v: str) -> str:
     return re.sub(r'[^\w\u4e00-\u9fff]', '', s).lower()
 
 
-def _chat_header_identity(page) -> dict:
-    """读取聊天页头目标 HR / 公司（对齐 AI-BossJob `_name-text` / `.name-box span:nth-child(2)` 与 job-claw header）。"""
+def _chat_header_identity(page, require_marked: bool = False) -> dict:
+    """Read only the header belonging to this page's validated chat panel."""
     try:
-        return page.evaluate("""() => {
-            const clean = (t) => (t || '').trim();
-            const recruiter = document.querySelector('.name-text, [class*="chat-title"] .name, [class*="friend-name"]');
-            const companyEl = document.querySelector('.name-box span:nth-child(2), [class*="company-name"]');
-            return { recruiter: clean(recruiter ? recruiter.textContent : ''),
-                     company: clean(companyEl ? companyEl.textContent : '') };
-        }""") or {}
+        result = page.evaluate(_CHAT_CONTEXT_SCRIPT, {"requireMarked": require_marked})
+        if result and result.get('found'):
+            return {key: str(result.get(key) or '') for key in ('recruiter', 'company')}
     except Exception:
-        return {}
+        pass
+    return {}
+
+
+def _comparable_identity(value: str) -> str:
+    # A visibly truncated label cannot establish either a match or a conflict.
+    text = str(value or '')
+    if '…' in text or '...' in text or '截断显示' in text:
+        return ''
+    return _norm_identity(text)
 
 
 def _resolve_target_conflict(expected: dict, actual: dict) -> bool:
-    """目标 HR/会话明确冲突（对齐 job-claw-main conversationSelectionEvidence：companyConflict/jobConflict）。
-    仅当期望与实见信息**都存在且不同**时才判冲突；信息缺失/截断时不武断阻断。"""
-    exp_r = _norm_identity(expected.get('recruiterName'))
-    act_r = _norm_identity(actual.get('recruiter'))
-    exp_c = _norm_identity(expected.get('company'))
-    act_c = _norm_identity(actual.get('company'))
-    if exp_r and act_r:
-        return exp_r != act_r          # HR 姓名双方都明确且不同 → 冲突
-    if exp_c and act_c and len(exp_c) >= 2 and len(act_c) >= 2:
-        return exp_c != act_c          # 仅公司可用，双方明确且不同 → 冲突
+    """A mismatch in either available, complete identity field is a conflict."""
+    for expected_key, actual_key in (('recruiterName', 'recruiter'), ('company', 'company')):
+        exp = _comparable_identity(expected.get(expected_key))
+        act = _comparable_identity(actual.get(actual_key))
+        if exp and act and (expected_key != 'company' or min(len(exp), len(act)) >= 2):
+            if exp != act:
+                return True
     return False
+
+
+def _chat_target_error(expected: dict | None, actual: dict) -> dict | None:
+    """Fail closed when no complete identity field can verify the target."""
+    expected = expected or {}
+    if _resolve_target_conflict(expected, actual):
+        return {"ok": False, "code": 602, "conflict": True, "sent": False,
+                "message": "当前聊天 HR/公司与目标冲突，已暂停发送"}
+    for exp_key, act_key in (('recruiterName', 'recruiter'), ('company', 'company')):
+        exp = _comparable_identity(expected.get(exp_key))
+        act = _comparable_identity(actual.get(act_key))
+        if exp and exp == act and (exp_key != 'company' or len(exp) >= 2):
+            return None
+    return {"ok": False, "code": 500, "sent": False,
+            "message": "无法确认当前聊天目标身份，已暂停，请人工核对"}
 
 
 def _read_hr_friend_context(page) -> dict:
@@ -977,9 +1012,12 @@ def _read_hr_friend_context(page) -> dict:
       - history：双方最近消息（按时序，早→晚），元素 {fromHr, text, sys}，用于多轮 AI 跟聊
       - needs_reply：最后一条「非系统」消息是 HR 发的（= 在等我回复，对齐 ghost-job 的 unanswered()）
     无 HR 真实消息返回 {count:0, last:'', history:[], needs_reply:False}。"""
+    if _find_chat_input(page) is None:
+        return {"count": 0, "last": "", "history": [], "needs_reply": False}
     try:
         r = page.evaluate("""() => {
-            const c = document.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
+            const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+            const c = panel && panel.querySelector('.chat-message .im-list, [class*="chat-message"] [class*="im-list"]');
             if (!c) return { count: 0, last: '', history: [] };
             const items = Array.from(c.querySelectorAll('li.message-item, li[class*="message-item"]'))
                 .filter(el => el.getBoundingClientRect().width > 0);
@@ -1048,12 +1086,24 @@ def _enter_chat(page, timeout: int = 28):
     1) 轮询聊天输入框；2) 自动点掉「已开始沟通」弹窗；3) 未就绪则真实点击/重点「立即沟通·继续沟通」；
     4) app.zhipin.com 域名交接（同标签导航）。返回 (target_page, input_locator)；失败返回 (None, error_dict)。"""
     deadline = time.time() + timeout
+    # Other already-open tabs cannot be evidence for this job's conversation.
+    initial_pages = set(_all_pages(page))
+    chat_pages = {page}
     last_click_at = 0
     clicks = 0
     no_btn = 0
     while time.time() < deadline:
         # 1) 输入框已就绪 → 命中
         for p in _all_pages(page):
+            if p not in chat_pages:
+                if p in initial_pages:
+                    continue
+                try:
+                    if p.opener() not in chat_pages:
+                        continue
+                except Exception:
+                    continue
+                chat_pages.add(p)
             risk = _risk_text_hit(p)
             if risk:
                 return None, {"code": 35, "message": f"检测到安全验证/访问受限（{risk}），已暂停，请人工完成验证"}
@@ -1113,13 +1163,14 @@ def _open_resume_entry(page) -> bool:
       const vas = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
       const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
       // 仅在聊天页操作（避免误点击岗位详情页头部「简历」导航菜单）
-      if (!document.querySelector('[data-bossclaw-chat-input],[class*="chat-conversation"],[class*="chat-message"],#chat-input,[contenteditable="true"]')) return false;
-      const input = document.querySelector('[data-bossclaw-chat-input]');
+      const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+      const input = panel && panel.querySelector('[data-bossclaw-chat-input="1"]');
+      if (!input) return false;
       let iRect = null;
       if (input) { try { iRect = input.getBoundingClientRect(); } catch (e) {} }
       const sems = ['resume', 'jianli', 'attachment', 'attach', 'send-resume', 'add-resume'];
       const candidates = [];
-      for (const el of Array.from(document.querySelectorAll('button,[role="button"],a,span,div,i'))) {
+      for (const el of Array.from(panel.querySelectorAll('button,[role="button"],a,span,div,i'))) {
         if (!vas(el)) continue;
         if (el.closest('[class*="dialog"],[class*="modal"],[class*="popover"]')) continue;
         const hit = ((el.getAttribute('ka') || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.className || '')).toLowerCase();
@@ -1139,7 +1190,7 @@ def _open_resume_entry(page) -> bool:
       }
       // 兜底：输入区附近带附加类外观（加号/更多/工具）的图标按钮（排除表情/发送）
       if (iRect) {
-        const extra = Array.from(document.querySelectorAll('button,[role="button"],[class*="add"],[class*="more"],[class*="tool"],[class*="icon"]'))
+        const extra = Array.from(panel.querySelectorAll('button,[role="button"],[class*="add"],[class*="more"],[class*="tool"],[class*="icon"]'))
           .filter((el) => {
             if (!vas(el)) return false;
             if (el.closest('[class*="dialog"],[class*="modal"],[class*="popover"]')) return false;
@@ -1167,12 +1218,22 @@ def _open_resume_entry(page) -> bool:
         return False
 
 
-def _click_select_dialog_option(page, keyword: str) -> bool:
+def _attachment_target_ok(page, expected: dict | None) -> bool:
+    """Revalidate the same target immediately before every attachment action."""
+    return (not _risk_text_hit(page) and _find_chat_input(page) is not None
+            and _chat_target_error(expected, _chat_header_identity(page, require_marked=True)) is None)
+
+
+def _click_select_dialog_option(page, keyword: str, expected: dict | None = None) -> bool:
     """在 upload-select-dialog 的选项块中点击含 keyword 的一项（上传简历 / 发送在线简历）。"""
     try:
+        if not _attachment_target_ok(page, expected):
+            return False
         return bool(page.evaluate("""(kw) => {
-            const dlg = document.querySelector('.upload-select-dialog, [class*="upload-select"]');
-            if (!dlg) return false;
+            const dialogs = Array.from(document.querySelectorAll('.upload-select-dialog, [class*="upload-select"]'))
+                .filter(el => el.offsetWidth && el.offsetHeight && getComputedStyle(el).visibility !== 'hidden');
+            if (dialogs.length !== 1) return false;
+            const dlg = dialogs[0];
             const opt = Array.from(dlg.querySelectorAll('.select-one, [class*="select-one"], li, div,a,button'))
                 .find((el) => (el.offsetWidth || el.offsetHeight) &&
                     (el.textContent || '').trim().replace(/\\s+/g, '').includes(kw));
@@ -1184,13 +1245,18 @@ def _click_select_dialog_option(page, keyword: str) -> bool:
         return False
 
 
-def _fill_upload_resume_files(page, files: list) -> bool:
+def _fill_upload_resume_files(page, files: list, expected: dict | None = None) -> bool:
     """在 upload-resume-dialog 中选择附件简历文件（input[ka=user-resume-upload-file]，接收 jpg/png/doc/pdf），
     注入后由 BOSS 自动上传并发送（对齐聊天页源码：`您的附件简历 X 已发送给Boss点击查看附件`）。"""
     try:
-        finput = page.locator(
-            '.upload-resume-dialog input[type="file"], input[type="file"][ka*="resume"], input[type="file"]'
-        ).first
+        if not _attachment_target_ok(page, expected):
+            return False
+        dialogs = page.locator('.upload-resume-dialog:visible')
+        if dialogs.count() != 1:
+            return False
+        finput = dialogs.locator('input[type="file"]')
+        if finput.count() != 1:
+            return False
         finput.set_input_files(files=files)
         human_sleep(3.2, 0.3, 1.8)
         return True
@@ -1199,7 +1265,7 @@ def _fill_upload_resume_files(page, files: list) -> bool:
         return False
 
 
-def _upload_resume_images(page, resume_images: list) -> dict:
+def _upload_resume_images(page, resume_images: list, expected: dict | None = None) -> dict:
     """发送图片简历（对齐 chat-new v5543 流程：简历入口 → upload-select-dialog →「上传简历」→ 注入文件自动发送；
     保留旧版「直接命中发送简历/附件按钮」路径为兜底链）。图片为可选项：失败不阻断已确认的文字沟通。"""
     if not resume_images:
@@ -1222,20 +1288,26 @@ def _upload_resume_images(page, resume_images: list) -> dict:
     if not files:
         return {"ok": False, "error": "图片简历数据为空"}
     try:
+        if not _attachment_target_ok(page, expected):
+            return {"ok": False, "error": "附件目标无法核验"}
         # 新流程：聊天工具栏简历入口 → 上传简历 → 注入文件（BOSS 自动上传发送）
         if _open_resume_entry(page):
             human_sleep(0.9, 0.4, 0.4)
-            if _click_select_dialog_option(page, '上传简历'):
+            if _click_select_dialog_option(page, '上传简历', expected):
                 human_sleep(0.9, 0.4, 0.4)
-                if _fill_upload_resume_files(page, files):
+                if _fill_upload_resume_files(page, files, expected):
                     log('📄', f'已按新聊天页流程注入 {len(files)} 张图片简历，等待自动发送')
                     return {"ok": True}
         # 旧流程兜底：直接点「发送简历/附件/图片」入口 + 任意可见文件框注入
+        if not _attachment_target_ok(page, expected):
+            return {"ok": False, "error": "附件目标无法核验"}
         try:
             page.evaluate("""() => {
                 const vas = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
                 const text = (el) => (el.textContent || '').trim().replace(/\\s+/g, ' ');
-                const btns = Array.from(document.querySelectorAll('button,[role="button"],a,span,div,[class*="attach"],[class*="img"]'))
+                const panel = document.querySelector('[data-bossclaw-chat-panel="1"]');
+                if (!panel) return;
+                const btns = Array.from(panel.querySelectorAll('button,[role="button"],a,span,div,[class*="attach"],[class*="img"]'))
                     .filter(el => vas(el) && !el.closest('[class*="dialog"]') && /发送简历|图片|附件/.test((el.className || '') + ' ' + text(el)));
                 btns.sort((a, b) => text(b).length - text(a).length);
                 if (btns.length) btns[0].click();
@@ -1243,7 +1315,11 @@ def _upload_resume_images(page, resume_images: list) -> dict:
         except Exception:
             pass
         human_sleep(0.9, 0.4, 0.4)
-        finput = page.locator('input[type="file"]').first
+        if not _attachment_target_ok(page, expected):
+            return {"ok": False, "error": "附件目标无法核验"}
+        finput = page.locator('[data-bossclaw-chat-panel="1"] input[type="file"]')
+        if finput.count() != 1:
+            return {"ok": False, "error": "当前聊天面板内没有唯一附件输入框"}
         finput.set_input_files(files=files)
         human_sleep(2.6, 0.3, 1.5)
         log('📄', f'已注入 {len(files)} 张图片简历，等待上传完成')
@@ -1253,22 +1329,37 @@ def _upload_resume_images(page, resume_images: list) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _send_chat_text(target_page, text: str) -> dict:
+def _send_chat_text(target_page, text: str, expected: dict | None = None) -> dict:
     """在「当前已打开的聊天窗口」里真实输入并发送文本，确认我方气泡后返回结果。
 
     发送前快照 → 类人逐字输入（空则 execCommand 兜底）→ 点发送/回车 → 稳定指纹 ×3 完整文本确认。
     发送失败或未确认一律不计成功（AGENTS.md 2.1 安全不变量）。首次招呼语与 AI 跟聊回复共用。
     返回 {ok:True, sentVia} 或 {ok:False, code, message}。
     """
-    # 输入框就绪（重新打分标记：常驻会话页切换会话后输入框可能重建）
+    risk = _risk_text_hit(target_page)
+    if risk:
+        return {"ok": False, "code": 35, "message": "检测到安全验证/访问受限，已暂停发送"}
+    # 输入框就绪（常驻会话页切换会话后输入框可能重建）
     input_el = _find_chat_input(target_page)
     if input_el is None:
         return {"ok": False, "code": 500, "message": "未找到聊天输入框"}
+    identity = _chat_header_identity(target_page, require_marked=True)
+    target_error = _chat_target_error(expected or {
+        "recruiterName": identity.get('recruiter'), "company": identity.get('company')}, identity)
+    if target_error:
+        return target_error
     before_fps = _outgoing_message_fingerprints(target_page)
     try:
         input_el.click()
         # 点击后短暂停顿，模拟真人移动鼠标/停留
         human_sleep(0.4, 0.5)
+        target_error = _chat_target_error(expected or {
+            "recruiterName": identity.get('recruiter'), "company": identity.get('company')},
+            _chat_header_identity(target_page, require_marked=True))
+        if target_error:
+            return target_error
+        if _risk_text_hit(target_page):
+            return {"ok": False, "code": 35, "message": "检测到安全验证/访问受限，已暂停发送"}
         target_page.keyboard.press('ControlOrMeta+a')
         target_page.keyboard.press('Delete')
         # 逐字随机打字节奏（接近真人，替代固定 delay=25）
@@ -1283,24 +1374,47 @@ def _send_chat_text(target_page, text: str) -> dict:
     except Exception as e:
         return {"ok": False, "code": 500, "message": f"输入沟通文本失败：{e}"}
 
+    def before_send_error():
+        target_error = _chat_target_error(expected or {
+            "recruiterName": identity.get('recruiter'), "company": identity.get('company')},
+            _chat_header_identity(target_page, require_marked=True))
+        if target_error:
+            return target_error
+        if _risk_text_hit(target_page):
+            return {"ok": False, "code": 35, "message": "检测到安全验证/访问受限，已暂停发送"}
+        if ' '.join(_input_text(target_page).split()) != ' '.join(text.split()):
+            return {"ok": False, "code": 500, "message": "聊天输入内容未完整匹配，已暂停发送"}
+        return None
+
     sent_via = 'enter'
     send_btn, send_kind = _find_send_button(target_page)
     if send_btn is not None:
         # 发送前随机停顿，模拟真人看完输入内容后点击
         human_sleep(0.5, 0.5, 0.2)
+        error = before_send_error()
+        if error:
+            return error
         try:
             send_btn.click()
             sent_via = send_kind or 'button'
             log('🖱️', f'已点击发送按钮（{sent_via}）')
         except Exception:
+            error = before_send_error()
+            if error:
+                return error
             try:
+                input_el.click()
                 target_page.keyboard.press('Enter')
                 sent_via = 'enter'
                 log('⌨️', '发送按钮点击失败，已回车发送')
             except Exception:
                 pass
     else:
+        error = before_send_error()
+        if error:
+            return error
         try:
+            input_el.click()
             target_page.keyboard.press('Enter')
             log('⌨️', '已回车发送')
         except Exception:
@@ -1427,15 +1541,12 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         except Exception:
             pass
 
-        # Step 5.5: 目标 HR/会话核验（对齐 AGENTS.md 2.1「目标 HR 或会话明确冲突时：不发送」/
-        # job-claw conversationSelectionEvidence）；信息缺失或截断时不武断阻断。
-        if expected and (expected.get('recruiterName') or expected.get('company')):
-            actual = _chat_header_identity(target_page)
-            if _resolve_target_conflict(expected, actual):
-                save_cookies(page.context)
-                return {"ok": False, "code": 602, "conflict": True, "sent": False,
-                        "message": f"目标疑似冲突：期望 HR={expected.get('recruiterName') or '?'}/公司={expected.get('company') or '?'}，"
-                                   f"实见 HR={actual.get('recruiter') or '?'}/公司={actual.get('company') or '?'}，已暂停发送"}
+        # A panel must supply comparable identity evidence, not a recommendation
+        # elsewhere in the document. Missing evidence is not permission to send.
+        target_error = _chat_target_error(expected, _chat_header_identity(target_page, require_marked=True))
+        if target_error:
+            save_cookies(page.context)
+            return target_error
 
         # Step 5.6: 只读巡检（mode='check'）——不发送任何消息，仅回传 HR 最新消息与完整对话历史，
         # 供渲染层「AI 跟聊监听」生成多轮回复后走 mode='reply' 发送。
@@ -1469,7 +1580,7 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
                         "message": "已与该 HR 建立会话且无需回复，跳过重复打招呼"}
 
         # Step 6-9: 真实输入并发送（发送前快照 → 类人逐字输入 → 发送 → 稳定气泡确认）
-        send_res = _send_chat_text(target_page, send_text)
+        send_res = _send_chat_text(target_page, send_text, expected)
         if not send_res.get('ok'):
             save_cookies(page.context)
             return {"ok": False, "code": send_res.get('code', 500),
@@ -1483,21 +1594,32 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
         # 配置为 0 时保持旧行为（不额外等待）；内容上传内部的人类化停顿不受影响。
         if (send_online_resume or (send_resume_image and resume_images)) and float(attachment_delay_seconds or 0) > 0:
             human_sleep(float(attachment_delay_seconds), 0.35, float(attachment_delay_seconds) * 0.3)
+        if send_online_resume or (send_resume_image and resume_images):
+            if _find_chat_input(target_page) is None:
+                attachment_error = {"ok": False, "code": 500,
+                                    "message": "文字已确认发送，但聊天面板已变化，未发送附件"}
+            else:
+                attachment_error = _chat_target_error(expected, _chat_header_identity(target_page, require_marked=True))
+            if attachment_error:
+                save_cookies(page.context)
+                return {**attachment_error, "sent": True}
         if send_online_resume:
             try:
                 online_sent = False
-                for p in _all_pages(page):
+                for p in [target_page]:
                     # 新流程：简历入口 → upload-select-dialog →「发送在线简历」
                     if _open_resume_entry(p):
                         human_sleep(0.9, 0.4, 0.4)
-                        if _click_select_dialog_option(p, '发送在线简历'):
+                        if _click_select_dialog_option(p, '发送在线简历', expected):
                             human_sleep(2.2, 0.3, 1.2)
                             log('📄', '已通过「发送在线简历」发送在线简历')
                             online_sent = True
                             break
                     # 旧流程兜底：页面存在直达「发送在线简历」按钮（含已打开的弹窗选项）
                     try:
-                        online_btn = p.locator("text=发送在线简历").first
+                        if not _attachment_target_ok(p, expected):
+                            break
+                        online_btn = p.locator('[data-bossclaw-chat-panel="1"]').locator("text=发送在线简历").first
                         if online_btn.is_visible(timeout=1500):
                             online_btn.click()
                             human_sleep(1.3, 0.3, 0.6)
@@ -1511,7 +1633,7 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
             except Exception:
                 log('⚠️', '发送在线简历失败（忽略）')
         if send_resume_image and resume_images:
-            _upload_resume_images(target_page, resume_images)
+            _upload_resume_images(target_page, resume_images, expected)
 
         save_cookies(page.context)
         return {"ok": True, "code": 0, "sent": True, "method": "browser-chat", "sentVia": sent_via}
@@ -1802,12 +1924,11 @@ def _send_to_conversation(page, name: str, company: str = '', text: str = '') ->
         return {"ok": False, "code": 400, "message": "回复文本过长（>800 字），拒绝发送", "sent": False}
     if len(text) < GREETING_MIN_LEN:
         return {"ok": False, "code": 400, "message": f"回复文本过短（<{GREETING_MIN_LEN} 字），拒绝发送", "sent": False}
-    header = _chat_header_identity(page)
-    cur = str((header or {}).get('recruiter') or '')
-    if cur and name and not _same_identity(cur, name):
-        return {"ok": False, "code": 602, "sent": False,
-                "message": f"发送前校验失败：当前窗口是「{cur}」，与目标「{name}」不符，放弃发送（防串人）"}
-    res = _send_chat_text(page, text)
+    expected = {"recruiterName": name, "company": company}
+    target_error = _chat_target_error(expected, _chat_header_identity(page))
+    if target_error:
+        return target_error
+    res = _send_chat_text(page, text, expected)
     if not res.get('ok'):
         return {"ok": False, "code": res.get('code', 500), "sent": False,
                 "message": res.get('message', '发送失败')}
