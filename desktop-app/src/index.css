@@ -5189,6 +5189,17 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   color: var(--brand);
   font-size: 14px;
 }
+/* 字段级提示图标（如「风控冷却」的边界说明）：原先是卡片底部一行常驻长句，
+   把同排三格拉成不等高（前两格底部各留一块空白）→ 收进 Tooltip，只留一个提示入口。 */
+.stat-input-card .sic-hint {
+  font-size: 12px;
+  color: var(--fg-subtle);
+  cursor: help;
+  transition: color 0.2s ease;
+}
+.stat-input-card .sic-hint:hover {
+  color: var(--brand);
+}
 .stat-input-card .sic-input-wrap {
   display: flex;
   align-items: center;
@@ -5199,24 +5210,61 @@ html[data-theme='dark'] .skill-chip-gap:hover {
   gap: 8px;
 }
 
-/* 「生效范围」说明：它不是临时提示而是**字段级语义**，必须常驻
-   （否则用户无法判断该设置管不管自动沟通/工作台），故不走顶部 notification。
-   选择器写成 `.sic-scope`（不限祖先）以便同一个类同时用于：卡片内部的小字说明、
-   以及卡片顶部的整卡生效范围横幅（后者不在 .stat-input-card 内）。 */
-.sic-scope {
+/* 基础节奏三格磁贴：等宽（minmax(0,1fr) 防止「次/分」这类较宽单位把列撑破）、
+   等高（grid 默认 stretch）。数值与单位同行 —— 输入框不再写 width:100%，
+   否则单位会被挤到独占一行，卡片内留下大片空档。 */
+.sic-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* 作息 / 批次休息：单列整行（理由见 AutoChat.tsx 内注释：侧栏固定 420px，并排两列必折行）。 */
+.sic-rows {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+.stat-input-card .sic-row-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* 数值行尾的派生说明（如「活跃时段」折算小时数）：左推至行尾，
+   让这一行与下一行的行尾对齐，避免卡片右侧出现散乱的留白。 */
+.stat-input-card .sic-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+
+/* 「生效范围」横幅：它不是临时提示而是**字段级语义**，必须常驻
+   （否则用户无法判断该设置管不管自动沟通/工作台），故不走顶部 notification。
+   做成浅底提示条而不是裸文字：卡片内一眼可见，又不与数值控件抢视觉层级。 */
+.sic-scope {
+  display: flex;
+  align-items: flex-start;
   /* 允许换行：整卡生效范围横幅是长句，容器窄时要能折行而不是溢出 */
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--fg-subtle);
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-brand);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
 }
 .sic-scope .anticon {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--brand);
+}
+.sic-scope b {
+  color: var(--fg);
 }
 .stat-input-card .sic-unit {
   font-size: 12px;
