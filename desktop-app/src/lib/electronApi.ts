@@ -119,6 +119,20 @@ export const electronApi = {
     preloadPath: (): string => (api() as { webviewPreload?: string }).webviewPreload || '',
   },
 
+  // 本地桥（OpenClaw）访问令牌：随机生成、存于 ~/.bossclaw/bridge-token（C-2）
+  bridge: {
+    token: async (): Promise<string> => {
+      try {
+        const fn = (api() as { bridgeToken?: () => Promise<string> }).bridgeToken;
+        if (!fn) return '';
+        const t = await fn();
+        return typeof t === 'string' ? t : '';
+      } catch {
+        return '';
+      }
+    },
+  },
+
   // P05：LLM 主进程代理（主进程 Node fetch 转发，规避渲染层 CORS）
   llmProxy: async (
     url: string,

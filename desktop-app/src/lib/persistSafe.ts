@@ -70,6 +70,11 @@ export function persistDirtyEpoch(name: string): number {
   return persistWriteEpoch.get(name) ?? 0;
 }
 
+/** 非 zustand 的业务键成功直写后调用，使下一次本地备份能发现变更。 */
+export function markPersistDirty(name: string): void {
+  persistWriteEpoch.set(name, (persistWriteEpoch.get(name) ?? 0) + 1);
+}
+
 /** 真实写盘（尽力而为，绝不抛出）。写失败时按「键的类型」处置：运行时日志键直接丢弃（重启即重新累积），业务键丢弃该次持久化。 */
 function writeWithFallback(store: Storage, name: string, value: StorageValue<unknown>): boolean {
   const payload = () => {

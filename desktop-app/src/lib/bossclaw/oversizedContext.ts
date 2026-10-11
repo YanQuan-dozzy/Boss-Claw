@@ -100,6 +100,8 @@ const notifiedKeys = new Set<string>();
 function notifyOnce(key: string, level: 'info' | 'warn', message: string): void {
   if (notifiedKeys.has(key)) return;
   notifiedKeys.add(key);
+  // L-17：长期运行下 notifiedKeys 只增不减会无界增长（key 含内容哈希，会话内数量可观）→ 加上限
+  if (notifiedKeys.size > 200) notifiedKeys.clear();
   try {
     useRuntimeLogsStore.getState().addLog(level, message);
   } catch {
@@ -200,7 +202,17 @@ export async function prepareContextText(
         : `【简历原文超出上下文窗口预算，以下为分片提炼的事实要点（按原文顺序）】\n${parts.join('\n')}`;
 
     // 合并后仍超预算（提炼未压到预期）：按预算二次裁剪，保证「返回即可投喂」的契约
-    const finalText = estimateTokens(merged) <= budget ? merged : fitContextToTokens(merged, budget);
+    const overBudget = estimateTokens(merged) > budget;
+    const finalText = overBudget ? fitContextToTokens(merged, budget) : merged;
+    if (overBudget) {
+      // L-16：原实现静默截断，与「不截断」口径冲突 —— 明确告知「已做二次裁剪」及其代价与解法。
+      notifyOnce(
+        `${noticeKey}:secondary-trim`,
+        'warn',
+        '分片提炼合并后仍超出上下文预算，已作二次裁剪（尾部内容被裁掉）。' +
+          '若需完整内容，请在「设置 → AI / LLM 配置」把「上下文长度」改为所用模型的**实际**窗口大小，或把「上下文用量」切到「全满」。',
+      );
+    }
 
     if (droppedChunks > 0) {
       notifyOnce(

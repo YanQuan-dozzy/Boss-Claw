@@ -66,6 +66,21 @@ check('院系写法：北京大学光华管理学院 → 保守禁止', resolveS
 check('专科：某某职业技术学院 → 禁止写校名', resolveSchoolTier(['某某职业技术学院 计算机应用 大专']).allowSchoolName, false);
 check('境外院校 → 禁止写校名', resolveSchoolTier(['University of Sydney 计算机 本科']).allowSchoolName, false);
 check('无任何教育信息 → 保守禁止（防幻觉校名）', resolveSchoolTier([]).allowSchoolName, false);
+// M-26/H-11：简称不得裸子串匹配到别的校名（原实现「北大」⊂ 东北大学/西北大学、「南大」⊂ 西南/云南/海南/中南大学）
+check('东北大学 → 不得误判为北京大学（H-11）',
+  resolveSchoolTier(['东北大学 计算机科学与技术 本科']).eliteSchools.includes('北京大学'), false);
+check('东北大学 → 命中自身（985）',
+  resolveSchoolTier(['东北大学 计算机科学与技术 本科']).eliteSchools.includes('东北大学'), true);
+check('西南大学 → 不得误判为南京大学（H-11）',
+  resolveSchoolTier(['西南大学 汉语言文学 本科']).eliteSchools.includes('南京大学'), false);
+check('云南大学 → 不得误判为南京大学（H-11）',
+  resolveSchoolTier(['云南大学 生态学 本科']).eliteSchools.includes('南京大学'), false);
+check('中南大学 → 不得误判为南京大学（H-11）',
+  resolveSchoolTier(['中南大学 材料科学与工程 本科']).eliteSchools.includes('南京大学'), false);
+check('「清华毕业」独立出现 → 仍命中清华大学（H-11 不误杀）',
+  resolveSchoolTier(['清华大学 计算机科学与技术 本科']).eliteSchools.includes('清华大学'), true);
+check('「北大 计算机」独立简称 → 命中北京大学（H-11 别名仍可用）',
+  resolveSchoolTier(['北大 计算机科学与技术 本科']).eliteSchools.includes('北京大学'), true);
 check('本科双非 + 硕士 985 → 允许写校名', resolveSchoolTier(['深圳大学 计算机 本科', '浙江大学 软件工程 硕士']).allowSchoolName, true);
 check('画像无教育行时退回简历原文判定', resolveSchoolTier([], '教育经历：北京大学 计算机科学与技术').allowSchoolName, true);
 

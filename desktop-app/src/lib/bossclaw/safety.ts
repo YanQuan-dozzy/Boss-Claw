@@ -134,6 +134,14 @@ export class ActionPacer {
     this.timestamps.push(now);
   }
 
+  /** L-25：从另一个 pacer 继承「本分钟已动作时间戳」。
+   *  预算变更时若直接 new 一个 pacer，会丢掉已计数动作 → 本分钟可再放行一整个新预算的动作，
+   *  瞬时突破限速。迁移时保留时间戳即可（prune 由既有逻辑负责）。 */
+  carryTimestampsFrom(other: ActionPacer | null | undefined): void {
+    if (!other) return;
+    this.timestamps = other.timestamps.slice();
+  }
+
   /**
    * 等待直到有空位，然后记录一次动作。
    *

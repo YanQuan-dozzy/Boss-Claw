@@ -1078,7 +1078,9 @@ function focusEditableScoped(input) {
 // 避免只按固定的容器选择器整段判断而漏掉（导致已成功发送却被误判失败、未写入已投递）。
 function confirmOwnMessage(greeting) {
   const needle = normalizeChatText(greeting).slice(0, 30);
-  if (!needle || needle.length < 12) return false;
+  // M-9：确认阈值原为 <12，**严于发送阈值（≥8）** → 8-11 字的招呼语真实发送后永远无法确认，
+  // 被误判 failed（且未记「已投递」）。与发送侧对齐到 8。
+  if (!needle || needle.length < 8) return false;
   // 聊天气泡节点语义类（对齐 job-claw-main chatMessageNodes 的选择器集）
   const bubbleSelectors = [
     '.message-content', '.chat-message', '.message-item', '.message-text',
@@ -2490,8 +2492,10 @@ function pageStatusData() {
     counts,
     listRootCls: listRoot ? String(listRoot.className || '').slice(0, 120) : '',
     skeleton: all('[class*="skeleton"], [class*="loading"], [class*="spinner"], [class*="placeholder"]').length,
-    // 登录墙 = 原文案命中（含安全验证/验证码等风控文案）或「平台登录墙特征 且 无任何岗位链接」
-    loginWall: /请登录|扫码登录|安全验证|验证码/.test(bodyText.slice(0, 500)) || loginWallDetected(),
+    // L-8：登录墙判定统一走 loginWallDetected()（URL 特征 或「正文命中登录文案 且 一条岗位链接都没有」）。
+    // 原实现额外用「正文前 500 字含 请登录/扫码登录/安全验证/验证码」直接置位 ——
+    // 风控类岗位 JD 里出现「验证码/安全验证」字样会被误报为登录墙。
+    loginWall: loginWallDetected(),
   };
 }
 
@@ -3388,7 +3392,14 @@ ipcRenderer.on('ui-eval', (_e, arg) => {
     } else if (op === 'click') {
       const el = uvPick(selector, label, index);
       if (!el) res = { error: '未命中元素' };
-      else { try { (typeof el.click === 'function') ? el.click() : el.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e) { res = { error: '点击失败: ' + (e && e.message) }; } res = { ok: true }; }
+      else {
+        // L-6：原实现把 `res = { ok: true }` 写在 catch 之后，点击抛错也会被覆盖成成功 →
+        // 失败被静默上报为成功。成功路径才置 ok。
+        try {
+          (typeof el.click === 'function') ? el.click() : el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          res = { ok: true };
+        } catch (e) { res = { error: '点击失败: ' + (e && e.message) }; }
+      }
     } else if (op === 'type') {
       const el = uvPick(selector, label, index);
       if (!el) res = { error: '未命中输入框' };

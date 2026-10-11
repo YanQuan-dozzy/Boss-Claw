@@ -39,8 +39,9 @@ function decodeAnsiBytes(bytes: Uint8Array): string {
   return new TextDecoder('windows-1252').decode(bytes);
 }
 
-/** 先严格 UTF-8，失败按中文文档代码页 GB18030，最后 cp1252 兜底（用于 RTF / HTML 伪装的 .doc） */
-function decodeTextBytes(bytes: Uint8Array): string {
+/** 先严格 UTF-8，失败按中文文档代码页 GB18030，最后 cp1252 兜底（用于 RTF / HTML 伪装的 .doc）
+ *  M-24：导出以复用给「按字节读入的 TXT/MD」解码（原实现只按 UTF-8 读 → GBK 简历静默乱码）。 */
+export function decodeTextBytes(bytes: Uint8Array): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
@@ -136,7 +137,8 @@ class CompoundFile {
     let difat = this.dv.getUint32(0x44, true);
     const difatCount = this.dv.getUint32(0x48, true);
     let guard = 0;
-    while (difat !== SECTOR_END && difat !== SECTOR_FREE && guard <= difatCount && guard < MAX_SECTORS) {
+    // L-14：`guard <= difatCount` 是 off-by-one（会多走一轮）；改为严格小于
+    while (difat !== SECTOR_END && difat !== SECTOR_FREE && guard < difatCount && guard < MAX_SECTORS) {
       const base = this.sectorOffset(difat);
       if (base + this.sectorSize > this.bytes.length) break;
       for (let i = 0; i < perSector - 1; i += 1) {
@@ -249,6 +251,8 @@ function readPieces(table: Uint8Array, fcClx: number, lcbClx: number): Piece[] {
       if (p + 3 > end) break;
       p += 3 + dv.getUint16(p + 1, true); // Prc：跳过 grpprl
     } else if (kind === 0x02) {
+      // L-13：缺边界检查（损坏文件会读越界抛 RangeError）
+      if (p + 5 > end) break;
       plcLen = dv.getUint32(p + 1, true);
       plcOffset = p + 5;
       break;

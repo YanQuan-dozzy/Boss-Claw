@@ -210,6 +210,8 @@ class CollectorBase:
                 except Exception as e:
                     log('⚠️', f'[{self.platform}] 注入 Cookie 失败：{e}')
 
+            parse_error = {'hit': False}  # H-8：本页接口解析是否异常（供断点推进判据）
+
             def on_response(response):
                 try:
                     if response.status != 200:
@@ -225,9 +227,11 @@ class CollectorBase:
                     items = self.parse_api_payload(json.loads(text))
                     if isinstance(items, list) and items:
                         captured.extend(items)
-                except Exception:
-                    # 接口拦截是「尽力而为」通道，解析失败静默交给 DOM 兜底
-                    pass
+                except Exception as e:
+                    # 接口拦截是「尽力而为」通道，解析失败交给 DOM 兜底；
+                    # H-8：但必须**标记**（原来完全静默 pass），否则接口结构变更时会「0 采集却标记采完」。
+                    parse_error['hit'] = True
+                    log('⚠️', f'[{self.platform}] 接口解析异常（结构可能变更）：{str(e)[:60]}')
 
             page.on('response', on_response)
 
@@ -256,6 +260,14 @@ class CollectorBase:
                     all_jobs.extend(dom_jobs)
                 elif self.empty_list_hit(page):
                     log('ℹ️', f'[{self.platform}] Page {page_num}: 页面提示无符合条件岗位，提前结束「{query}」')
+                    break
+                else:
+                    # H-8：接口与 DOM 两个通道皆空、又非「页面明确显示无岗位」→ 视为采集缺口。
+                    # 不推进词级断点（宁可下次重复采，也不整词静默漏采）；命中解析异常时给出更明确的日志。
+                    if parse_error['hit']:
+                        log('⚠️', f'[{self.platform}] Page {page_num}: 接口解析失败且 DOM 兜底为空，判定为采集缺口，不推进断点')
+                    else:
+                        log('⚠️', f'[{self.platform}] Page {page_num}: 未采到岗位且未见空态标记，判定为缺口，不推进断点')
                     break
                 captured = []
                 collected_pages = page_num
@@ -304,6 +316,15 @@ class CollectorBase:
         url = str(job.get('url') or '').strip()
         if not job_id and not url:
             return {'ok': False, 'code': 400, 'message': '缺少岗位 jobId/url', 'sent': False}
+        # 安全不变量（审查 C-3）：投递只能落到**明确的岗位详情页**。
+        # 历史缺陷：url 为空时回退到 `build_search_url('Python', ...)` 的**搜索结果列表页**，
+        # 随后在列表页上定位并点击「投递」→ 可能对用户**未选择的任意岗位**发起不可逆投递。
+        # 现在：无 url 直接拒绝（保留 job_id 仅用于提示），绝不回退列表页。
+        if not url:
+            return {
+                'ok': False, 'code': 400, 'sent': False,
+                'message': f'缺少岗位 url（job={job_id or "?"}），拒绝投递；请回列表重新进入该岗位详情页后再投递',
+            }
         # 安全不变量：招呼语为空拒绝投递（所有平台一致，不可放宽）
         if not str(greeting or '').strip():
             return {'ok': False, 'code': 400, 'message': '招呼语为空，拒绝投递', 'sent': False}
@@ -320,7 +341,7 @@ class CollectorBase:
                 except Exception as e:
                     log('⚠️', f'[{self.platform}] 注入 Cookie 失败：{e}')
 
-            target = url or self.build_search_url('Python', '', '', 1)
+            target = url
             if not goto_stable(page, target, wait=2.5):
                 return self._fail(35, f'{self.label}页面未加载（可能被反爬拦截）', page)
             risk = risk_text_hit(page)

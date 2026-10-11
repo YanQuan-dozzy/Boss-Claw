@@ -15,16 +15,51 @@ function normalizeLineBreaks(text: string): string {
     .trim();
 }
 
+/** 解压输出的硬上限（审查 H-5）：防 Flate 解压炸弹把渲染进程打爆 / OOM。
+ *  64MB 对正常简历内容流绰绰有余（原始正文远小于此）。 */
+const INFLATE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** 边读边累计字节数，超阈值即 reader.cancel() 中止（不把解压结果整体读进内存）。 */
+async function readStreamCapped(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || !value.byteLength) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* 忽略 */ }
+        throw new Error(`解压输出超过 ${maxBytes} 字节上限（疑似解压炸弹），已中止`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* 忽略 */ }
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out;
+}
+
 async function inflateBytes(bytes: Uint8Array): Promise<Uint8Array> {
   const attempts = ['deflate', 'deflate-raw'];
+  let lastError: unknown = null;
   for (const format of attempts) {
     try {
       const stream = new Blob([bytes as unknown as BlobPart]).stream().pipeThrough(new DecompressionStream(format as CompressionFormat));
-      return new Uint8Array(await new Response(stream).arrayBuffer());
-    } catch {
+      return await readStreamCapped(stream, INFLATE_MAX_BYTES);
+    } catch (error) {
+      lastError = error;
+      // 超限（解压炸弹）属确定性失败：立即中止，不再尝试其它压缩格式
+      if (error instanceof Error && error.message.includes('解压炸弹')) throw error;
       // PDF 生产者对是否带 zlib 头存在差异，尝试下一种格式
     }
   }
+  void lastError;
   throw new Error('无法解压 PDF 数据流');
 }
 
@@ -273,7 +308,9 @@ function parseToUnicodeCMap(text: string) {
       const start = Number.parseInt(range[1], 16);
       const end = Number.parseInt(range[2], 16);
       const width = range[1].length;
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end - start > 8192) continue;
+      // L-15：原上限 8192 会把常见大范围 CJK 映射（如 U+4E00–U+9FFF ≈ 21k）整体丢弃 → 丢字。
+      // 放宽到 65536（覆盖 BMP 内常见映射），同时保留上限作为超大跨度的 DoS 守卫。
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || end - start > 65536) continue;
       if (range[3]) {
         const destination = range[3].toUpperCase();
         for (let code = start; code <= end; code += 1) {

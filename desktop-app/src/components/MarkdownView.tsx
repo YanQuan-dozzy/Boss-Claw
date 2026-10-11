@@ -27,6 +27,8 @@ function renderInline(text: string, keySeed: string | number): React.ReactNode[]
             <a
               key={`${keySeed}-${i}`}
               href={url}
+              // L-29：纵深防御 —— 除 preventDefault 外，明确声明 opener/referrer 不传递
+              rel="noreferrer noopener"
               onClick={(e) => {
                 e.preventDefault();
                 electronApi.external.open(url);

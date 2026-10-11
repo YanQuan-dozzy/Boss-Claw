@@ -57,17 +57,20 @@ const PHONE_RE = /(?<!\d)1[3-9]\d{9}(?!\d)/;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 const INTENT_RE = /(?:求职意向|意向岗位|应聘岗位|目标岗位|期望岗位|求职方向)\s*[:：]?\s*([^\n，。；;、|【】（）()]{2,24})/;
 
+/** 简历标题类词（M-23：「个人简历」等 2-4 个汉字会被误判为姓名并进入导出 PDF/图片） */
+const NAME_TITLE_BLACKLIST = /^(?:个人简历|求职简历|应聘简历|我的简历|个人主页|简历|resume|curriculum\s*vitae)$/i;
+
 /** 从简历文本提取姓名（宽松启发式，结果须人工确认） */
 function extractName(text: string): string {
   // 1) 显式标签：姓名：张三
   const labeled = text.match(/姓\s*名\s*[:：]\s*([\u4e00-\u9fa5·]{2,4})/);
-  if (labeled) return labeled[1];
+  if (labeled && !NAME_TITLE_BLACKLIST.test(labeled[1])) return labeled[1];
   // 2) 首行：纯 2-4 个汉字（常见简历第一行就是姓名）
   const firstLine = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((l) => l.trim()).find(Boolean);
-  if (firstLine && /^[\u4e00-\u9fa5·]{2,4}$/.test(firstLine)) return firstLine;
-  // 3) 首行形如「张三的简历」
+  if (firstLine && /^[\u4e00-\u9fa5·]{2,4}$/.test(firstLine) && !NAME_TITLE_BLACKLIST.test(firstLine)) return firstLine;
+  // 3) 首行形如「张三的简历」（整体是标题词时跳过，避免把「个人简历」切出「个人」）
   const withSuffix = text.match(/([\u4e00-\u9fa5·]{2,4})(?:的)?简历(?:\.docx?)?/);
-  if (withSuffix) return withSuffix[1];
+  if (withSuffix && !NAME_TITLE_BLACKLIST.test(withSuffix[0]) && !NAME_TITLE_BLACKLIST.test(withSuffix[1])) return withSuffix[1];
   return '';
 }
 
@@ -200,7 +203,7 @@ export function buildResumeDocData(
   };
 
   // 输出顺序 = 用户给定顺序（勾选且排序后）；未给定则用默认顺序
-  const order = selectedIds && selectedIds.length ? selectedIds : RESUME_SECTION_META.map((m) => m.id);
+  const order = selectedIds ?? RESUME_SECTION_META.map((m) => m.id);
   const modules: ResumeDocModule[] = [];
   for (const id of order) {
     const mod = buildModule(id);

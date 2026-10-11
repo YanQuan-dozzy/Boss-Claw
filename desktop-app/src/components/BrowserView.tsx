@@ -392,7 +392,18 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   const registeredTabs = useRef<Record<string, boolean>>({});
   // boss-api 的 seq → resolve 映射
   const apiResolvers = useRef<Map<string, (v: any) => void>>(new Map());
+  // L-28：seq → 超时定时器句柄，供卸载时统一清理（原实现未决 Promise + 定时器最长滞留 26s）
+  const apiTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const seqRef = useRef(0);
+
+  // L-28：卸载时清理未决的 seq 等待与超时定时器 —— 原实现两者都不清理，
+  // 未决 Promise 与定时器最长滞留 26s，且回调在组件卸载后仍会 resolve/操作已卸载状态。
+  useEffect(() => () => {
+    for (const t of apiTimers.current.values()) { try { clearTimeout(t); } catch { /* 忽略 */ } }
+    for (const resolve of apiResolvers.current.values()) { try { resolve({ error: '页面已卸载' }); } catch { /* 忽略 */ } }
+    apiTimers.current.clear();
+    apiResolvers.current.clear();
+  }, []);
 
   // ===== 活跃 tab 引用（始终是最新的）=====
   const activeIdRef = useRef(activeId);
@@ -675,11 +686,14 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   }, []);
 
   // ===== 创建标签页（多标签版本）=====
-  const createTab = useCallback((url: string, title: string, _activate: boolean, kind: 'main' | 'detail' = 'main'): string => {
+  const createTab = useCallback((url: string, title: string, activate: boolean, kind: 'main' | 'detail' = 'main'): string => {
     const fallbackTitle = PLATFORM_META[resolvePlatform(url)]?.label || 'BOSS直聘';
     const tab = makeTab(url, title || fallbackTitle, kind);
     setTabs((prev) => [...prev, tab]);
-    setActiveId(tab.id);
+    // M-40：原实现忽略 activate 恒抢焦点 —— 后台开引擎标签会打断用户当前浏览（与 CloakView 行为不一致）。
+    // 现按入参决定是否激活；不激活时保持当前激活标签不变。
+    if (activate) setActiveId(tab.id);
+    else setActiveId((prev) => prev || tab.id); // 无激活标签时（首个标签）仍需激活，避免空白
     return tab.id;
   }, []);
 
@@ -894,10 +908,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       const timer = setTimeout(() => {
         if (apiResolvers.current.has(seq)) {
           apiResolvers.current.delete(seq);
+          apiTimers.current.delete(seq);
           resolve({ error: 'boss-api 超时（15s）' });
         }
       }, 16000);
-      apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); resolve(payload); });
+      apiTimers.current.set(seq, timer);
+      apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); apiTimers.current.delete(seq); resolve(payload); });
       sendInTab(tabIdToUse, 'boss-api', { seq, action, params });
     });
   }, [sendInTab]);
@@ -912,10 +928,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       const timer = setTimeout(() => {
         if (apiResolvers.current.has(seq)) {
           apiResolvers.current.delete(seq);
+          apiTimers.current.delete(seq);
           resolve({ error: `${channel} 超时（${timeoutMs}ms）` });
         }
       }, timeoutMs);
-      apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); resolve(payload); });
+      apiTimers.current.set(seq, timer);
+      apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); apiTimers.current.delete(seq); resolve(payload); });
       sendInTab(id, channel, { seq, ...args });
     });
   }, [sendInTab]);
@@ -1263,6 +1281,15 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
                 partition="persist:bossclaw"
                 // backgroundThrottling=no：工作台切到其它模块时隐藏但保持挂载，
                 // 禁用 Chromium 后台节流，保证采集/投递的 guest 页 setTimeout/rAF 全速运行
+                //
+                // ⚠️ sandbox=no 为**硬约束，不可改为 yes**（审查 H-13 已评估）：
+                //   electron/preload/webview.cjs 依赖本地 `require('./platform-adapters.cjs')` /
+                //   `require('./humanize.cjs')`；沙箱化 preload 只允许 `require('electron')`，
+                //   本地相对 require 会被禁 → 采集/投递 preload 全废。
+                //   风险与补偿：guest 承载第三方站点且注入 preload 运行在非沙箱上下文，一旦 Chromium
+                //   漏洞被利用影响面更大。补偿措施 = 渲染层 navigate/openExternal 均走
+                //   browserWhitelist.ts 白名单 + 主进程 guest setWindowOpenHandler；宿主主窗口
+                //   （mainWindow.webContents）仍保持默认沙箱。彻底收敛需把 preload 依赖打包内联，属待办。
                 webpreferences="sandbox=no, backgroundThrottling=no"
                 src={t.url}
               />

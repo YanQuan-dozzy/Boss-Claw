@@ -22,7 +22,13 @@ export function sharedPacer(perMinute?: number): ActionPacer {
     SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE,
     Math.max(1, Number(perMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE),
   );
-  if (pacer.budget !== budget) pacer = new ActionPacer(budget);
+  // L-25：预算变更时重建 pacer 必须**继承本分钟已计数动作**，否则用户中途调整预算会让限速
+  // 在本分钟内再放行一整个新预算的动作（瞬时突破）。
+  if (pacer.budget !== budget) {
+    const next = new ActionPacer(budget);
+    next.carryTimestampsFrom(pacer);
+    pacer = next;
+  }
   return pacer;
 }
 

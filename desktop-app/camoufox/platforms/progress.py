@@ -31,6 +31,7 @@ Boss-claw 的采集是**整批返回**架构：Python 侧把一轮所有岗位�
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -258,5 +259,7 @@ class ProgressStore:
                 'ttlHours': self._ttl_hours,
                 'path': str(self._path),
                 'comboCount': len(valid),
-                'combos': valid,
+                # L-12：深拷贝 —— 原实现直接返回 _combos 内层 dict 的引用，
+                # 调用方（HTTP 端点/渲染层）修改返回值会污染内存态。
+                'combos': copy.deepcopy(valid),
             }

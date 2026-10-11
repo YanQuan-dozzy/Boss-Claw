@@ -29,11 +29,14 @@
 
   // ===== 事件桥接 =====
   // 渲染层 / launcher → Page：window.__bossclaw_dispatch(channel, payload)
-  // Page → launcher / 渲染层：console.log('__bossclaw_emit__', JSON.stringify({channel,payload}))
+  // Page → launcher / 渲染层：console.log('__bossclaw_emit__' + NONCE + JSON.stringify({channel,payload}))
+  // M-7：NONCE 由 launcher 每次启动替换注入（本文件以 __BOSSCLAW_EMIT_NONCE__ 占位）；
+  // 未携带正确 NONCE 的 `__bossclaw_emit__` 事件会被 launcher 丢弃，防页面盲伪造。
+  const EMIT_NONCE = '__BOSSCLAW_EMIT_NONCE__';
   const channelHandlers = new Map();
   function emit(channel, payload) {
     try {
-      console.log('__bossclaw_emit__' + JSON.stringify({ channel, payload: payload || {} }));
+      console.log('__bossclaw_emit__' + EMIT_NONCE + JSON.stringify({ channel, payload: payload || {} }));
     } catch (e) { /* ignore */ }
   }
   window.__bossclaw_emit = emit;

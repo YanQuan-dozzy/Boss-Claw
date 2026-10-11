@@ -94,7 +94,13 @@ reply 正文的固定策略：
 - HR 最新一条是系统提示、表情或无实质内容时，reply 留空字符串。`;
 
 // 未提供「沟通信息」时拒绝的「承诺/安排」类表述（薪资、面试/到岗时间等）
-const FABRICATED_COMMIT = /薪资.{0,8}(要求|期望|多少|是|给)|期望薪资|实习工资|可到岗|现在(就)?入职|到岗时间|随时到岗|面试时间|可以面试|安排面试/;
+// 审查 H-10：下沉为共享导出，供定制简历（求职信 coverLetter）等链路复用同一张承诺词表。
+export const FABRICATED_COMMIT = /薪资.{0,8}(要求|期望|多少|是|给)|期望薪资|实习工资|可到岗|现在(就)?入职|到岗时间|随时到岗|面试时间|可以面试|安排面试/;
+
+/** 文本是否含「无依据的承诺/安排」表述（薪资 / 到岗时间 / 面试时间等） */
+export function hasFabricatedCommit(text: string): boolean {
+  return FABRICATED_COMMIT.test(String(text || ''));
+}
 
 function isAcceptableReply(text: string, allowInfo = false): boolean {
   const raw = String(text || '').trim();
@@ -154,7 +160,14 @@ function parseReplyDecision(raw: string): ReplyDecision | null {
     const obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
     const outcome: ReplyOutcome =
       obj.outcome === 'hr_rejected' || obj.outcome === 'declined' ? obj.outcome : 'continue';
-    const reply = typeof obj.reply === 'string' ? normalizeGreetingText(obj.reply) : '';
+    // M-17：原实现 `typeof obj.reply === 'string' ? ... : ''` —— JSON 合法但 reply 非字符串时被置空，
+    // 会被上层当作「无需回复」直接丢弃真实回复。改为：null/undefined 才视为空，其余 String(...) 兜底。
+    const rawReply = obj.reply;
+    const reply = typeof rawReply === 'string'
+      ? normalizeGreetingText(rawReply)
+      : rawReply == null
+        ? ''
+        : normalizeGreetingText(String(rawReply));
     return { outcome, reply, sendResume: Boolean(obj.send_resume), interview: Boolean(obj.interview) };
   } catch {
     const fallback = normalizeGreetingText(text.replace(/^["'「]|["'」]$/g, ''));

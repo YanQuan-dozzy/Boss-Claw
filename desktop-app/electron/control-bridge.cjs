@@ -114,6 +114,15 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
   let boundPort = basePort;
   let listening = false;
   let infoFile = null;
+  // M-5：stop() 必须能取消「端口占用重试」定时器，否则已停止的桥会被重试回调复活并重写状态文件
+  let stopped = false;
+  let retryTimer = null;
+  /** L-5：常量时间令牌比较（避免时序侧信道） */
+  const tokenMatches = (given) => {
+    const a = Buffer.from(String(token || ''));
+    const b = Buffer.from(String(given || ''));
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
   try {
     infoFile = path.join(app.getPath('userData'), 'control-bridge.json');
   } catch {
@@ -259,7 +268,8 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
         });
       }
 
-      if (req.headers['x-bossclaw-token'] !== token) {
+      // L-5：常量时间比较（勿改回 `!==`，那会引入时序侧信道）
+      if (!tokenMatches(req.headers['x-bossclaw-token'])) {
         return sendJson(401, { ok: false, error: 'token 无效' });
       }
 
@@ -325,12 +335,15 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
   }
 
   function tryListen(index) {
+    // M-5：stop() 之后不得再继续重试（否则已停止的桥会复活）
+    if (stopped) return;
     const port = basePort + index;
     const onError = (e) => {
       server.removeListener('listening', onListening);
       if (e?.code === 'EADDRINUSE' && index < PORT_SPAN - 1) {
         log('warn', 'control bridge port busy, trying next', { port, next: port + 1 });
-        setTimeout(() => tryListen(index + 1), 50);
+        // M-5：保存定时器句柄，供 stop() 清除
+        retryTimer = setTimeout(() => { retryTimer = null; tryListen(index + 1); }, 50);
         return;
       }
       log('error', 'control bridge listen failed', { error: String(e?.message || e), port });
@@ -338,6 +351,8 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
     };
     const onListening = () => {
       server.removeListener('error', onError);
+      // M-5：竞态兜底 —— 已 stop 则立即关闭，不写状态文件、不置 listening
+      if (stopped) { try { server.close(); } catch { /* 忽略 */ } return; }
       boundPort = port;
       listening = true;
       writeInfo(port);
@@ -360,7 +375,11 @@ function startControlBridge({ app, getWindow, log = () => {} }) {
       return listening;
     },
     stop() {
+      // M-5：置停止标志 + 清除重试定时器 —— 原实现只 server.close()，端口占用时的重试回调
+      // 仍会在 50ms 后重新 listen 并重写 info 文件，使「已停止」的控制桥复活。
+      stopped = true;
       listening = false;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       try {
         server.close();
       } catch {

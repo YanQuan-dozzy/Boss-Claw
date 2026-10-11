@@ -194,7 +194,10 @@ export function resolvePlatform(url?: string | null): JobPlatform {
     host = (u.split('/')[2] || '').toLowerCase();
   }
   for (const id of PLATFORM_IDS) {
-    if (host.endsWith(PLATFORM_META[id].domain)) return id;
+    // M-27：加域名点边界 —— 原 `host.endsWith(domain)` 会把 `notzhipin.com` / `xx51job.com`
+    // 误判为内置平台（与 browserWhitelist.ts / renderer 同口径）。
+    const d = PLATFORM_META[id].domain;
+    if (host === d || host.endsWith('.' + d)) return id;
   }
   return 'boss';
 }

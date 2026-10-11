@@ -189,6 +189,34 @@ function normalizeSchoolText(raw: string): string {
     .replace(/[\s\u3000·・\-—_、,，|｜/]/g, '');
 }
 
+/**
+ * 别名是否可信命中（审查 H-11）。
+ * 原实现 `scopeForElite.includes(alias)` 为裸子串匹配：2 字简称会被更长的**其它**校名吞掉 ——
+ * 「北大」⊂ 东北大学/西北大学/河北大学，「南大」⊂ 西南/云南/海南/中南/暨南大学 →
+ * 误判成北大/南大，反而**授权 AI 写出该生并未就读的院校名**（与本模块防幻觉目的相反）。
+ *
+ * ⚠️ 边界判定必须在**归一化前的原文**上做：normalizeSchoolText 会删掉空格/分隔符，
+ * 归一化后整行会并成一串汉字，任何「独立成词」的判据都会失效。
+ * 规则：
+ *   1) 原文出现该别名对应的**全名** → 直接认定（覆盖「北京大学」「北京大学（985）」等）；
+ *   2) 别名本身以「大学/学院」结尾（如「第二军医大学」这类改名前的全称）→ 无歧义，直接 includes；
+ *   3) 其余短简称 → 仅当在**原文**中前后均非汉字（行首/行尾/空格/标点）时认定，即「独立成词」。
+ *      这样「北大 计算机」「南大」可命中，而「东北大学」「云南大学」这类被更长校名吞掉的出现不会误判。
+ */
+function aliasHit(rawScope: string, normalizedScope: string, alias: string, full: string): boolean {
+  if (normalizedScope.includes(full)) return true;
+  if (/(?:大学|学院)$/.test(alias)) return normalizedScope.includes(alias);
+  const CJK = /[\u4e00-\u9fa5]/;
+  let idx = rawScope.indexOf(alias);
+  while (idx !== -1) {
+    const before = idx > 0 ? rawScope[idx - 1] : '';
+    const after = idx + alias.length < rawScope.length ? rawScope[idx + alias.length] : '';
+    if (!CJK.test(before) && !CJK.test(after)) return true;
+    idx = rawScope.indexOf(alias, idx + 1);
+  }
+  return false;
+}
+
 export interface SchoolTierResult {
   /** 命中的 985/211 院校名（规范化全名，最多 3 个） */
   eliteSchools: string[];
@@ -212,6 +240,12 @@ export function resolveSchoolTier(education?: string[] | null, resumeText?: stri
     .split('\n')
     .filter((line) => !/大学[\u4e00-\u9fa5]{2,10}学院/.test(line))
     .join('\n');
+  // H-11：别名的「独立成词」判定要基于**未归一化**的原文（归一化会删空格，破坏边界）
+  const rawText = (education && education.length ? education.join('\n') : String(resumeText || '').slice(0, 2000));
+  const rawScopeForElite = rawText
+    .split('\n')
+    .filter((line) => !/大学[\u4e00-\u9fa5]{2,10}学院/.test(normalizeSchoolText(line)))
+    .join('\n');
   const eliteSchools: string[] = [];
   if (scopeForElite) {
     for (const name of ELITE_SCHOOLS) {
@@ -220,7 +254,7 @@ export function resolveSchoolTier(education?: string[] | null, resumeText?: stri
     }
     if (eliteSchools.length < 3) {
       for (const [alias, full] of Object.entries(ELITE_ALIASES)) {
-        if (scopeForElite.includes(alias) && !eliteSchools.includes(full)) eliteSchools.push(full);
+        if (aliasHit(rawScopeForElite, scopeForElite, alias, full) && !eliteSchools.includes(full)) eliteSchools.push(full);
         if (eliteSchools.length >= 3) break;
       }
     }

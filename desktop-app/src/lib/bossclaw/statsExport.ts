@@ -39,7 +39,8 @@ export function escapeCsvCell(value: CsvCell): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
   let s = String(value);
-  const risky = /^[=+\-@\t\r]/.test(s);
+  // M-29：只看首字符会被前导空格绕过（`" =1+1"`）；先跳过空白再判定，并覆盖换行
+  const risky = /^[\s]*[=+\-@\t\r\n]/.test(s);
   if (risky) s = `'${s}`;
   const needsQuote = /[",\n\r]/.test(s) || /^\s|\s$/.test(s);
   if (needsQuote) return `"${s.replace(/"/g, '""')}"`;

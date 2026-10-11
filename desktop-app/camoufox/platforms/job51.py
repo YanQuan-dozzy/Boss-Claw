@@ -14,6 +14,7 @@
 搜索·投递·登录三段骨架统一由 `base.CollectorBase` 提供（对齐 BossHunter 分层）。
 """
 import re
+from urllib.parse import quote
 
 from .base import CollectorBase
 from .common import human_sleep, log
@@ -93,7 +94,8 @@ def build_search_url(query: str, city: str, salary: str, page: int = 1,
         parts.append(f"salary={sal}")
     q = str(query or '').strip()
     if q:
-        parts.append(f"keyword={q}")
+        # M-12：关键词 URL 编码（原直拼 → `C++`/含 & 的 query 会截断或错位）
+        parts.append(f"keyword={quote(q, safe='')}")
     for k, v in build_filter_params(PLATFORM, criteria).items():
         parts.append(f"{k}={v}")
     return 'https://we.51job.com/pc/search' + ('?' + '&'.join(parts) if parts else '')
@@ -193,12 +195,15 @@ JS_FIND_DELIVER_BTN = r"""() => {
 }"""
 
 # 投递成功确认：① 结果弹窗「投递成功 N 个，未投递 M 个」（get_jobs(Job51.java) 真机口径：
-# .el-dialog__body 含「投递成功」）→ ② toast / 正文兜底
+# .el-dialog__body 含「投递成功」）→ ② toast 容器兜底（M-15：原实现兜底查整页 innerText，
+# 点击前页面既有的「投递成功」字样会造成误判，故收窄到 toast/弹层容器内）。
 JS_DELIVER_CONFIRMED = r"""() => {
     const dlg = document.querySelector('.el-dialog__body');
     if (dlg && /投递成功/.test(dlg.innerText || '')) return true;
-    const body = (document.body ? document.body.innerText : '') || '';
-    return /投递成功|成功投递|投递完成|已投递\s*\d+|投递\s*\d+\s*份/.test(body.slice(0, 4000));
+    const visible = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch(e) { return false; } };
+    const OVERLAY = '[class*="toast"],[class*="Toast"],[class*="message"],[class*="Message"],[class*="dialog"],[class*="Dialog"],[class*="modal"],[class*="Modal"],[role="alert"],[role="dialog"]';
+    const overlayText = Array.from(document.querySelectorAll(OVERLAY)).filter(visible).map(el => el.innerText || '').join(' ');
+    return /投递成功|成功投递|投递完成|已投递\s*\d+|投递\s*\d+\s*份/.test(overlayText);
 }"""
 
 

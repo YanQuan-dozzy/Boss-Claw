@@ -8,7 +8,7 @@
  * 右栏子模块：内置浏览器（BrowserView 多平台标签 webview，含 BOSS 等平台登录态与岗位详情页）
  */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Select, Alert } from 'antd';
+import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Select, Alert, Modal } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   StopOutlined, UndoOutlined, ThunderboltOutlined,
@@ -714,6 +714,17 @@ export default function Workbench() {
   const onApproveAll = () => {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (!waiting.length) { message.info('没有待确认的岗位'); return; }
+    // M-39：高危批量动作前置二次确认（展示将处理的数量），避免误点一次性入队
+    Modal.confirm({
+      title: '批量确认全部「待确认」岗位？',
+      content: `将把 ${waiting.length} 个岗位一次性加入「投递中」队列；其中缺少求职招呼语的岗位不会入队（仍留在「待确认」）。`,
+      okText: '确认入队',
+      cancelText: '取消',
+      onOk: () => approveAllNow(waiting),
+    });
+  };
+
+  const approveAllNow = (waiting: PendingItem[]) => {
     // 批量确认走同一口径：直接入队。逐个校验招呼语——无招呼语者**不入队**（保持待确认），
     // 与单个「批准」的「无招呼语则拒绝批准」一致，不做静默兜底。
     const noGreeting: string[] = [];
@@ -747,9 +758,19 @@ export default function Workbench() {
   const onRejectAll = () => {
     const waiting = pending.filter((p) => p.status === 'pending');
     if (!waiting.length) { message.info('没有待确认的岗位'); return; }
-    setPending(pending.map((p) => (p.status === 'pending' ? { ...p, status: 'ignored' as const } : p)));
-    addLog('info', `已忽略 ${waiting.length} 个岗位`);
-    recomputeStats();
+    // M-39：批量忽略不可逆（岗位离开待确认），前置二次确认并展示数量
+    Modal.confirm({
+      title: '忽略全部「待确认」岗位？',
+      content: `将把 ${waiting.length} 个岗位标记为「已忽略」。`,
+      okText: '确认忽略',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => {
+        setPending(pending.map((p) => (p.status === 'pending' ? { ...p, status: 'ignored' as const } : p)));
+        addLog('info', `已忽略 ${waiting.length} 个岗位`);
+        recomputeStats();
+      },
+    });
   };
 
   const onRetry = (id: string) => {
@@ -801,11 +822,22 @@ export default function Workbench() {
     const { next, count } = promoteApprovedToQueue(pending, useSettingsStore.getState().config);
     const queued = pending.filter((p) => p.status === 'approved_queue').length;
     if (!count && !queued) { message.info('队列里没有待投递的岗位'); return; }
-    if (count) setPending(next);
-    if (!running) setAutoAssist(true);
-    addLog('success', count
-      ? `已将 ${count} 个「待投递」岗位并入「投递中」队列，开始投递`
-      : `队列中已有 ${queued} 个岗位，开始投递`);
+    // M-39：一键投递会真实开启投递引擎（不可逆的外部副作用），前置二次确认并展示将处理的数量
+    Modal.confirm({
+      title: '开始「一键投递」？',
+      content: count
+        ? `将把 ${count} 个「待投递」岗位并入「投递中」队列，并开启投递引擎开始投递${queued ? `（队列中另有 ${queued} 个已入队岗位）` : ''}。`
+        : `队列中已有 ${queued} 个「投递中」岗位，将开启投递引擎开始投递。`,
+      okText: '开始投递',
+      cancelText: '取消',
+      onOk: () => {
+        if (count) setPending(next);
+        if (!running) setAutoAssist(true);
+        addLog('success', count
+          ? `已将 ${count} 个「待投递」岗位并入「投递中」队列，开始投递`
+          : `队列中已有 ${queued} 个岗位，开始投递`);
+      },
+    });
   };
 
   const toggleExpanded = (id: string) => {
@@ -1677,7 +1709,8 @@ export default function Workbench() {
       });
       lastCode = null; // 每组重置：故障范围判定与 catch 兜底只看本组结果，避免沿用上一组残留码
       try {
-        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria, forceRecheck);
+        // M-11：透传断点续采 TTL 配置（仅 platforms 非敏感子集；严禁整份 config，含 API Key）
+        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria, forceRecheck, { platforms: config.platforms });
         if (result.skipped) {
           // 断点续采命中：既非失败、也非「无岗位」，单独记账便于用户理解「为什么没采」
           addLog('info', `「${keywordLabel(item.keyword)}」跳过本次采集：${result.message || '近期已采过（断点续采）'}`);

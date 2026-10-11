@@ -30,8 +30,8 @@ export const STORAGE_KEYS: StorageKeySpec[] = [
   // AI 缓存 / 统计：可重建，不导出不备份，但清空时必须删（P2-02）
   { key: 'bossclaw-ai-cache-v1', export: false, backup: false, clear: true },
   { key: 'bossclaw-ai-cache-stats', export: false, backup: false, clear: true },
-  // 定制简历历史 / 模块排序 / 模板 / 照片 dataURL（隐私）：清空时删，不导出不备份
-  { key: 'bossclaw-tailor-history-v1', export: false, backup: false, clear: true },
+  // 定制历史纳入本地备份；模块排序 / 模板 / 照片仅留在主存储。均不纳入换机导出，清空时删。
+  { key: 'bossclaw-tailor-history-v1', export: false, backup: true, clear: true },
   { key: 'bossclaw-resume-module-order-v1', export: false, backup: false, clear: true },
   { key: 'bossclaw-resume-template-v1', export: false, backup: false, clear: true },
   { key: 'bossclaw-resume-photo-v1', export: false, backup: false, clear: true },

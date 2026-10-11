@@ -303,7 +303,10 @@ function jobIdFromUrl(raw) {
   const h51 = s.match(/jobs\.51job\.com\//i);
   if (h51) {
     const seg = s.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || '';
-    return seg.replace(/\.html?$/i, '').trim();
+    const id = seg.replace(/\.html?$/i, '').trim();
+    // L-7：URL 无路径段时 pop() 会把**主机名**当 jobId（jobs.51job.com → 'jobs.51job.com'）。
+    // 仅接受形如 jobId 的段（不含点号），否则继续走下面的通用匹配。
+    if (id && !/\./.test(id) && /^[A-Za-z0-9_-]+$/.test(id)) return id;
   }
 
   const m = s.match(/jobId=(\d+)/i)

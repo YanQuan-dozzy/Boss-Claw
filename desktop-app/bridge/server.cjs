@@ -7,13 +7,91 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { URL } = require('url');
 const { execFile, execFileSync } = require('child_process');
 
-const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+// L-4：配置损坏不应让桥接进程崩溃（模块加载期 JSON.parse 无兜底）
+let config;
+try {
+  config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+} catch (e) {
+  console.warn(`[OpenClaw bridge] 读取 config.json 失败，回退默认配置：${e.message}`);
+  config = {};
+}
+const PORT = Number(config.port) || 18765;
 const dataDir = path.join(os.homedir(), '.bossclaw');
 const databasePath = path.join(dataDir, 'data.json');
 fs.mkdirSync(dataDir, { recursive: true });
+
+// ===========================================================================
+// C-2 本地桥鉴权加固
+// ---------------------------------------------------------------------------
+// 原实现：令牌硬编码 `bossclaw-desktop-bridge`（config.json + 前端 bundle 三处同源）、
+// 经 URL query 传递；respond() 反射任意 Origin。=> 用户机器上任意网页（含 origin=null 的
+// 沙箱 iframe）都能读 /report 数据并下 /command 指令。
+// 现改为：
+//   1) 令牌启动时随机生成，写入仅本机可读的运行时文件 ~/.bossclaw/bridge-token（不入库）；
+//      也接受环境变量 BOSSCLAW_BRIDGE_TOKEN 覆盖（由主进程 spawn 时注入，便于同源共享）。
+//   2) 不再反射任意 Origin：只对白名单来源（null / localhost / 127.0.0.1）回显 CORS 头，
+//      其余来源一律拒绝且不回 CORS 头（浏览器侧无法读取响应）。
+//   3) 校验 Host 头（防 DNS rebinding：恶意域解析到 127.0.0.1 时 Host 仍是恶意域）。
+//   4) 令牌支持请求头 X-Bossclaw-Token（首选，不落入日志/URL）；保留 query 仅为命令行调试。
+// ===========================================================================
+function resolveBridgeToken() {
+  const fromEnv = String(process.env.BOSSCLAW_BRIDGE_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  const tokenPath = path.join(dataDir, 'bridge-token');
+  try {
+    const existing = fs.readFileSync(tokenPath, 'utf8').trim();
+    if (existing) return existing;
+  } catch { /* 不存在则生成 */ }
+  const generated = crypto.randomBytes(24).toString('hex');
+  try {
+    // wx：独占创建，避免两个进程同时首次启动时互相覆写（EEXIST 时读回既有值）
+    fs.writeFileSync(tokenPath, generated, { mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch {
+    try {
+      const existing = fs.readFileSync(tokenPath, 'utf8').trim();
+      if (existing) return existing;
+    } catch { /* 读回失败则退回本次生成（下次启动会再对齐） */ }
+    return generated;
+  }
+}
+const TOKEN = resolveBridgeToken();
+
+/** 白名单来源：Electron file:// 渲染层（Origin: null）、本机 dev server（任意端口）。 */
+function isAllowedOrigin(origin) {
+  if (!origin || origin === 'null') return true; // 无 Origin（本机 CLI）与 file:// 渲染层
+  try {
+    const u = new URL(origin);
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/** Host 头白名单：仅接受 127.0.0.1:<port> / localhost:<port>，拦 DNS rebinding。 */
+function isAllowedHost(hostHeader) {
+  const h = String(hostHeader || '').toLowerCase();
+  return h === `127.0.0.1:${PORT}` || h === `localhost:${PORT}` || h === `[::1]:${PORT}`;
+}
+
+/** 常量时间令牌比较（避免时序侧信道）。 */
+function tokenEqual(a, b) {
+  const ab = Buffer.from(String(a || ''));
+  const bb = Buffer.from(String(b || ''));
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+/** 请求携带的令牌：头 X-Bossclaw-Token 优先，query token 兜底（命令行调试用）。 */
+function requestToken(request, requestUrl) {
+  const fromHeader = String(request.headers['x-bossclaw-token'] || '').trim();
+  if (fromHeader) return fromHeader;
+  return String(requestUrl.searchParams.get('token') || '').trim();
+}
 
 function emptyDatabase() {
   return { events: [], commands: [], snapshots: [], control: { running: false, paused: false } };
@@ -160,12 +238,15 @@ async function convertDocToDocx(filePath, tempDir, record) {
     // 路径经 base64 传入，规避中文路径与引号在命令行中的转义问题（-EncodedCommand 同样为编码传递）
     const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
     const script = [
+      // 注：以下各行以 ';' 拼接为**单行** PowerShell，故不可含 `#` 注释（会注释掉本行后续全部语句）。
+      // M-6：AutomationSecurity=3（msoAutomationSecurityForceDisable）强制禁用宏，避免打开不受信 .doc 执行宏。
       "$ErrorActionPreference='Stop'",
       `$src=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(filePath)}'))`,
       `$dst=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(expected)}'))`,
       '$w=New-Object -ComObject Word.Application',
       '$w.Visible=$false',
       '$w.DisplayAlerts=0',
+      '$w.AutomationSecurity=3',
       'try{$d=$w.Documents.Open($src,$false,$true,$false);$d.SaveAs2($dst,12);$d.Close(0)}finally{$w.Quit()}',
     ].join(';');
     try {
@@ -215,47 +296,61 @@ async function parseResumeText(payload) {
   return parseResumePdf(payload);
 }
 
-function respond(response, status, payload, origin) {
-  response.writeHead(status, {
+function respond(response, status, payload, origin, allowed) {
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': origin || 'null',
-    'Access-Control-Allow-Headers': 'content-type',
-    'Access-Control-Allow-Private-Network': 'true',
     'Cache-Control': 'no-store',
-  });
+  };
+  if (allowed) {
+    // 仅对白名单来源回显 CORS 头（不再反射任意 Origin）
+    headers['Access-Control-Allow-Origin'] = origin || 'null';
+    headers['Access-Control-Allow-Headers'] = 'content-type, x-bossclaw-token';
+    headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
+    headers['Access-Control-Allow-Private-Network'] = 'true';
+    headers['Vary'] = 'Origin';
+  }
+  response.writeHead(status, headers);
   response.end(JSON.stringify(payload));
 }
 
 const server = http.createServer((request, response) => {
-  const requestUrl = new URL(request.url, `http://127.0.0.1:${config.port}`);
+  const requestUrl = new URL(request.url, `http://127.0.0.1:${PORT}`);
   const origin = request.headers.origin || '';
-  const token = requestUrl.searchParams.get('token') || '';
-  if (request.method === 'OPTIONS') return respond(response, 200, {}, origin);
-  if (token !== config.token) return respond(response, 403, { ok: false, error: 'token denied' }, origin);
+  const allowed = isAllowedOrigin(origin);
+  const reply = (status, payload) => respond(response, status, payload, origin, allowed);
+  // Host 校验（DNS rebinding 防御）→ Origin 白名单 → 令牌（常量时间比较）
+  if (!isAllowedHost(request.headers.host)) return reply(403, { ok: false, error: 'host denied' });
+  if (!allowed) return reply(403, { ok: false, error: 'origin denied' });
+  if (request.method === 'OPTIONS') return reply(200, {});
+  if (!tokenEqual(requestToken(request, requestUrl), TOKEN)) return reply(403, { ok: false, error: 'token denied' });
 
   let body = '';
   let tooLarge = false;
-  request.on('data', (chunk) => { body += chunk; if (body.length > 28 * 1024 * 1024) tooLarge = true; });
+  request.on('data', (chunk) => {
+    if (tooLarge) return; // 已超限则丢弃后续数据，避免无限累积（内存放大）
+    body += chunk;
+    if (Buffer.byteLength(body) > 28 * 1024 * 1024) { tooLarge = true; body = ''; }
+  });
   request.on('end', async () => {
-    if (tooLarge) return respond(response, 413, { ok: false, error: 'request too large' }, origin);
+    if (tooLarge) return reply(413, { ok: false, error: 'request too large' });
     try {
       const database = loadDatabase();
       const payload = body ? JSON.parse(body) : {};
       if (requestUrl.pathname === '/status') {
-        return respond(response, 200, {
+        return reply(200, {
           ok: true, name: 'bossclaw-bridge', version: '2.0.0', running: database.control.running, paused: database.control.paused,
           parsers: { pdftotext: commandExists('pdftotext'), soffice: findSoffice() || false, wordCom: process.platform === 'win32' },
           databasePath, events: database.events.length,
-        }, origin);
+        });
       }
       if (requestUrl.pathname === '/logs') {
         // 桥接日志查看：最近的指令与事件（时间倒序，各最多 50 条）
         const commands = (database.commands || []).slice(-50).reverse();
         const events = (database.events || []).slice(-50).reverse();
-        return respond(response, 200, { ok: true, commands, events }, origin);
+        return reply(200, { ok: true, commands, events });
       }
       if (requestUrl.pathname === '/report') {
-        return respond(response, 200, { ok: true, report: buildReport(database) }, origin);
+        return reply(200, { ok: true, report: buildReport(database) });
       }
       if (requestUrl.pathname === '/command') {
         const type = String(payload.type || 'status');
@@ -264,35 +359,37 @@ const server = http.createServer((request, response) => {
         else if (type === 'stop') { database.control.running = false; database.control.paused = false; }
         else if (type === 'restore') {
           const snapshot = database.snapshots.at(-1);
-          return respond(response, 200, { ok: true, snapshot: snapshot || null }, origin);
+          return reply(200, { ok: true, snapshot: snapshot || null });
         }
+        // L-3：commands 无上限会令 data.json 持续膨胀 → 仅保留最近 500 条
         database.commands.push({ type, ts: Date.now() });
+        if (database.commands.length > 500) database.commands = database.commands.slice(-500);
         saveDatabase(database);
-        return respond(response, 200, { ok: true, control: database.control }, origin);
+        return reply(200, { ok: true, control: database.control });
       }
       if (requestUrl.pathname === '/ocr') {
         try {
           const result = await parseResumePdf(payload);
-          return respond(response, 200, result, origin);
+          return reply(200, result);
         } catch (error) {
-          return respond(response, 200, { ok: false, error: error.message }, origin);
+          return reply(200, { ok: false, error: error.message });
         }
       }
       if (requestUrl.pathname === '/resume-text') {
         try {
           const result = await parseResumeText(payload);
-          return respond(response, 200, result, origin);
+          return reply(200, result);
         } catch (error) {
-          return respond(response, 200, { ok: false, error: error.message }, origin);
+          return reply(200, { ok: false, error: error.message });
         }
       }
-      return respond(response, 404, { ok: false, error: 'not found' }, origin);
+      return reply(404, { ok: false, error: 'not found' });
     } catch (error) {
-      return respond(response, 500, { ok: false, error: error.message }, origin);
+      return reply(500, { ok: false, error: error.message });
     }
   });
 });
 
-server.listen(config.port, '127.0.0.1', () => {
-  console.log(`[OpenClaw bridge] listening on 127.0.0.1:${config.port}`);
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`[OpenClaw bridge] listening on 127.0.0.1:${PORT}`);
 });

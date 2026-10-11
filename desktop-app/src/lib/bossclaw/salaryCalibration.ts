@@ -69,7 +69,9 @@ export function extractSalaryMentions(text: string, monthlyWorkDays = DEFAULT_MO
     return (a + b) / 2;
   };
   const isAnnual = (index: number): boolean => /年\s*薪|年薪|元\s*\/\s*年/.test(t.slice(Math.max(0, index - 8), index + 4));
-  const noisy = (index: number, len: number): boolean => SALARY_NOISE_RE.test(t.slice(Math.max(0, index - 10), index + len));
+  // L-22：噪声窗口原右界只到命中片段末尾（index+len）→ 噪声词在数字**之后**时漏判
+  // （如「300万用户」：窗口=\"300万\"，含不到「用户」）。右界外扩 8 字。
+  const noisy = (index: number, len: number): boolean => SALARY_NOISE_RE.test(t.slice(Math.max(0, index - 10), index + len + 8));
   const push = (raw: string, index: number, monthlyK: number): void => {
     if (noisy(index, raw.length)) return;
     if (Number.isFinite(monthlyK) && monthlyK > 0) out.push({ raw, monthlyK: Math.round(monthlyK * 10) / 10 });

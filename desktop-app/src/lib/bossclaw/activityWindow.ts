@@ -148,9 +148,11 @@ export function formatActiveWindow(cfgInput: Partial<ActiveHoursConfig> | null |
 
 /** 人类可读的剩余时间（用于提示），如「6 小时 12 分」 */
 export function humanDuration(ms: number): string {
-  const total = Math.max(0, Math.round(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.round((total % 3600) / 60);
+  // L-19：原实现先取总秒再 `Math.round((total % 3600)/60)` —— 3599 秒会显示「60 分」而非进位为 1 小时。
+  // 改为先归一到分钟，再按分钟进位拆分。
+  const totalMin = Math.max(0, Math.round(Math.max(0, ms) / 60_000));
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
   if (h > 0) return h + ' 小时 ' + m + ' 分';
   return m + ' 分';
 }

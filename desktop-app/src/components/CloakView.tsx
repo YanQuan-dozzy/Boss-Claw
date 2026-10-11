@@ -415,6 +415,11 @@ export default function CloakView(props: Props) {
 
   const sendInTab = useCallback((id: string, channel: string, ...args: any[]) => {
     if (!id) return;
+    // M-43：CloakBrowser 通道只支持**单个 payload**（cloakPageSend(tabId, channel, payload)）。
+    // 与 BrowserView.sendInTab 的 `...args` 语义分叉会静默丢参，多参时显式告警以免无感截断。
+    if (args.length > 1) {
+      console.warn(`[CloakView] sendInTab('${channel}') 收到 ${args.length} 个参数，仅第一个会被转发（CloakBrowser 通道为单 payload）`);
+    }
     e.cloakPageSend?.(id, channel, args[0]);
   }, []);
 

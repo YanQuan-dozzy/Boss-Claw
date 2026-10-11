@@ -21,6 +21,8 @@ const GRACE_MS = 90_000; // 目标时刻后的容差窗口（应对节流/半分
 let started = false;
 // P2-08：保存 interval 句柄，支持 stop（此前 setInterval 返回值被丢弃，测试/重置场景定时器持续累积）
 let tickTimer: ReturnType<typeof setInterval> | null = null;
+/** M-33：正在执行中的定时任务 id（防止异步动作进行期间重复进入同一目标时刻） */
+const pendingRun = new Set<string>();
 
 function parseMinute(t: string): number {
   const m = String(t || '').match(/^(\d{1,2}):(\d{1,2})/);
@@ -53,7 +55,13 @@ function platformText(platforms?: JobPlatform[]): string {
   return platforms.map((p) => platformLabel(p)).join('/');
 }
 
-async function fireAction(entry: ScheduleEntry): Promise<void> {
+/**
+ * 执行一条定时任务动作。
+ * 返回 true = **本次真的触发了动作**（用于决定是否记账 lastRunStamp）；false = 本次被跳过。
+ * M-33：原实现无返回值，调用方无条件先写 lastRunStamp —— 被跳过（如已有批量沟通在跑）的当日定时投递
+ * 会因「本目标时刻已记账」而不再重触发，日志却称「将于下一个触发时刻再次尝试」，属静默丢单。
+ */
+async function fireAction(entry: ScheduleEntry): Promise<boolean> {
   const store = useScheduleStore.getState();
   switch (entry.action) {
     case 'deliver': {
@@ -63,9 +71,9 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
         useRuntimeLogsStore.getState().addChatLog({
           level: 'warn',
           stage: 'system',
-          msg: `⏰ 定时任务「${entry.name}」触发但已有批量沟通在运行，本次触发已跳过（将于下一个触发时刻再次尝试）。`,
+          msg: `⏰ 定时任务「${entry.name}」触发但已有批量沟通在运行，本次触发已跳过（将于本触发窗口内再次尝试）。`,
         });
-        break;
+        return false;
       }
       const maxCount = Math.max(0, Number(entry.limitPerRun) || 0);
       useAutoChatStore.getState().start({
@@ -77,7 +85,7 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已启动批量自动投递（平台：${platformText(targetPlatforms(entry))}${maxCount > 0 ? `；本次上限 ${maxCount} 条` : ''}）。`,
       });
-      break;
+      return true;
     }
     case 'collect': {
       // 置位采集请求（携带目标平台），由常驻工作台组件消费（跨页可触发）
@@ -87,13 +95,13 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已请求搜索采集（平台：${platformText(targetPlatforms(entry))}）。`,
       });
-      break;
+      return true;
     }
     case 'backup': {
       const dir = await getBackupDir();
       if (!dir) {
         useRuntimeLogsStore.getState().addLog('warn', `定时备份「${entry.name}」触发但未设置本地备份目录，已跳过`);
-        break;
+        return false;
       }
       const r = await writeLocalBackup();
       if (r.wrote) {
@@ -101,8 +109,10 @@ async function fireAction(entry: ScheduleEntry): Promise<void> {
       } else {
         useRuntimeLogsStore.getState().addLog('info', `定时备份「${entry.name}」：内容未变化，未重写文件`);
       }
-      break;
+      return true;
     }
+    default:
+      return false;
   }
 }
 
@@ -122,12 +132,19 @@ function tick(): void {
         // 窗口之外（含应用启动时的历史目标时刻）一律跳过，不做补触发。
         if (now.getTime() < targetMs || now.getTime() >= targetMs + GRACE_MS) continue;
         if (entry.lastRunStamp === targetMs) continue; // 已在本目标时刻触发过 → 去重
-        // 先生成新 lastRunStamp 再触发，避免异步动作期间重复进入
-        useScheduleStore.getState().markRun(entry.id, targetMs);
+        // M-33：改为「真正触发后才记账 lastRunStamp」。
+        // 用模块级 pendingRun 防止异步动作进行期间重复进入（替代原「先记账」的互斥作用）。
+        if (pendingRun.has(entry.id)) continue;
+        pendingRun.add(entry.id);
         // P30：单条触发异常不得影响其余条目与整个间隔循环（网络/备份失败等）
-        void fireAction(entry).catch((e: unknown) => {
-          useRuntimeLogsStore.getState().addLog('error', `定时任务「${entry.name}」执行异常：${e instanceof Error ? e.message : String(e)}`);
-        });
+        void fireAction(entry)
+          .then((fired) => {
+            if (fired) useScheduleStore.getState().markRun(entry.id, targetMs);
+          })
+          .catch((e: unknown) => {
+            useRuntimeLogsStore.getState().addLog('error', `定时任务「${entry.name}」执行异常：${e instanceof Error ? e.message : String(e)}`);
+          })
+          .finally(() => pendingRun.delete(entry.id));
       } catch (e: unknown) {
         useRuntimeLogsStore.getState().addLog('error', `定时任务「${entry.name}」处理异常：${e instanceof Error ? e.message : String(e)}`);
       }

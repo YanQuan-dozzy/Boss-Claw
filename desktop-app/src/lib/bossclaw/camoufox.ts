@@ -205,7 +205,14 @@ export async function camoufoxStatus(platform: string = 'boss'): Promise<Camoufo
 /** 调用 Camoufox 桥（搜索 / 发送 / 登录）——platform 维度进 in-flight 锁，防跨平台串锁 */
 export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Record<string, unknown>): Promise<T> {
   const platform = typeof payload?.platform === 'string' && payload.platform ? payload.platform : 'boss';
-  const key = `${action}:${platform}:${typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : 'global'}`;
+  // M-32：无 jobId 的操作（搜索类）原键坍缩为 `search:boss:global`，
+  // 并发搜索不同关键词/城市会被误判为「重复操作」而丢弃。改为把 query/city/page/keyword 纳入键。
+  const jobId = typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : '';
+  const scope = jobId || [payload?.query, payload?.city, payload?.page, payload?.keyword]
+    .map((v) => (v === undefined || v === null ? '' : String(v)))
+    .filter((v) => v !== '')
+    .join('|') || 'global';
+  const key = `${action}:${platform}:${scope}`;
   if (CAMOUFOX_IN_FLIGHT.has(key)) {
     return ({ ok: false, error: '同一岗位/动作正在执行中，已阻止重复操作' }) as T;
   }
@@ -241,11 +248,18 @@ export function camoufoxSearch(
   platform: string = 'boss',
   criteria?: Record<string, unknown>,
   force = false,
+  /**
+   * M-11：向 Python 侧透传断点续采 TTL 配置。
+   * ⚠️ 只允许传「非敏感子集」（如 `{ platforms }`）——**严禁整份 settings.config**，
+   * 其中含 `model.apiKey`，透传会把密钥写进本地桥请求体。
+   */
+  config?: Record<string, unknown>,
 ): Promise<CamoufoxSearchResult> {
   return camoufoxCall<CamoufoxSearchResult>('search', {
     query, city, pages, os: os || undefined, platform,
     criteria: criteria && Object.keys(criteria).length ? criteria : undefined,
     force: force || undefined,
+    config: config && Object.keys(config).length ? config : undefined,
   });
 }
 

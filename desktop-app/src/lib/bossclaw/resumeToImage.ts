@@ -10,6 +10,8 @@ export interface ResumeImageResult {
 }
 
 const PAGE_W = 794;
+/** M-25：画布高度上限（Chromium 单边上限约 16384px；留安全余量） */
+const MAX_CANVAS_H = 16000;
 const PAD_X = 56;
 const CONTENT_W = PAGE_W - PAD_X * 2;
 const PAD_TOP = 46;
@@ -125,12 +127,18 @@ export function drawResumeImage(maskedText: string): ResumeImageResult {
   const totalH = y + 40;
 
   // 绘制
+  // M-25：Chromium 画布有尺寸上限，超长简历会产生超限画布 → toDataURL 抛错或输出空白图。
+  // 这里在超限时**按比例整体缩放绘制**（内容全保留，只是整体变小），并在 toDataURL 处加异常兜底。
+  const rawHeight = Math.max(120, Math.round(totalH));
+  const canvasScale = rawHeight > MAX_CANVAS_H ? MAX_CANVAS_H / rawHeight : 1;
   const canvas = document.createElement('canvas');
-  canvas.width = PAGE_W;
-  canvas.height = Math.max(120, Math.round(totalH));
+  canvas.width = Math.max(1, Math.round(PAGE_W * canvasScale));
+  canvas.height = Math.max(1, Math.round(rawHeight * canvasScale));
   const ctx = canvas.getContext('2d')!;
+  if (canvasScale !== 1) ctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // 背景按**逻辑尺寸**填充（画布已缩放，用 canvas.width 会溢出逻辑坐标系）
+  ctx.fillRect(0, 0, PAGE_W, rawHeight);
 
   // 顶部标题 + 分隔线
   ctx.textBaseline = 'alphabetic';
@@ -161,8 +169,15 @@ export function drawResumeImage(maskedText: string): ResumeImageResult {
     }
   }
 
-  const pngDataUrl = canvas.toDataURL('image/png');
-  const jpegDataUrl = toJpeg(canvas);
+  let pngDataUrl = '';
+  let jpegDataUrl = '';
+  try {
+    pngDataUrl = canvas.toDataURL('image/png');
+    jpegDataUrl = toJpeg(canvas);
+  } catch (e) {
+    // M-25：画布超限等异常不再让调用方拿到「空白图」或未捕获异常
+    throw new Error(`简历图片生成失败（可能内容过长超出画布上限）：${(e as Error).message}`);
+  }
   return { pngDataUrl, jpegDataUrl, width: canvas.width, height: canvas.height };
 }
 

@@ -12,11 +12,35 @@ export interface DocxParseResult {
   pageCount: number;
 }
 
-function inflateDeflate(bytes: Uint8Array): Promise<Uint8Array> {
+/** 解压输出硬上限（审查 H-5）：防 zip/deflate 解压炸弹把渲染进程打爆。 */
+const DOCX_INFLATE_MAX_BYTES = 64 * 1024 * 1024;
+
+async function inflateDeflate(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as unknown as BlobPart])
     .stream()
     .pipeThrough(new DecompressionStream('deflate-raw' as CompressionFormat));
-  return new Response(stream).arrayBuffer().then((buf) => new Uint8Array(buf));
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || !value.byteLength) continue;
+      total += value.byteLength;
+      if (total > DOCX_INFLATE_MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* 忽略 */ }
+        throw new Error(`DOCX 解压输出超过 ${DOCX_INFLATE_MAX_BYTES} 字节上限（疑似解压炸弹），已中止`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* 忽略 */ }
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out;
 }
 
 interface ZipEntry {

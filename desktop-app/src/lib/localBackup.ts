@@ -138,10 +138,16 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
     // 全 null 备份、或各键与现状一致的备份都不算恢复成功——否则会谎报 restored，
     // 触发调用方整页 reload，落入「恢复→刷新→再恢复」的无限循环（首页假死）。
     let restoredCount = 0;
+    // M-34：只接受**白名单键**且值为字符串 —— 原实现遍历备份中所有键无脑写回 localStorage，
+    // 一份被篡改/损坏的备份文件可写入任意键（如注入伪造的配置/数据键）。
+    const allowed = new Set<string>(BACKUP_KEYS);
     for (const [k, v] of Object.entries(r.bundle.keys)) {
       try {
+        if (!allowed.has(k)) continue;
         if (v == null) {
           localStorage.removeItem(k); // 与备份一致：备份时该键缺失则删除
+        } else if (typeof v !== 'string') {
+          continue; // 非字符串值一律忽略
         } else if (localStorage.getItem(k) !== v) {
           localStorage.setItem(k, v);
           restoredCount += 1;

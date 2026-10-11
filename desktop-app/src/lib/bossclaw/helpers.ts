@@ -132,6 +132,8 @@ export function isStudentResume(text: string): boolean {
 // 按方向名反查目录规则（用于补齐搜索词/证据/短板）
 export function findDirectionRule(name: string): DirectionRule | undefined {
   const key = normalizeDirectionKey(name);
+  // M-30：key 为空时兜底的 `ruleKey.includes('')` 恒为 true → 命中 DIRECTION_RULES[0]（张冠李戴）。
+  if (!key) return undefined;
   const exact = DIRECTION_RULES.find((rule) => normalizeDirectionKey(rule.name) === key || normalizeDirectionKey(rule.internName) === key);
   if (exact) return exact;
   return DIRECTION_RULES.find((rule) => {

@@ -16,6 +16,7 @@
 搜索·投递·登录三段骨架统一由 `base.CollectorBase` 提供（对齐 BossHunter 分层）。
 """
 import re
+from urllib.parse import quote
 
 from .base import CollectorBase
 from .filters import build_filter_params
@@ -109,7 +110,8 @@ def build_search_url(query: str, city: str, salary: str, page: int = 1,
         url += f"&salaryCode={sal}"
     q = str(query or '').strip()
     if q:
-        url += f"&key={q}"
+        # M-12：关键词 URL 编码（原直拼 → `C++`/含 & 的 query 会截断或错位）
+        url += f"&key={quote(q, safe='')}"
     for k, v in build_filter_params(PLATFORM, criteria).items():
         url += f"&{k}={v}"
     return url

@@ -625,7 +625,8 @@ export default function Tasks() {
                           );
                         })}
                         {p.analysis.risks?.map((r, i) => (
-                          <Tooltip key={`risk-${i}`} title={r}>
+                          // L-30：纯索引 key 在刷新后会导致节点复用错位；以内容为主键
+                          <Tooltip key={`risk-${r}-${i}`} title={r}>
                             <span className="task-prop-chip task-prop-chip--risk">{r}</span>
                           </Tooltip>
                         ))}

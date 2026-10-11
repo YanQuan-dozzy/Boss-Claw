@@ -46,6 +46,9 @@ const RE_WEEKLY_DAYS = /(?:每|一)\s*周\s*(?:工作|上班|出勤)?\s*(\d(?:\.
 const RE_MONTHLY_REST = /月\s*休\s*(\d{1,2})\s*天|每月\s*(?:休息|休)\s*(\d{1,2})\s*天/;
 const RE_BIG_SMALL_WEEK = /大小周|大小休|单双休|单双轮休/;
 const RE_SINGLE_REST = /做六休一|单休|六天制|六天工作制|周休一天|每周休一天|六日制/;
+/** M-31：与 ⑤ 的双休守卫对称 ——「非单休 / 不是单休 / 无双休」里的「单休」不代表单休。
+ *  （原实现只给双休加否定守卫，`非单休` 会命中 ④ 被折算为 6 天/周，日薪基数偏大。） */
+const RE_SINGLE_REST_NEGATION = /(?:非|不是|没有|无|不)\s*(?:单休|做六休一)/;
 const RE_DOUBLE_REST = /周末双休|做五休二|双休|五天制|五天工作制|周末休息/;
 /**
  * 「否认双休」的表述（审查 #44）：「非双休 / 不是双休 / 无双休 / 没有双休 / 不双休 / 非周末双休」——
@@ -103,8 +106,8 @@ export function detectWorkSchedule(input?: Partial<JobMeta> | null): WorkSchedul
   if (bigSmall) {
     return { weeklyDays: 5.5, monthlyWorkDays: monthlyWorkDaysOf(5.5), label: '大小周', detected: true, evidence: clip(bigSmall[0]) };
   }
-  // ④ 单休系 → 6 天/周
-  const single = text.match(RE_SINGLE_REST);
+  // ④ 单休系 → 6 天/周（M-31：先排除「非单休 / 不是单休」等否认表述，避免反向误判）
+  const single = RE_SINGLE_REST_NEGATION.test(text) ? null : text.match(RE_SINGLE_REST);
   if (single) {
     return { weeklyDays: 6, monthlyWorkDays: monthlyWorkDaysOf(6), label: '单休', detected: true, evidence: clip(single[0]) };
   }

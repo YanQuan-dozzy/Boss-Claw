@@ -210,12 +210,18 @@ export function extractJsonWithMeta(text: string): { value: any; tailCut: boolea
       if (v !== undefined) return { value: v, tailCut: true };
     }
   }
-  throw new Error('无法解析 JSON');
+  throw new AIError('AI_INVALID_JSON', '无法解析 JSON（自动修复未能成功）', { partial: text });
 }
 
 /** 兼容包装：只取解析结果（不关心是否走了截尾兜底）。 */
 export function extractJson(text: string): any {
-  return extractJsonWithMeta(text).value;
+  const value = extractJsonWithMeta(text).value;
+  // M-18：出口必须是**普通对象**。旧实现会把顶层为 number / string / null 的合法 JSON 也判为成功，
+  // 上层按对象取值时全部落空（表现为「AI 返回空字段」），同时掩盖了「模型没按对象输出」这一真实失败。
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AIError('AI_INVALID_JSON', 'AI 返回的 JSON 顶层不是对象', { partial: text });
+  }
+  return value;
 }
 
 /** 在结果对象上挂非枚举 _repaired 标记（供消费方区分「AI 修复过」与「原生输出」）；失败不影响主流程 */

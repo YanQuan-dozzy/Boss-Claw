@@ -244,7 +244,10 @@ export default function App() {
               </Suspense>
             </ErrorBoundary>
           </div>
-          {!isWorkbench && (
+          {/* M-41：原为 `{!isWorkbench && (...)}` —— 一旦进入工作台就整体卸载所有已访问页面，
+              与下方「首进常驻 / 保持挂载」的注释自相矛盾（来回切页会整页重挂载）。
+              现始终渲染，仅由 .is-show / .is-background / .workbench-host 控制显隐。 */}
+          {(
             /* 非工作台页「首进常驻」：已访问页保持挂载，仅切换 .is-show 显隐（display 控制），
                避免来回切换时整页卸载/重挂载的卡顿；未访问页展示 Suspense 骨架（lazy 分块已预取）。
                每个页面使用稳定 key（路由名），ErrorBoundary/key 不再随 activeRoute 变化，

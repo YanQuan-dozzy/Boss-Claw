@@ -388,11 +388,17 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   const refreshCamoufox = async (silent = false) => {
     if (!silent) setCfxLoading(true);
-    const s = await camoufoxStatus();
-    setCfx(s);
-    // 依赖首次安装中不算「不可用」，不自动关闭引擎开关
-    if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
-    if (!silent) setCfxLoading(false);
+    // M-37：探测失败必须复位 loading（原实现无 catch，失败后按钮永久转圈）
+    try {
+      const s = await camoufoxStatus();
+      setCfx(s);
+      // 依赖首次安装中不算「不可用」，不自动关闭引擎开关
+      if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+    } catch (e: any) {
+      if (!silent) message.error(`引擎状态检测失败：${e?.message || '未知错误'}`);
+    } finally {
+      if (!silent) setCfxLoading(false);
+    }
   };
 
   // ===== 多平台适配：刷新各平台 Camoufox 登录态（并行探活，避免 4 平台串行 await 阻塞）=====
@@ -504,9 +510,15 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   const refreshBridge = async () => {
     setBridgeLoading(true);
-    const s = await bridgeStatus();
-    setBridge(s as any);
-    setBridgeLoading(false);
+    // M-37：失败必须复位 loading 且给出降级状态（桥为可选模块，未连接属正常）
+    try {
+      const s = await bridgeStatus();
+      setBridge(s as any);
+    } catch {
+      setBridge({ ok: false } as any);
+    } finally {
+      setBridgeLoading(false);
+    }
   };
 
   const testConnection = async () => {
@@ -1733,7 +1745,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             )}
 
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
-              🔒 API Key 仅加密保存在本机 localStorage，绝不会上传至第三方服务器。未配置时职业画像与岗位匹配将自动回退到本地规则初稿。
+              🔒 API Key 保存在本机 localStorage（<strong>明文存储，应用未做额外加密</strong>），仅用于直连你在上方配置的模型服务商，绝不会上传至第三方服务器；请避免在共用设备上使用。未配置时职业画像与岗位匹配将自动回退到本地规则初稿。
             </Paragraph>
           </div>
 
@@ -1756,7 +1768,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="ai-cache-banner__content">
                 <div className="ai-cache-banner__title">智能本地结果缓存与 Context 节约</div>
                 <div className="ai-cache-banner__desc">
-                  职业画像、岗位分析与求职招呼语生成结果均加密保存在本机。相同输入（简历/画像/岗位/提示词均未变）时<strong>直接复用缓存（0 延迟、0 Token 计费）</strong>；更新简历或提示词后将自动重新计算生成。
+                  职业画像、岗位分析与求职招呼语生成结果均保存在本机（<strong>明文存储</strong>）。相同输入（简历/画像/岗位/提示词均未变）时<strong>直接复用缓存（0 延迟、0 Token 计费）</strong>；更新简历或提示词后将自动重新计算生成。
                 </div>
               </div>
             </div>

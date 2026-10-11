@@ -66,7 +66,9 @@ const MIGRATIONS: SettingsMigration[] = [
         if (k in defaultPlatforms) {
           const def = (defaultPlatforms as Record<string, { enabled: boolean; priority: number; dailyTarget: number }>)[k];
           (merged as Record<string, { enabled: boolean; priority: number; dailyTarget: number }>)[k] = {
-            enabled: v?.enabled !== false,
+            // L-26：不可用 `v?.enabled !== false` —— 缺失字段会被判为 true，升级后静默启用多平台。
+            // 缺失/非法一律以默认平台配置为准。
+            enabled: typeof v?.enabled === 'boolean' ? v.enabled : Boolean(def.enabled),
             priority: Number.isFinite(Number(v?.priority)) ? Number(v.priority) : def.priority,
             dailyTarget: Number.isFinite(Number(v?.dailyTarget)) ? Number(v.dailyTarget) : legacyDailyTarget,
           };

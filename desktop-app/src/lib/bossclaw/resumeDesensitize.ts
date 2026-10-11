@@ -12,7 +12,11 @@ export interface DesensitizeOptions {
   hideName?: boolean;
 }
 
-const PHONE_RE = /(?<!\d)1[3-9]\d{9}(?!\d)/g;
+// 手机号匹配（审查 H-4）：原 `1[3-9]\d{9}` 仅命中「前后非数字的连续 11 位」，漏掉
+//   +86 13812345678 / +8613812345678 / 138-1234-5678 / 138 1234 5678 等写法 → 明文进导出图片。
+// 现允许可选国码（+86/86）与 3-4-4 之间的 `-`/空格分隔；两侧 `(?<!\d)`/`(?!\d)` 防长串误命中。
+const PHONE_SRC = /(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d(?:[\s-]?\d{4}){2}(?!\d)/;
+const PHONE_RE = new RegExp(PHONE_SRC.source, 'g');
 // 邮箱匹配分两份（审查 #43）：带 /g 的正则用 `.test()` 会推进 `lastIndex`，连续调用时
 // 奇偶交替命中（same 字符串第二次返回 false）→ 孤立邮箱行漏删、隐私残留。
 // 故 `.test()` 一律用不带 /g 的 EMAIL_SRC，`replace` 全域替换才用带 /g 的 EMAIL_RE。
@@ -20,8 +24,10 @@ const EMAIL_SRC = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 const EMAIL_RE = new RegExp(EMAIL_SRC.source, 'g');
 const IDCARD_RE = /(?<!\d)\d{17}[\dXx](?!\d)/g;
 // 「标签:值」整行标签（命中即剔除整行，连同标签一起消失）
+// 审查 M-21：「姓名」不在此列 —— 默认（hideName=false）应保留姓名，仅隐藏联系方式；
+// 隐藏姓名由下方 `hideName` 分支（`^姓\s*名\s*[:：]`）单独处理。
 const STRIP_LEAD_RE =
-  /^\s*(姓名|电话|联系电话|手机|手机号|邮箱|E-mail|Email|微信|WeChat|VX|vx|WX|wx|QQ|扣扣|钉钉|地址|住址|现居|现居住地|所在城市|所在|户籍|家庭住址|身份证|身份证号)\s*[:：]/i;
+  /^\s*(电话|联系电话|手机|手机号|邮箱|E-mail|Email|微信|WeChat|VX|vx|WX|wx|QQ|扣扣|钉钉|地址|住址|现居|现居住地|所在城市|所在|户籍|家庭住址|身份证|身份证号)\s*[:：]/i;
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -32,8 +38,9 @@ function isBareContactLine(line: string): boolean {
   const s = line.trim();
   if (!s) return false;
   return (
-    /^(?<!\d)1[3-9]\d{9}(?!\d)$/.test(s) ||
-    EMAIL_SRC.test(s) ||
+    new RegExp(`^${PHONE_SRC.source}$`).test(s) ||
+    // 审查 M-22：邮箱分支必须整体锚定（原未锚定会把「含邮箱的正常正文行」整行删除）
+    /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(s) ||
     /^(?<!\d)\d{17}[\dXx](?!\d)$/.test(s) ||
     /^(?:微|微信)[A-Za-z0-9_-]{2,32}$/i.test(s)
   );

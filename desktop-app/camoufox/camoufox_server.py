@@ -29,6 +29,7 @@ BossClaw 隐身引擎 —— 本地 Python 桥服务（仅 Camoufox 原生隐身
 """
 
 import argparse
+import hmac
 import json
 import os
 import random
@@ -128,10 +129,23 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
                 if api_result is None:
                     log('❌', 'API evaluate 重试耗尽')
                     break
+                # H-7：fetch 的 .catch(e => ({error: e.message})) 只回 {error}，无 code；
+                # 原实现 code=None → 收口 `last_code not in (0, None)` 判为「成功但 0 岗位」，
+                # 下游无法区分「确实为空」与「抓取失败」。这里显式置失败码 37。
+                if isinstance(api_result, dict) and api_result.get('error') and api_result.get('code') is None:
+                    last_code, last_msg = 37, f'接口请求失败：{str(api_result.get("error"))[:80]}'
+                    log('❌', last_msg)
+                    break
                 code = api_result.get('code')
                 msg = api_result.get('message', '')
-                log('🧾', f'API code={code} msg={msg[:40]}')
+                log('🧾', f'API code={code} msg={str(msg)[:40]}')
                 last_code, last_msg = code, msg
+                # H-7：响应结构异常（有响应但既无 code 也无 error）→ 同样 fail-safe 上报失败，
+                # 不再当成「成功但 0 岗位」。
+                if code is None:
+                    last_code, last_msg = 37, '接口返回缺少 code（响应结构可能已变更）'
+                    log('❌', last_msg)
+                    break
 
                 if code == 0:
                     jobs = api_result.get('zpData', {}).get('jobList', [])
@@ -353,22 +367,22 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
         # Step 4: 优先走 friend/add.json API（返回 code 0 = 成功）
         if encrypt_user_id:
             try:
-                body = json.dumps({
+                # L-10：原实现把 json.dumps 用 f-string 拼进 page.evaluate 的**源码**（且另有一份
+                # 未使用的 `body` 死代码）。改经 evaluate 参数传值，由 JS 侧 JSON.stringify ——
+                # 既消除 U+2028/U+2029 等字符破坏 JS 字面量的风险，也去掉死代码。
+                payload_body = {
                     "encryptJobId": job_id,
                     "encryptBossId": encrypt_user_id,
                     "greeting": greeting,
-                }, ensure_ascii=False)
-                send_result = page.evaluate(f"""
-                    () => fetch('/wapi/zpgeek/friend/add.json', {{
+                }
+                send_result = page.evaluate(
+                    """(payload) => fetch('/wapi/zpgeek/friend/add.json', {
                         method: 'POST',
-                        headers: {{'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}},
-                        body: JSON.stringify({json.dumps({
-                            "encryptJobId": job_id,
-                            "encryptBossId": encrypt_user_id,
-                            "greeting": greeting,
-                        }, ensure_ascii=False)})
-                    }}).then(r => r.json()).catch(e => ({{error: e.message}}))
-                """)
+                        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                        body: JSON.stringify(payload)
+                    }).then(r => r.json()).catch(e => ({error: e.message}))""",
+                    payload_body,
+                )
                 code = send_result.get('code')
                 log('🧾', f'friend/add.json code={code} msg={send_result.get("message", "")[:40]}')
                 if code == 0:
@@ -2072,6 +2086,14 @@ def _watch_teardown_async() -> None:
 # ============================================================
 # HTTP 服务
 # ============================================================
+def _token_ok(expected: str, given: str) -> bool:
+    """L-11：常量时间令牌比较（避免时序侧信道）。长度不等也应正常返回 False。"""
+    try:
+        return hmac.compare_digest(str(expected or ''), str(given or ''))
+    except Exception:
+        return False
+
+
 class CamoufoxHandler(BaseHTTPRequestHandler):
     server_version = f'BossClaw-Camoufox/{VERSION}'
 
@@ -2085,8 +2107,15 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_body(self) -> dict:
-        length = int(self.headers.get('Content-Length') or 0)
+        # L-9：Content-Length 非法（非数字 / 负数）不应抛出未捕获异常；一律按「无 body」处理
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except (TypeError, ValueError):
+            return {}
         if length <= 0:
+            return {}
+        # 上限保护：避免恶意/异常的超大 Content-Length 让本进程按声明值阻塞读
+        if length > 64 * 1024 * 1024:
             return {}
         raw = self.rfile.read(length)
         try:
@@ -2100,7 +2129,7 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         token = parse_qs(parsed.query).get('token', [''])[0]
-        if token != self.server.token:
+        if not _token_ok(self.server.token, token):
             return self._send(403, {"ok": False, "error": "token denied"})
         if parsed.path == '/status':
             # 平台名归一化口径与 do_POST 一致（审查 #49）：原实现只 .strip() 不 .lower()，
@@ -2113,7 +2142,7 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         token = parse_qs(parsed.query).get('token', [''])[0]
-        if token != self.server.token:
+        if not _token_ok(self.server.token, token):
             return self._send(403, {"ok": False, "error": "token denied"})
         body = self._read_body()
         platform = str(body.get('platform') or 'boss').strip().lower() or 'boss'
@@ -2136,7 +2165,9 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 if platform == 'boss':
                     result = search_jobs(query, city, pages, os_name)
                 else:
-                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria, force)
+                    # M-11：透传配置（渲染层只发非敏感子集 {platforms}），供断点续采 TTL 读取
+                    cfg = body.get('config') if isinstance(body.get('config'), dict) else None
+                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria, force, cfg)
                 return self._send(200, result)
 
             if parsed.path == '/send':
@@ -2238,7 +2269,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 if body.get('clear') is True:
                     target = platform if body.get('platform') else None
                     return self._send(200, platform_mods.clear_collection_progress(target))
-                return self._send(200, {"ok": True, **platform_mods.collection_progress(platform)})
+                progress_cfg = body.get('config') if isinstance(body.get('config'), dict) else None
+                return self._send(200, {"ok": True, **platform_mods.collection_progress(platform, progress_cfg)})
 
             return self._send(404, {"ok": False, "error": "not found"})
         except Exception as e:
@@ -2336,7 +2368,9 @@ def engine_status(platform: str = 'boss') -> dict:
 def main():
     parser = argparse.ArgumentParser(description='BossClaw Camoufox 隐身引擎桥')
     parser.add_argument('--port', type=int, default=18767)
-    parser.add_argument('--token', default='bossclaw-camoufox')
+    # M-2：令牌优先取环境变量（主进程随机生成后经 env 注入）；--token 仍可显式覆盖。
+    # 兜底默认值仅为「脱离主进程单独手工启动本服务」时的可用性，正式链路不会用到。
+    parser.add_argument('--token', default=os.environ.get('BOSSCLAW_CAMOUFOX_TOKEN') or 'bossclaw-camoufox')
     args = parser.parse_args()
 
     # 启动前先检测引擎可用性（内核 + Cookie）

@@ -9,6 +9,8 @@ interface ElectronBridgeApi {
   readDoc?: () => Promise<{ ok: boolean; text?: string; file?: string; error?: string }>;
   bossLogin?: () => Promise<unknown>;
   bossLogout?: (platform: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
+  // 本地桥（OpenClaw）访问令牌（随机生成，存于 ~/.bossclaw/bridge-token）
+  bridgeToken?: () => Promise<string>;
   webviewPreload?: string;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send?: (channel: string, ...args: unknown[]) => void;
@@ -53,6 +55,12 @@ interface ElectronBridgeApi {
   skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+  savePdfBatch?: (items: Array<{ fileName: string; html: string }>, requestId: string) => Promise<{
+    ok: boolean; canceled?: boolean; directory?: string; error?: string; total?: number;
+    results: Array<{ fileName: string; ok: boolean; filePath?: string; error?: string }>;
+  }>;
+  cancelPdfBatch?: (requestId: string) => Promise<{ ok: boolean }>;
+  onPdfBatchProgress?: (callback: (progress: { requestId: string; completed: number; total: number; fileName: string }) => void) => () => void;
   // 通用文本导出（CSV）：主进程弹系统保存对话框由用户选择保存位置后写盘
   saveFile?: (
     defaultName: string,

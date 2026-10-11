@@ -111,8 +111,28 @@ export function queryInteractive(
   return (visible[Math.min(Math.max(index, 0), visible.length - 1)] as HTMLElement) || null;
 }
 
-/** 采集可见交互元素快照，供 agent 「看见」界面可操作点 */
-export function snapshotInteractive(
+/**
+ * H-2：应用自身作用域下的「高危控件」黑名单。
+ * agent 经 uiClick / uiType / uiSubmit（scope='app'）可合成点击应用界面控件，
+ * `uiClick(label='一键投递'/'开始批量沟通')` 会绕过动作白名单与 executionMode 护栏触发真实批量投递。
+ * 这里对目标控件的可见文本 / aria-label / placeholder 做语义拦截：命中即拒绝。
+ * （只作用于 agent 控制链；用户在本机界面上手动点击不受影响。）
+ */
+export const DANGEROUS_APP_CONTROL_RE =
+  /投递|发送|打招呼|招呼语|沟通|批量|一键|全部|确认|清空|删除|移除|忽略|停止|开始|启动|恢复|重置|退出登录|登录|扫码/;
+
+/** 目标控件的可读文本（可见文本 + aria-label + placeholder） */
+export function describeControlText(el: HTMLElement): string {
+  if (!el) return '';
+  return `${textOf(el)} ${el.getAttribute('aria-label') || ''} ${(el as HTMLInputElement).placeholder || ''}`.trim();
+}
+
+/** 该控件是否属应用界面高危操作（agent 不得触发） */
+export function isDangerousAppControl(el: HTMLElement): boolean {
+  return DANGEROUS_APP_CONTROL_RE.test(describeControlText(el));
+}
+
+/** 采集可见交互元素快照，供 agent 「看见」界面可操作点 */export function snapshotInteractive(
   root: Document | Element = document,
   selector?: string,
   limit = EL_LIST_MAX

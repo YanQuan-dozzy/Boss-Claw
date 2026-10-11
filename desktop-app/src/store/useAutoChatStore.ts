@@ -233,8 +233,11 @@ async function aiReplyAndSend(args: {
   return { outcome: 'sent', result: replySend.result };
 }
 
-/** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致） */
-async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
+/** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致）
+ *  `run` 由调用方传入（自身持有 currentRun 的那个 run 对象）——避免 stop() 在置位取消信号的
+ *  同一步就把 currentRun 置 null，导致此处读 `currentRun?.cancelRequested` 恒为 falsy、
+ *  「发送前取消」守卫失效（审查 H-3）。 */
+async function chatJob(item: PendingItem, run: EngineRun): Promise<ChatJobOutcome> {
   const { updatePending } = useDataStore.getState();
   const { addLog, addChatLog } = useRuntimeLogsStore.getState();
   const cfg = useSettingsStore.getState().config;
@@ -283,8 +286,9 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     // 其余平台 deliver() 会忽略这两个参数，故这里直接不下发，避免构造无用的 base64 负载。
     const canAttach = platformSupports(platform as JobPlatform, 'attach');
     // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
-    // （chatJob 仅由持有 currentRun 的 start()/chatOne() 调用，此处即本 run 的取消信号）
-    if (currentRun?.cancelRequested) {
+    // （审查 H-3：必须检查**调用方持有的 run**，而非模块级 currentRun —— stop() 会在置位信号的
+    //  同一步把 currentRun 置 null，若读 currentRun 则判据恒为 falsy、取消失效仍会真实发送）
+    if (run.cancelRequested) {
       addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
       return 'stop';
     }
@@ -954,7 +958,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
             await sleep(baseSec * 1000 * (0.7 + Math.random() * 0.6));
 
-            const outcome = await chatJob(item);
+            const outcome = await chatJob(item, run);
             if (outcome === 'success') {
               sentCount += 1;
               if (nowCfg.requireSingleJobValidation && !nowCfg.singleJobValidationCompletedAt) {
@@ -1035,7 +1039,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           resetDeliveredSinceRest();
         }
         await pacerNow().waitForSlot();
-        await chatJob(item);
+        await chatJob(item, run);
       } finally {
         if (currentRun === run) {
           currentRun = null;

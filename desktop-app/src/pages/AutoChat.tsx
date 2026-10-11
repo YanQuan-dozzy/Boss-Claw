@@ -61,9 +61,6 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
   ignored: { color: 'default', label: '已忽略' },
 };
 
-/** 待沟通队列默认最多展示的卡片数；超出部分改为容器内滚动，避免整页被拉长。 */
-const QUEUE_VISIBLE_COUNT = 3;
-
 export default function AutoChat() {
   // ===== Store 订阅（按字段选择并使用 useShallow 避免全量重渲染） =====
   const pending = useDataStore(useShallow((s) => s.pending));
@@ -118,11 +115,17 @@ export default function AutoChat() {
 
   const refreshCamoufox = useCallback(async (silent = false) => {
     if (!silent) setCfxLoading(true);
-    const s = await camoufoxStatus();
-    setCfx(s);
-    // 依赖安装中不算「不可用」，不自动关闭引擎开关
-    if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
-    if (!silent) setCfxLoading(false);
+    // M-38：探测失败必须复位 loading（原实现无 catch，挂载时的 fire-and-forget 失败会让 cfxLoading 卡住）
+    try {
+      const s = await camoufoxStatus();
+      setCfx(s);
+      // 依赖安装中不算「不可用」，不自动关闭引擎开关
+      if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+    } catch {
+      /* 探测失败：保持上一次状态，不打断页面 */
+    } finally {
+      if (!silent) setCfxLoading(false);
+    }
   }, [cfxConfig, setConfig]);
 
   // 页面挂载时静默刷新引擎状态：跨路由重挂载后 `cfx` 会被重置为 null，导致误显示「引擎未就绪」。
@@ -194,36 +197,34 @@ export default function AutoChat() {
   const sentCount = useMemo(() => pending.filter((p) => p.status === 'sent').length, [pending]);
   const failedCount = useMemo(() => pending.filter((p) => p.status === 'failed').length, [pending]);
 
-  // ===== 队列滚动展示：默认只露出前 3 张卡片，其余在容器内滚动 =====
-  // 直接量测「第 1 张 → 第 4 张」的垂直跨度，把它（含容器上下内边距）设为 max-height，
-  // 这样无论卡片因招呼语多行/失败提示而变高，都恰好完整展示 3 张、不出现半截卡片。
+  // ===== 队列滚动展示：卡片撑满列高（底边与右列对齐），超出部分在容器内滚动 =====
+  // 高度不再由 JS 量测卡片并按「固定 3 张」写死 max-height —— 那种做法一旦量到的卡片高度偏小
+  // （例如 antd `Input.TextArea` 的 autoSize 在 passive 相位才生效，layout 相位读到的是未撑开的高度），
+  // 队列区就被压到一张卡，差额全部变成卡底空白。现在布局交给 CSS：
+  //   .autochat-main { contain: size }                 ← 行高只由右列决定，队列再长也不拉长整页
+  //   .setting-card:last-child { flex: 1 1 0 }         ← 卡片撑满左列，底边与右列对齐
+  //   .autochat-queue-scroll { flex: 1 1 auto }        ← 列表区吃掉卡内剩余高度（不留空白）
+  // 这里只做一件事：探测列表是否真的溢出，用于决定底部「向下滚动查看全部」提示是否出现。
   const queueScrollRef = useRef<HTMLDivElement | null>(null);
-  const [queueMaxHeight, setQueueMaxHeight] = useState<number | undefined>(undefined);
+  const [queueScrollable, setQueueScrollable] = useState(false);
 
   useLayoutEffect(() => {
     const el = queueScrollRef.current;
     if (!el) return;
+    let raf = 0;
     const measure = () => {
-      const kids = Array.from(el.children) as HTMLElement[];
-      if (kids.length <= QUEUE_VISIBLE_COUNT) {
-        setQueueMaxHeight(undefined);
-        return;
-      }
-      const firstTop = kids[0].getBoundingClientRect().top;
-      const nextTop = kids[QUEUE_VISIBLE_COUNT].getBoundingClientRect().top;
-      const span = nextTop - firstTop;
-      if (!(span > 0)) return;
-      const cs = getComputedStyle(el);
-      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      const next = Math.round(span + pad);
-      setQueueMaxHeight((prev) => (prev === next ? prev : next));
+      const over = el.scrollHeight > el.clientHeight + 1;
+      setQueueScrollable((prev) => (prev === over ? prev : over));
     };
     measure();
-    // 卡片高度会随招呼语行数 / 失败提示变化，逐个监听卡片尺寸以便跟随重算
+    // 补一次下一帧复测：autoSize（passive 相位）晚于本 effect（layout 相位），首测可能还没撑开
+    raf = window.requestAnimationFrame(measure);
+    // 卡片高度随招呼语行数 / 失败提示变化，逐个监听卡片尺寸以便跟随判定
     const ro = new ResizeObserver(measure);
     Array.from(el.children).forEach((c) => ro.observe(c as HTMLElement));
     window.addEventListener('resize', measure);
     return () => {
+      window.cancelAnimationFrame(raf);
       ro.disconnect();
       window.removeEventListener('resize', measure);
     };
@@ -462,12 +463,8 @@ export default function AutoChat() {
               />
             ) : (
               <>
-                {/* 默认最多露出前 3 张卡片，其余在容器内滚动，避免整页被队列拉长 */}
-                <div
-                  ref={queueScrollRef}
-                  className={'wb-jobs autochat-queue-scroll' + (queueItems.length > QUEUE_VISIBLE_COUNT ? ' is-scrollable' : '')}
-                  style={queueMaxHeight ? { maxHeight: queueMaxHeight } : undefined}
-                >
+                {/* 卡片撑满列高、队列在卡内滚动（可视条数随窗口自适应，不写死张数） */}
+                <div ref={queueScrollRef} className="wb-jobs autochat-queue-scroll">
                   {queueItems.map((p: PendingItem) => {
                     const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
                     const isActive = p.id === activeChatId
@@ -565,7 +562,8 @@ export default function AutoChat() {
                   })}
                 </div>
 
-                {queueItems.length > QUEUE_VISIBLE_COUNT && (
+                {/* 仅当列表真的溢出（还有看不到的岗位）时才提示可滚动 */}
+                {queueScrollable && (
                   <div className="autochat-queue-more">
                     <ChevronDown size={13} style={{ marginRight: 6 }} aria-hidden="true" />
                     <span>共 {queueItems.length} 个岗位，向下滚动查看全部</span>

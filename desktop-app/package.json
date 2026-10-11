@@ -25,7 +25,10 @@
     "start": "electron .",
     "verify": "npm run typecheck && npm run build",
     "test:theme-vars": "node scripts/theme-vars-regression.mjs",
-    "test:context-budget": "node scripts/context-budget-regression.mjs"
+    "test:context-budget": "node scripts/context-budget-regression.mjs",
+    "test:tailor-job": "node scripts/tailor-job-regression.mjs",
+    "test:tailor-batch": "node scripts/tailor-batch-regression.mjs",
+    "test:tailor-iteration": "node scripts/tailor-iteration-regression.mjs"
   },
   "build": {
     "appId": "com.bossclaw.desktop",

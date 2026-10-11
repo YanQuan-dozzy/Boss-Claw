@@ -167,12 +167,18 @@ export default function Home() {
     setDocOpen(true);
     if (docText || docLoading) return; // 已加载 / 加载中
     setDocLoading(true);
-    const r = await electronApi.readDoc();
-    setDocLoading(false);
-    if (r.ok && r.text) {
-      setDocText(r.text);
-    } else {
-      message.warning(r.error || '使用文档读取失败');
+    // M-36：IPC 拒绝/异常时必须复位 loading，否则按钮永久转圈（原实现无 try/catch）
+    try {
+      const r = await electronApi.readDoc();
+      if (r.ok && r.text) {
+        setDocText(r.text);
+      } else {
+        message.warning(r.error || '使用文档读取失败');
+      }
+    } catch (e: any) {
+      message.warning(`使用文档读取失败：${e?.message || '未知错误'}`);
+    } finally {
+      setDocLoading(false);
     }
   };
 

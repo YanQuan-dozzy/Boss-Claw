@@ -89,9 +89,17 @@ def load_cookies(platform: str = 'boss') -> list:
         return []
     pw_cookies = []
     for c in auth.get('cookies', []):
+        # H-9：字段缺失不再抛 KeyError 穿透整链路（search_jobs/deliver/do_login → HTTP 500）；
+        # 缺关键字段的条目直接跳过（降级为空/部分 Cookie 继续，而非整条链路硬失败）。
+        if not isinstance(c, dict):
+            continue
+        name, value, domain = c.get("name"), c.get("value"), c.get("domain")
+        if not name or not value or not domain:
+            log('⚠️', '跳过字段缺失的 Cookie（%s）：name=%r domain=%r' % (platform, name, domain))
+            continue
         cookie = {
-            "name": c["name"], "value": c["value"],
-            "domain": c["domain"], "path": c.get("path", "/"),
+            "name": name, "value": value,
+            "domain": domain, "path": c.get("path", "/"),
         }
         expires = c.get("expires", -1)
         if expires and expires > 0:
@@ -210,11 +218,15 @@ def goto_stable(page, url, *, max_tries=4, min_content=500, wait=3):
             continue
         try:
             blen = len(page.content() or '')
-        except Exception:
-            blen = float('inf')
+        except Exception as e:
+            # M-16：取页面内容失败**不能**当作「内容充足」直接返回成功（原实现 blen=float('inf')），
+            # 多为页面仍在导航或被反爬中断 → 按未稳定处理并重试。
+            log('⚠️', f'第 {attempt + 1} 次读取页面内容失败：{str(e)[:60]}，重试…')
+            time.sleep(2)
+            continue
         if blen >= min_content:
             return True
-        log('⚠️', f'第 {attempt + 1} 次命中反爬空壳（len={blen if blen != float("inf") else "navigating"}），重试…')
+        log('⚠️', f'第 {attempt + 1} 次命中反爬空壳（len={blen}），重试…')
         time.sleep(2)
     return False
 

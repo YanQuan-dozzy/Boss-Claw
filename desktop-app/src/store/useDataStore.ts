@@ -344,6 +344,8 @@ function jobCompleteness(job?: Pick<JobMeta, 'url' | 'company' | 'location' | 's
 function dedupePendingItems(pending: PendingItem[]): PendingItem[] {
   const kept: PendingItem[] = [];
   for (const item of pending) {
+    // L-27：迁移/损坏数据可能含 null 元素，先跳过，避免 `item.job` 抛 TypeError 使整次迁移失败
+    if (!item || typeof item !== 'object') continue;
     const key = jobUrlKey(item.job);
     const jid = String(item.job?.jobId || '').trim().toLowerCase();
     const exactHit = kept.some(

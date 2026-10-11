@@ -7,6 +7,8 @@
 const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
@@ -20,6 +22,8 @@ let _debugLogEnabled = null;
 // 原实现是模块级单一数组，所有标签页共用 60 条/分钟额度：一个标签页的高频动作会耗尽额度，
 // 使另一标签页的正常投递被误判「输入风暴」拒绝（表现为对端标签页莫名失败、日志显示 rate limited）。
 const inputWindows = new Map(); // senderId(number) -> number[]（时间戳）
+// 审查 H-14：已注册过 destroyed 清理的 guest webContents（WeakSet，随对象回收）——避免重复注册监听器
+const inputDestroyHooked = new WeakSet();
 function inputWindowFor(id) {
   let arr = inputWindows.get(id);
   if (!arr) { arr = []; inputWindows.set(id, arr); }
@@ -371,7 +375,29 @@ let controlBridge = null;
 // Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口 18767
 let camoufoxProcess = null;
 const CAMOUFOX_PORT = 18767;
-const CAMOUFOX_TOKEN = 'bossclaw-camoufox';
+// M-2：隐身后端桥令牌不再硬编码（原为常量 'bossclaw-camoufox'）。
+// 运行时随机生成并存于 ~/.bossclaw/camoufox-token（跨启动稳定，避免与上一会话残留的桥令牌不一致），
+// 经**环境变量**传给 Python（不再走 argv，避免出现在进程命令行里）。
+function loadOrCreateRuntimeSecret(name) {
+  const file = path.join(os.homedir(), '.bossclaw', name);
+  try {
+    const existing = fs.readFileSync(file, 'utf8').trim();
+    if (existing) return existing;
+  } catch { /* 不存在则生成 */ }
+  const generated = crypto.randomBytes(24).toString('hex');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, generated, { mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch {
+    try {
+      const existing = fs.readFileSync(file, 'utf8').trim();
+      if (existing) return existing;
+    } catch { /* 读回失败则退回本次生成 */ }
+    return generated;
+  }
+}
+const CAMOUFOX_TOKEN = loadOrCreateRuntimeSecret('camoufox-token');
 
 // ===== 数据版本标记：v3 重建后首次启动自动清空旧数据（BOSS 登录态 / 隐身引擎数据）=====
 // 本次「内置浏览器 + 收集投递沟通模块」从零重建，旧登录态与缓存需清空（用户需重新扫码登录）。
@@ -629,9 +655,9 @@ async function startCamoufoxBridge(pythonOverride) {
     const server = path.join(__dirname, '..', 'camoufox', 'camoufox_server.py');
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
     // 会被拦截导致 camoufox fetch 等清理逻辑失败；spawn 时剥离该注入，不影响正常用户环境。
-    const env = { ...process.env };
+    const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN };
     if (String(env.PYTHONPATH || '').includes('vendor/shim')) delete env.PYTHONPATH;
-    camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT), '--token', CAMOUFOX_TOKEN], {
+    camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT)], {
       stdio: 'ignore',
       detached: false,
       windowsHide: true,
@@ -1423,6 +1449,25 @@ function withTimeout(promise, ms, label) {
 // 保存定制简历 PDF：渲染进程传 A4 打印 HTML → 隐藏窗口 printToPDF → 系统保存对话框 → 写盘。
 // 排版完全由 HTML/CSS 控制（resumePdf.ts 的 moderncv 风格模板），@page 控制页边距，
 // printToPDF 传 margins:'none' 避免与 CSS 边距叠加。零额外依赖、中文由系统字体渲染。
+const { validatePdfItem, writeUniquePdf } = require('./resume-pdf-batch.cjs');
+async function renderResumePdf(htmlText) {
+  const printWin = new BrowserWindow({
+    show: false, width: 842, height: 1191,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  try {
+    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '打印页加载');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const pdf = await withTimeout(printWin.webContents.printToPDF({
+      pageSize: 'A4', printBackground: true, margins: { marginType: 'none' },
+    }), 30_000, 'PDF 生成');
+    if (!pdf || !pdf.length) throw new Error('PDF 生成结果为空');
+    return pdf;
+  } finally {
+    try { printWin.destroy(); } catch {}
+  }
+}
+
 safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
   const name = String(defaultName || '').trim();
   if (!/^[\w\u4e00-\u9fa5()（）\-· ]{1,120}\.pdf$/i.test(name)) {
@@ -1442,30 +1487,60 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
   });
   if (canceled || !filePath) return { ok: false, canceled: true };
 
-  // 隐藏打印窗口：不启用 Node 能力，纯渲染 HTML（无脚本），保证安全
-  const printWin = new BrowserWindow({
-    show: false,
-    width: 842,
-    height: 1191,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-  });
   try {
-    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '打印页加载');
-    // 等待字体与样式渲染稳定（系统字体加载 + 布局）
-    await new Promise((r) => setTimeout(r, 400));
-    const pdf = await withTimeout(printWin.webContents.printToPDF({
-      pageSize: 'A4',
-      printBackground: true,
-      margins: { marginType: 'none' },
-    }), 30_000, 'PDF 生成');
-    if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
+    const pdf = await renderResumePdf(htmlText);
     await fs.promises.writeFile(filePath, pdf);
     return { ok: true, filePath };
   } catch (e) {
     dlog('error', 'printToPDF failed', { message: (e && e.message) || String(e) });
     return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+const pdfBatchSessions = new Map();
+safeHandle('jc:save-pdf-batch-cancel', async (event, requestId) => {
+  const batch = pdfBatchSessions.get(String(requestId));
+  if (!batch || batch.senderId !== event.sender.id) return { ok: false };
+  batch.stopped = true;
+  return { ok: true };
+});
+
+safeHandle('jc:save-pdf-batch', async (event, input, requestId) => {
+  if (!Array.isArray(input) || !input.length || input.length > 1000) return { ok: false, error: '请选择 1–1000 份简历', results: [] };
+  let items;
+  try { items = input.map(validatePdfItem); }
+  catch (error) { return { ok: false, error: error.message, results: [] }; }
+  const id = String(requestId || `${event.sender.id}_${Date.now()}`).slice(0, 120);
+  if (pdfBatchSessions.has(id)) return { ok: false, error: '这批简历正在导出', results: [] };
+  const batch = { senderId: event.sender.id, stopped: false };
+  pdfBatchSessions.set(id, batch);
+  const results = [];
+  let directory;
+  try {
+    const picked = await dialog.showOpenDialog(mainWindow, {
+      title: '选择批量简历保存目录', properties: ['openDirectory', 'createDirectory'],
+    });
+    if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true, results, total: items.length };
+    directory = picked.filePaths[0];
+    for (const item of items) {
+      if (batch.stopped || event.sender.isDestroyed()) break;
+      try {
+        const pdf = await renderResumePdf(item.html);
+        const filePath = await writeUniquePdf(directory, item.fileName, pdf);
+        results.push({ fileName: item.fileName, ok: true, filePath });
+      } catch (error) {
+        results.push({ fileName: item.fileName, ok: false, error: String(error?.message || error) });
+      }
+      if (!event.sender.isDestroyed()) event.sender.send('jc:save-pdf-batch-progress', {
+        requestId: id, completed: results.length, total: items.length, fileName: item.fileName,
+      });
+    }
+    return { ok: !batch.stopped && results.length === items.length && results.every((r) => r.ok),
+      canceled: batch.stopped, directory, results, total: items.length };
+  } catch (error) {
+    return { ok: false, directory, results, error: String(error?.message || error), total: items.length };
   } finally {
-    try { printWin.destroy(); } catch {}
+    pdfBatchSessions.delete(id);
   }
 });
 
@@ -1645,6 +1720,39 @@ safeHandle('jc:qualified-jobs-dir-pick', async () => {
 // 因此用户在外部改了素材文件即时生效，应用内不保存任何素材内容副本。
 // 素材扩展名白名单（P4-10 双端共享口径：选择对话框 filters 与读取校验必须一致）
 const MATERIAL_EXT_WHITELIST = ['pdf', 'docx', 'doc', 'md', 'markdown', 'txt', 'text'];
+/**
+ * 补充材料「按路径读取」的防护口径（审查 H-6 / M-3 的**替代方案**）。
+ *
+ * 报告原建议「仅允许 `materialPick` 选过的路径」。实测该口径有 UX 回归：用户历史已选的素材
+ * 只记在渲染层 localStorage（`experienceMaterials`），主进程无从知晓 → 升级后全部判为未授权，
+ * 必须逐个重选。而「让渲染层把历史路径注册给主进程」等于把授权面重新交给渲染层，防护价值归零。
+ *
+ * 权衡后的口径：**不做路径预授权**，改为三重收敛 + 既有上限：
+ *   ① 必须绝对路径、存在、是普通文件；
+ *   ② 扩展名白名单（仅文档/文本类，`.env`/`id_rsa`/`.pem`/`.db` 等天然被挡在门外）；
+ *   ③ 敏感文件名 / 敏感目录黑名单（凭据类文件、系统目录、浏览器与云凭据目录）；
+ *   ④ 单文件 ≤20MB（既有）。
+ * 这样可读面收敛到「文档/文本素材」且排除凭据类，同时**不产生任何重选回归**。
+ */
+const MATERIAL_SENSITIVE_NAME_RE =
+  /(?:password|passwd|credential|secret|token|api[_-]?key|id_rsa|id_ed25519|密码|账号|凭据|私钥)/i;
+function isSensitiveMaterialPath(p) {
+  const base = path.basename(p);
+  if (MATERIAL_SENSITIVE_NAME_RE.test(base)) return true;
+  const norm = String(p).replace(/\\/g, '/');
+  const lower = norm.toLowerCase();
+  // 凭据 / 密钥目录
+  if (/(?:^|\/)\.ssh\//.test(lower) || /(?:^|\/)\.gnupg\//.test(lower)) return true;
+  if (/(?:^|\/)\.aws\//.test(lower) || /(?:^|\/)\.config\/gcloud\//.test(lower)) return true;
+  if (/(?:^|\/)\.config\/(?:gh|git)\//.test(lower)) return true;
+  // 系统目录
+  if (/^[a-z]:\/windows\//i.test(norm) || /^[a-z]:\/program files/i.test(norm)) return true;
+  if (/(?:^|\/)appdata\/(roaming|local)\/microsoft\//i.test(lower)) return true;
+  if (/^\/etc\//.test(norm) || /^\/system\//i.test(norm) || /^\/library\//i.test(lower)) return true;
+  // 浏览器/通讯软件配置目录（cookie / 登录态）
+  if (/(?:^|\/)appdata\/(roaming|local)\/(google|mozilla|tencent|microsoft)\//i.test(lower)) return true;
+  return false;
+}
 safeHandle('jc:material-pick', async () => {
   try {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
@@ -1671,10 +1779,14 @@ safeHandle('jc:material-read', async (_event, filePath) => {
     if (!stat.isFile()) return { ok: false, error: '不是文件' };
     // 单文件上限 20MB：避免超大素材拖垮解析与内存
     if (stat.size > 20 * 1024 * 1024) return { ok: false, error: '文件超过 20MB' };
-    // P4-10：扩展名白名单与 jc:material-pick 的 filters 同源（拒绝任意绝对路径读取 → 防敏感文件外泄）
+    // P4-10：扩展名白名单与 jc:material-pick 的 filters 同源
     const ext = path.extname(p).replace(/^\./, '').toLowerCase();
     if (!MATERIAL_EXT_WHITELIST.includes(ext)) {
       return { ok: false, error: `不支持的素材格式：.${ext}（仅 PDF/DOCX/DOC/MD/TXT）` };
+    }
+    // H-6 / M-3：敏感文件名/目录黑名单（凭据类、系统目录、浏览器与云凭据目录）
+    if (isSensitiveMaterialPath(p)) {
+      return { ok: false, error: '拒绝读取：该路径属敏感文件/目录，不可作为简历补充材料' };
     }
     const buf = await fs.promises.readFile(p);
     const mime = ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
@@ -1819,20 +1931,73 @@ safeHandle('jc:autostart-set', async (_event, enabled) => {
   }
 });
 
+// ===== 出网请求统一护栏（M-1 / L-2：SSRF 与响应体体积放大防护）=====
+/** 内网 / 环回 / 链路本地 / 元数据地址（SSRF 目标） */
+function isPrivateOutboundHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true;
+  if (h === '::1' || h === '0.0.0.0') return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (/^(?:fc|fd|fe80)/.test(h)) return true;
+  return false;
+}
+/** 出网 URL 校验：协议 + host 策略。allowLoopback=true 时放行本机地址（本地 LLM 场景）。 */
+function outboundUrlCheck(raw, { allowLoopback = false, requireHttpsOffLoopback = false } = {}) {
+  let parsed;
+  try { parsed = new URL(String(raw || '')); } catch { return { ok: false, error: 'invalid url' }; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { ok: false, error: '仅支持 http(s) 地址' };
+  const priv = isPrivateOutboundHost(parsed.hostname);
+  if (priv && !allowLoopback) return { ok: false, error: `拒绝访问内网/环回/元数据地址：${parsed.hostname}` };
+  // 公网明文 HTTP 会泄露 API Key，强制 https（本机回环允许 http，供本地模型服务使用）
+  if (requireHttpsOffLoopback && !priv && parsed.protocol !== 'https:') {
+    return { ok: false, error: '非本机地址必须使用 https（避免 API Key 明文传输）' };
+  }
+  return { ok: true, url: parsed.toString() };
+}
+/** 响应体硬上限（L-2）：流式累计，超限即取消，避免超大响应打爆主进程内存 */
+const OUTBOUND_MAX_BYTES = 32 * 1024 * 1024;
+async function readResponseTextCapped(res, maxBytes = OUTBOUND_MAX_BYTES) {
+  const body = res.body;
+  if (!body || typeof body.getReader !== 'function') return await res.text();
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let total = 0;
+  let out = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || !value.byteLength) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* 忽略 */ }
+        throw new Error(`响应体超过 ${maxBytes} 字节上限，已中止`);
+      }
+      out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+    return out;
+  } finally {
+    try { reader.releaseLock(); } catch { /* 忽略 */ }
+  }
+}
+
 // 通用 URL 抓取（CORS 无关，供渲染进程获取 BOSS 公开接口，如城市编码表）。
 // 在主进程用 Node 原生 fetch 请求，避免渲染进程跨域限制。
 safeHandle('jc:fetch-url', async (_event, url) => {
   try {
-    const target = String(url || '');
-    if (!/^https?:\/\//.test(target)) return { ok: false, error: 'invalid url' };
+    const chk = outboundUrlCheck(url);
+    if (!chk.ok) return { ok: false, error: chk.error };
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const res = await fetch(target, {
+      const res = await fetch(chk.url, {
         signal: ctrl.signal,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       });
-      const text = await res.text();
+      const text = await readResponseTextCapped(res);
       return { ok: res.ok, status: res.status, text };
     } finally {
       clearTimeout(timer);
@@ -1844,10 +2009,12 @@ safeHandle('jc:fetch-url', async (_event, url) => {
 
 // P05：LLM 主进程代理（对齐 AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
 // 渲染层不再直连 provider（规避部分端点 CORS 失败、统一主进程超时/错误口径），经此转发。
-// 信任面同 jc:fetch-url（本地工具、URL 由渲染层自身配置的 provider 端点提供）。
+// M-1：允许本机地址（本地模型服务如 Ollama），但**公网必须 https**（防 API Key 明文传输）；
+//     响应体加 32MB 上限（L-2），避免超大响应撑爆主进程内存。
 safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000) => {
-  const target = String(url || '');
-  if (!/^https?:\/\//.test(target)) return { ok: false, status: 0, text: '', error: 'invalid url' };
+  const chk = outboundUrlCheck(url, { allowLoopback: true, requireHttpsOffLoopback: true });
+  if (!chk.ok) return { ok: false, status: 0, text: '', error: chk.error };
+  const target = chk.url;
   // P1-11：apiKey 从网页复制常带尾部空格/换行，trim 后再拼 Authorization 头，
   // 否则 fetch 会抛 `TypeError: Invalid value` 且被下面 catch 吞成模糊的失败信息。
   const key = String(apiKey || '').trim();
@@ -1860,7 +2027,7 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
       body: typeof payload === 'string' ? payload : JSON.stringify(payload),
       signal: ctrl.signal,
     });
-    const text = await res.text();
+    const text = await readResponseTextCapped(res);
     return { ok: res.ok, status: res.status, text };
   } catch (e) {
     const msg = String((e && e.message) || e);
@@ -1976,7 +2143,11 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
           return pat.startsWith('=') ? name === pat.slice(1) : name.includes(pat);
         });
       });
-      const matchDomain = domainHint && domain.includes(domainHint);
+      const matchDomain = domainHint && (() => {
+        // M-4：改为后缀匹配（原 `domain.includes(hint)` 会让 `evilzhipin.com` 命中 `zhipin.com`）
+        const d = domain.replace(/^\./, '');
+        return d === domainHint || d.endsWith('.' + domainHint);
+      })();
       if (matchHint || matchDomain) {
         try {
           await ses.cookies.remove(cookieUrl(c), c.name);
@@ -2011,8 +2182,10 @@ ipcMain.on('jc:webview-input', (event, payload) => {
   const now = Date.now();
   // 按发送方（guest webContents）分桶计数（审查 #14）：跨标签页互不挤占额度。
   const window60 = inputWindowFor(wc.id);
-  if (!wc.isDestroyed()) {
-    // 标签销毁时清理自己的桶（once 幂等；桶本身很小，但避免长会话里 Map 无限增长）
+  // 审查 H-14：`once('destroyed')` 只注册一次（原实现每条消息都注册 → 同一 webContents 线性累积
+  // 监听器，长会话可达上万，触发 MaxListenersExceededWarning 与内存泄漏）。用 WeakSet 去重。
+  if (!wc.isDestroyed() && !inputDestroyHooked.has(wc)) {
+    inputDestroyHooked.add(wc);
     try { wc.once('destroyed', () => inputWindows.delete(wc.id)); } catch {}
   }
   const live = window60.filter((t) => t > now - 60_000);
@@ -2116,6 +2289,35 @@ ipcMain.on('jc:bridge-control', (_event, type) => {
   if (type === 'start' && !bridgeProcess) startBridge();
   if (type === 'stop' && bridgeProcess) { try { bridgeProcess.kill(); } catch {} bridgeProcess = null; }
 });
+
+// ===== 本地桥令牌（C-2：随机生成 + 本机私有文件，不再随前端打包分发）=====
+// 与 bridge/server.cjs 的 resolveBridgeToken 同口径：env 优先 → 运行时文件 → 生成并落盘。
+// 渲染层经本 IPC 取令牌后以请求头 X-Bossclaw-Token 调用本地桥，避免令牌出现在 URL/日志中。
+function bridgeTokenPath() {
+  return path.join(app.getPath('home'), '.bossclaw', 'bridge-token');
+}
+function resolveBridgeToken() {
+  const fromEnv = String(process.env.BOSSCLAW_BRIDGE_TOKEN || '').trim();
+  if (fromEnv) return fromEnv;
+  const tokenPath = bridgeTokenPath();
+  try {
+    const existing = fs.readFileSync(tokenPath, 'utf8').trim();
+    if (existing) return existing;
+  } catch { /* 不存在则生成 */ }
+  const generated = crypto.randomBytes(24).toString('hex');
+  try {
+    fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+    fs.writeFileSync(tokenPath, generated, { mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch {
+    try {
+      const existing = fs.readFileSync(tokenPath, 'utf8').trim();
+      if (existing) return existing;
+    } catch { /* 读回失败则退回本次生成 */ }
+    return generated;
+  }
+}
+safeHandle('jc:bridge-token', () => resolveBridgeToken());
 
 // 说明：不启用 app.requestSingleInstanceLock()——该 API 在部分受限/沙箱环境下
 // 无其他实例时也会返回 false 导致主进程直接退出（实测 WorkBuddy 沙箱复现）。
@@ -2228,14 +2430,28 @@ app.whenReady().then(async () => {
 
 
 app.on('window-all-closed', () => {
+  // L-1：macOS 关掉所有窗口后应用仍存活（activate 会重建窗口）。原实现无条件停掉各通道，
+  // 导致重新激活后本地桥/隐身引擎/控制桥全死且不会重启。改为：非 macOS 才停服并退出；
+  // 真正的退出（含 macOS Cmd+Q）由 before-quit 统一收口，保证不留孤儿进程。
+  if (process.platform !== 'darwin') {
+    stopBackgroundServices();
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  stopBackgroundServices();
+});
+
+/** 统一停掉所有后台服务（本地桥 / 隐身引擎 / 隐身浏览器 / 本地控制桥） */
+function stopBackgroundServices() {
   if (bridgeProcess) { try { bridgeProcess.kill(); } catch {} bridgeProcess = null; }
   stopCamoufoxBridge();
   // 关闭 CloakBrowser 隐身浏览器（如已启动）
   try { cloakLauncher.stop(); } catch {}
   // 关闭本地控制桥并清理信息文件（避免残留 stale 记录被 MCP 读到）
   if (controlBridge) { try { controlBridge.stop(); } catch {} controlBridge = null; }
-  if (process.platform !== 'darwin') app.quit();
-});
+}
 
 // ===== CloakBrowser 隐身浏览器 IPC（可选增强）=====
 // 与 webview 路径平行运行；用户在设置页启用后才启动 launcher。

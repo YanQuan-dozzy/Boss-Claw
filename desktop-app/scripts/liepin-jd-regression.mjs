@@ -211,6 +211,9 @@ async function expiryChecks() {
   eq('「投递截止日期」+ 斜杠', parseJdDeadline('投递截止日期：2026/07/16', NOW_1001)?.expired, true);
   eq('「报名截止」+ 点号', parseJdDeadline('报名截止：2026.07.16', NOW_1001)?.expired, true);
   eq('「有效期至」', parseJdDeadline('有效期至 2026年12月31日', NOW_1001)?.expired, false);
+  // M-26：非投递语境的「有效期」不得当作投递截止日（否则会误杀岗位）
+  eq('「证书有效期」→ null', parseJdDeadline('证书有效期：2020-01-01', NOW_1001), null);
+  eq('「合同有效期」→ null', parseJdDeadline('劳动合同有效期至 2029年12月31日', NOW_1001), null);
 
   // ⑤ 护栏：不写截止日期 / 非日期语义 → 一律不判定（防止误杀绝大多数岗位）
   eq('无截止日期标签 → null', parseJdDeadline('岗位职责：负责前后端开发，要求熟悉 Python', NOW_1001), null);

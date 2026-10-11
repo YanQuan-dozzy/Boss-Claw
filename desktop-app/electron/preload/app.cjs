@@ -5,13 +5,34 @@ const { contextBridge, ipcRenderer } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-// P4-09：IPC 通道命名断言（桥接层逃生口 invoke/send/on 用）。
-// 本项目对外通道统一 `jc:` 前缀，与 main.cjs 的 safeHandle / ipcMain 注册面对应；
-// 逃生口保留是为了兼容历史桥接调用，但通道名不合规（拼写错 / 漏前缀）会在控制台给出警告，
-// 避免「通道是否受支持」只能靠全仓库 grep 推断。仅工程可维护性断言，不做访问控制。
+// P4-09 → 审查 H-6：IPC 通道白名单（硬约束）。
+// 原实现只 `console.warn` 不拦截 → 渲染层一旦 XSS 就能用通用逃生口 invoke/send/on
+// 调用主进程**所有**已注册 handler、并订阅任意通道。现改为白名单：不在表内的通道直接抛错。
+// 表 = main.cjs / electron/*.cjs 中出现的全部 `jc:` 通道（含主进程主动 push 的事件通道）。
+const ALLOWED_IPC_CHANNELS = new Set([
+  'jc:app-info', 'jc:autostart-get', 'jc:autostart-set',
+  'jc:backup-delete', 'jc:backup-dir-get', 'jc:backup-dir-pick', 'jc:backup-dir-set', 'jc:backup-read', 'jc:backup-write',
+  'jc:boss-login', 'jc:boss-logout', 'jc:bridge-control', 'jc:bridge-token',
+  'jc:camoufox-call', 'jc:camoufox-restart', 'jc:camoufox-status', 'jc:camoufox-stop', 'jc:clipboard-write',
+  'jc:cloak-binary', 'jc:cloak-event', 'jc:cloak-health', 'jc:cloak-page-back', 'jc:cloak-page-close',
+  'jc:cloak-page-forward', 'jc:cloak-page-input', 'jc:cloak-page-list', 'jc:cloak-page-navigate',
+  'jc:cloak-page-new', 'jc:cloak-page-reload', 'jc:cloak-page-send', 'jc:cloak-start', 'jc:cloak-status',
+  'jc:cloak-status-changed', 'jc:cloak-stop',
+  'jc:fetch-url', 'jc:llm-proxy', 'jc:material-pick', 'jc:material-read', 'jc:open-external',
+  'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
+  'jc:save-file', 'jc:save-pdf', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
+  'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
+  'jc:webview-diag', 'jc:webview-input', 'jc:webview-input-done', 'jc:webview-open-link', 'jc:webview-source',
+  'jc:window-always-on-top', 'jc:window-always-on-top-changed', 'jc:window-always-on-top-set',
+  'jc:window-close', 'jc:window-focus-changed', 'jc:window-is-maximized', 'jc:window-maximize',
+  'jc:window-maximized-changed', 'jc:window-minimize',
+]);
+
 const assertIpcChannel = (method, channel) => {
-  if (typeof channel !== 'string' || !/^jc:/.test(channel)) {
-    console.warn(`[preload/app] 非约定前缀 IPC 通道 ${method}('${String(channel)}') —— 通道须以 jc: 开头并在 main.cjs 注册`);
+  if (typeof channel !== 'string' || !ALLOWED_IPC_CHANNELS.has(channel)) {
+    const msg = `[preload/app] 拒绝非白名单 IPC 通道 ${method}('${String(channel)}') —— 通道须在 ALLOWED_IPC_CHANNELS 表内`;
+    console.error(msg);
+    throw new Error(msg);
   }
   return channel;
 };
@@ -59,6 +80,9 @@ const api = {
   // 清除指定平台在 persist:bossclaw 会话中的登录 cookie（设置页「退出登录」用）
   bossLogout: (platform) => ipcRenderer.invoke('jc:boss-logout', platform),
 
+  // 本地桥（OpenClaw）访问令牌：随机生成、存于 ~/.bossclaw/bridge-token（C-2，不再随 bundle 分发）
+  bridgeToken: () => ipcRenderer.invoke('jc:bridge-token'),
+
   // 内置浏览器 webview 预加载脚本绝对路径（由 BrowserView 组件读取后设置到 <webview>）
   // 注意：webview 标签的 preload 属性协议必须是 file:（Electron 文档硬性要求，反斜杠绝对路径会被拒绝加载）
   webviewPreload: pathToFileURL(path.join(__dirname, 'webview.cjs')).href,
@@ -83,6 +107,13 @@ const api = {
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),
+  savePdfBatch: (items, requestId) => ipcRenderer.invoke('jc:save-pdf-batch', items, requestId),
+  cancelPdfBatch: (requestId) => ipcRenderer.invoke('jc:save-pdf-batch-cancel', requestId),
+  onPdfBatchProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress);
+    ipcRenderer.on('jc:save-pdf-batch-progress', handler);
+    return () => ipcRenderer.removeListener('jc:save-pdf-batch-progress', handler);
+  },
   // 通用文本导出（CSV）：主进程弹系统保存对话框由用户选位置后写盘（extWhitelist 默认 ['csv']）
   saveFile: (defaultName, content, extWhitelist) =>
     ipcRenderer.invoke('jc:save-file', defaultName, content, extWhitelist),
@@ -101,6 +132,9 @@ const api = {
   // 系统文件选择对话框（多选）→ 返回 [{ path, name }]
   materialPick: () => ipcRenderer.invoke('jc:material-pick'),
   // 按绝对路径现读文件 → { ok, name, dataUrl, bytes }
+  // 防护由主进程统一实施（扩展名白名单 + 敏感文件名/目录黑名单 + 20MB 上限）——
+  // 刻意**不**在渲染层做「仅允许本次选过的路径」限制：历史素材只存在渲染层 localStorage，
+  // 那样做会让升级后所有历史素材都需重新选择（UX 回归），且防护面并未真正收紧。
   materialRead: (filePath) => ipcRenderer.invoke('jc:material-read', filePath),
 
   // ===== AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）=====

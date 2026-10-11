@@ -154,7 +154,9 @@ export function fallbackApplicantGreeting(job: JobMeta, profile: Profile | null)
 
   const body: string[] = [];
   if (identity) body.push(`我是${identity}`);
-  if (showSkills.length) body.push(`熟悉${showSkills.join('、')}`);
+  // M-19：本地兜底**不得**给技能硬加「熟悉」前缀 —— 会把简历里写「了解」的技能升格为「熟悉」。
+  // 兜底只表达「简历技能区列出了这些」，不附加水平描述语（水平由 AI 或原文决定）。
+  if (showSkills.length) body.push(`技能涉及${showSkills.join('、')}`);
   if (award) body.push(`曾获${award}`);
   const parts = [`您好，我想应聘贵公司的${title}岗位。`];
   if (body.length) parts.push(`${body.join('，')}。`);

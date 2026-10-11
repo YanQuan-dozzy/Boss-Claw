@@ -10,6 +10,7 @@
 import { extractPdfText, isReadableResumeText } from './pdfExtractor';
 import { extractDocxText } from './docxParser';
 import { extractDocText } from './docParser';
+import { decodeTextBytes } from './docParser';
 import { markdownToPlainText } from './mdParser';
 
 export interface ResumeParseResult {
@@ -37,7 +38,8 @@ export async function parseResumeFile(file: File, bridgeFallback?: BridgeFallbac
   const warnings: string[] = [];
 
   if (kind === 'md') {
-    const raw = await file.text();
+    // M-24：按字节读入并做编码兜底（原 file.text() 只按 UTF-8 解 → GBK 简历静默乱码）
+    const raw = decodeTextBytes(new Uint8Array(await file.arrayBuffer()));
     const cleaned = markdownToPlainText(raw);
     const text = (cleaned || raw).trim();
     if (!text) {
@@ -48,8 +50,12 @@ export async function parseResumeFile(file: File, bridgeFallback?: BridgeFallbac
   }
 
   if (kind === 'text') {
-    const text = await file.text();
-    return { text: String(text || '').trim(), method: 'text', warnings };
+    // M-24：同上，按字节解码（UTF-8 → GB18030 → cp1252 兜底）；并补「可读正文」提示
+    const text = decodeTextBytes(new Uint8Array(await file.arrayBuffer())).trim();
+    if (text && !isReadableResumeText(text)) {
+      warnings.push('未识别到可靠的简历正文（可能是乱码或非文本内容），请检查文件编码，或直接复制正文粘贴。');
+    }
+    return { text, method: 'text', warnings };
   }
 
   if (kind === 'pdf') {

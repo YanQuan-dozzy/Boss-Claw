@@ -592,7 +592,8 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     if (p.status === 'sent') pfAcc.sent += 1;
     else if (p.status === 'failed') pfAcc.failed += 1;
     else if (WAITING_STATUSES.includes(p.status)) pfAcc.waiting += 1;
-    if (score !== null) { pfAcc.scoreSum += score; pfAcc.analyzed += 1; }
+    // L-21：与 dimensionAvg 口径对齐（要求 v>=0）—— 原实现只用 `score !== null`，负分也被计入均分
+    if (score !== null && score >= 0) { pfAcc.scoreSum += score; pfAcc.analyzed += 1; }
     platformAcc.set(pf, pfAcc);
 
     const dirKey = p.runId ? runDirection.get(String(p.runId)) || '未归属方向' : '未归属方向';
@@ -601,7 +602,8 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     if (p.status === 'sent') dirAcc.sent += 1;
     else if (p.status === 'failed') dirAcc.failed += 1;
     else if (WAITING_STATUSES.includes(p.status)) dirAcc.waiting += 1;
-    if (score !== null) { dirAcc.scoreSum += score; dirAcc.analyzed += 1; }
+    // L-21：同上游口径（v>=0）保持一致
+    if (score !== null && score >= 0) { dirAcc.scoreSum += score; dirAcc.analyzed += 1; }
     directionAcc.set(dirKey, dirAcc);
   }
 

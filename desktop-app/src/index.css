@@ -1216,16 +1216,53 @@ html[data-theme='dark'],
   height: 100%;
 }
 
+/*
+  双栏布局下（≥1181px）左列不参与 grid 行高（auto row）的 max-content 计算：
+  行高只由右列（设置卡 + 日志面板）决定，左列传多长的队列都不会把整行 / 整页拉长。
+
+  为什么需要它：队列卡是「与右列等高、卡内滚动」的（见下），卡片自身的 max-content
+  等于整条队列的高度；一旦左列参与行高计算，十几个岗位就能把行高顶到几千像素，
+  右列的日志卡被一起拉长、整页变长 —— 这正是旧版把队列限死「最多 3 张」来绕开的问题。
+  这里从根上解掉：行高归右列，左列只负责「填满这一行」。
+  （单列布局没有右侧同排行可对齐，contain 会让左列高塌成 0，故只在双栏断点内启用。）
+*/
+@media (min-width: 1181px) {
+  .autochat-main {
+    contain: size;
+  }
+}
+
+/*
+  最后一张卡 = 待沟通岗位队列卡：撑满左列剩余高度（底边与右列对齐），
+  队列在卡内滚动、可视条数随窗口/右列自适应（不再固定 3 张）。
+  min-height: 0 是压缩链的必需项 —— 默认 min-height: auto 会让卡片被内容顶高，
+  卡片撑出列外、整页被队列拉长。
+*/
 .autochat-main > .setting-card:last-child {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
 .autochat-main > .setting-card:last-child .ant-card-body {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/*
+  单列布局（≤1180px）：右列落到下方，没有「等高对齐」的对象。
+  此时队列区按约一屏封顶（而不是按内容铺开），超出在卡内滚动，
+  否则十几张卡会把整页拉到几千像素。
+*/
+@media (max-width: 1180px) {
+  .autochat-main > .setting-card:last-child {
+    /* 单列时左列高度由内容决定（flex: 1 1 0 会因没有剩余空间而塌成 0），故改回按内容布局 */
+    flex: 0 1 auto;
+    max-height: calc(100vh - 240px);
+  }
 }
 
 .autochat-side {
@@ -1278,18 +1315,20 @@ html[data-theme='dark'],
   }
 }
 
-/* ===== 自动沟通：待沟通队列滚动容器（默认最多展示 3 张卡片，其余在容器内滚动） ===== */
+/* ===== 自动沟通：待沟通队列滚动容器（铺满卡片剩余高度，超出部分在容器内滚动） ===== */
 .autochat-queue-scroll {
-  /* 四周留 2px，避免卡片描边 / 激活态外发光被 overflow 裁切（上下 2px 已计入 JS 的 max-height） */
+  /* 四周留 2px，避免卡片描边 / 激活态外发光被 overflow 裁切 */
   padding: 2px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-.autochat-queue-scroll.is-scrollable {
-  /* 预留滚动条槽位，避免出现/消失时卡片宽度抖动 */
+  /* 常驻预留滚动条槽位：可视条数随窗口变化，出现/消失时卡片宽度不再抖动 */
   scrollbar-gutter: stable;
+  /* 吃掉卡内剩余高度：列表区永远铺满「卡片 body − 底部提示行」，
+     而不是把差额留在卡底变成空白。滚动容器在 flex 主轴上的自动最小尺寸为 0，
+     配合 min-height: 0 才允许在队列很长时被压缩（否则会把卡片顶高、整页被拉长）。 */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .autochat-queue-more {
@@ -6071,6 +6110,10 @@ html[data-theme='dark'] .skill-chip-gap:hover {
 }
 .tailor-point-row--missing {
   border-left: 3px solid rgba(245, 34, 45, 0.6);
+}
+/* 待复核：正文已改但该要点未获得有效复核（旧历史 / 复核失效），用中性虚线区分于三档结论 */
+.tailor-point-row--pending {
+  border-left: 3px dashed rgba(120, 130, 145, 0.55);
 }
 .tailor-point-name {
   flex: 1 1 auto;
