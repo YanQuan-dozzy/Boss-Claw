@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.6-078A83)
+![Version](https://img.shields.io/badge/version-v2.5.7-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E42-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.6**（2026-10-09 发布，Windows x64）；上一正式版为 v2.5.5（2026-09-22）。本条目的改动主轴是**内核升级 Electron 31 → 42（Chromium 126 → 148）**，另含内置浏览器请求头与真机画像对齐、猎聘 / 前程无忧全链路、岗位过期判定、AI 跟聊监听、旧版 `.doc` 解析、代码审查修复批次与 PDF 解析卡死修复；**v2.5.6 发布后 `main` 另含社区贡献的 Camoufox 聊天上下文隔离修复（PR #5 / Fixes #4）**；功能表按当前实现标注。
+> **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.7**（2026-10-13 发布，Windows x64）；上一正式版为 v2.5.6（2026-10-09）。本条目的改动主轴是**工作台岗位「定制简历」（单岗位 / 批量 / 迭代生成）+ 猎聘投递链路升级（招呼语真实输入发送、文字气泡确认才计成功）+ 控制桥 / 本地桥安全护栏批次**，另含社区贡献的 Camoufox 聊天上下文隔离修复（PR #5 / Fixes #4）与自动沟通「安全节奏」卡片排版收敛；功能表按当前实现标注。
 
 ## 下载安装
 
@@ -26,8 +26,8 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.6-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.6-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.6-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.6-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.5.7-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.7-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.5.7-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.7-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目前仍为 **v2.5.3**，见 [Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases) 对应版本页；也可从源码自行打包（`npm run package:linux` / `package:mac`，macOS 的 dmg 只能在 macOS 上构建）。
 
@@ -184,7 +184,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.6）
+├── desktop-app/               当前主应用（Electron + React，v2.5.7）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs + preload/（app / webview / platform-adapters）
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 7 项）· React 渲染进程（store / components / pages / lib）
@@ -218,7 +218,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 反馈与联系
 
-遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.5.6）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
+遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.5.7）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
 
 ## 开源许可与署名
 

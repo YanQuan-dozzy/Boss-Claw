@@ -218,7 +218,7 @@ release/
 ```
 
 > `<version>` 取 `desktop-app/package.json` 的 `version`（单一来源；安装包名由 electron-builder 按同一字段生成）。
-> 示例：`version` = `2.5.6` → `BossClaw-2.5.6-x64.exe`。
+> 示例：`version` = `2.5.7` → `BossClaw-2.5.7-x64.exe`。
 
 ### Linux（`npm run package:linux` 或 `package:all`）
 
@@ -327,10 +327,14 @@ release/
 
 ## 变更记录
 
-* **main（v2.5.6 之后，尚未打包发布）** — 社区贡献修复（PR #5 / Fixes #4）：**Camoufox 聊天上下文隔离，修复搜索框误识别**。
-  * BOSS 沟通链路把搜索 / 筛选控件**硬排除**；聊天就绪判定、身份核验、输入、发送与附件全部限定在同一「**已验证聊天面板**」内，不再把搜索框误当聊天输入框。
-  * 目标不明或冲突时 **fail-closed**（`sent=false`），发送前与附件前**重复核验**；修复 Playwright `evaluate` 单参数调用错位。
-  * 新增真实 Playwright DOM 回归 `camoufox/tests/test_chat_context.py`（含 `tests/fixtures/` 的 `chat.html` / `detail.html`）。
+* **v2.5.7（2026-10-13 发布）** — 工作台岗位「定制简历」+ 猎聘投递链路升级 + 控制桥 / 本地桥安全护栏批次 + 社区贡献修复：
+  * **工作台岗位「定制简历」**（`tailorJob.ts` / `tailorBatch.ts` + `TailorResultView` / `JobAssistant`）：单岗位 / 批量 / 迭代三档生成，主进程 `resume-pdf-batch.cjs` 独占写盘防竞态（`wx` + 同名自动编号），配套 `test:tailor-job` / `test:tailor-batch` / `test:tailor-iteration` 三支回归。
+  * **猎聘投递链路升级（双通道同源）**：webview（preload）与 Camoufox（Python）均改为「点『聊一聊』→ 校验草稿 / 会话未变 → **真实输入本岗位招呼语** → 发送 → 读取 IM 状态确认**新增本人文字消息**才计成功」（仅会话打开不再计成功）；输入 / 发送前后命中风控即停交人工，草稿异常保留待人工核对。新增只读 IM 状态模块 `electron/preload/liepin-im.cjs`（纯 DOM 零 Electron 依赖，可离线回归）与 `test:webview-send` / `test:webview-native-send` / `test:liepin-im` / `test:liepin-delivery`（Python）回归。
+  * **控制桥 / 本地桥安全护栏批次**：本地桥令牌改**运行时随机生成**（`~/.bossclaw/bridge-token`，仅本机可读）+ Origin / Host 白名单 + 常量时间比较（C-2 / L-4），`config.json` 移除硬编码令牌；控制桥 `CONFIG_DENY` 补安全侧配置（活跃时段 / 批次休息 / 首条验收 / 日上限，防 agent 关掉安全节奏自证绕过，H-1）、`uiClick` / `uiType` / `uiSubmit` 强制显式 scope 且拦 app 作用域高危控件（H-2）、`autochatStart` / `autochatStep` 补 `executionMode` 护栏（C-1）、浏览器导航走招聘平台白名单（M-35）；素材「按路径读取」采用文件名 / 目录黑名单 + 扩展名白名单（H-6 / M-3）；`App.tsx` 页面常驻不再随进入工作台整体卸载（M-41）。
+  * **社区贡献修复（PR #5 / Fixes #4）**：**Camoufox 聊天上下文隔离，修复搜索框误识别** —— BOSS 沟通链路把搜索 / 筛选控件**硬排除**；聊天就绪判定、身份核验、输入、发送与附件全部限定在同一「**已验证聊天面板**」内，不再把搜索框误当聊天输入框；目标不明或冲突时 **fail-closed**（`sent=false`），发送前与附件前**重复核验**；修复 Playwright `evaluate` 单参数调用错位；新增真实 Playwright DOM 回归 `camoufox/tests/test_chat_context.py`。
+  * **界面**：自动沟通「安全节奏」卡片排版收敛 —— 三格等宽等高 / 作息改单列整行 / 字段级说明收进 Tooltip。
+  * **依赖锁修复**：`package-lock.json` 对齐 Electron 42 / electron-builder 26（此前 lock 仍锁 31.7.7 / 24，干净 `npm ci` 会装回 Electron 31 致升级丢失）。
+  * 门禁：`tsc -b` + `vite build` 通过；`scripts/` 全量静态回归通过。
 
 * **v2.5.6（2026-10-09 发布）** — 内核升级 Electron 31 → 42 + 内置浏览器反检测增强 + 猎聘 / 前程无忧全链路 + 岗位过期判定 + AI 跟聊监听 + 代码审查修复：
   * **内置浏览器「主世界」反检测补丁**（新增 `electron/preload/stealth.cjs`）：`<webview>` 的 preload 与 `session.setPreloads` 均运行在**隔离世界**，改不了主世界 `navigator` —— 故补丁以源码字符串导出，由主进程 `executeJavaScript` 注入**主世界**（`did-start-loading` + `dom-ready` 双时机、内建幂等守卫）。补丁项 `uaCh` / `languages` / `notification` / `chromeObject` / `toStringGuard` 可用环境变量 `BOSSCLAW_STEALTH`（`off` / `only=a,b` / `skip=a,b`）单项开关；`webdriver` / `plugins` 经实测原生即正常，默认不改（盲改反会引入新破绽）。内置 11 类指纹自检探针 + 不变量断言（改补丁后必跑，防「修一个洞、开两个洞」）。
