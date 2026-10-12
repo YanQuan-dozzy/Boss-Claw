@@ -17,7 +17,7 @@ BossHunter 的核心贡献之一：把「某个平台到底支持哪些动作」
   - monitor  ：HR 回复监听（**当前未实现**，四个平台都不含此能力）
 
 投递语义另表 `PLATFORM_DELIVERY_KIND`，与 TS 侧 `PlatformMeta.deliveryKind` 同源：
-  chat（BOSS 聊天文字气泡）/ greet_auto（猎聘 App 预设招呼语）/ resume（投递简历按钮）
+  chat（BOSS/猎聘招呼语文字消息）/ resume（投递简历按钮）
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ ALL_CAPABILITIES: tuple = ('collect', 'score', 'greet', 'deliver', 'attach', 'mo
 # ============================================================
 PLATFORM_DELIVERY_KIND: dict[str, str] = {
     'boss': 'chat',
-    'liepin': 'greet_auto',
+    'liepin': 'chat',
     'zhaopin': 'resume',
     'job51': 'resume',
 }

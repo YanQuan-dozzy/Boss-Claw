@@ -19,10 +19,13 @@
 // 不绕过平台安全措施。code 36/32/35/37/38 统一映射风控码，由上层（Workbench + safety.ts）处理。
 'use strict';
 
-const { ipcRenderer } = require('electron');
+const { ipcRenderer, webFrame } = require('electron');
 // 多平台 DOM 适配表（webview 侧唯一权威：列表选择器 / 链接形态 / 页面形态判定）。
 // 纯数据 + 纯函数、零 DOM 依赖 → 可直接单测（见 desktop-app/tmp/probe-webview-platforms.cjs）。
 const ADAPTERS = require('./platform-adapters.cjs');
+// 猎聘 IM 状态读取（纯 DOM 读取，零 Electron 依赖 → 可离线回归）。
+// 「会话窗口打开」不等于「招呼语已发送」，故发送与确认都以此模块的状态快照为准。
+const { readLiepinImState, findNewLiepinConversation, normalizeLiepinText, readLiepinDeliveryState } = require('./liepin-im.cjs');
 // 人类化输入计划（纯函数，零 DOM 依赖 → 单测见 desktop-app/scripts/humanize-regression.mjs）。
 // 只负责「怎么动」，不发事件；真实点击/输入仍走 jc:webview-input 主进程通道。
 const humanize = require('./humanize.cjs');
@@ -1008,29 +1011,78 @@ function isDisabledish(el) {
     || /(^|\s)disable(d)?(\s|$)/i.test(String(el?.className || ''));
 }
 
-function sendButton(input, opts = {}) {
-  const allowDisabled = Boolean(opts && opts.allowDisabled);
-  if (!input) return null;
-  // 「立即沟通」弹窗的发送是 <div class="send-message disable">发送</div>（非 button），
-  // 初始带 disable 类、由页面框架在输入内容后移除；allowDisabled=true 时也返回该元素，
-  // 由调用方 waitFor 其启用后再点击（默认 false 保持原有语义：只认已启用按钮）。
-  const usable = (el) => visible(el) && (allowDisabled || !isDisabledish(el));
-  const sels = '.send-message, [class*="send-message"], [class*="sendMessage"], .send-btn, .btn-send, [class*="sendBtn"], [class*="btn-send"], [class*="chatSend"], [class*="chat-send"]';
-  // 优先输入框所属编辑区/弹窗内的按钮（避免被页面底部全局的「发送」误命中）
-  const scope = input.closest('[class*="edit-area"], [class*="editArea"], .startchat-content, [class*="startchat"], [class*="chat-input"], [class*="input-box"], [class*="editor"]');
-  const scoped = scope ? all(sels).filter((el) => scope.contains(el)).find(usable) : null;
-  const labelMatch = scoped || all(sels).find(usable);
-  if (labelMatch) {
-    const label = textOf(labelMatch);
-    if (!/发送简历|发送附件|发送在线简历|发简历|图片/.test(label) && (/^发送$/.test(label) || /send/i.test(String(labelMatch.className || '')))) return labelMatch;
+function chatSendVisible(el) {
+  return Boolean(el?.isConnected && visible(el) && !el.closest('[hidden],[aria-hidden="true"]'));
+}
+
+function chatSendEditors(root) {
+  const excluded = '[class*="user-list"],[class*="friend-list"],[class*="contact-list"],[class*="conversation-list"],[class*="recommend"],[class*="similar-job"]';
+  return all('input,textarea,[contenteditable="true"],[contenteditable="plaintext-only"]', root).filter(el => {
+    if (!chatSendVisible(el) || isDisabledish(el) || el.readOnly || el.closest(excluded + ',[aria-readonly="true"],[aria-disabled="true"]')) return false;
+    if (el.parentElement?.closest('[contenteditable="true"],[contenteditable="plaintext-only"]')) return false;
+    const hints = ['placeholder', 'aria-label', 'title', 'name'].map(attr => el.getAttribute(attr) || '').join(' ');
+    const semantics = hints + ' ' + el.id + ' ' + String(el.className || '');
+    if (el.type === 'search' || /search|filter|搜索|查找|筛选|关键词/i.test(semantics) || el.closest('[role="search"]')) return false;
+    if (el.matches('input') && !el.matches('input[type="text"],input:not([type])')) return false;
+    return el.id === 'chat-input' || /chat-input|input-area/.test(String(el.className || ''))
+      || /消息|回复|打招呼|沟通/.test(hints) || Boolean(el.isContentEditable && el.closest('.chat-editor'));
+  });
+}
+
+function chatSendPanel(input) {
+  const panels = '.chat-conversation,[class*="chat-panel"],[class*="chat-window"],.startchat-content';
+  for (let panel = input?.parentElement; panel && !panel.matches('body,html'); panel = panel.parentElement) {
+    if (!panel.matches(panels) || !chatSendVisible(panel)) continue;
+    const messages = all('.im-list,.message-list,[class*="message-list"]', panel).filter(chatSendVisible);
+    const headers = all('.chat-header,[class*="chatHeader"],.conversation-header,[class*="chat-title"]', panel)
+      .filter(el => chatSendVisible(el) && !el.querySelector('input,textarea,[contenteditable],.im-list,.message-list'));
+    // 当前 BOSS 的 .chat-conversation 首个直接子节点是收件人/岗位头部。
+    // 只在已确认的聊天面板内使用该结构，不能读取页面正文或会话列表。
+    const first = panel.firstElementChild;
+    const header = headers.length === 1 ? headers[0] : headers.length === 0 && panel.matches('.chat-conversation')
+      && chatSendVisible(first) && !first.matches('input,textarea,[contenteditable],.im-list,.message-list')
+      && !first.querySelector('input,textarea,[contenteditable],.im-list,.message-list') ? first : null;
+    if (messages.length === 1 && header && normalizeChatText(textOf(header))) return { panel, header, messages: messages[0] };
   }
-  // 兜底：输入框右下方最近的「发送」按钮
-  const inputRect = input.getBoundingClientRect();
-  return all('button,[role="button"],[class*="send"]').find((el) => {
-    if (!usable(el)) return false;
-    const rect = el.getBoundingClientRect();
-    return /^发送$/.test(textOf(el)) && Math.abs(rect.top - inputRect.bottom) < 200 && rect.left > inputRect.left - 60;
-  }) || null;
+  return null;
+}
+
+function createChatSendContext(input) {
+  const editors = chatSendEditors(document);
+  if (editors.length !== 1 || editors[0] !== input) return null;
+  const scopes = editors.map(editor => ({ editor, scope: chatSendPanel(editor) })).filter(item => item.scope);
+  if (scopes.length !== 1 || scopes[0].editor !== input) return null;
+  const scope = scopes[0].scope;
+  return { ...scope, input, identity: normalizeChatText(textOf(scope.header)), url: location.href };
+}
+
+function currentChatSendInput(context) {
+  if (!context || location.href !== context.url || !chatSendVisible(context.panel) || !chatSendVisible(context.header)
+    || !context.panel.contains(context.header) || !context.panel.contains(context.messages)
+    || !chatSendVisible(context.messages) || normalizeChatText(textOf(context.header)) !== context.identity) return null;
+  const editors = chatSendEditors(document);
+  if (editors.length !== 1) return null;
+  const scope = chatSendPanel(editors[0]);
+  return scope?.panel === context.panel && scope.header === context.header && scope.messages === context.messages ? editors[0] : null;
+}
+
+function sendButton(input, opts = {}) {
+  const context = opts.context || createChatSendContext(input);
+  if (!context || currentChatSendInput(context) !== input) return null;
+  const selector = 'button,[role="button"],.send-message,[class*="send-message"],[class*="sendMessage"],.send-btn,.btn-send,[class*="sendBtn"],[class*="chat-send"],[aria-label],[title]';
+  const matches = all(selector, context.panel).filter(el => {
+    if (!chatSendVisible(el) || el === input || input.contains(el) || el.closest('[contenteditable],textarea,input')) return false;
+    if (context.header.contains(el) || context.messages.contains(el)
+      || !el.matches('button,[role="button"],[class*="send"],[class*="Send"]')) return false;
+    const labels = [textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].map(normalizeChatText);
+    if (labels.some(label => /图片|图像|附件|简历|电话|微信|image|photo|attach|resume|phone|wechat/i.test(label))) return false;
+    return labels.some(label => /^(发送|发送消息|发送文字|发送文本|发送招呼语|send|send message|send text)$/i.test(label));
+  });
+  // 内层有相同语义的 span 时只保留其真实 button/role=button，避免祖先重复。
+  const candidates = matches.filter(el => !matches.some(other => other !== el && other.contains(el)
+    && other.matches('button,[role="button"]')));
+  if (candidates.length !== 1 || (!opts.allowDisabled && isDisabledish(candidates[0]))) return null;
+  return candidates[0];
 }
 
 // 文本归一化：去掉零宽字符/统一空白，用于气泡级匹配招呼文案
@@ -1073,36 +1125,76 @@ function focusEditableScoped(input) {
   } catch {}
   return editor;
 }
-// 文字气泡确认：发送后聊天记录里出现刚发送的文字（安全不变量：未确认不计成功）。
-// BOSS 聊天 DOM 屡次改版，气泡节点语义类各不相同：按「气泡级选择器 + 文本归一化」匹配，
-// 避免只按固定的容器选择器整段判断而漏掉（导致已成功发送却被误判失败、未写入已投递）。
-function confirmOwnMessage(greeting) {
-  const needle = normalizeChatText(greeting).slice(0, 30);
-  // M-9：确认阈值原为 <12，**严于发送阈值（≥8）** → 8-11 字的招呼语真实发送后永远无法确认，
-  // 被误判 failed（且未记「已投递」）。与发送侧对齐到 8。
-  if (!needle || needle.length < 8) return false;
-  // 聊天气泡节点语义类（对齐 job-claw-main chatMessageNodes 的选择器集）
-  const bubbleSelectors = [
-    '.message-content', '.chat-message', '.message-item', '.message-text',
-    '[class*="message-content"]', '[class*="messageContent"]',
-    '[class*="chat-message"]', '[class*="chatMessage"]',
-    '[class*="message-item"]', '[class*="messageItem"]',
-    '[class*="message-text"]', '[class*="messageText"]',
-    '[class*="bubble"]', '[class*="chat-record"]', '[class*="chatRecord"]',
-    '[class*="item-myself"]', '[class*="itemMyself"]',
-    '[class*="msg-item"]', '[class*="msgItem"]', '[data-message-id]',
-    '[class*="conversation"] .msg', '[class*="chat-list"] [class*="item"]',
-  ];
-  // 1) 气泡级精确匹配：某个消息节点正文等于招呼语或其前 30 字
-  const nodes = new Set();
-  for (const sel of bubbleSelectors) { for (const el of all(sel)) nodes.add(el); }
-  for (const el of nodes) {
-    if (!visible(el)) continue;
-    const t = normalizeChatText(el.innerText || el.textContent || '');
-    if (t && t.includes(needle)) return true;
+function ownMessageEntries(context) {
+  if (!currentChatSendInput(context)) return [];
+  const own = '.item-myself,.item-self,.item-own,.message-self,[data-direction="outgoing"],[data-from="self"]';
+  return all(own, context.messages).filter(node => chatSendVisible(node)
+    && !node.parentElement?.closest(own) && !node.closest('[contenteditable],textarea,input')
+    && !node.matches('.failed,.sending,[data-status="failed"],[data-status="sending"]')).flatMap(node => {
+      const texts = all('.text,.message-content,.message-text,.text-content,[data-message-text],.bubble-text', node)
+        .filter(el => chatSendVisible(el) && !el.closest('[contenteditable],textarea,input'));
+      const leaves = texts.filter(el => !texts.some(other => other !== el && el.contains(other)));
+      if (leaves.length !== 1) return [];
+      const text = normalizeChatText(textOf(leaves[0]));
+      return text ? [{ node, text, id: node.getAttribute('data-message-id') || node.getAttribute('data-mid') || '' }] : [];
+    });
+}
+
+function captureOwnMessages(context) {
+  if (!currentChatSendInput(context)) return null;
+  const entries = ownMessageEntries(context);
+  return { entries, nodes: new Set(entries.map(entry => entry.node)), ids: new Set(entries.map(entry => entry.id).filter(Boolean)),
+    messages: context.messages, tail: context.messages.lastElementChild };
+}
+
+function confirmOwnMessage(greeting, context, before) {
+  const input = currentChatSendInput(context);
+  const needle = normalizeChatText(greeting);
+  if (!input || !needle || !before || before.messages !== context.messages
+    || normalizeChatText(input.value || input.innerText || '') || before.entries.some(entry => entry.text === needle)) return false;
+  // 历史列表整段重建/虚拟滚动不能证明本次新增；证据不足时交人工核对。
+  if (before.tail && (!before.tail.isConnected || before.tail.parentElement !== context.messages)) return false;
+  return ownMessageEntries(context).some(entry => entry.text === needle && !before.nodes.has(entry.node)
+    && !(entry.id && before.ids.has(entry.id))
+    && (!before.tail || Boolean(before.tail.compareDocumentPosition(entry.node) & Node.DOCUMENT_POSITION_FOLLOWING)));
+}
+
+async function sendChatMessage(context, greeting, before) {
+  const fail = (reason, clicked = false, sent = clicked ? null : false) => {
+    // 直接触发发送时可能没有活跃队列任务；log 阶段仍会保留这条脱敏终态。
+    notify('apply-stage', { stage: 'log', message: `文字发送停止：${reason}`, sent });
+    return { ok: false, reason, clicked, sent };
+  };
+  const expected = normalizeChatText(greeting);
+  if (!expected || !before || !currentChatSendInput(context)) return fail('聊天面板或会话已变化');
+  if (before.entries.some(entry => entry.text === expected)) return fail('历史消息已包含相同文字，请人工核对避免重复发送');
+  const btn = await waitFor(() => {
+    const input = currentChatSendInput(context);
+    if (!input || normalizeChatText(input.value || input.innerText || '') !== expected) return null;
+    return sendButton(input, { context });
+  }, 4000, '文字发送按钮启用');
+  if (!btn) {
+    notify('apply-stage', { stage: 'log', message: '文字发送前置检查失败：会话变化、按钮不唯一或启用超时', sent: false });
+    return fail('未找到唯一且已启用的文字发送按钮，已停止');
   }
-  // 2) 兜底：整篇页面正文包含招呼语（发送成功后输入框已清空，正文仅剩发出的气泡；覆盖选择器未命中的改版 DOM）
-  return normalizeChatText(document.body?.innerText).includes(needle);
+  notify('apply-stage', { stage: 'log', message: '文字发送按钮已启用', button: { tag: btn.tagName.toLowerCase(),
+    label: '文字发送', enabled: true }, sent: null });
+  const guard = () => {
+    const input = currentChatSendInput(context);
+    return Boolean(input && normalizeChatText(input.value || input.innerText || '') === expected
+      && sendButton(input, { context }) === btn && !ownMessageEntries(context).some(entry => entry.text === expected));
+  };
+  // 不走 humanClickElement 的去重/合成兜底：仅一次可信文字发送，失败后不能再回车或重发。
+  const clicked = await trustedClickElement(btn, { guard, report: (step, ok) => {
+    // Workbench 只持久化 message；不能把回执状态只放在会被丢弃的元数据中。
+    notify('apply-stage', { stage: 'log', message: `文字发送点击检查：${step}=${ok ? '通过' : '失败'}`, sent: null });
+  } });
+  notify('apply-stage', { stage: 'log', message: `文字发送可信点击回执：${clicked ? '成功' : '失败'}`, trustedClick: clicked, sent: null });
+  if (!clicked) return fail('文字发送可信点击失败，已停止；请人工核对消息状态', false, null);
+  notify('apply-stage', { stage: 'verify_message', label: '确认新增完整己方文字气泡', sent: null });
+  const confirmed = await waitFor(() => confirmOwnMessage(greeting, context, before), 8000, '新增完整文字气泡确认');
+  if (!confirmed) return fail('未能确认新增完整己方文字气泡，请人工核对，禁止自动重发', true);
+  return { ok: true, clicked: true, sent: true };
 }
 
 // 真实鼠标点击（isTrusted:true，经主进程 sendInputEvent 产生）。
@@ -1127,19 +1219,79 @@ function elementCenter(el) {
   } catch { return null; }
 }
 
+function visibleClickPoint(el) {
+  if (!el?.isConnected) return null;
+  const rect = el.getBoundingClientRect();
+  const left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+  const right = Math.min(innerWidth, rect.right), bottom = Math.min(innerHeight, rect.bottom);
+  if (right - left < 4 || bottom - top < 4) return null;
+  // 小尺寸内嵌视口会裁切页面，固定浮层也可能仅遮住按钮中心。
+  // 只在此按钮与视口的交集中找点，并逐点检查真实顶层命中；不点击浮层或相邻控件。
+  for (const fy of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+    for (const fx of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+      const x = Math.round(left + (right - left) * fx), y = Math.round(top + (bottom - top) * fy);
+      const hit = document.elementFromPoint(x, y);
+      if (hit === el || (hit && el.contains(hit))) return { x, y };
+    }
+  }
+  return null;
+}
+
+function observeTrustedClick(el) {
+  let finish;
+  let timer;
+  const receipt = new Promise(resolve => { finish = resolve; });
+  const done = (ok) => {
+    clearTimeout(timer);
+    document.removeEventListener('click', onClick, true);
+    finish(ok);
+  };
+  const onClick = (event) => {
+    // 派发 IPC 成功并不等于按钮收到点击。只接受此按钮/其子节点的原生 click。
+    if (!event.isTrusted) return;
+    done(Boolean(el.isConnected && (event.target === el || el.contains(event.target))));
+  };
+  document.addEventListener('click', onClick, true);
+  timer = setTimeout(() => done(false), 1200);
+  return { receipt, cancel: () => done(false) };
+}
+
 async function trustedClickElement(el, opts = {}) {
   if (!el) return false;
   try { el.scrollIntoView?.({ block: 'center', behavior: 'instant' }); } catch {}
   await jitterDelay(200);
-  const to = elementCenter(el);
+  const to = opts.guard ? visibleClickPoint(el) : elementCenter(el);
+  opts.report?.('按钮坐标', Boolean(to));
   if (!to) return false;
   const from = lastCursor || { x: Math.max(0, to.x - 70 - Math.round(Math.random() * 40)), y: Math.max(0, to.y - 50 - Math.round(Math.random() * 30)) };
   const path = humanize.buildMousePath(from, to);
   if (opts.settle !== false) await sleep(humanize.settleDelayMs());
-  const r = await trustedInput('clickAt', '', { x: to.x, y: to.y, path });
-  if (r && r.ok) lastCursor = { x: to.x, y: to.y };
+  let click = { x: to.x, y: to.y, path };
+  if (opts.guard) {
+    // 受保护的文字发送先完成轨迹，再复核。最终 clickAt 不带异步轨迹，
+    // 防止检查后等待鼠标移动期间切换会话，或等待前的坐标变成其他控件。
+    const hovered = await trustedInput('hoverAt', '', { path });
+    opts.report?.('悬停回执', Boolean(hovered?.ok));
+    if (!hovered?.ok) return false;
+    const guarded = Boolean(opts.guard());
+    opts.report?.('会话与草稿守卫', guarded);
+    if (!guarded) return false;
+    const current = visibleClickPoint(el);
+    const hit = current && document.elementFromPoint(current.x, current.y);
+    const hitTarget = Boolean(current && (hit === el || el.contains(hit)));
+    opts.report?.('按钮命中', hitTarget);
+    if (!hitTarget) return false;
+    click = { x: current.x, y: current.y };
+  }
+  const observed = opts.guard ? observeTrustedClick(el) : null;
+  const r = await trustedInput('clickAt', '', click);
+  opts.report?.('输入事件派发', Boolean(r?.ok));
+  if (!r?.ok) observed?.cancel();
+  const received = observed ? await observed.receipt : Boolean(r?.ok);
+  if (observed) opts.report?.('按钮原生点击回执', received);
+  if (r?.ok && received) lastCursor = { x: click.x, y: click.y };
   await jitterDelay(opts.afterMs || 160);
-  return Boolean(r && r.ok);
+  return Boolean(r?.ok && received);
 }
 
 // 纯悬停：只移动光标到元素（可带轨迹），不按键。用于「输入前先把鼠标移过去」。
@@ -1352,22 +1504,37 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
       return;
     }
 
+    const context = createChatSendContext(input);
+    const before = captureOwnMessages(context);
+    if (!context || !before) {
+      notify('apply-stage', { stage: 'failed', error: '无法确定唯一的当前聊天面板，已停止输入和发送', sent: false });
+      return;
+    }
+    if (before.entries.some(entry => entry.text === normalizeChatText(safeGreeting))) {
+      notify('apply-stage', { stage: 'failed', error: '历史消息已包含相同招呼语，请人工核对避免重复发送', sent: false });
+      return;
+    }
     notify('apply-stage', { stage: 'fill_message', label: '填写招呼语' });
     // 仅编辑区内清空/聚焦（严禁整页 selectAll）；随后可信 insertText 插入。
     input.scrollIntoView({ block: 'center' });
     // 先把光标真实移过去再输入：否则序列是「点按钮 → 鼠标不动 → 文字凭空出现」，
     // 这是行为层很显眼的一条（真人必然先移动鼠标）。纯移动、不按键，失败也不影响后续写入。
     await trustedHoverElement(input);
+    if (currentChatSendInput(context) !== input) {
+      notify('apply-stage', { stage: 'failed', error: '输入前聊天会话或输入框发生变化，已停止', sent: false });
+      return;
+    }
     const editor = focusEditableScoped(input);
     // 沟通窗口渲染慢时 Slate 编辑器可能未完全就绪，单次 insertText 易失权：带重试 + 落盘文本校验。
-    const needle20 = normalizeChatText(safeGreeting).slice(0, 20);
     let ins = { ok: false };
     for (let i = 0; i < 3 && !ins.ok; i++) {
+      if (currentChatSendInput(context) !== input) break;
       if (i > 0) { focusEditableScoped(editor); await jitterDelay(400); }
+      if (currentChatSendInput(context) !== input) break;
       ins = await trustedInput('insertText', safeGreeting);
       if (ins.ok) {
         const got = normalizeChatText(editor?.innerText || editor?.value || '');
-        if (got && got.includes(needle20)) break; // 已落盘 → 成功
+        if (got === normalizeChatText(safeGreeting)) break;
         ins = { ok: false }; // 被 Slate 渲染清掉 → 重试
         await jitterDelay(300);
       }
@@ -1391,37 +1558,12 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
       fire();
       setTimeout(fire, 200);
     } catch {}
-    // 找发送按钮（含 disable 态），等待框架把按钮切为可用后点击；点击后仍以文字气泡确认兜底。
-    const btn = sendButton(input, { allowDisabled: true });
-    if (btn) {
-      try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
-      await waitFor(() => !isDisabledish(btn), 4000, '发送按钮启用');
-      // 「发送」是 BOSS 受控组件按钮，与「立即沟通」同属只认 isTrusted 的那一类 → 真实点击优先
-      await humanClickElement(btn, { dedupeMs: 1200 });
-    } else {
-      // 未找到按钮：弹窗 textarea 内回车是换行、不会发送，直接交人工；
-      // 其余输入（contenteditable 聊天页等）仍退回回车发送兜底。
-      const isDialogTextarea = input.matches('textarea');
-      if (!isDialogTextarea) {
-        const enter = await trustedInput('pressEnter');
-        if (!enter.ok) {
-          notify('apply-stage', { stage: 'failed', error: '未找到发送按钮且回车发送失败，已暂停' });
-          return;
-        }
-      } else {
-        notify('apply-stage', { stage: 'failed', error: '未找到可用的发送按钮（发送按钮可能未随输入内容启用），已暂停请人工发送' });
-        return;
-      }
-    }
-
-    // 文字气泡确认（安全不变量）
-    notify('apply-stage', { stage: 'verify_message', label: '确认文字已发送' });
-    const confirmed = await waitFor(() => confirmOwnMessage(safeGreeting), 8000, '文字气泡确认');
-    if (!confirmed) {
-      notify('apply-stage', { stage: 'failed', error: '未能确认文字气泡已发送，请人工核对后重试' });
+    const result = await sendChatMessage(context, safeGreeting, before);
+    if (!result.ok) {
+      notify('apply-stage', { stage: 'failed', error: result.reason, sent: result.sent });
       return;
     }
-    notify('apply-stage', { stage: 'verify_result', label: '确认投递结果', ok: true });
+    notify('apply-stage', { stage: 'verify_result', label: '确认投递结果', ok: true, sent: true });
   } catch (error) {
     const errorText = String(error?.message || error);
     if (/安全验证|验证码|频繁|限速|登录|封禁|异常/.test(errorText)) {
@@ -2399,6 +2541,24 @@ async function visualCollect(opts = {}) {
 // 输出当前页面：元素统计 / 列表容器候选 / li·a 样本 / 详情面板 / 「查看更多信息」按钮候选，
 // 供上层（Workbench 日志区）复制给开发者对齐新版选择器。
 function domDump() {
+  // 聊天诊断只报告布尔值/计数/缩放，不输出收件人、消息正文或账号信息。
+  // 此检查不聚焦、不输入、不点击，便于真实页面验收前定位发送前置条件。
+  try {
+    const input = chatInput();
+    const context = input && createChatSendContext(input);
+    const button = context && sendButton(input, { context, allowDisabled: true });
+    const center = button && elementCenter(button);
+    const hit = center && document.elementFromPoint(center.x, center.y);
+    const clickPoint = button && visibleClickPoint(button);
+    notify('apply-stage', { stage: 'log', message: '文字发送只读检查：' + JSON.stringify({
+      input: Boolean(input), panel: Boolean(context), session: Boolean(context && currentChatSendInput(context)),
+      button: Boolean(button), enabled: Boolean(button && !isDisabledish(button)),
+      hit: Boolean(button && hit && (hit === button || button.contains(hit))),
+      clickablePoint: Boolean(clickPoint),
+      zoom: webFrame.getZoomFactor(), focus: document.hasFocus(),
+      ownMessages: context ? ownMessageEntries(context).length : 0,
+    }) });
+  } catch { notify('apply-stage', { stage: 'log', message: '文字发送只读检查失败（未执行任何输入或点击）' }); }
   const clamp = (v, n) => String(v || '').slice(0, n);
   const out = {
     time: Date.now(),
@@ -2995,7 +3155,7 @@ ipcRenderer.on('webview-command', (_e, arg) => {
 
 // ===== 非 BOSS 平台投递（platform-apply）：猎聘/智联/51job 新标签页 DOM 投递 =====
 // 口径对齐 get_jobs / Auto-JobHunter / AgentMesh-JobAgent（多项目交叉验证）：
-//  - liepin greetAuto：点「聊一聊」即触发 App 预设招呼语（无需打字）；IM 会话打开=成功。
+//  - liepin chat：点「聊一聊」，输入并发送本岗位招呼语，确认新增本人文字消息后计成功。
 //  - zhaopin resume：点「投递」，投递弹层文本含「申请成功」=成功；「达到上限」→停。
 //  - job51 resume：点「投递」，成功弹层=成功；「需要到企业招聘平台单独申请」=站外网申→跳过。
 // 安全不变量：外部网申跳过、未确认不计成功、找不到目标→failed 交人工、绝不猜成功。
@@ -3055,7 +3215,18 @@ async function zhaopinContinueChat(spec) {
 }
 
 async function platformApply(args = {}) {
-  const { seq, job = {}, externalApplyHints = [] } = args;
+  if (platformApply.busy) {
+    if (String(platformApply.activeSeq) === String(args.seq)) return; // 同一 IPC 重复到达，保留首个流程的终态。
+    notify('platform-apply-result', { seq: args.seq, ok: false, stage: 'failed', needsReview: true, error: '本页面已有投递流程，已忽略重复请求，请人工核对' });
+    return;
+  }
+  platformApply.busy = true;
+  platformApply.activeSeq = args.seq;
+  try { await platformApplyOnce(args); } finally { platformApply.busy = false; }
+}
+
+async function platformApplyOnce(args = {}) {
+  const { seq, job = {}, externalApplyHints = [], greeting = '' } = args;
   const platform = String(args.platform || PLATFORM || 'boss');
   const fail = (stage, extra = {}) => notify('platform-apply-result', Object.assign({ seq, ok: false, stage }, extra));
   const ok = (extra = {}) => notify('platform-apply-result', Object.assign({ seq, ok: true, stage: 'success', method: 'dom' }, extra));
@@ -3072,7 +3243,7 @@ async function platformApply(args = {}) {
     }
 
     if (platform === 'liepin') {
-      // ===== 猎聘详情页「聊一聊」= 触发 App 预设招呼语自动发送，无需本机打字 =====
+      // ===== 猎聘详情页：打开目标会话 → 填写本岗位招呼语 → 发送 → 核对新增消息 =====
       //
       // 2026-10-01 真机源码取证（用户提供的 `岗位.txt` 详情页 HTML），纠正三处旧口径：
       //   ① **「聊一聊」是 <a> 不是 <button>** —— 主操作区
@@ -3088,7 +3259,9 @@ async function platformApply(args = {}) {
       //      岗位描述里出现这些词（风控/反欺诈岗）会被误判成风控并暂停引擎 —— 与智联分支同一教训，
       //      这里对齐智联：**只在风控类容器内**判定。
       //
-      // 安全不变量不变：已沟通/已投递 → 跳过；未确认 IM 打开 → failed 交人工；绝不猜成功。
+      // 窗口打开或按钮变「继续聊」只表示会话就绪，不能证明招呼语已发送。
+      const safeGreeting = normalizeLiepinText(greeting);
+      if (safeGreeting.length < 8) return fail('failed', { error: '猎聘招呼语为空或过短，已停止发送' });
       const btnSelectors = [
         // ① 主操作区「聊一聊」（真机 `<a class="btn-main" data-selector="chat-chat">`）
         'a.btn-main[data-selector="chat-chat"]',
@@ -3103,7 +3276,7 @@ async function platformApply(args = {}) {
         '.ant-btn-round',
         '.chat-btn-box button',
       ];
-      const chatLabels = ['聊一聊'];
+      const chatLabels = ['聊一聊', '继续聊', '继续沟通'];
 
       // 已沟通/已投递态：**只认操作区自身的按钮态**（专用选择器 + 精确文案），
       // 不做全页链接扫描（页脚/导航含「已投递」等词的链接会误判整条跳过）。
@@ -3113,12 +3286,12 @@ async function platformApply(args = {}) {
         '.job-apply-operate a[data-selector="chat-chat"]',
         '.chat-btn-box button',
       ];
-      const appliedLabels = ['已沟通', '已投递', '聊过了', '已招满', '继续沟通'];
+      const appliedLabels = ['已沟通', '已投递', '聊过了', '已招满', '继续沟通', '继续聊'];
       const readAppliedState = () =>
-        findPlatformAction(appliedSelectors, appliedLabels)
-        || all('a.btn-main, .chat-btn-box button').find((el) => visible(el) && ADAPTERS.labelExactHit(textOf(el), appliedLabels))
+        all(appliedSelectors.join(', ')).find((el) => visible(el) && ADAPTERS.labelExactHit(textOf(el), appliedLabels))
         || null;
-      if (readAppliedState()) {
+      const previousApplied = readAppliedState();
+      if (previousApplied && !ADAPTERS.labelExactHit(textOf(previousApplied), ['继续聊', '继续沟通'])) {
         return fail('skip', { message: '该岗位已沟通/已投递过，跳过（不重复打扰同一 HR）' });
       }
 
@@ -3134,7 +3307,7 @@ async function platformApply(args = {}) {
         return 'blocked';
       };
 
-      const btn = findPlatformAction(btnSelectors, chatLabels);
+      const btn = previousApplied || findPlatformAction(btnSelectors, chatLabels);
       if (!btn) {
         // 找不到入口时先看是不是被登录墙/风控拦了，给出可定位的原因而不是笼统「未找到」
         const blockEl = firstVisible([
@@ -3157,17 +3330,17 @@ async function platformApply(args = {}) {
         return fail('failed', { error: '未找到「聊一聊」入口（岗位可能已下架/非招聘中/详情页未加载完成）' });
       }
 
-      notify('apply-stage', { stage: 'send_message', label: '平台自动打招呼', platform });
+      const imBefore = readLiepinImState(document);
+      notify('apply-stage', { stage: 'open_chat', label: '打开目标沟通窗口', platform });
       await clickElement(btn);
 
-      // 成功 = IM 会话打开（猎聘用 App 预设招呼语自动发送，无需本机输入）。
-      // 就绪信号以**页面自身事实**为准（真机：`#im-c-entry` 容器 / `.im-ui-chat-modal-container` 弹层 /
-      // `.im-ui-basic-entry` 侧栏入口），旧 `.__im_basic__*` 命名在本站恒不命中，已移除。
+      // 就绪 = 唯一的新会话且有真实可编辑输入框。
+      // #im-c-entry 可能只是无尺寸挂载点；im-ui-basic-entry 是「我的沟通」入口。
+      // 检查可见会话/输入区的点击前后变化，避免漏掉后面的窗口，也不把侧栏入口算成功。
       // 风控容器范围收窄：只在弹层/提示/校验类容器内查风控文案，不扫岗位描述正文。
       const RISK_SCOPE = [
-        '[class*="im-ui-chat-modal"]', '[class*="im-ui-basic"]',
         '.ant-modal', '.ant-drawer', '.ant-message', '.ant-notification',
-        '[class*="dialog"]', '[class*="toast"]', '[class*="message"]',
+        '[class*="dialog"]', '[class*="toast"]',
         '[class*="risk"]', '[class*="warning"]', '[class*="alert"]',
         '[class*="verify"]', '[class*="captcha"]', '[class*="waf"]', '[class*="geetest"]',
       ];
@@ -3176,6 +3349,7 @@ async function platformApply(args = {}) {
         if (firstVisible(['[class*="geetest"]', '[class*="waf"]', '[id*="captcha"]', '[class*="captcha"]'])) return true;
         for (const el of all(RISK_SCOPE.join(', '))) {
           if (!visible(el)) continue;
+          if (el.querySelector('textarea, [contenteditable]')) continue; // 编辑器/聊天正文里的业务词不是验证提示。
           const t = PLATFORM_NORM(textOf(el));
           if (t && ['安全验证', '请完成验证', '验证码', '行为异常', '操作频繁'].some((k) => t.includes(k))) return true;
         }
@@ -3183,24 +3357,89 @@ async function platformApply(args = {}) {
       };
       const imReady = await waitFor(() => {
         if (riskHit()) return 'risk';
-        // IM 会话真机信号（任一命中即视为已打开）：
-        const modal = $('.im-ui-chat-modal-container');
-        if (modal && visible(modal) && PLATFORM_NORM(textOf(modal)).length > 0) return 'ok';
-        const entry = $('.im-ui-basic-entry, .im-ui-basic-entry-title');
-        if (entry && visible(entry)) return 'ok';
-        // SPA 场景也可能整页跳到 /im/ 路由
-        if (/\/im\b/i.test(location.pathname)) return 'ok';
-        return null;
+        return findNewLiepinConversation(imBefore, readLiepinImState(document));
       }, 15000, '猎聘 IM 会话窗口');
       if (imReady === 'risk') {
         return fail('risk', { code: 35, message: '点击「聊一聊」后检测到安全验证/风控提示，已暂停，请人工完成' });
       }
       if (!imReady) {
+        const state = readLiepinImState(document);
         return fail('failed', {
-          error: '点击「聊一聊」后 IM 会话未打开（未检测到 im-ui-chat-modal/im-ui-basic-entry，请人工核对页面）',
+          needsReview: true,
+          imDiagnostic: { roots: state.rootsSeen, conversations: state.widgets.length, inaccessibleFrames: state.inaccessibleFrames },
+          error: '点击「聊一聊」后未能确认目标会话，已保留页面并暂停投递，请人工核对聊天窗口及按钮状态',
         });
       }
-      return ok({ method: 'dom' });
+      const target = imReady;
+      const currentTarget = () => readLiepinImState(document).widgets.find((widget) => widget.element === target.element && widget.heading === target.heading && widget.editor);
+      const beforeSend = readLiepinDeliveryState(target, safeGreeting);
+      if (beforeSend.matching.length) return fail('skip', { message: '目标会话已发送与当前工作台文案相同的消息，已跳过重复发送' });
+      if (beforeSend.incoming.length) return fail('skip', { message: '目标会话已有招聘方回复，请在聊天中继续沟通，已跳过首次招呼语' });
+      if (beforeSend.nonDefaultOutgoing.length) return fail('skip', { message: '目标会话已有平台默认句以外的本人消息，已跳过重复发送' });
+      if (beforeSend.editorText) {
+        return fail('failed', { needsReview: true, error: '猎聘输入框已有未发送草稿，已保留，请人工核对后发送' });
+      }
+      const input = target.editor;
+      input.scrollIntoView({ block: 'center' });
+      input.focus();
+      // 使用编辑器自身的 document/window，支持同源 iframe 与开放 shadow root。
+      if (input.matches('[contenteditable]')) {
+        const doc = input.ownerDocument, selection = doc.defaultView.getSelection();
+        const range = doc.createRange(); range.selectNodeContents(input); range.collapse(false);
+        selection.removeAllRanges(); selection.addRange(range);
+      }
+      notify('apply-stage', { stage: 'fill_message', label: '填写猎聘招呼语', platform });
+      if (riskHit()) return fail('risk', { code: 35, message: '猎聘输入前出现安全验证，已暂停' });
+      if (!currentTarget()) return fail('failed', { needsReview: true, error: '猎聘目标会话已变化，已停止发送，请人工核对' });
+      const inserted = await trustedInput('insertText', safeGreeting);
+      if (!inserted.ok) return fail('failed', { needsReview: true, error: '猎聘招呼语真实输入失败，已保留窗口，请人工核对' });
+      try {
+        input.dispatchEvent(new input.ownerDocument.defaultView.Event('input', { bubbles: true }));
+        input.dispatchEvent(new input.ownerDocument.defaultView.Event('change', { bubbles: true }));
+      } catch {}
+      let lastWritten = null;
+      let readinessReadError = false;
+      const written = await waitFor(() => {
+        if (riskHit()) return 'risk';
+        const current = currentTarget();
+        if (!current) return 'changed';
+        try {
+          const state = readLiepinDeliveryState(current, safeGreeting);
+          lastWritten = state;
+          return state.editorText === safeGreeting && state.sendButton ? state : null;
+        } catch { readinessReadError = true; return null; }
+      }, 5000, '猎聘招呼语和发送按钮就绪');
+      if (written === 'risk') return fail('risk', { code: 35, message: '猎聘输入后出现安全验证，已暂停' });
+      if (written === 'changed') return fail('failed', { needsReview: true, error: '猎聘目标会话已变化，已保留草稿并停止发送，请人工核对' });
+      if (!written) {
+        const expectedChars = safeGreeting.length;
+        const editorChars = lastWritten?.editorText.length ?? 0;
+        const textMatches = lastWritten?.editorText === safeGreeting;
+        const readiness = lastWritten?.readiness || {};
+        const details = `官方按钮 ${readiness.officialSendButtons || 0}，禁用 ${readiness.disabledOfficialSendButtons || 0}，可用 ${readiness.sendCandidates || 0}`;
+        const error = !lastWritten ? '猎聘读取输入框或发送按钮失败，已保留草稿，请人工核对'
+          : !textMatches ? `猎聘输入文字核对失败（应为 ${expectedChars} 字，读到 ${editorChars} 字），已保留草稿，请人工核对`
+            : `猎聘文案已填入，但未找到唯一可用的发送按钮（${details}），已保留草稿，请人工核对`;
+        return fail('failed', { needsReview: true, error,
+          imDiagnostic: { expectedChars, editorChars, textMatches, readinessReadError, ...readiness } });
+      }
+      if (written.matching.length || written.incoming.length || written.nonDefaultOutgoing.length) {
+        return fail('failed', { needsReview: true, error: '填写期间会话出现当前文案或实际沟通消息，已保留草稿，请人工核对' });
+      }
+      const messageBefore = new Set(written.matching);
+      notify('apply-stage', { stage: 'send_message', label: '发送猎聘招呼语', platform });
+      await clickElement(written.sendButton);
+      notify('apply-stage', { stage: 'verify_message', label: '确认猎聘文字消息', platform });
+      const sent = await waitFor(() => {
+        if (riskHit()) return 'risk';
+        const current = currentTarget();
+        if (!current) return 'changed';
+        const state = readLiepinDeliveryState(current, safeGreeting);
+        return !state.editorText && state.matching.some((el) => !messageBefore.has(el)) ? 'sent' : null;
+      }, 10000, '猎聘招呼语文字确认');
+      if (sent === 'risk') return fail('risk', { code: 35, message: '猎聘发送后出现安全验证，已暂停，请人工核对' });
+      if (sent !== 'sent') return fail('failed', { needsReview: true, error: '猎聘招呼语发送结果未确认，已保留窗口并暂停，请人工核对；程序不会自动重发' });
+      return ok({ method: 'dom', greetingConfirmed: true });
     }
 
     if (platform === 'zhaopin') {

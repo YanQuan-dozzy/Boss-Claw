@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>Offline native send regression</title>
+<style>body{margin:0;background:#eee}header{height:80px;padding-left:20px}webview{position:absolute;left:135px;top:90px;width:800px;height:600px;border:3px solid #777}</style>
+<header><input id="host-input" value="offline host"></header>
+<script>
+const guest = document.createElement('webview');
+guest.setAttribute('partition', 'native-send-regression');
+guest.setAttribute('webpreferences', 'contextIsolation=yes,sandbox=no');
+guest.setAttribute('preload', new URL('./preload.cjs', location.href).href);
+guest.setAttribute('src', new URL('./guest.html', location.href).href);
+document.body.append(guest);
+</script>

@@ -165,6 +165,14 @@ class CollectorBase:
         """确认「已建立沟通 / 投递成功」——未确认一律不计成功。"""
         raise NotImplementedError
 
+    def before_action(self, page):
+        """需要发送消息的平台记录点击前的会话；默认不改变简历投递流程。"""
+        return None
+
+    def finish_action(self, page, greeting: str, before=None) -> dict | None:
+        """平台额外发送与确认；返回 None 时继续通用的投递按钮确认。"""
+        return None
+
     # ============================================================
     # 骨架 1：隐身搜索（含断点续采）
     # ============================================================
@@ -375,6 +383,7 @@ class CollectorBase:
                     'message': self.missing_button_message(),
                 }
 
+            before_action = self.before_action(page)
             try:
                 btn.click(timeout=8000)
             except Exception as e:
@@ -398,6 +407,13 @@ class CollectorBase:
                     'ok': False, 'code': 32, 'sent': False,
                     'message': self.limit_message(),
                 }
+
+            finished = self.finish_action(page, greeting, before_action)
+            if finished is not None:
+                if finished.get('ok') and finished.get('sent'):
+                    self.after_sent(page)
+                save_cookies(page.context, self.platform)
+                return finished
 
             confirmed = False
             deadline = time.time() + self.confirm_timeout_seconds

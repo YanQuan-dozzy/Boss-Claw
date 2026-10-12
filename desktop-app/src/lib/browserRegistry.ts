@@ -37,8 +37,12 @@ export interface BrowserPageRead {
 
 export interface BrowserApplyOutcome {
   ok: boolean;
+  /** 同步派发请求是否被当前浏览器标签接收；true 不代表网站已发送消息。 */
+  accepted: boolean;
+  /** 仅在观察到最终发送确认时为 true；尚未确认时为 null，明确未执行时为 false。 */
+  sent: boolean | null;
   reason?: string;
-  /** 触发自动投递后是否可观测到结果（走应用日志 / apply-stage） */
+  /** 投递过程仍通过应用日志 / apply-stage 观察；accepted 本身不是发送回执。 */
   hint?: string;
 }
 

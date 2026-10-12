@@ -59,6 +59,8 @@ interface ControlOp {
 
 interface ControlResult {
   applied: boolean;
+  accepted?: boolean;
+  sent?: boolean | null;
   message?: string;
   previous?: unknown;
   next?: unknown;
@@ -531,12 +533,22 @@ const handlers: Record<string, Handler> = {
     // 安全护栏：仅当用户已开启「全自动」（executionMode==='auto'）时，agent 才能触发自动投递
     const mode = useSettingsStore.getState().config.executionMode;
     if (mode !== 'auto') {
-      return { applied: false, message: '全自动未开启（executionMode 为 review），自动投递已被拒绝；请先在应用内开启全自动，或用 delivery.draft 草拟后由用户发送' };
+      return { applied: false, accepted: false, sent: false, message: '全自动未开启（executionMode 为 review），自动投递已被拒绝；请先在应用内开启全自动，或用 delivery.draft 草拟后由用户发送' };
     }
     const b = getBrowser();
-    if (!b) return { applied: false, message: '浏览器控制不可用（需 webview 引擎运行）' };
-    const out = await b.sendApply(greeting !== undefined ? { greeting: String(greeting) } : {});
-    return { applied: out.ok, message: out.ok ? (out.hint || '已触发自动投递') : (out.reason || '触发失败'), next: out };
+    if (!b) return { applied: false, accepted: false, sent: false, message: '浏览器控制不可用（需 webview 引擎运行）' };
+    try {
+      const out = await b.sendApply(greeting !== undefined ? { greeting: String(greeting) } : {});
+      return {
+        applied: out.ok,
+        accepted: out.accepted,
+        sent: out.sent,
+        message: out.ok ? (out.hint || '已派发自动投递请求；发送结果尚未确认') : (out.reason || '触发失败'),
+        next: out,
+      };
+    } catch (e) {
+      return { applied: false, accepted: false, sent: false, message: `投递请求未能派发：${(e as Error)?.message || e}` };
+    }
   },
 
   // ===== A. 通用 UI 接管（scope: app → document；webview → browser.uiExec）=====

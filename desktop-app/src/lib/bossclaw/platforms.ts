@@ -8,7 +8,7 @@ import { SAFETY_LIMITS } from './limits';
 export type { JobPlatform } from './types';
 
 /** 投递动作语义：boss=聊天文字气泡；liepin=App 预设招呼语自动发送；zhaopin/job51=投递简历按钮 */
-export type DeliveryKind = 'chat' | 'greetAuto' | 'resume';
+export type DeliveryKind = 'chat' | 'resume';
 
 /**
  * 平台动作能力（与 Python 侧 `camoufox/platforms/capabilities.py` 的
@@ -83,9 +83,10 @@ export const PLATFORM_META: Record<JobPlatform, PlatformMeta> = {
     domain: 'liepin.com',
     homeUrl: 'https://www.liepin.com',
     loginUrl: 'https://www.liepin.com/login/',
-    deliveryKind: 'greetAuto',
+    deliveryKind: 'chat',
     capabilities: ['collect', 'score', 'greet', 'deliver'],
-    // 猎聘投递=点「聊一聊」即沟通，无网申概念（聊一聊不跳第三方）
+    // 猎聘投递=点「聊一聊」打开会话后**注入本岗位招呼语并发送**，成功以「新增本人文字气泡」为准；
+    // 仅窗口打开不计成功（与 BOSS chat 同口径，双源同步见 camoufox/platforms/capabilities.py）
     externalApplyHints: ['立即网申', '去网申', '前往申请', '申请职位'],
     stageLabels: {
       open_chat: '打开沟通窗口',

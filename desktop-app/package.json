@@ -28,7 +28,11 @@
     "test:context-budget": "node scripts/context-budget-regression.mjs",
     "test:tailor-job": "node scripts/tailor-job-regression.mjs",
     "test:tailor-batch": "node scripts/tailor-batch-regression.mjs",
-    "test:tailor-iteration": "node scripts/tailor-iteration-regression.mjs"
+    "test:tailor-iteration": "node scripts/tailor-iteration-regression.mjs",
+    "test:webview-send": "node scripts/webview-send-regression.mjs",
+    "test:webview-native-send": "node scripts/webview-native-send-regression.mjs",
+    "test:liepin-im": "node scripts/liepin-im-regression.mjs",
+    "test:liepin-delivery": "python -m unittest discover -s camoufox/tests -p \"test_liepin_delivery.py\""
   },
   "build": {
     "appId": "com.bossclaw.desktop",

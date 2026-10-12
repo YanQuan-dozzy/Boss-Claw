@@ -8,19 +8,21 @@
     （薪资参数名以平台自生成链接为准：`salaryCode`，非 `salary`）
   - 数据源：接口 com.liepin.searchfront4c.pc-search-job（on_response 拦截 JSON，
     data.data.jobCardList，每项含 job / comp / recruiter 子对象）；DOM 卡片兜底
-  - 投递：卡片/详情页点「聊一聊」→ 平台用 App 预设招呼语自动发送 → 聊天窗打开
-    → 按钮态变「继续聊」= 已建立会话（成功判定，对齐「未确认不计成功」不变量）
-  - 安全：不注入招呼语文本（App 预设）；code 35/36/32 类风控立即停止交人工
+  - 投递：点「聊一聊」→ 填写当前岗位招呼语 → 发送 → 确认文字消息
+  - 安全：仅会话打开不计成功；code 35/36/32 类风控立即停止交人工
 
 本模块只保留**平台差异**（常量表 / JS 选择器 / 接口解析 / 按钮定位与确认），
 搜索·投递·登录三段骨架统一由 `base.CollectorBase` 提供（对齐 BossHunter 分层）。
 """
 import re
+import time
+from pathlib import Path
 from urllib.parse import quote
 
 from .base import CollectorBase
 from .filters import build_filter_params
 from .models import JobCandidate
+from .common import human_sleep, risk_text_hit
 
 PLATFORM = 'liepin'
 
@@ -36,14 +38,6 @@ SALARY_CODES = {
     '31-50万': '5', '51-100万': '6', '100万以上': '7',
 }
 SEARCH_API_HINT = 'com.liepin.searchfront4c.pc-search-job'
-
-# 沟通按钮文本（卡片/详情页）：聊一聊 / 和TA聊聊 / 与TA聊聊 / 继续聊
-CHAT_BTN_RE = re.compile(r'聊\s*一\s*聊|和\s*TA\s*聊聊|与\s*TA\s*聊聊|和\s*他\s*聊聊|和\s*她\s*聊聊|继续\s*聊')
-# 已建立会话的按钮态
-CONTINUE_CHAT_RE = re.compile(r'继续\s*聊')
-# 外部网申（猎聘无此概念，保留占位）
-EXTERNAL_RE = re.compile(r'立即\s*网申|去\s*网申|前往\s*申请|申请\s*职位')
-
 
 def _resolve_city(city: str) -> str:
     c = str(city or '').strip()
@@ -223,20 +217,9 @@ JS_FIND_CHAT_BTN = r"""(pat) => {
     return text(hits[0]);
 }"""
 
-# 聊天窗元素选择器取自 get_jobs Locators.CHAT_HEADER(.__im_basic__header-wrap) /
-# CHAT_CLOSE(div.__im_basic__contacts-title svg) —— 猎聘 IM 面板真机口径。
-# 已建立会话确认：① IM 面板头部挂载（get_jobs 判定，真机验证）
-#                    ② 按钮态变「继续聊」（已建会话）③ 输入区出现（兜底）
-# ⚠️ 不得把「猜选择器」当主判据：确认失败会落到「未确认不计成功」，而岗位其实已投出。
-JS_CHAT_ESTABLISHED = r"""() => {
-    if (document.querySelector('.__im_basic__header-wrap')) return true;
-    const text = (el) => (el.textContent || '').trim().replace(/\s+/g, ' ');
-    const visible = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch(e) { return false; } };
-    const all = Array.from(document.querySelectorAll('button, a, [role="button"], span, div'));
-    const hasContinue = all.some(el => visible(el) && /^继续\s*聊$/.test(text(el)) && text(el).length <= 8);
-    const hasChatInput = !!document.querySelector('#chat-input, [contenteditable="true"], textarea');
-    return hasContinue || hasChatInput;
-}"""
+# 与 Electron 共用 DOM 范围、编辑器、发送按钮和消息确认，避免两通道各猜一套选择器。
+_IM_SOURCE = (Path(__file__).resolve().parents[2] / 'electron' / 'preload' / 'liepin-im.cjs').read_text(encoding='utf-8')
+JS_DELIVERY_SNAPSHOT = '(args) => { const module = {exports:{}}; ' + _IM_SOURCE + '; return module.exports.snapshotLiepinDelivery(document, args); }'
 
 # 投递成功后的收尾：关闭聊天窗口（① get_jobs 的 IM 面板关闭图标 → ② 通用关闭按钮兜底）
 JS_CLOSE_CHAT = r"""() => {
@@ -263,7 +246,7 @@ class LiepinCollector(CollectorBase):
     detail_markers = ('/job/',)
     # 接口数据等待轮询次数（实测 6 次足够；对齐改造前取值）
     capture_wait_attempts = 6
-    # 「继续聊」= 已建立会话（点击前短路，不重复发送）
+    # 会话已存在时，也要读取消息历史判断是否需要跳过。
     supports_already_sent = True
     # 确认最长等待 15s + 收尾停顿 2.5s（对齐改造前取值）
     confirm_timeout_seconds = 15.0
@@ -297,28 +280,107 @@ class LiepinCollector(CollectorBase):
 
     # ---------- 投递差异 ----------
     def find_action_button(self, page):
-        """定位「聊一聊」：已「继续聊」→ ('already', loc)，否则 ('ready', loc) / ('not_found', None)。"""
+        """定位「聊一聊」或「继续聊」，打开后再核对消息，按钮态不计为发送成功。"""
         try:
             hit = page.evaluate(
                 JS_FIND_CHAT_BTN,
-                r'聊\s*一\s*聊|和\s*TA\s*聊聊|与\s*TA\s*聊聊|和\s*他\s*聊聊|和\s*她\s*聊聊',
+                r'聊\s*一\s*聊|继续\s*聊|继续\s*沟通|和\s*TA\s*聊聊|与\s*TA\s*聊聊|和\s*他\s*聊聊|和\s*她\s*聊聊',
             )
             if not hit:
                 return 'not_found', None
             loc = page.locator('[data-liepin-chat-btn]').first
             if loc.count() <= 0:
                 return 'not_found', None
-            if CONTINUE_CHAT_RE.search(str(loc.inner_text() or '')):
-                return 'already', loc
             return 'ready', loc
         except Exception:
             return 'not_found', None
 
     def confirm_sent(self, page) -> bool:
+        # 不能再以窗口出现或“继续聊”作为已发送；finish_action 完成实际发送和确认。
+        return False
+
+    def before_action(self, page):
+        return page.evaluate(JS_DELIVERY_SNAPSHOT, {'phase': 'before'})
+
+    def finish_action(self, page, greeting: str, before=None) -> dict:
+        text = ' '.join(str(greeting or '').split())
+        def unconfirmed(message):
+            return {'ok': False, 'code': 501, 'sent': False, 'needsReview': True, 'message': message}
+        def blocked():
+            if risk_text_hit(page):
+                return {'ok': False, 'code': 35, 'sent': False, 'message': '猎聘出现安全验证，已暂停，请人工核对'}
+            if self._limit_hit(page):
+                return {'ok': False, 'code': 32, 'sent': False, 'message': self.limit_message()}
+            return None
+        def snapshot():
+            return page.evaluate(JS_DELIVERY_SNAPSHOT, {'greeting': text})
+        def marked_locator(attribute):
+            hits = [frame.locator(f'[{attribute}="active"]') for frame in page.frames]
+            hits = [hit for hit in hits if hit.count() == 1]
+            if len(hits) != 1:
+                raise RuntimeError('目标会话标记不唯一')
+            return hits[0]
         try:
-            return bool(page.evaluate(JS_CHAT_ESTABLISHED))
+            if len(text) < 8:
+                return unconfirmed('猎聘招呼语为空或过短，已停止发送')
+            deadline = time.time() + 15
+            target = None
+            while time.time() < deadline:
+                stopped = blocked()
+                if stopped: return stopped
+                target = snapshot()
+                if target.get('changed'): return unconfirmed('猎聘目标会话已变化，请人工核对')
+                if target.get('ready'): break
+                human_sleep(0.25, 0.2, 0.1)
+            if not target or not target.get('ready'):
+                return unconfirmed('猎聘目标会话未就绪，请人工核对')
+            skip_reason = None
+            if target.get('matching'):
+                skip_reason = '目标会话已发送与当前工作台文案相同的消息，跳过重复发送'
+            elif target.get('incoming'):
+                skip_reason = '目标会话已有招聘方回复，请在聊天中继续沟通，跳过首次招呼语'
+            elif target.get('nonDefaultOutgoing'):
+                skip_reason = '目标会话已有平台默认句以外的本人消息，跳过重复发送'
+            if skip_reason:
+                return {'ok': False, 'code': 701, 'sent': False, 'alreadyChatted': True, 'message': skip_reason}
+            if target.get('editorText'):
+                return unconfirmed('猎聘输入框已有未发送草稿，请人工核对，程序不会覆盖')
+            heading = target.get('heading')
+            marked_locator('data-bossclaw-liepin-editor').fill(text, timeout=5000)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                stopped = blocked()
+                if stopped: return stopped
+                state = snapshot()
+                if not state.get('ready') or state.get('heading') != heading:
+                    return unconfirmed('猎聘目标会话已变化，已停止发送')
+                if state.get('editorText') == text and state.get('sendReady'): break
+                human_sleep(0.2, 0.2, 0.1)
+            else:
+                if state.get('editorText') != text:
+                    return unconfirmed(f'猎聘输入文字核对失败（应为 {len(text)} 字，读到 {len(state.get("editorText", ""))} 字），已保留草稿，请人工核对')
+                readiness = state.get('readiness') or {}
+                details = (f'官方按钮 {readiness.get("officialSendButtons", 0)}，'
+                           f'禁用 {readiness.get("disabledOfficialSendButtons", 0)}，'
+                           f'可用 {readiness.get("sendCandidates", 0)}')
+                return unconfirmed(f'猎聘文案已填入，但未找到唯一可用的发送按钮（{details}），已保留草稿，请人工核对')
+            if state.get('matching') or state.get('incoming') or state.get('nonDefaultOutgoing'):
+                return unconfirmed('填写期间会话出现当前文案或实际沟通消息，已保留草稿，请人工核对')
+            matches_before = state.get('matching', 0)
+            marked_locator('data-bossclaw-liepin-send').click(timeout=5000)
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                stopped = blocked()
+                if stopped: return stopped
+                state = snapshot()
+                if not state.get('ready') or state.get('heading') != heading:
+                    return unconfirmed('猎聘发送后会话已变化，请人工核对，程序不会自动重发')
+                if not state.get('editorText') and state.get('matching', 0) > matches_before:
+                    return {'ok': True, 'code': 0, 'sent': True, 'method': 'liepin-chat-message', 'greetingConfirmed': True}
+                human_sleep(0.25, 0.2, 0.1)
+            return unconfirmed('猎聘文字发送结果未确认，请人工核对，程序不会自动重发')
         except Exception:
-            return False
+            return unconfirmed('猎聘招呼语输入或发送异常，请人工核对，程序不会自动重发')
 
     def action_label(self) -> str:
         return '聊一聊'
@@ -357,7 +419,7 @@ def deliver(job: dict, greeting: str, os_name: str | None = None,
             send_resume_image: bool = False, send_online_resume: bool = False,
             expected: dict | None = None, resume_images: list | None = None,
             mode: str = 'auto', reply_text: str | None = None) -> dict:
-    """猎聘投递：点「聊一聊」→ 确认聊天窗/「继续聊」态（App 预设招呼语自动发送）。"""
+    """猎聘投递：点「聊一聊」→ 输入并发送招呼语 → 确认文字消息。"""
     return _COLLECTOR.deliver(job, greeting, os_name, send_resume_image, send_online_resume,
                               expected, resume_images, mode, reply_text)
 

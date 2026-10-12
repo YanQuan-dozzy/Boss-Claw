@@ -2203,6 +2203,14 @@ ipcMain.on('jc:webview-input', (event, payload) => {
   const action = String((payload && payload.action) || '');
   const text = String((payload && payload.text) || '');
   const reply = (result) => { try { wc.send('jc:webview-input-done', { seq, ...result }); } catch {} };
+  // preload 的 getBoundingClientRect 返回网页 CSS 坐标；sendInputEvent 使用
+  // guest webContents 的 DIP 坐标。只乘 guest 页面缩放，不能再乘 Windows DPR、
+  // 宿主缩放或 webview 在窗口中的偏移。缩放 125% 时旧代码会误点到输入框。
+  const nativeMousePoint = (x, y) => {
+    const zoom = wc.getZoomFactor();
+    if (!Number.isFinite(zoom) || zoom <= 0) throw new Error('invalid guest zoom');
+    return { x: Math.round(x * zoom), y: Math.round(y * zoom) };
+  };
   // 沿人类化轨迹逐点移动鼠标，走完再执行收尾动作（点击 / 仅悬停）。
   // 轨迹由 preload 侧 humanize.cjs 生成（纯函数、可离线回归），这里只负责「按顺序发事件」。
   // 为什么合成在一处：整条轨迹只占 **1 条信道消息**，不会因分段移动而吃掉频率预算。
@@ -2215,7 +2223,7 @@ ipcMain.on('jc:webview-input', (event, payload) => {
         const p = list[i++];
         const px = Math.round(Number(p && p.x));
         const py = Math.round(Number(p && p.y));
-        if (Number.isFinite(px) && Number.isFinite(py)) wc.sendInputEvent({ type: 'mouseMove', x: px, y: py });
+        if (Number.isFinite(px) && Number.isFinite(py)) wc.sendInputEvent({ type: 'mouseMove', ...nativeMousePoint(px, py) });
         const delay = Math.min(Math.max(Number(p && p.delayMs) || 0, 0), 120);
         if (delay > 0) setTimeout(step, delay);
         else step();
@@ -2233,14 +2241,15 @@ ipcMain.on('jc:webview-input', (event, payload) => {
         // 真实鼠标点击（isTrusted:true）：与 insertText/pressEnter 同源思路。
         // 背景：BOSS「立即沟通」对 preload 里 dispatchEvent 的合成点击**完全不响应**
         // （线上实测：点击后按钮仍在、无弹窗、无输入框、无导航、无风控），
-        // 必须由主进程 sendInputEvent 产生可信鼠标事件。坐标为视口坐标（= getBoundingClientRect）。
+        // 必须由主进程 sendInputEvent 产生可信鼠标事件。请求中的坐标为网页 CSS 视口坐标。
         const x = Math.round(Number(payload && payload.x));
         const y = Math.round(Number(payload && payload.y));
         if (!Number.isFinite(x) || !Number.isFinite(y)) return reply({ ok: false, action, error: 'bad coords' });
         const fire = () => {
-          wc.sendInputEvent({ type: 'mouseMove', x, y });
-          wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-          wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+          const point = nativeMousePoint(x, y);
+          wc.sendInputEvent({ type: 'mouseMove', ...point });
+          wc.sendInputEvent({ type: 'mouseDown', ...point, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 });
           reply({ ok: true, action, x, y, path: Array.isArray(payload && payload.path) ? payload.path.length : 0 });
         };
         // 有轨迹则先「移过去」再点：消除「光标瞬移 + 立即点击」这一最容易被行为层识别的特征。

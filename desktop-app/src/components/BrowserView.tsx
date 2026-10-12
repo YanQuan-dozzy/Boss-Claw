@@ -31,7 +31,7 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import electronApi from '@/lib/electronApi';
 import { PLATFORM_META, PLATFORM_IDS, PLATFORM_CHIP_PALETTE, platformEnabled, resolvePlatform, type JobPlatform } from '@/lib/bossclaw/platforms';
 import { isWhitelistedUrl, whitelistSitesOf, WHITELIST_GROUPS, type BrowserSite as BrowserWhitelistSite } from '@/lib/bossclaw/browserWhitelist';
-import { registerBrowser, unregisterBrowser } from '@/lib/browserRegistry';
+import { registerBrowser, unregisterBrowser, type BrowserApplyOutcome } from '@/lib/browserRegistry';
 import CloakView from '@/components/CloakView';
 import BrowserNewTabPage, { type NewTabGroup } from '@/components/BrowserNewTabPage';
 
@@ -135,8 +135,8 @@ export interface WebviewApi {
    * platform-apply，终态经 platform-apply-result 回传 resolve。返回 {ok, stage, external?, code?, message?, error?, tabId}。
    * stage: success | external | skip | stop | risk | failed。
    */
-  platformApply: (url: string, platform: JobPlatform, job: any) => Promise<{
-    ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string;
+  platformApply: (url: string, platform: JobPlatform, job: any, greeting?: string) => Promise<{
+    ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string; needsReview?: boolean;
   }>;
   /**
    * 只读探测页面自身的就绪事实（readyState / 岗位卡片命中数 / 选择器计数 / 骨架屏启发式）。
@@ -774,11 +774,10 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // ===== 向指定标签页发送 IPC 消息（按 tabId 真正派发）=====
   const sendInTab = useCallback((id: string, channel: string, ...args: any[]) => {
     const tabId = id || tabsRef.current.find((t) => t.kind === 'main')?.id || tabsRef.current[0]?.id;
-    if (!tabId) return;
+    if (!tabId) return false;
     const el = webviewEls.current[tabId];
-    if (el) {
-      try { el.send(channel, ...args); } catch {}
-    }
+    if (!el) return false;
+    try { el.send(channel, ...args); return true; } catch { return false; }
   }, []);
 
   const send = useCallback((channel: string, ...args: any[]) => {
@@ -951,7 +950,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // 一旦该标记因任何原因未置位（详见 handleRegister 上方「身份稳定 ref 回调」的根因说明），
   // 就会把「页面 2s 内早已可用」误判成「详情页加载超时」——本次报告的智联投递失败即此。
   const platformApply = useCallback(
-    (url: string, platform: JobPlatform, job: any): Promise<{ ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string }> =>
+    (url: string, platform: JobPlatform, job: any, greeting = ''): Promise<{ ok: boolean; stage: string; external?: boolean; code?: number; message?: string; error?: string; tabId?: string; needsReview?: boolean }> =>
       new Promise((resolve) => {
         const tabId = openInNewTab(url, PLATFORM_META[platform]?.label || '岗位投递', 'detail');
         if (!tabId) {
@@ -965,9 +964,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
           const timer = setTimeout(() => {
             if (apiResolvers.current.has(seq)) {
               apiResolvers.current.delete(seq);
-              resolve({ ok: false, stage: 'failed', error: 'platform-apply 超时（25s）', tabId });
+              // 猎聘 chat 口径要在会话里完成「填入招呼语 → 可信点击发送 → 确认新增气泡」，
+              // 26s 不够用；超时后一律交人工核对，绝不猜成功。
+              resolve({ ok: false, stage: 'failed', error: '投递结果未在规定时间内确认，请人工核对', needsReview: platform === 'liepin', tabId });
             }
-          }, 26000);
+          }, platform === 'liepin' ? 55000 : 26000);
           apiResolvers.current.set(seq, (payload: any) => {
             clearTimeout(timer);
             resolve({ ...(payload || {}), tabId });
@@ -976,6 +977,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
             seq,
             platform,
             job,
+            greeting,
             externalApplyHints: PLATFORM_META[platform]?.externalApplyHints || [],
           });
         };
@@ -1047,12 +1049,15 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });
     return { ok: true, note: '已触发 DOM 诊断（结果见日志区）' };
   }, [sendInTab]);
-  const sendApply = useCallback((payload: Record<string, any> = {}) => {
+  const sendApply = useCallback((payload: Record<string, any> = {}): Promise<BrowserApplyOutcome> => {
     const id = activeIdRef.current || tabsRef.current[0]?.id || '';
-    if (!id) return Promise.resolve({ ok: false, reason: '无可用标签页' });
-    sendInTab(id, 'start-apply', payload);
+    if (!id) return Promise.resolve({ ok: false, accepted: false, sent: false, reason: '无可用标签页' });
+    if (!sendInTab(id, 'start-apply', payload)) {
+      return Promise.resolve({ ok: false, accepted: false, sent: false, reason: '当前标签页不可用，投递请求未派发' });
+    }
     // domApply 自带招呼语非空/外部网申跳过/气泡确认/风控即停；触发后结果经 apply-stage 回传。
-    return Promise.resolve({ ok: true, hint: '已触发自动投递（domApply），结果见 apply-stage/日志；首次成功会自动暂停验收' });
+    // Electron 的 send() 只确认请求已派发；真实发送结果仍以 preload verify_result 为准。
+    return Promise.resolve({ ok: true, accepted: true, sent: null, hint: '已派发自动投递请求，发送结果见 apply-stage/日志；首次成功会自动暂停验收' });
   }, [sendInTab]);
 
   // ===== 通用 UI 接管（ui-eval）：对 webview 页面执行白名单 DOM 操作（query/click/type/scroll）=====

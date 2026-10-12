@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>BossClaw isolated send regression fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 16px; }
+  .chat-conversation { border: 1px solid #888; width: 600px; margin-bottom: 12px; padding: 12px; }
+  .chat-header { min-height: 30px; }
+  .chat-message { min-height: 80px; }
+  .im-list { margin: 0; min-height: 50px; padding: 8px; }
+  .message-item { list-style: none; min-height: 24px; }
+  .chat-editor { padding: 8px; }
+  .chat-input { min-height: 60px; border: 1px solid #aaa; padding: 8px; }
+  .send-message { display: inline-block; padding: 8px; margin: 8px; }
+  [hidden] { display: none !important; }
+</style>
+<div class="chat-conversation" id="current-panel">
+  <div class="chat-header">
+    <span class="name">测试 HR 甲</span>
+    <span class="company-name">离线测试公司</span>
+    <span class="position-name">测试开发岗位</span>
+  </div>
+  <div class="chat-message">
+    <ul class="im-list" id="messages">
+      <li class="message-item item-myself" data-message-id="historic-1"><div class="text">历史消息，用于确定新增消息的起点。</div></li>
+    </ul>
+  </div>
+  <div class="chat-editor">
+    <div id="chat-input" class="chat-input" contenteditable="true" role="textbox" aria-label="消息输入框"></div>
+    <div class="send-message" id="image-send" role="button" aria-label="发送图片"><span>图片</span></div>
+    <button class="send-message" id="text-send" type="button">发送</button>
+  </div>
+</div>
+</html>

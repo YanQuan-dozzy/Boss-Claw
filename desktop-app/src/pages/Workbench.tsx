@@ -1934,6 +1934,15 @@ export default function Workbench() {
   /** 通道 A：非 BOSS 平台 DOM 投递（猎聘/智联/51Job；新建对应平台标签页） */
   const deliverNonBoss = async (candidate: PendingItem, url: string): Promise<void> => {
     const pf = String(candidate.job?.platform || 'boss') as JobPlatform;
+    // 猎聘 chat 口径：必须把该岗位**最新**招呼语传入聊天发送流程（发送成功以「新增本人文字气泡」为准）。
+    // 队列中同一岗位的招呼语可能已被后续编辑覆盖，故一律从 store 读 live 值，不用闭包里的旧 candidate。
+    // 招呼语过短时先暂停自动沟通，避免用空文案走完「打开会话 → 点发送」却什么都发不出去。
+    const liveCandidate = useDataStore.getState().pending.find((p) => p.id === candidate.id);
+    const greeting = String(liveCandidate?.deliveryGreeting || liveCandidate?.analysis?.greeting || candidate.deliveryGreeting || candidate.analysis?.greeting || '').trim();
+    if (pf === 'liepin' && greeting.length < 8) {
+      pauseAssist('猎聘招呼语为空或过短，请先补充招呼语再投递');
+      return;
+    }
     if (!claimDelivery(candidate.id, pf)) {
       addLog('warn', `岗位正由后台「自动沟通」投递，工作台已跳过：${candidate.job?.title || '岗位'}`);
       // 不降级状态：该岗位是 approved_queue（「投递中」），只是本轮投递权被后台占用。
@@ -1948,14 +1957,14 @@ export default function Workbench() {
     }
     setApplyStage('open_job');
     addLog('info', `通过「${platformLabel(pf)}」新标签页投递：${candidate.job?.title || '岗位'}`);
-    // 注意：智联「继续沟通」的招呼语发送已移交「自动沟通」引擎，工作台 platformApply 不再携带
-    // greeting（避免在 platform-apply 内做整套填发确认导致 25s 超时）——见 webview.cjs continue_chat 收口。
+    // 猎聘必须把本岗位实际招呼语传入聊天发送流程（发送+确认在 platform-apply 内完成）；
+    // 智联「继续沟通」的招呼语发送仍移交「自动沟通」引擎处理，不在工作台路径携带 greeting。
     let r: any;
     try {
       // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
       // 因此与串行版本保持一致：先等满岗位间隔再执行（安全语义优先于观感）。
       await awaitDeliveryGap();
-      r = await webviewApi.current?.platformApply(url, pf, candidate.job);
+      r = await webviewApi.current?.platformApply(url, pf, candidate.job, greeting);
     } catch (e) {
       r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
     } finally {
@@ -2017,6 +2026,13 @@ export default function Workbench() {
     const errMsg = res.error || res.message || '投递失败';
     updatePending(candidate.id, { status: 'failed', error: errMsg });
     addLog('error', `投递失败：${nTitle}（${errMsg}）`);
+    if (res.needsReview) {
+      // 猎聘 chat 口径：没能确认到「新增本人文字气泡」时证据不足 —— 保留会话标签供人工核对，
+      // 既不自动重试也不继续下一条（避免重复给同一 HR 发消息）。
+      setApplyStage(null); recomputeStats();
+      pauseAssist(errMsg);
+      return;
+    }
     if (res.tabId) webviewApi.current?.closeTab(res.tabId);
     setApplyStage(null); recomputeStats();
     if (useAppStore.getState().autoAssist) {
