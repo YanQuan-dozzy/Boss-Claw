@@ -72,6 +72,11 @@ Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目�
 
 ## 架构与布局
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img src="assets/architecture-light.svg" width="880" alt="BossClaw 架构总览：求职者与外部 Agent 位于应用之外；本机内部按 Electron 壳、渲染进程 src/、本地侧车服务三列分组，底部为本地数据层；外部依赖为四个招聘平台与用户自带 API Key 的 LLM 服务商">
+</picture>
+
 - **技术栈**：Electron `^42`（Chromium 148）+ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
 - **进程模型**：主进程（CommonJS）+ 预加载脚本（`contextBridge` 安全 IPC）+ React 渲染层；`contextIsolation: true`、`nodeIntegration: false`、`webviewTag: true`。
 - **界面**：顶部标题栏 + 左侧 11 入口侧栏 + 底部状态栏；「工作台」为三栏，其余页面为双栏。

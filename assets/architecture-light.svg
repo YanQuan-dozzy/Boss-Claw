@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 828" width="880" height="828" role="img" aria-labelledby="bcArchTitle bcArchDesc">
+  <title id="bcArchTitle">BossClaw 架构总览</title>
+  <desc id="bcArchDesc">求职者与外部 Agent 是仅有的两个外部主体。本机内部分三层：Electron 壳（主进程、preload、IPC 总线、主世界注入、内置浏览器 webview）、渲染进程 src/（11 个页面、Zustand store、lib/bossclaw 业务内核、electronApi 出口）、本地侧车服务（控制桥 17650、MCP stdio、Camoufox 桥 18767、OpenClaw 桥 18765、CloakBrowser）。本地数据落在 localStorage 并做五分钟脏检查写盘。外部依赖是四个招聘平台与用户自带 Key 的 LLM 服务商。</desc>
+
+  <rect x="0" y="0" width="880" height="828" fill="#FBFAF7" />
+
+  <defs>
+    <marker id="bcArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="#5B6472" />
+    </marker>
+  </defs>
+
+  <!-- 本机分带（虚线行政带） -->
+  <rect x="40" y="136" width="800" height="556" rx="4" fill="#F2F0EC" stroke="#D2CFC9" stroke-dasharray="4 4" />
+
+  <!-- 三个分组列（虚线） -->
+  <rect x="56" y="176" width="232" height="420" rx="4" fill="none" stroke="#D2CFC9" stroke-dasharray="4 4" />
+  <rect x="324" y="176" width="232" height="420" rx="4" fill="none" stroke="#D2CFC9" stroke-dasharray="4 4" />
+  <rect x="592" y="176" width="232" height="420" rx="4" fill="none" stroke="#D2CFC9" stroke-dasharray="4 4" />
+
+  <!-- 实体节点 -->
+  <g fill="#FFFFFF" stroke="#DCD9D4">
+    <rect x="40" y="40" width="380" height="64" rx="8" />
+    <rect x="460" y="40" width="380" height="64" rx="8" />
+    <rect x="72" y="216" width="200" height="60" rx="8" />
+    <rect x="72" y="292" width="200" height="60" rx="8" />
+    <rect x="72" y="368" width="200" height="60" rx="8" />
+    <rect x="72" y="444" width="200" height="60" rx="8" />
+    <rect x="72" y="520" width="200" height="60" rx="8" />
+    <rect x="340" y="216" width="200" height="60" rx="8" />
+    <rect x="340" y="292" width="200" height="60" rx="8" />
+    <rect x="340" y="368" width="200" height="60" rx="8" />
+    <rect x="340" y="444" width="200" height="60" rx="8" />
+    <rect x="340" y="520" width="200" height="60" rx="8" />
+    <rect x="608" y="216" width="200" height="60" rx="8" />
+    <rect x="608" y="292" width="200" height="60" rx="8" />
+    <rect x="608" y="368" width="200" height="60" rx="8" />
+    <rect x="608" y="444" width="200" height="60" rx="8" />
+    <rect x="608" y="520" width="200" height="60" rx="8" />
+    <rect x="40" y="724" width="380" height="64" rx="8" />
+    <rect x="460" y="724" width="380" height="64" rx="8" />
+  </g>
+
+  <!-- 焦点：本地数据 -->
+  <rect x="56" y="612" width="768" height="64" rx="8" fill="#FBEDE7" stroke="#BF4520" />
+
+  <!-- 连线路由 -->
+  <g fill="none" stroke="#5B6472" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#bcArrow)">
+    <path d="M230 104 V135" />
+    <path d="M650 104 V135" />
+    <path d="M324 386 H290" />
+    <path d="M592 386 H558" />
+    <path d="M230 692 V723" />
+    <path d="M650 692 V723" />
+  </g>
+
+  <!-- 线路标签胶囊 -->
+  <g fill="#EDEAE5" stroke="#D2CFC9">
+    <rect x="242" y="110" width="82" height="20" rx="8" />
+    <rect x="662" y="110" width="76" height="20" rx="8" />
+    <rect x="242" y="698" width="82" height="20" rx="8" />
+    <rect x="662" y="698" width="94" height="20" rx="8" />
+  </g>
+
+  <!-- 节点标题 -->
+  <g font-family="'Segoe UI',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="14" font-weight="500" fill="#131313">
+    <text x="60" y="74">求职者 · 用户</text>
+    <text x="480" y="74">外部 Agent</text>
+    <text x="88" y="240">主进程</text>
+    <text x="88" y="316">preload 层</text>
+    <text x="88" y="392">IPC 总线</text>
+    <text x="88" y="468">主世界注入</text>
+    <text x="88" y="544">内置浏览器 webview</text>
+    <text x="356" y="240">页面 ×11</text>
+    <text x="356" y="316">Zustand store ×5</text>
+    <text x="356" y="392">业务内核 lib/bossclaw</text>
+    <text x="356" y="468">投递 · 沟通 · 统计</text>
+    <text x="356" y="544">electronApi 出口</text>
+    <text x="624" y="240">控制桥 :17650</text>
+    <text x="624" y="316">MCP 服务器</text>
+    <text x="624" y="392">Camoufox 桥 :18767</text>
+    <text x="624" y="468">OpenClaw 桥 :18765</text>
+    <text x="624" y="544">CloakBrowser</text>
+    <text x="60" y="754">招聘平台 ×4</text>
+    <text x="480" y="754">LLM 服务商</text>
+  </g>
+
+  <!-- 节点副标题（说明性） -->
+  <g font-family="'Segoe UI',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="12" fill="#5B6472">
+    <text x="60" y="94">导入简历 · 确认方向 · 批准发送</text>
+    <text x="480" y="94">Claude · WorkBuddy · Cursor · 任意 MCP 客户端</text>
+    <text x="88" y="260">窗口 · IPC · 子进程</text>
+    <text x="88" y="564">真实输入 · 采集 · 投递</text>
+    <text x="356" y="260">Home · Workbench</text>
+    <text x="356" y="412">解析 · 画像 · 匹配</text>
+    <text x="356" y="488">招呼语 · 漏斗 · 导出</text>
+    <text x="356" y="564">唯一 IPC 接口</text>
+    <text x="624" y="336">stdio · 9 工具 / 3 组</text>
+    <text x="624" y="488">OCR · 日报 · 日志</text>
+    <text x="60" y="774">BOSS · 猎聘 · 智联 · 51Job</text>
+    <text x="480" y="774">OpenAI · DeepSeek · 通义 · GLM</text>
+  </g>
+
+  <!-- 节点副标题（技术标识，等宽） -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="12" fill="#5B6472">
+    <text x="88" y="336">app.cjs · webview.cjs</text>
+    <text x="88" y="412">safeHandle · 白名单</text>
+    <text x="88" y="488">stealth.cjs · UA-CH</text>
+    <text x="356" y="336">app · data · settings</text>
+    <text x="624" y="260">/state · /action · token</text>
+    <text x="624" y="412">platforms/ · 差异声明</text>
+    <text x="624" y="564">launcher.cjs · 可选</text>
+  </g>
+
+  <!-- 分带与分组标签 -->
+  <g font-family="'Segoe UI',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="12" font-weight="500" fill="#5B6472">
+    <text x="60" y="162">本机 · 进程与数据 · 无云端后端</text>
+    <text x="72" y="202">Electron 壳</text>
+    <text x="340" y="202">渲染进程 src/</text>
+    <text x="608" y="202">本地侧车服务</text>
+  </g>
+
+  <!-- 线路标签文字 -->
+  <g font-family="'Segoe UI',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="12" font-weight="500" fill="#131313" text-anchor="middle">
+    <text x="283" y="124">简历 · 条件</text>
+    <text x="700" y="124">白名单动作</text>
+    <text x="283" y="712">投递 · 沟通</text>
+    <text x="709" y="712">提示词 · 代答</text>
+  </g>
+
+  <!-- 焦点节点文字 -->
+  <g font-family="'Segoe UI',-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" fill="#8F3418">
+    <text x="76" y="636" font-size="14" font-weight="500">本地数据 · 本地优先</text>
+    <text x="76" y="656" font-size="12">localStorage ×5 键 · 每 5 分钟脏检查写盘 · 导出 / 导入 / 恢复</text>
+  </g>
+</svg>
