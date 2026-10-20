@@ -264,7 +264,7 @@ release/
 
 ### IPC 总线（白名单 channel）
 
-详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**66 条** `ALLOWED_IPC_CHANNELS` 白名单；新增 `jc:` 通道必须同步登记，否则运行时抛错）：
+详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**112 条** `ALLOWED_IPC_CHANNELS` 白名单，其中模拟面试 `jc:mock-interview-*` 占 46 条；新增 `jc:` 通道必须同步登记，否则运行时抛错）：
 
 | Channel                       | 用途                                                |
 | ----------------------------- | ------------------------------------------------- |
@@ -289,6 +289,7 @@ release/
 | `jc:skills-*`                 | AI 技能库列出 / 读取 / 导入 / 删除（防路径穿越）                  |
 | `jc:llm-proxy`                | 主进程代发用户配置模型的 HTTP 请求（统一出口）                      |
 | `jc:webview-diag` / `jc:webview-source` | webview 诊断信息 / 页面源码（复制用）                    |
+| `jc:mock-interview-*`（46 条） | 模拟面试：会话 CRUD / 导出、题库与题目、语音包安装与状态、ASR / TTS |
 
 所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。`jc:save-pdf-batch*` 由 preload 直接 `invoke`，尚未纳入 `assertIpcChannel` 白名单校验（待统一）。
 
