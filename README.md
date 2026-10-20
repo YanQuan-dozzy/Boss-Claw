@@ -16,6 +16,8 @@
 ![Language](https://img.shields.io/badge/language-简体中文-F06284)
 ![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
 
+如果 BossClaw 对你有帮助，欢迎 [点个 ⭐ Star](https://github.com/YanQuan-dozzy/Boss-Claw) 支持作者，让更多需要的求职者看到它。
+
 </div>
 
 > **版本口径**：本文以 `main` 分支当前实现为准；**当前版本 v2.5.7**（2026-10-13 发布，Windows x64）；上一正式版为 v2.5.6（2026-10-09）。本条目的改动主轴是**工作台岗位「定制简历」（单岗位 / 批量 / 迭代生成）+ 猎聘投递链路升级（招呼语真实输入发送、文字气泡确认才计成功）+ 控制桥 / 本地桥安全护栏批次**，另含社区贡献的 Camoufox 聊天上下文隔离修复（PR #5 / Fixes #4）与自动沟通「安全节奏」卡片排版收敛；功能表按当前实现标注。
@@ -34,6 +36,7 @@ Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目�
 - **运行要求**：Windows 10/11（x64）；Linux 主流 x86_64 发行版；macOS 需自构建。
 - **首次启动**按提示在「设置」页填写求职条件与 AI API Key 即可使用（API Key 只存本机，不上传）。
 - BossClaw 由用户主动控制，不属于任何招聘平台的官方产品，也不代表平台提供授权、合作或背书；使用者应遵守适用法律、目标网站规则及账号使用要求。
+- ⭐ **觉得好用就点个 Star**：下载体验之后如果觉得有帮助，欢迎到 [GitHub 仓库](https://github.com/YanQuan-dozzy/Boss-Claw) 点个 Star 支持一下 —— 这是对作者最直接的鼓励，也能帮到更多正在求职的人。
 
 ## BossClaw 是什么
 
