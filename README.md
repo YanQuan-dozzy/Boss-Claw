@@ -16,7 +16,7 @@
 ![Language](https://img.shields.io/badge/language-简体中文-F06284)
 ![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
 
-如果 BossClaw 对你有帮助，欢迎 [点个 ⭐ Star](https://github.com/YanQuan-dozzy/Boss-Claw) 支持作者，让更多需要的求职者看到它。
+<h3 align="center">⭐ 如果 BossClaw 对你有帮助，欢迎 <a href="https://github.com/YanQuan-dozzy/Boss-Claw">点个 Star</a> 支持作者，让更多需要的求职者看到它。</h3>
 
 </div>
 
