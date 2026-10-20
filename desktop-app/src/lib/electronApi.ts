@@ -7,6 +7,20 @@
 //   2. 永远不直接 typeof window.electron 操作，所有调用走该封装，便于统一审计与单测替身。
 //   3. 任何缺失的 API 都以「默认值 + Promise.resolve() / no-op」形式降级，绝不抛错导致 UI 崩溃。
 
+import type { MockIndexEntry, MockSession } from './bossclaw/mockInterviewTypes';
+import type { BankMeta, BankQuestion } from './bossclaw/mockInterviewBank';
+import type {
+  AsrResult,
+  ClonedVoice,
+  CustomVoice,
+  SpeechProgress,
+  SpeechStatus,
+  TtsChunk,
+  TtsResult,
+  TtsStreamResult,
+  VoicePackProbe,
+} from './bossclaw/mockInterviewVoice';
+
 export interface CamoufoxApiStatus {
   python?: boolean;
   pythonCmd?: string;
@@ -324,6 +338,499 @@ export const electronApi = {
         return false;
       }
     },
+  },
+
+  // 模拟面试：会话文件仓储（主进程 <userData>/mock-interview/），渲染层只经此封装读写
+  mockInterview: {
+    list: async (): Promise<{ ok: boolean; sessions: MockIndexEntry[]; error?: string }> => {
+      try {
+        const fn = api().mockInterviewList;
+        if (!fn) return { ok: false, sessions: [], error: '模拟面试存储仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; sessions?: MockIndexEntry[]; error?: string };
+        return { ok: Boolean(r?.ok), sessions: Array.isArray(r?.sessions) ? (r!.sessions as MockIndexEntry[]) : [], error: r?.error };
+      } catch (e) {
+        return { ok: false, sessions: [], error: (e as Error).message };
+      }
+    },
+    read: async (id: string): Promise<{ ok: boolean; session?: MockSession; error?: string }> => {
+      try {
+        const fn = api().mockInterviewRead;
+        if (!fn) return { ok: false, error: '模拟面试存储仅桌面端可用' };
+        const r = (await fn(id)) as { ok?: boolean; session?: MockSession; error?: string };
+        return { ok: Boolean(r?.ok), session: r?.session, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    write: async (session: MockSession, opts?: { immediate?: boolean }): Promise<{ ok: boolean; stale?: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewWrite;
+        if (!fn) return { ok: false, error: '模拟面试存储仅桌面端可用' };
+        const r = (await fn(session, opts)) as { ok?: boolean; stale?: boolean; error?: string };
+        return { ok: Boolean(r?.ok), stale: r?.stale, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    remove: async (id: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewDelete;
+        if (!fn) return { ok: false, error: '模拟面试存储仅桌面端可用' };
+        return (await fn(id)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    clear: async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewClear;
+        if (!fn) return { ok: false, error: '模拟面试存储仅桌面端可用' };
+        return (await fn()) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    clearSessions: async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewClearSessions;
+        if (!fn) return { ok: false, error: '模拟面试存储仅桌面端可用' };
+        return (await fn()) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    exportAll: async (): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; count?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewExport;
+        if (!fn) return { ok: false, error: '模拟面试导出仅桌面端可用' };
+        return (await fn()) as { ok: boolean; canceled?: boolean; filePath?: string; count?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    usage: async (): Promise<{ ok: boolean; count: number; bytes: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewUsage;
+        if (!fn) return { ok: false, count: 0, bytes: 0, error: '模拟面试存储仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; count?: number; bytes?: number; error?: string };
+        return { ok: Boolean(r?.ok), count: Number(r?.count || 0), bytes: Number(r?.bytes || 0), error: r?.error };
+      } catch (e) {
+        return { ok: false, count: 0, bytes: 0, error: (e as Error).message };
+      }
+    },
+
+    // ===== 题库（P3：内置库随包只读，用户库写 userData）=====
+    bankList: async (): Promise<{ ok: boolean; banks: BankMeta[]; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankList;
+        if (!fn) return { ok: false, banks: [], error: '题库仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; banks?: BankMeta[]; error?: string };
+        return { ok: Boolean(r?.ok), banks: Array.isArray(r?.banks) ? (r!.banks as BankMeta[]) : [], error: r?.error };
+      } catch (e) {
+        return { ok: false, banks: [], error: (e as Error).message };
+      }
+    },
+    bankRead: async (bankId: string): Promise<{ ok: boolean; questions: BankQuestion[]; meta?: BankMeta; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankRead;
+        if (!fn) return { ok: false, questions: [], error: '题库仅桌面端可用' };
+        const r = (await fn(bankId)) as { ok?: boolean; questions?: BankQuestion[]; meta?: BankMeta; error?: string };
+        return {
+          ok: Boolean(r?.ok),
+          questions: Array.isArray(r?.questions) ? (r!.questions as BankQuestion[]) : [],
+          meta: r?.meta,
+          error: r?.error,
+        };
+      } catch (e) {
+        return { ok: false, questions: [], error: (e as Error).message };
+      }
+    },
+    bankCreate: async (name: string): Promise<{ ok: boolean; bank?: BankMeta; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankCreate;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        const r = (await fn(name, 'custom')) as { ok?: boolean; bank?: BankMeta; error?: string };
+        return { ok: Boolean(r?.ok), bank: r?.bank, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankRename: async (bankId: string, name: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankRename;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, name)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankDelete: async (bankId: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankDelete;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankToggle: async (bankId: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankToggle;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, enabled)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankRestoreBuiltin: async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankRestoreBuiltin;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn()) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankAddQuestion: async (bankId: string, q: Partial<BankQuestion>): Promise<{ ok: boolean; question?: BankQuestion; count?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankAddQuestion;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, q)) as { ok: boolean; question?: BankQuestion; count?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankUpdateQuestion: async (bankId: string, questionId: string, patch: Partial<BankQuestion>): Promise<{ ok: boolean; question?: BankQuestion; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankUpdateQuestion;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, questionId, patch)) as { ok: boolean; question?: BankQuestion; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankDeleteQuestion: async (bankId: string, questionId: string): Promise<{ ok: boolean; count?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankDeleteQuestion;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, questionId)) as { ok: boolean; count?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankImport: async (bankId: string, questions: BankQuestion[], mode: 'append' | 'replace' = 'append'): Promise<{ ok: boolean; count?: number; added?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankImport;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(bankId, questions, { mode })) as { ok: boolean; count?: number; added?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankUsage: async (): Promise<{ ok: boolean; count: number; bytes: number; builtinCount?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankUsage;
+        if (!fn) return { ok: false, count: 0, bytes: 0, error: '题库仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; count?: number; bytes?: number; builtinCount?: number; error?: string };
+        return {
+          ok: Boolean(r?.ok),
+          count: Number(r?.count || 0),
+          bytes: Number(r?.bytes || 0),
+          builtinCount: Number(r?.builtinCount || 0),
+          error: r?.error,
+        };
+      } catch (e) {
+        return { ok: false, count: 0, bytes: 0, error: (e as Error).message };
+      }
+    },
+    bankCacheRead: async (): Promise<{ ok: boolean; data?: string; bytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankCacheRead;
+        if (!fn) return { ok: false };
+        return (await fn()) as { ok: boolean; data?: string; bytes?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankCacheWrite: async (payload: string): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankCacheWrite;
+        if (!fn) return { ok: false, error: '题库仅桌面端可用' };
+        return (await fn(payload)) as { ok: boolean; bytes?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    bankCacheClear: async (): Promise<{ ok: boolean; freedBytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewBankCacheClear;
+        if (!fn) return { ok: false };
+        return (await fn()) as { ok: boolean; freedBytes?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+
+    // ===== 语音（P2：本地 Kokoro 朗读）=====
+    speechStatus: async (): Promise<SpeechStatus> => {
+      try {
+        const fn = api().mockInterviewSpeechStatus;
+        if (!fn) return { ok: false, error: '语音仅桌面端可用' };
+        return ((await fn()) as SpeechStatus) || { ok: false, error: '状态读取失败' };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    speechInstall: async (pack: 'tts' | 'asr' | 'clone' = 'tts'): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewSpeechInstall;
+        if (!fn) return { ok: false, error: '语音安装仅桌面端可用' };
+        return ((await fn(pack)) as { ok: boolean; bytes?: number; error?: string }) || { ok: false };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    speechCancel: async (): Promise<{ ok: boolean; canceled?: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewSpeechCancel;
+        if (!fn) return { ok: false, error: '语音安装仅桌面端可用' };
+        return (await fn()) as { ok: boolean; canceled?: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    speechRemove: async (pack: 'tts' | 'asr' | 'clone' = 'tts'): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewSpeechRemove;
+        if (!fn) return { ok: false, error: '语音仅桌面端可用' };
+        return (await fn(pack)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    speechSetOnline: async (on: boolean): Promise<{ ok: boolean; onlineEngine?: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewSpeechSetOnline;
+        if (!fn) return { ok: false, error: '语音仅桌面端可用' };
+        return (await fn(on)) as { ok: boolean; onlineEngine?: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    asr: async (opts: {
+      samplesBase64: string;
+      sampleRate: number;
+      segments?: Array<{ start: number; end: number }>;
+    }): Promise<AsrResult> => {
+      try {
+        const fn = api().mockInterviewAsr;
+        if (!fn) return { ok: false, error: '语音识别仅桌面端可用' };
+        return ((await fn(opts)) as AsrResult) || { ok: false, error: '识别失败' };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    asrWarmup: async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewAsrWarmup;
+        if (!fn) return { ok: false, error: '语音识别仅桌面端可用' };
+        return (await fn()) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    tts: async (opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string }): Promise<TtsResult> => {
+      try {
+        const fn = api().mockInterviewTts;
+        if (!fn) return { ok: false, error: '语音合成仅桌面端可用' };
+        return ((await fn(opts)) as TtsResult) || { ok: false, error: '合成失败' };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    ttsPreview: async (opts: { sid?: number; speed?: number; voiceId?: string; engine?: string; onlineVoice?: string }): Promise<TtsResult> => {
+      try {
+        const fn = api().mockInterviewTtsPreview;
+        if (!fn) return { ok: false, error: '语音合成仅桌面端可用' };
+        return ((await fn(opts)) as TtsResult) || { ok: false, error: '试听失败' };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    /**
+     * 流式朗读：先问一次 invoke，合成过程中分块从 onTtsChunk 推过来。
+     * 返回值在整段合成结束（或取消）时 resolve；首包到达靠 onTtsChunk 感知。
+     */
+    ttsStream: async (
+      opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string },
+      streamId: string,
+    ): Promise<TtsStreamResult> => {
+      try {
+        const fn = api().mockInterviewTtsStream;
+        if (!fn) return { ok: false, unavailable: true, error: '流式朗读仅桌面端可用' };
+        return ((await fn({ ...opts, streamId })) as TtsStreamResult) || { ok: false, error: '合成失败' };
+      } catch (e) {
+        const msg = (e as Error).message || String(e);
+        // 主进程还没注册这条通道（旧版本）时不该弹错，退回整段合成即可
+        if (/No handler registered/i.test(msg)) return { ok: false, unavailable: true, error: msg };
+        return { ok: false, error: msg };
+      }
+    },
+    ttsCancel: async (streamId: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewTtsCancel;
+        if (!fn) return { ok: false, error: '流式朗读仅桌面端可用' };
+        return (await fn(streamId)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    onTtsChunk: (callback: (chunk: TtsChunk) => void): (() => void) => {
+      const fn = api().onMockInterviewTtsChunk;
+      if (!fn) return () => {};
+      return fn((chunk) => callback(chunk as TtsChunk));
+    },
+    clearTtsCache: async (): Promise<{ ok: boolean; freedBytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewTtsClearCache;
+        if (!fn) return { ok: false, error: '语音仅桌面端可用' };
+        return (await fn()) as { ok: boolean; freedBytes?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    // ===== 克隆音色（P4-B：参考音频存 userData/speech/voices）=====
+    voiceList: async (): Promise<{ ok: boolean; voices: CustomVoice[]; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceList;
+        if (!fn) return { ok: false, voices: [], error: '自定义音色仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; voices?: CustomVoice[]; error?: string };
+        return { ok: Boolean(r?.ok), voices: Array.isArray(r?.voices) ? (r!.voices as CustomVoice[]) : [], error: r?.error };
+      } catch (e) {
+        return { ok: false, voices: [], error: (e as Error).message };
+      }
+    },
+    voiceCreate: async (payload: {
+      name?: string;
+      samplesBase64: string;
+      sampleRate: number;
+      refText: string;
+      licenseAck: boolean;
+    }): Promise<{
+      ok: boolean;
+      voice?: ClonedVoice;
+      previewOk?: boolean;
+      previewError?: string;
+      previewWavBase64?: string;
+      error?: string;
+    }> => {
+      try {
+        const fn = api().mockInterviewVoiceCreate;
+        if (!fn) return { ok: false, error: '克隆音色仅桌面端可用' };
+        return (await fn(payload)) as {
+          ok: boolean;
+          voice?: ClonedVoice;
+          previewOk?: boolean;
+          previewError?: string;
+          previewWavBase64?: string;
+          error?: string;
+        };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voicePackPick: async (): Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      dir?: string;
+      probe?: VoicePackProbe;
+      error?: string;
+    }> => {
+      try {
+        const fn = api().mockInterviewVoicePackPick;
+        if (!fn) return { ok: false, error: '音色包导入仅桌面端可用' };
+        return (await fn()) as { ok: boolean; canceled?: boolean; dir?: string; probe?: VoicePackProbe; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voicePackPreview: async (dir: string, sid = 0): Promise<{
+      ok: boolean;
+      wavBase64?: string;
+      bytes?: number;
+      ms?: number;
+      engine?: string;
+      family?: string;
+      borrowedDataDir?: boolean;
+      error?: string;
+    }> => {
+      try {
+        const fn = api().mockInterviewVoicePackPreview;
+        if (!fn) return { ok: false, error: '音色包试听仅桌面端可用' };
+        return (await fn(dir, sid)) as {
+          ok: boolean;
+          wavBase64?: string;
+          bytes?: number;
+          ms?: number;
+          engine?: string;
+          family?: string;
+          error?: string;
+        };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voiceImport: async (
+      dir: string,
+      opts: { name?: string; license?: string; source?: string; sid?: number },
+    ): Promise<{ ok: boolean; voice?: CustomVoice; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceImport;
+        if (!fn) return { ok: false, error: '音色包导入仅桌面端可用' };
+        return (await fn(dir, opts)) as { ok: boolean; voice?: CustomVoice; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voiceRename: async (id: string, name: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceRename;
+        if (!fn) return { ok: false, error: '克隆音色仅桌面端可用' };
+        return (await fn(id, name)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voiceRemove: async (id: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceRemove;
+        if (!fn) return { ok: false, error: '克隆音色仅桌面端可用' };
+        return (await fn(id)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    voiceUsage: async (): Promise<{ ok: boolean; count: number; bytes: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceUsage;
+        if (!fn) return { ok: false, count: 0, bytes: 0, error: '克隆音色仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; count?: number; bytes?: number; error?: string };
+        return { ok: Boolean(r?.ok), count: Number(r?.count || 0), bytes: Number(r?.bytes || 0), error: r?.error };
+      } catch (e) {
+        return { ok: false, count: 0, bytes: 0, error: (e as Error).message };
+      }
+    },
+    voiceClear: async (): Promise<{ ok: boolean; removed?: number; freedBytes?: number; error?: string }> => {
+      try {
+        const fn = api().mockInterviewVoiceClear;
+        if (!fn) return { ok: false, error: '克隆音色仅桌面端可用' };
+        return (await fn()) as { ok: boolean; removed?: number; freedBytes?: number; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    onSpeechProgress: (cb: (p: SpeechProgress) => void) =>
+      (api().onMockInterviewSpeechProgress || noopUnsub)(cb as (p: unknown) => void),
   },
 
   // 保存「达标岗位」数据到本地：dir 为空走系统保存对话框，dir 为绝对路径则在指定导出目录自动按天写文件

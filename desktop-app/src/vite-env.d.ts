@@ -90,6 +90,56 @@ interface ElectronBridgeApi {
   backupWrite?: (bundle: unknown) => Promise<{ ok?: boolean; file?: string; size?: number; error?: string }>;
   backupRead?: () => Promise<{ ok?: boolean; file?: string | null; bundle?: { updatedAt?: number; keys?: Record<string, string | null> } | null; error?: string }>;
   backupDelete?: () => Promise<{ ok?: boolean; error?: string }>;
+  // 模拟面试：会话文件存于 <userData>/mock-interview/（主进程持有，不进 localStorage）
+  mockInterviewList?: () => Promise<{ ok: boolean; sessions?: unknown[]; error?: string }>;
+  mockInterviewRead?: (id: string) => Promise<{ ok: boolean; session?: unknown; error?: string }>;
+  mockInterviewWrite?: (session: unknown, opts?: { immediate?: boolean }) => Promise<{ ok: boolean; stale?: boolean; error?: string }>;
+  mockInterviewDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  mockInterviewClear?: () => Promise<{ ok: boolean; error?: string }>;
+  mockInterviewClearSessions?: () => Promise<{ ok: boolean; error?: string }>;
+  mockInterviewExport?: () => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; count?: number; error?: string }>;
+  mockInterviewUsage?: () => Promise<{ ok: boolean; count?: number; bytes?: number; error?: string }>;
+  // 模拟面试 · 题库（内置库随包只读，用户库写 userData/mock-interview/bank/）
+  mockInterviewBankList?: () => Promise<unknown>;
+  mockInterviewBankRead?: (bankId: string) => Promise<unknown>;
+  mockInterviewBankCreate?: (name: string, type?: string) => Promise<unknown>;
+  mockInterviewBankRename?: (bankId: string, name: string) => Promise<unknown>;
+  mockInterviewBankDelete?: (bankId: string) => Promise<unknown>;
+  mockInterviewBankToggle?: (bankId: string, enabled: boolean) => Promise<unknown>;
+  mockInterviewBankRestoreBuiltin?: () => Promise<unknown>;
+  mockInterviewBankAddQuestion?: (bankId: string, question: unknown) => Promise<unknown>;
+  mockInterviewBankUpdateQuestion?: (bankId: string, questionId: string, patch: unknown) => Promise<unknown>;
+  mockInterviewBankDeleteQuestion?: (bankId: string, questionId: string) => Promise<unknown>;
+  mockInterviewBankImport?: (bankId: string, questions: unknown, opts?: unknown) => Promise<unknown>;
+  mockInterviewBankUsage?: () => Promise<unknown>;
+  mockInterviewBankCacheRead?: () => Promise<unknown>;
+  mockInterviewBankCacheWrite?: (payload: string) => Promise<unknown>;
+  mockInterviewBankCacheClear?: () => Promise<unknown>;
+  // 模拟面试 · 语音（本地 sherpa-onnx；模型与缓存存 userData/speech/）
+  mockInterviewSpeechStatus?: () => Promise<unknown>;
+  mockInterviewSpeechInstall?: (pack?: string) => Promise<{ ok: boolean; bytes?: number; error?: string }>;
+  mockInterviewSpeechCancel?: () => Promise<{ ok: boolean; canceled?: boolean; error?: string }>;
+  mockInterviewSpeechRemove?: (pack?: string) => Promise<{ ok: boolean; error?: string }>;
+  mockInterviewSpeechSetOnline?: (on: boolean) => Promise<{ ok: boolean; onlineEngine?: boolean; error?: string }>;
+  mockInterviewTts?: (opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string }) => Promise<unknown>;
+  mockInterviewTtsStream?: (opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string; streamId?: string }) => Promise<unknown>;
+  mockInterviewTtsCancel?: (streamId: string) => Promise<{ ok: boolean; error?: string }>;
+  onMockInterviewTtsChunk?: (callback: (chunk: unknown) => void) => () => void;
+  mockInterviewTtsPreview?: (opts: { sid?: number; speed?: number; voiceId?: string; engine?: string; onlineVoice?: string }) => Promise<unknown>;
+  mockInterviewTtsClearCache?: () => Promise<{ ok: boolean; freedBytes?: number; error?: string }>;
+  mockInterviewAsr?: (opts: unknown) => Promise<unknown>;
+  mockInterviewAsrWarmup?: () => Promise<unknown>;
+  // 克隆音色（P4-B）
+  mockInterviewVoiceList?: () => Promise<unknown>;
+  mockInterviewVoiceCreate?: (payload: unknown) => Promise<unknown>;
+  mockInterviewVoicePackPick?: () => Promise<unknown>;
+  mockInterviewVoicePackPreview?: (dir: string, sid?: number) => Promise<unknown>;
+  mockInterviewVoiceImport?: (dir: string, opts?: unknown) => Promise<unknown>;
+  mockInterviewVoiceRename?: (id: string, name: string) => Promise<unknown>;
+  mockInterviewVoiceRemove?: (id: string) => Promise<unknown>;
+  mockInterviewVoiceUsage?: () => Promise<unknown>;
+  mockInterviewVoiceClear?: () => Promise<unknown>;
+  onMockInterviewSpeechProgress?: (callback: (progress: unknown) => void) => () => void;
 }
 
 interface Window {

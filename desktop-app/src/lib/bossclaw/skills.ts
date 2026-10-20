@@ -78,6 +78,24 @@ export const BOSS_SKILLS: BossSkill[] = [
     instructions:
       '【执行顺序】先把 JD 读完（四层拆解 → 关键词 → 顺序 → 结果表达），再开始输出定制内容，不得跳过拆解直接润色。四层：硬门槛（学历/年限/语言/行业背景/远程出差，不能绕开）、优先条件（「优先/加分/更佳」，不完全匹配时用可迁移经历补位）、职责信号（描述每天做什么：重推进/结果导向/结构化思考）、团队信号（判断公司阶段，只作中性参考）。读完 JD 后立刻做四件事：①提取高频关键词；②重排经历顺序（最贴岗位的排前面）；③改结果不只改动作（尽量补数字/范围/变化，但只能用简历已有的数字）；④顶部一行面向 JD 的摘要。把 JD 翻译成投递说明（3 句结构：我为什么适合 / 哪段经历最接近 / 能解决什么问题）。落地到输出：jdPoints 每条标注层级 layer（must/prefer/duty/team）、同类合并 ≤20 条、每条 ≤12 字，并给 verdict（covered 简历已体现 / addable 画像或补充材料真实具备但简历未写 / missing 与真实背景毫无交集无法合理外推）与 ≤30 字 evidence；matchScore 输出 before（原简历+补充材料+画像对 JD）与 after（定制后简历文档对 JD）两个 0-100 整数，两者必须基于同一份 jdPoints 与同一套判断标准，after 只有在确实补上要点时才允许高于 before，不得为好看抬分；highlightedSkills 按 JD 规范名编写 3-8 个岗位适配技能；resume.projects/internships/works 的 bullets 按岗位相关性从高到低重排，每条写清「动作 → 结果/价值」；resume.skills 按类别分组，每组一行「类别：技能A、技能B」，与 JD 相关性高的组排前面；tailoredSummary 为 120-150 字面向该 JD 的摘要，开头点明身份；coverLetter 按「我为什么适合 / 哪段经历最接近 / 能解决什么问题」结构写，其中的院校名称只在简历院校属于 985/211 时才允许写出（以系统「校名披露」本地核验结论为准），其余院校一律不出现任何院校名称或层级字样、只写学历/专业/年级；rewrites 每条被改写的条目都要带一条原简历原文摘录 before（必须来自简历原文或补充材料的真实文字，不得改写拼凑），after 为对应改写结果，没有实质改写的模块不输出条目。定制简历文档固定七个模块，顺序为 教育经历 → 实习经历 → 工作经历 → 项目经历 → 专业技能 → 个人荣誉 → 自我评价；你只填内容，顺序与「空模块不输出」由程序决定，没有内容的模块返回空数组或空字符串，不要编造内容填充、也不要写「暂无」。边界：只允许按 JD 规范名重新表达真实具备的能力，不得为覆盖要点而虚构公司/职位/在职时长/学校/学历/专业/证书/奖项/数字/承诺；只能靠编造才能覆盖的要点一律记 missing。**保留能力描述语（保真红线）**：原文的「精通/熟练/熟悉/掌握/擅长/了解/具备…能力/沉淀」必须原样保留（禁止降级或删除），严禁把带描述语的表述压成裸技能罗列（「前端：熟悉 React、TypeScript，沉淀通用组件库」不得改成「前端：React、TypeScript、通用组件库」）；resume.skills 每组一行「类别：<描述语><技能>、<描述语><技能>」，按 JD 补新技能沿用同组同强度描述语，不得凭空升级为「精通」。',
   },
+  {
+    id: 'mock-interview-question',
+    name: '模拟面试出题',
+    description: '两段式出题方法论：阶段一只按岗位出通用题，阶段二按简历与上一轮回答深挖；含自检清单与深挖优先级',
+    scope: 'mock-interview',
+    defaultEnabled: true,
+    instructions:
+      '阶段一只按岗位方向与面试官类型出题，不要引用简历里的具体项目（简历还没给你）；至少各 1 道破冰 / 专业基础 / 行为题。阶段二必须引用简历或上一轮回答里的真实事实（resumeRef），深挖优先级：指标口径与定义 > 方法与工具细节 > 业务价值与影响 > 量化结果的真实性与推导过程；锚不到真实事实时改问「如果让你做你会怎么做」并留空 resumeRef。绝不引入简历与回答里没有的公司/项目/数字。题干口语化，禁止「请列举三点」这类笔试腔，禁止询问年龄、婚育、户籍、健康、政治面貌。追问一次只问一个最关键的点（20–40 字），同题最多 2 轮。',
+  },
+  {
+    id: 'mock-interview-report',
+    name: '模拟面试评分',
+    description: '4+1 维四档语义、六态证据、证据必须逐字引用原句、要点来源标注与事实边界',
+    scope: 'mock-interview',
+    defaultEnabled: true,
+    instructions:
+      '只给档位不给分数：每维输出 { reasoning, level:1–4, pos:1–3, evidence }，reasoning 必须写在 level 之前；不输出 0–100、总分或录用档位。四档：4 强（有事实有数量且口径清楚）/ 3 扎实（有事实数量，归属或口径之一模糊）/ 2 部分（有做法缺数量或结果）/ 1 不足（只有概括名词）。每维必须逐字引用候选人回答原句作 evidence（10–60 字，不得改写或编造），系统会做子串校验，对不上会把该维压到 69 以下。回答长不等于答得好，冗余重复在相关性上扣分。未作答或该维不适用标 na（不按 0 分），但不得为省事整题全标 na。不评价人格/情绪/诚实/健康/外貌，不预测录用概率。改写回答只能用原答与简历里的真实事实与数字，需要新数字的地方写入 gaps。',
+  },
 ];
 
 // ===== 磁盘加载（skills/*/SKILL.md，经主进程 IPC） =====
@@ -125,7 +143,7 @@ export async function ensureSkillsLoaded(): Promise<void> {
             id: String(s.id || ''),
             name: String(s.name || s.id || ''),
             description: String(s.description || ''),
-            scope: (['profile', 'job-analysis', 'greetings', 'assistant'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
+            scope: (['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
             defaultEnabled: s.defaultEnabled !== false,
             custom: Boolean(s.custom),
             body,

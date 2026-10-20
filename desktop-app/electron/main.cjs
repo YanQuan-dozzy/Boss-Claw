@@ -14,6 +14,16 @@ const { spawn, execFile } = require('node:child_process');
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
 // 内置浏览器「主世界」反检测补丁 + 指纹自检（补丁本体与探针同一模块，见文件头说明）
 const stealth = require('./preload/stealth.cjs');
+// 模拟面试会话仓储（主进程文件数据；不进 localStorage / 现有备份体系，见 mockInterviewRepo.cjs 头注释）
+const mockInterviewRepo = require('./mockInterviewRepo.cjs');
+// 模拟面试题库（内置库随包、用户库写 userData；索引缓存也是派生文件）
+const mockInterviewBankRepo = require('./mockInterviewBankRepo.cjs');
+// 语音运行时（utilityProcess 宿主 + 模型安装）；仅在模拟面试朗读时懒加载，不影响启动
+const speechInstall = require('./speechInstall.cjs');
+const speechService = require('./speechService.cjs');
+// 克隆音色的参考音频存储（<userData>/speech/voices/）
+const speechVoiceRepo = require('./mockInterviewVoiceRepo.cjs');
+const speechVoicePack = require('./mockInterviewVoicePack.cjs');
 
 // ===== 轻量日志：仅在 BOSSCLAW_DEBUG=1 或开发模式写文件；正常情况只走 console =====
 // 延迟访问 app（顶层 require 时 app 可能尚未就绪），且不影响其它调用方读取 dlog。
@@ -126,7 +136,7 @@ function safeOn(channel, handler) {
 const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
 const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
-const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant'];
+const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'];
 
 /** 解析 SKILL.md frontmatter（顶部成对分隔线之间的 key: value）+ 正文（frontmatter 之后的内容） */
 // 分隔线兼容 --- 与 *** / === / ___ 等常见 YAML/文档分隔符（历史文件曾用 ***/---------------------，
@@ -847,6 +857,8 @@ async function createMainWindow() {
       webviewTag: true,
       preload: path.join(__dirname, 'preload', 'app.cjs'),
       spellcheck: false,
+      // 模拟面试的题干自动朗读需要在无用户手势时播报；语音全程本地合成，不涉及自动播放外部媒体
+      autoplayPolicy: 'no-user-gesture-required',
       // 关闭后台节流：最小化时渲染进程定时器仍按时触发（本地 5 分钟备份心跳 / 定时任务后台触发依赖此设置）
       backgroundThrottling: false,
     },
@@ -1912,6 +1924,408 @@ safeHandle('jc:backup-delete', async () => {
   }
 });
 
+// ===== 模拟面试：会话文件仓储（主进程持有；渲染层只经 IPC 读写，不接受任意路径）=====
+// 与 localStorage 备份体系完全解耦：面试记录是「用户产出内容」，每次变更即写文件。
+safeHandle('jc:mock-interview-list', async () => mockInterviewRepo.list());
+
+safeHandle('jc:mock-interview-read', async (_event, id) => {
+  try {
+    return mockInterviewRepo.read(String(id || ''));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-write', async (_event, session, opts) => {
+  try {
+    return await mockInterviewRepo.write(session, opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-delete', async (_event, id) => {
+  try {
+    return await mockInterviewRepo.remove(String(id || ''));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-clear', async () => {
+  try {
+    return await mockInterviewRepo.clear();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-clear-sessions', async () => {
+  try {
+    return await mockInterviewRepo.clearSessions();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-export', async (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    return await mockInterviewRepo.exportAll(win);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-usage', async () => {
+  try {
+    return mockInterviewRepo.usage();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 模拟面试 · 题库（P3：容器 / 题目 CRUD / 导入写入 / 索引缓存）=====
+safeHandle('jc:mock-interview-bank-list', async () => {
+  try {
+    return mockInterviewBankRepo.list();
+  } catch (e) {
+    return { ok: false, banks: [], error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-read', async (_event, bankId) => {
+  try {
+    return mockInterviewBankRepo.read(String(bankId || ''));
+  } catch (e) {
+    return { ok: false, questions: [], error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-create', async (_event, name, type) => {
+  try {
+    return mockInterviewBankRepo.createBank(name, type === 'imported' ? 'imported' : 'custom');
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-rename', async (_event, bankId, name) => {
+  try {
+    return mockInterviewBankRepo.renameBank(String(bankId || ''), name);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-delete', async (_event, bankId) => {
+  try {
+    return mockInterviewBankRepo.deleteBank(String(bankId || ''));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-toggle', async (_event, bankId, enabled) => {
+  try {
+    return mockInterviewBankRepo.setEnabled(String(bankId || ''), Boolean(enabled));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-restore-builtin', async () => {
+  try {
+    return mockInterviewBankRepo.restoreBuiltin();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-add-question', async (_event, bankId, question) => {
+  try {
+    return mockInterviewBankRepo.addQuestion(String(bankId || ''), question);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-update-question', async (_event, bankId, questionId, patch) => {
+  try {
+    return mockInterviewBankRepo.updateQuestion(String(bankId || ''), String(questionId || ''), patch);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-delete-question', async (_event, bankId, questionId) => {
+  try {
+    return mockInterviewBankRepo.deleteQuestion(String(bankId || ''), String(questionId || ''));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-import', async (_event, bankId, questions, opts) => {
+  try {
+    return mockInterviewBankRepo.importQuestions(String(bankId || ''), questions, opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-usage', async () => {
+  try {
+    return mockInterviewBankRepo.usage();
+  } catch (e) {
+    return { ok: false, count: 0, bytes: 0, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-bank-cache-read', async () => mockInterviewBankRepo.readIndexCache());
+safeHandle('jc:mock-interview-bank-cache-write', async (_event, payload) =>
+  mockInterviewBankRepo.writeIndexCache(payload),
+);
+safeHandle('jc:mock-interview-bank-cache-clear', async () => mockInterviewBankRepo.clearIndexCache());
+
+// ===== 模拟面试 · 语音（本地 sherpa-onnx，P2：题干/追问朗读）=====
+safeHandle('jc:mock-interview-speech-status', async () => {
+  try {
+    return { ok: true, ...speechService.status() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-speech-install', async (event, pack) => {
+  try {
+    const raw = String(pack || 'tts');
+    const which = raw === 'asr' ? 'asr' : raw === 'clone' ? 'clone' : 'tts';
+    const sender = event.sender;
+    const onProgress = (p) => {
+      try { if (!sender.isDestroyed()) sender.send('jc:mock-interview-speech-progress', p); } catch { /* 窗口已关 */ }
+    };
+    const r = which === 'asr'
+      ? await speechInstall.installAsr(onProgress)
+      : which === 'clone'
+        ? await speechInstall.installClone(onProgress)
+        : await speechInstall.installTts(onProgress);
+    // 装完立刻预热，用户点第一句/第一次录音时不用再等模型加载
+    if (which === 'asr') void speechService.warmupAsr();
+    else if (which === 'clone') void speechService.warmup('zipvoice');
+    else void speechService.warmup();
+    return r;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    return { ok: false, error: msg === '已取消' ? '已取消安装' : msg };
+  }
+});
+
+safeHandle('jc:mock-interview-speech-cancel', async () => {
+  try {
+    return speechInstall.cancel();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-speech-remove', async (_event, pack) => {
+  try {
+    // 删任意一包都要先停 worker：模型文件被占用时 Windows 删不掉
+    speechService.shutdown();
+    const which = String(pack || 'tts');
+    if (which === 'asr') return speechInstall.removeAsr();
+    if (which === 'clone') {
+      // 删模型包不动已录的参考音频（用户可能只是换模型重装），音色单独删
+      return speechInstall.removeClone();
+    }
+    return speechInstall.remove();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 在线高音质引擎开关（方案 6.6，默认关）：偏好存 <userData>/speech/settings.json。
+// 隐私提示由渲染层在开启前弹窗，主进程只负责落盘 —— 不在这里做二次确认，避免两处口径。
+safeHandle('jc:mock-interview-speech-set-online', async (_event, on) => {
+  try {
+    return speechInstall.setOnlineEngine(on);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-tts', async (_event, opts) => {
+  try {
+    return await speechService.synthesize(opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 流式朗读：分块通过 webContents.send 回推，首块到达即可开播（追问场景的首包从 13.8s 降到 1.7s）
+safeHandle('jc:mock-interview-tts-stream', async (event, opts) => {
+  const sender = event.sender;
+  try {
+    return await speechService.synthesizeStream(opts || {}, (chunk) => {
+      try {
+        if (!sender.isDestroyed()) sender.send('jc:mock-interview-tts-chunk', chunk);
+      } catch { /* 窗口已关，忽略 */ }
+    });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-tts-cancel', async (_event, streamId) => {
+  try {
+    return speechService.cancelTtsStream(streamId);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-tts-preview', async (_event, opts) => {
+  try {
+    const sid = Math.round(Number(opts && opts.sid) || 0);
+    const speed = Number(opts && opts.speed) || 1;
+    const voiceId = String((opts && opts.voiceId) || '');
+    return await speechService.synthesize({
+      text: '你好，我是今天的面试官。准备好了我们就开始，请尽量用具体的事例回答。',
+      sid,
+      speed,
+      voiceId,
+      engine: String((opts && opts.engine) || ''),
+      onlineVoice: String((opts && opts.onlineVoice) || ''),
+    });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-asr', async (_event, opts) => {
+  try {
+    return await speechService.recognize(opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-asr-warmup', async () => {
+  try {
+    return await speechService.warmupAsr();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 模拟面试 · 克隆音色（P4-B：参考音频存 <userData>/speech/voices/）=====
+safeHandle('jc:mock-interview-voice-list', async () => {
+  try {
+    return speechVoiceRepo.list();
+  } catch (e) {
+    return { ok: false, voices: [], error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-create', async (_event, payload) => {
+  try {
+    const r = speechVoiceRepo.create(payload || {});
+    if (!r.ok) return r;
+    // 创建后立刻用克隆声合成一句，验证「参考音频真的能被模型采纳」。
+    // 失败不删音色（用户可以先听再决定），但把原因带回去，UI 提示重录。
+    const probe = await speechService.synthesize({
+      text: '你好，我是今天的面试官。',
+      voiceId: r.voice.id,
+      speed: 1,
+    });
+    return {
+      ok: true,
+      voice: r.voice,
+      previewOk: Boolean(probe.ok),
+      previewError: probe.ok ? '' : probe.error || '试听合成失败',
+      previewWavBase64: probe.ok ? probe.wavBase64 : '',
+    };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-pack-pick', async () => {
+  try {
+    const picked = await dialog.showOpenDialog(mainWindow, {
+      title: '选择音色包目录（不是单个文件）',
+      properties: ['openDirectory'],
+      buttonLabel: '选择这个目录',
+    });
+    if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true };
+    const dir = picked.filePaths[0];
+    const probe = speechVoicePack.probe(dir);
+    return { ok: probe.ok, canceled: false, dir, probe };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-pack-preview', async (_event, dir, sid) => {
+  try {
+    return await speechService.previewPack({ dir: String(dir || ''), sid: Number(sid) || 0 });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-import', async (_event, dir, opts) => {
+  try {
+    const r = speechVoiceRepo.importFromDir(String(dir || ''), opts || {});
+    if (!r.ok) return r;
+    return { ok: true, voice: r.voice };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-rename', async (_event, id, name) => {
+  try {
+    return speechVoiceRepo.rename(id, name);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-remove', async (_event, id) => {
+  try {
+    return speechVoiceRepo.remove(id);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-clear', async () => {
+  try {
+    speechService.shutdown();
+    return speechVoiceRepo.clearAll();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-voice-usage', async () => {
+  try {
+    return speechVoiceRepo.usage();
+  } catch (e) {
+    return { ok: false, count: 0, bytes: 0, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:mock-interview-tts-clear-cache', async () => {
+  try {
+    return speechInstall.clearCache();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 // ===== 开机自启动（Windows 登录项）=====
 safeHandle('jc:autostart-get', async () => {
   try {
@@ -2460,6 +2874,8 @@ function stopBackgroundServices() {
   try { cloakLauncher.stop(); } catch {}
   // 关闭本地控制桥并清理信息文件（避免残留 stale 记录被 MCP 读到）
   if (controlBridge) { try { controlBridge.stop(); } catch {} controlBridge = null; }
+  // 关闭语音运行时（utilityProcess）；模型常驻内存，不主动退出会留下子进程
+  try { speechService.shutdown(); } catch {}
 }
 
 // ===== CloakBrowser 隐身浏览器 IPC（可选增强）=====

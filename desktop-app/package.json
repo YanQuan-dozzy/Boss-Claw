@@ -26,13 +26,23 @@
     "verify": "npm run typecheck && npm run build",
     "test:theme-vars": "node scripts/theme-vars-regression.mjs",
     "test:context-budget": "node scripts/context-budget-regression.mjs",
+    "test:mock-interview": "node scripts/mock-interview-score-regression.mjs",
     "test:tailor-job": "node scripts/tailor-job-regression.mjs",
     "test:tailor-batch": "node scripts/tailor-batch-regression.mjs",
     "test:tailor-iteration": "node scripts/tailor-iteration-regression.mjs",
     "test:webview-send": "node scripts/webview-send-regression.mjs",
     "test:webview-native-send": "node scripts/webview-native-send-regression.mjs",
     "test:liepin-im": "node scripts/liepin-im-regression.mjs",
-    "test:liepin-delivery": "python -m unittest discover -s camoufox/tests -p \"test_liepin_delivery.py\""
+    "test:liepin-delivery": "python -m unittest discover -s camoufox/tests -p \"test_liepin_delivery.py\"",
+    "test:mock-interview-tts": "node scripts/mock-interview-tts-smoke.mjs",
+    "test:bank": "node scripts/bank-recall-regression.mjs && node scripts/bank-repo-smoke.mjs",
+    "build:bank": "node scripts/build-bank.mjs",
+    "test:mock-interview-delivery": "node scripts/mock-interview-delivery-regression.mjs",
+    "test:mock-interview-asr": "node scripts/mock-interview-asr-smoke.mjs",
+    "test:mock-interview-clone": "node scripts/mock-interview-clone-smoke.mjs",
+    "test:mock-interview-stream": "node scripts/tts-stream-regression.mjs && node scripts/tts-pcm-regression.mjs",
+    "test:voice": "node scripts/voice-repo-regression.mjs && node scripts/voice-pack-regression.mjs",
+    "test:edge-tts": "node scripts/edge-tts-protocol-regression.mjs && node scripts/edge-tts-service-regression.mjs"
   },
   "build": {
     "appId": "com.bossclaw.desktop",
@@ -53,6 +63,7 @@
       "camoufox/**/*",
       "skills/**/*",
       "resources/**/*",
+      "node_modules/sherpa-onnx-*/**",
       "package.json",
       "!**/*.pyc",
       "!**/__pycache__",
@@ -114,7 +125,8 @@
     "playwright-core": "1.62",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^4.5.5"
+    "zustand": "^4.5.5",
+    "sherpa-onnx-node": "^1.13.8"
   },
   "devDependencies": {
     "@types/react": "^18.3.11",

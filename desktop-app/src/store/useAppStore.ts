@@ -17,6 +17,7 @@ export type RouteKey =
   | 'openclaw'
   | 'autochat'
   | 'assistant'
+  | 'mockInterview'
   | 'settings';
 
 export interface NavItem {
@@ -26,8 +27,17 @@ export interface NavItem {
 
 export type { ThemeMode };
 
+/** 工作台「面试」入口带入的一次性请求：模拟面试页消费后清空（不持久化，避免重开应用又弹一次） */
+export interface PendingMockInterview {
+  jobId: string | null;
+  jobTitle: string;
+  company: string;
+  jdText: string;
+  requestId: number;
+}
+
 /**
- * 侧边栏导航（11 模块）唯一权威定义：key = 路由标识，label = 中文展示名。
+ * 侧边栏导航（12 模块）唯一权威定义：key = 路由标识，label = 中文展示名。
  * 维护定位：渲染在 components/Sidebar.tsx（图标见其 NAV_ICONS）；
  * 各模块 key(中文) → 页面组件 → 页面文件（App.tsx 中按 key 渲染）：
  *   home(首页)        → Home          → src/pages/Home.tsx
@@ -38,6 +48,7 @@ export type { ThemeMode };
  *   schedule(定时任务) → ScheduleTasks → src/pages/ScheduleTasks.tsx
  *   stats(数据统计)   → Stats         → src/pages/Stats.tsx
  *   assistant(定制简历) → JobAssistant → src/pages/JobAssistant.tsx
+ *   mockInterview(模拟面试) → MockInterview → src/pages/MockInterview.tsx
  *   openclaw(OpenClaw) → OpenClaw     → src/pages/OpenClaw.tsx
  *   autochat(自动沟通) → AutoChat     → src/pages/AutoChat.tsx
  *   settings(设置)    → Settings      → src/pages/Settings.tsx
@@ -52,6 +63,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'schedule', label: '定时任务' },
   { key: 'stats', label: '数据统计' },
   { key: 'assistant', label: '定制简历' },
+  { key: 'mockInterview', label: '模拟面试' },
   { key: 'openclaw', label: 'OpenClaw' },
   { key: 'autochat', label: '自动沟通' },
   { key: 'settings', label: '设置' },
@@ -70,7 +82,7 @@ export const ACTION_SOURCE_PRIORITY: Record<string, number> = {
 };
 
 /** 设置页分区 key（与 Settings.tsx 的 Tabs items 一一对应，唯一权威） */
-export type SettingsTabKey = 'appearance' | 'platforms' | 'criteria' | 'llm' | 'engine' | 'data';
+export type SettingsTabKey = 'appearance' | 'platforms' | 'criteria' | 'llm' | 'engine' | 'speech' | 'data';
 
 interface AppState {
   theme: ThemeMode;
@@ -119,6 +131,10 @@ interface AppState {
   browserLoginRequest: { platform: JobPlatform; loginUrl: string } | null;
   requestBrowserLogin: (platform: JobPlatform, loginUrl: string) => void;
   clearBrowserLogin: () => void;
+  /** 工作台岗位卡片「面试」入口：带入岗位信息并跳转模拟面试页（消费后清空） */
+  pendingMockInterview: PendingMockInterview | null;
+  requestMockInterview: (job: Omit<PendingMockInterview, 'requestId'>) => void;
+  clearMockInterview: () => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -139,6 +155,9 @@ export const useAppStore = create<AppState>()(
         engineStatus: 'stopped',
         currentAction: { text: '等待中', source: null },
         browserLoginRequest: null,
+        pendingMockInterview: null,
+        requestMockInterview: (job) => set({ pendingMockInterview: { ...job, requestId: Date.now() } }),
+        clearMockInterview: () => set({ pendingMockInterview: null }),
         requestBrowserLogin: (platform, loginUrl) => set({ browserLoginRequest: { platform, loginUrl } }),
         clearBrowserLogin: () => set({ browserLoginRequest: null }),
         setTheme: (t) => set({ theme: t }),
@@ -181,7 +200,7 @@ export const useAppStore = create<AppState>()(
       // bridgeStatus / bossLoggedIn / platformLogins / currentAction 是运行时探测结果，不能持久化：
       // 否则上次「已连接 / 正在投递」会被带到下次启动，导致未运行时仍显示旧状态
       partialize: (s) => {
-        const { bridgeStatus: _bridge, bossLoggedIn: _login, platformLogins: _pl, currentAction: _action, browserLoginRequest: _blr, ...rest } = s;
+        const { bridgeStatus: _bridge, bossLoggedIn: _login, platformLogins: _pl, currentAction: _action, browserLoginRequest: _blr, pendingMockInterview: _pmi, ...rest } = s;
         return rest;
       },
     }

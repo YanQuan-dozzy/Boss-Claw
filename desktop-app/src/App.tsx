@@ -32,13 +32,14 @@ const Stats = lazy(() => import('./pages/Stats'));
 const OpenClaw = lazy(() => import('./pages/OpenClaw'));
 const AutoChat = lazy(() => import('./pages/AutoChat'));
 const JobAssistant = lazy(() => import('./pages/JobAssistant'));
+const MockInterview = lazy(() => import('./pages/MockInterview'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 // 非工作台功能页的路由 key（顺序即侧栏展示顺序；工作台单独常驻处理）。
 // 用于「首进常驻」：切到已访问页面不重挂载，仅切换显隐，消除来回切换的挂载卡顿。
-const NAV_PAGES: Array<'home' | 'resume' | 'directions' | 'tasks' | 'schedule' | 'stats' | 'openclaw' | 'autochat' | 'assistant' | 'settings'> = [
+const NAV_PAGES: Array<'home' | 'resume' | 'directions' | 'tasks' | 'schedule' | 'stats' | 'openclaw' | 'autochat' | 'assistant' | 'mockInterview' | 'settings'> = [
   'home', 'resume', 'directions', 'tasks',
-  'schedule', 'stats', 'openclaw', 'autochat', 'assistant', 'settings',
+  'schedule', 'stats', 'openclaw', 'autochat', 'assistant', 'mockInterview', 'settings',
 ];
 
 // 页面分块预加载：空闲期预取全部功能页 chunk，使首次切换无需等待懒加载请求/编译，
@@ -54,6 +55,7 @@ const PRELOAD_PAGES: Array<() => Promise<unknown>> = [
   () => import('./pages/OpenClaw'),
   () => import('./pages/AutoChat'),
   () => import('./pages/JobAssistant'),
+  () => import('./pages/MockInterview'),
   () => import('./pages/Settings'),
 ];
 
@@ -263,7 +265,8 @@ export default function App() {
                           directions(投递方向)→Directions / tasks(任务进度)→Tasks /
                           schedule(定时任务)→ScheduleTasks / stats(数据统计)→Stats /
                           openclaw(OpenClaw)→OpenClaw / autochat(自动沟通)→AutoChat /
-                          assistant(定制简历)→JobAssistant / settings(设置)→Settings；
+                          assistant(定制简历)→JobAssistant / mockInterview(模拟面试)→MockInterview /
+                          settings(设置)→Settings；
                           workbench(工作台) 在「工作台常驻宿主」处单独挂载。新增模块需同步此处分支。 */}
                       {key === 'home' && <Home />}
                       {key === 'resume' && <Resume />}
@@ -274,6 +277,7 @@ export default function App() {
                       {key === 'openclaw' && <OpenClaw />}
                       {key === 'autochat' && <AutoChat />}
                       {key === 'assistant' && <JobAssistant />}
+                      {key === 'mockInterview' && <MockInterview isVisible={activeRoute === 'mockInterview'} />}
                       {key === 'settings' && <Settings isVisible={activeRoute === 'settings'} />}
                     </Suspense>
                   </ErrorBoundary>

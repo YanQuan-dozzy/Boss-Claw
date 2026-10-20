@@ -2931,6 +2931,17 @@ export default function Workbench() {
                 // 元信息行只展示真实解析到的「公司 · 地点 · 薪资」；缺字段时整行不渲染，绝不显示占位/裸链接占位，
                 // 投递/招呼语依赖这些真实字段（见 overlay 权威解析），缺失即视为旧卡，需重新「加入任务」触发自愈补齐。
                 const metaLine = formatMetaLine(p.job?.company, p.job?.location, p.job?.salary);
+                // 「面试」入口：把该岗位的 JD 快照带入模拟面试（岗位缓存只留 7 天，必须当场快照）
+                const openMockInterview = () => {
+                  const st = useAppStore.getState();
+                  st.requestMockInterview({
+                    jobId: p.job?.jobId ? String(p.job.jobId) : null,
+                    jobTitle: String(p.job?.title || ''),
+                    company: String(p.job?.company || ''),
+                    jdText: String(p.job?.description || p.job?.cardText || ''),
+                  });
+                  st.setRoute('mockInterview');
+                };
                 return (
                   <div key={p.id} className={'job-card ' + jobCardStatus(p) + (p.id === activeId ? ' is-active' : '')}>
                     <div className="job-header" role="button" tabIndex={0} aria-expanded={isExpanded}
@@ -3016,6 +3027,7 @@ export default function Workbench() {
                           </div>
                           <div className="job-actions-left">
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
+                            <Button size="small" onClick={openMockInterview}>面试</Button>
                             <Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button>
                           </div>
                         </>
@@ -3030,6 +3042,7 @@ export default function Workbench() {
                           </div>
                           <div className="job-actions-left">
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
+                            <Button size="small" onClick={openMockInterview}>面试</Button>
                             <Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button>
                           </div>
                         </>
@@ -3048,6 +3061,7 @@ export default function Workbench() {
                           </div>
                           <div className="job-actions-right">
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
+                            <Button size="small" onClick={openMockInterview}>面试</Button>
                             <Button size="small" onClick={() => onIgnore(p.id)} disabled={p.status === 'sent'}>忽略</Button>
                             <Button size="small" onClick={() => onSkip(p.id)} disabled={p.status === 'sent'}>跳过</Button>
                           </div>

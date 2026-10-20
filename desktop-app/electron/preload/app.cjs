@@ -19,6 +19,26 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:cloak-page-new', 'jc:cloak-page-reload', 'jc:cloak-page-send', 'jc:cloak-start', 'jc:cloak-status',
   'jc:cloak-status-changed', 'jc:cloak-stop',
   'jc:fetch-url', 'jc:llm-proxy', 'jc:material-pick', 'jc:material-read', 'jc:open-external',
+  'jc:mock-interview-clear', 'jc:mock-interview-clear-sessions', 'jc:mock-interview-delete',
+  'jc:mock-interview-export', 'jc:mock-interview-list', 'jc:mock-interview-read',
+  'jc:mock-interview-usage', 'jc:mock-interview-write',
+  'jc:mock-interview-bank-add-question', 'jc:mock-interview-bank-cache-clear',
+  'jc:mock-interview-bank-cache-read', 'jc:mock-interview-bank-cache-write',
+  'jc:mock-interview-bank-create', 'jc:mock-interview-bank-delete',
+  'jc:mock-interview-bank-delete-question', 'jc:mock-interview-bank-import',
+  'jc:mock-interview-bank-list', 'jc:mock-interview-bank-read',
+  'jc:mock-interview-bank-rename', 'jc:mock-interview-bank-restore-builtin',
+  'jc:mock-interview-bank-toggle', 'jc:mock-interview-bank-update-question',
+  'jc:mock-interview-bank-usage',
+  'jc:mock-interview-speech-cancel', 'jc:mock-interview-speech-install', 'jc:mock-interview-speech-progress',
+  'jc:mock-interview-speech-remove', 'jc:mock-interview-speech-set-online', 'jc:mock-interview-speech-status',
+  'jc:mock-interview-tts', 'jc:mock-interview-tts-clear-cache', 'jc:mock-interview-tts-preview',
+  'jc:mock-interview-tts-stream', 'jc:mock-interview-tts-cancel', 'jc:mock-interview-tts-chunk',
+  'jc:mock-interview-asr', 'jc:mock-interview-asr-warmup',
+  'jc:mock-interview-voice-clear', 'jc:mock-interview-voice-create', 'jc:mock-interview-voice-list',
+  'jc:mock-interview-voice-import', 'jc:mock-interview-voice-pack-pick',
+  'jc:mock-interview-voice-pack-preview', 'jc:mock-interview-voice-remove',
+  'jc:mock-interview-voice-rename', 'jc:mock-interview-voice-usage',
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
   'jc:save-file', 'jc:save-pdf', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
   'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
@@ -92,6 +112,76 @@ const api = {
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
   llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
+
+  // ===== 模拟面试（会话文件存于 <userData>/mock-interview/，不进 localStorage）=====
+  // 列表 / 读取 / 写入 / 删除 / 清空 / 导出 / 目录占用。写入带 seq，主进程拒绝更旧的迟到包。
+  mockInterviewList: () => ipcRenderer.invoke('jc:mock-interview-list'),
+  mockInterviewRead: (id) => ipcRenderer.invoke('jc:mock-interview-read', id),
+  mockInterviewWrite: (session, opts) => ipcRenderer.invoke('jc:mock-interview-write', session, opts),
+  mockInterviewDelete: (id) => ipcRenderer.invoke('jc:mock-interview-delete', id),
+  mockInterviewClear: () => ipcRenderer.invoke('jc:mock-interview-clear'),
+  mockInterviewClearSessions: () => ipcRenderer.invoke('jc:mock-interview-clear-sessions'),
+  mockInterviewExport: () => ipcRenderer.invoke('jc:mock-interview-export'),
+  mockInterviewUsage: () => ipcRenderer.invoke('jc:mock-interview-usage'),
+
+  // ===== 模拟面试 · 题库（内置库随包只读，用户库写 <userData>/mock-interview/bank/）=====
+  mockInterviewBankList: () => ipcRenderer.invoke('jc:mock-interview-bank-list'),
+  mockInterviewBankRead: (bankId) => ipcRenderer.invoke('jc:mock-interview-bank-read', bankId),
+  mockInterviewBankCreate: (name, type) => ipcRenderer.invoke('jc:mock-interview-bank-create', name, type),
+  mockInterviewBankRename: (bankId, name) => ipcRenderer.invoke('jc:mock-interview-bank-rename', bankId, name),
+  mockInterviewBankDelete: (bankId) => ipcRenderer.invoke('jc:mock-interview-bank-delete', bankId),
+  mockInterviewBankToggle: (bankId, enabled) => ipcRenderer.invoke('jc:mock-interview-bank-toggle', bankId, enabled),
+  mockInterviewBankRestoreBuiltin: () => ipcRenderer.invoke('jc:mock-interview-bank-restore-builtin'),
+  mockInterviewBankAddQuestion: (bankId, question) =>
+    ipcRenderer.invoke('jc:mock-interview-bank-add-question', bankId, question),
+  mockInterviewBankUpdateQuestion: (bankId, questionId, patch) =>
+    ipcRenderer.invoke('jc:mock-interview-bank-update-question', bankId, questionId, patch),
+  mockInterviewBankDeleteQuestion: (bankId, questionId) =>
+    ipcRenderer.invoke('jc:mock-interview-bank-delete-question', bankId, questionId),
+  mockInterviewBankImport: (bankId, questions, opts) =>
+    ipcRenderer.invoke('jc:mock-interview-bank-import', bankId, questions, opts),
+  mockInterviewBankUsage: () => ipcRenderer.invoke('jc:mock-interview-bank-usage'),
+  mockInterviewBankCacheRead: () => ipcRenderer.invoke('jc:mock-interview-bank-cache-read'),
+  mockInterviewBankCacheWrite: (payload) => ipcRenderer.invoke('jc:mock-interview-bank-cache-write', payload),
+  mockInterviewBankCacheClear: () => ipcRenderer.invoke('jc:mock-interview-bank-cache-clear'),
+
+  // ===== 模拟面试 · 语音（本地 sherpa-onnx；模型与缓存存 <userData>/speech/）=====
+  mockInterviewSpeechStatus: () => ipcRenderer.invoke('jc:mock-interview-speech-status'),
+  mockInterviewSpeechInstall: (pack) => ipcRenderer.invoke('jc:mock-interview-speech-install', pack),
+  mockInterviewSpeechCancel: () => ipcRenderer.invoke('jc:mock-interview-speech-cancel'),
+  mockInterviewSpeechRemove: (pack) => ipcRenderer.invoke('jc:mock-interview-speech-remove', pack),
+  mockInterviewSpeechSetOnline: (on) => ipcRenderer.invoke('jc:mock-interview-speech-set-online', on),
+  mockInterviewTts: (opts) => ipcRenderer.invoke('jc:mock-interview-tts', opts),
+  mockInterviewTtsStream: (opts) => ipcRenderer.invoke('jc:mock-interview-tts-stream', opts),
+  mockInterviewTtsCancel: (streamId) => ipcRenderer.invoke('jc:mock-interview-tts-cancel', streamId),
+  // 流式朗读的分块（主进程 → 渲染层），返回取消订阅函数
+  onMockInterviewTtsChunk: (callback) => {
+    const listener = (_event, chunk) => callback(chunk);
+    ipcRenderer.on('jc:mock-interview-tts-chunk', listener);
+    return () => ipcRenderer.removeListener('jc:mock-interview-tts-chunk', listener);
+  },
+  mockInterviewTtsPreview: (opts) => ipcRenderer.invoke('jc:mock-interview-tts-preview', opts),
+  mockInterviewTtsClearCache: () => ipcRenderer.invoke('jc:mock-interview-tts-clear-cache'),
+  // 语音识别（P4）：渲染层传 16k Float32 PCM + 能量 VAD 分段
+  mockInterviewAsr: (opts) => ipcRenderer.invoke('jc:mock-interview-asr', opts),
+  mockInterviewAsrWarmup: () => ipcRenderer.invoke('jc:mock-interview-asr-warmup'),
+
+  // ===== 模拟面试 · 克隆音色（P4-B）=====
+  mockInterviewVoiceList: () => ipcRenderer.invoke('jc:mock-interview-voice-list'),
+  mockInterviewVoiceCreate: (payload) => ipcRenderer.invoke('jc:mock-interview-voice-create', payload),
+  mockInterviewVoicePackPick: () => ipcRenderer.invoke('jc:mock-interview-voice-pack-pick'),
+  mockInterviewVoicePackPreview: (dir, sid) => ipcRenderer.invoke('jc:mock-interview-voice-pack-preview', dir, sid),
+  mockInterviewVoiceImport: (dir, opts) => ipcRenderer.invoke('jc:mock-interview-voice-import', dir, opts),
+  mockInterviewVoiceRename: (id, name) => ipcRenderer.invoke('jc:mock-interview-voice-rename', id, name),
+  mockInterviewVoiceRemove: (id) => ipcRenderer.invoke('jc:mock-interview-voice-remove', id),
+  mockInterviewVoiceUsage: () => ipcRenderer.invoke('jc:mock-interview-voice-usage'),
+  mockInterviewVoiceClear: () => ipcRenderer.invoke('jc:mock-interview-voice-clear'),
+  // 安装进度（下载/解压/校验），返回取消订阅函数
+  onMockInterviewSpeechProgress: (callback) => {
+    const listener = (_event, p) => callback(p);
+    ipcRenderer.on('jc:mock-interview-speech-progress', listener);
+    return () => ipcRenderer.removeListener('jc:mock-interview-speech-progress', listener);
+  },
 
   // ===== 开机自启动（Windows 登录项）=====
   autostartGet: () => ipcRenderer.invoke('jc:autostart-get'),

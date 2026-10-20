@@ -56,6 +56,7 @@ import {
   SyncOutlined,
   DisconnectOutlined,
   InfoCircleOutlined,
+  AudioOutlined,
   RedoOutlined,
   FolderOpenOutlined,
   SaveOutlined,
@@ -79,7 +80,10 @@ import {
   type CustomSkillFields,
 } from '@/lib/bossclaw/skills';
 import { exportData, importData, clearAllData } from '@/lib/storage';
+import { clearMockInterviewAll, exportMockSessions } from '@/lib/bossclaw/mockInterviewRepo';
+import { formatSpeechBytes } from '@/lib/bossclaw/mockInterviewVoice';
 import { useDataStore } from '@/store/useDataStore';
+import SpeechSettingsCard from '@/components/SpeechSettingsCard';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { electronApi } from '@/lib/electronApi';
 import {
@@ -141,6 +145,7 @@ const SKILL_SCOPE_OPTIONS = [
   { label: '岗位匹配评估（job-analysis）', value: 'job-analysis' },
   { label: '打招呼语（greetings）', value: 'greetings' },
   { label: '岗位定制简历（assistant）', value: 'assistant' },
+  { label: '模拟面试（mock-interview）', value: 'mock-interview' },
 ];
 
 // 新建技能的默认表单
@@ -663,20 +668,40 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     }
   };
 
-  const onClear = () => {
+  const onClear = async () => {
+    // 先把「会删掉几个克隆音色、占多少」查出来写进弹窗（验收 #9 要求清空前可见）
+    const voiceUsage = await electronApi.mockInterview.voiceUsage();
+    const voiceLine = voiceUsage.ok && voiceUsage.count > 0
+      ? `另有 ${voiceUsage.count} 个克隆音色（${formatSpeechBytes(voiceUsage.bytes)}）会一并删除，删后需重新录制。`
+      : '当前没有克隆音色。';
     Modal.confirm({
       title: '清空全部本地数据？',
-      content: '将删除简历原文、职业画像、投递方向、任务记录与全部设置（包括 LLM 配置）。此操作不可恢复，建议先导出备份。',
+      content:
+        '将删除简历原文、职业画像、投递方向、任务记录与全部设置（包括 LLM 配置），' +
+        '并删除 <userData>/mock-interview/ 下的全部模拟面试记录、题库（含你导入/自建的题库与索引缓存）。' +
+        voiceLine +
+        '此操作不可恢复，建议先分别导出「JSON 备份」与「面试记录」。',
       okText: '确认清空',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () => {
         clearAllData();
         void clearLocalBackup();
+        // 面试记录是主进程文件数据，不在 localStorage 清空范围内，必须单独删目录
+        void clearMockInterviewAll();
+        // 克隆音色的参考音频在 speech/voices/，不在面试目录里（模型包保留，避免重下 163MB）
+        void electronApi.mockInterview.voiceClear();
         message.success('已清空本地数据，正在刷新…');
         setTimeout(() => window.location.reload(), 600);
       },
     });
+  };
+
+  const onExportMockInterview = async () => {
+    const r = await exportMockSessions();
+    if (r.canceled) return;
+    if (!r.ok) { message.error('导出面试记录失败：' + (r.error || '未知错误')); return; }
+    message.success(`已导出 ${r.count || 0} 场面试记录：${r.filePath || ''}`);
   };
 
   const llmReady = isLLMConfigured();
@@ -2205,6 +2230,17 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     },
 
     {
+      key: 'speech',
+      label: (
+        <span>
+          <AudioOutlined style={{ marginRight: 6 }} />
+          语音
+        </span>
+      ),
+      children: <SpeechSettingsCard active={settingsTab === 'speech'} />,
+    },
+
+    {
       key: 'data',
       label: (
         <span>
@@ -2244,6 +2280,14 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 <Button
                   size="middle"
                   className="btn-uniform"
+                  icon={<DownloadOutlined />}
+                  onClick={() => void onExportMockInterview()}
+                >
+                  导出面试记录
+                </Button>
+                <Button
+                  size="middle"
+                  className="btn-uniform"
                   danger
                   icon={<ClearOutlined />}
                   onClick={onClear}
@@ -2255,6 +2299,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             </div>
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
               数据（简历、画像、投递方向、任务记录、偏好设置）全量保存在本机浏览器 localStorage。建议定期导出 JSON 文件备份。
+              模拟面试记录是独立的主进程文件（userData/mock-interview/），不随 JSON 备份导出，请用「导出面试记录」单独备份。
             </Paragraph>
           </div>
 
