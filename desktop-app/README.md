@@ -14,7 +14,7 @@
 
 * **半自动投递**：中栏批准岗位 → 浏览器跳转 → AI 草稿预填沟通框 → 用户发送。
 
-* **AI 匹配与评分（v2.5.3）**：岗位匹配改为 **AI 四层整体裁决**（硬门槛 → 优先条件 → 职责信号 → 团队信号，一次判断给出 `fitLevel` 档位：strong / match / cautious / unfit），**分数由档位映射、不跨档，AI 分即最终分**（本地五维仅用于界面展示与 AI 不可用时兜底，不再做融合或降级调整）；五维语义锚点与「仅显著命中才给高分」的反通胀口径全链路统一；入队门槛改为设置页可配 `minQueueScore`；工作台会话级去重 + `addSkipLogOnce` 合并重复跳过日志。
+* **AI 匹配与评分（v2.5.3）**：岗位匹配改为 **AI 四层整体裁决**（硬门槛 → 优先条件 → 职责信号 → 团队信号，一次判断给出 `fitLevel` 档位：strong / match / cautious / unfit），**分数由档位映射、不跨档，AI 分即最终分**（本地五维仅用于界面展示与 AI 不可用时兜底，不再做融合或降级调整）；五维语义锚点与「仅显著命中才给高分」的反通胀口径全链路统一；入队门槛改为设置页可配 `minQueueScore`；工作台岗位去重（归一化 URL / `jobId` / 软匹配）+ `addSkipLogOnce` 合并重复跳过日志。
 
 * **多平台投递入口**：工作台「一键投递 / 开始投递」按岗位平台**分派三条通道**（`runNext` 只做「选岗位 + 预检 + 分派」，三条通道各自 try/finally 持有投递锁）：**通道 A 非 BOSS DOM** —— 猎聘 / 智联 / 前程无忧，新建该平台自己的标签页打开岗位详情后下发 `platform-apply`（猎聘 = 点「聊一聊」`a.btn-main[data-selector="chat-chat"]` + 等 IM 窗口就绪；智联 = 投递按钮 + 简历面板二次确认，命中「继续沟通」→ 岗位移交自动沟通队列；前程无忧 = 投递按钮 + 成功弹层），外部网申 / 已投递 / 平台上限一律收口为跳过；**通道 B Camoufox** —— 仅 BOSS，且需设置页开启「优先走隐身通道」；**通道 C BOSS DOM** —— 内置浏览器详情页真实 DOM 沟通（默认路径）。
 
@@ -258,13 +258,13 @@ release/
 
 * **主进程**（`electron/main.cjs`，CommonJS）：单窗口生命周期 + IPC 总线 + `persist:bossclaw` 会话 + CloakBrowser / Camoufox / Node 桥 子进程管理。
 
-* **预加载**（`electron/preload/*.cjs`，`contextIsolation: true`）：`app.cjs` 暴露 `window.electron` API；`webview.cjs` 注入 BOSS 页面，跑官方 API + DOM 兜底 + 真实键盘输入。
+* **预加载**（`electron/preload/*.cjs`，`contextIsolation: true`）：`app.cjs` 暴露 `window.electron` API；`webview.cjs` 注入各启用平台页面（采集 + 真实输入 + 投递状态机）；平台选择器集中在 `platform-adapters.cjs`；`liepin-im.cjs` 只读猎聘 IM 状态；`humanize.cjs` / `stealth.cjs` 负责人类化节奏与反检测补丁。
 
 * **渲染进程**（`src/`，ESM）：React SPA + antd。`window.electron` 是唯一与主进程交互的接口。
 
 ### IPC 总线（白名单 channel）
 
-详见 `electron/main.cjs` 与 `electron/preload/app.cjs`：
+详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**66 条** `ALLOWED_IPC_CHANNELS` 白名单；新增 `jc:` 通道必须同步登记，否则运行时抛错）：
 
 | Channel                       | 用途                                                |
 | ----------------------------- | ------------------------------------------------- |
@@ -278,12 +278,19 @@ release/
 | `jc:camoufox-*`               | Camoufox Python 桥（status / search / send / login / logout / restart，按平台） |
 | `jc:cloak-*`                  | CloakBrowser 隐身浏览器（启动 / 标签 / 输入 / health 健康检查自动重启）                  |
 | `jc:bridge-control`           | OpenClaw Node 桥启停                                 |
+| `jc:bridge-token`             | 取 OpenClaw 桥运行时令牌（`~/.bossclaw/bridge-token`，渲染层不再持有硬编码值） |
 | `jc:autostart-*`              | 开机自启动（Windows 登录项，get / set）                       |
 | `jc:backup-*`                 | 本地备份（dir-get / dir-set / dir-pick / write / read / delete） |
 | `jc:clipboard-write`          | 剪贴板写入（查看网页源码复制）                              |
-| `jc:save-pdf`                 | 定制简历 A4 打印成 PDF 并保存                              |
+| `jc:save-pdf` / `jc:save-pdf-batch*` | 定制简历 A4 打印成 PDF（单条 / 批量，含进度事件 `jc:save-pdf-batch-progress`） |
+| `jc:save-report-pdf` / `jc:save-file` | 统计报表 PDF / CSV 导出（系统保存对话框）                |
+| `jc:save-qualified-jobs` / `jc:qualified-jobs-dir-*` | 达标岗位 JSON 落盘与导出目录管理                  |
+| `jc:material-pick` / `jc:material-read` | 经历补充材料：选文件、读正文（不缓存、不持久化正文）          |
+| `jc:skills-*`                 | AI 技能库列出 / 读取 / 导入 / 删除（防路径穿越）                  |
+| `jc:llm-proxy`                | 主进程代发用户配置模型的 HTTP 请求（统一出口）                      |
+| `jc:webview-diag` / `jc:webview-source` | webview 诊断信息 / 页面源码（复制用）                    |
 
-所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。
+所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。`jc:save-pdf-batch*` 由 preload 直接 `invoke`，尚未纳入 `assertIpcChannel` 白名单校验（待统一）。
 
 ### 本地控制桥（不走 IPC）
 
@@ -303,7 +310,11 @@ release/
 
 * **运行时状态**（`useAppStore`）：主题、活动路由、桥状态、BOSS 登录态、引擎状态——**不持久化**（每次启动重置）。
 
-* **业务数据**（`useDataStore`）：岗位 / 任务 / 日志 / 画像——**持久化到 localStorage**（带 `bossclaw-data-version` 重置）。
+* **业务数据**（`useDataStore`）：岗位 / 任务 / 画像 / 方向 / 招呼语——**持久化到 `bossclaw-data`**（带 `bossclaw-data-version` 重置）。
+
+* **运行日志**（`useRuntimeLogsStore`）：日志 / 聊天日志——独立持久化到 `bossclaw-runtime-logs`，避免日志膨胀拖慢业务数据序列化。
+
+* **定时任务**（`useScheduleStore`）：定时条目 + 采集请求——持久化到 `bossclaw-schedule`。
 
 * **用户配置**（`useSettingsStore`）：LLM 密钥、过滤规则、招呼语、引擎模式——**持久化**（设置页可导出/导入）。
 
