@@ -165,7 +165,7 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 
 ### 11. AI 技能
 
-标准 `SKILL.md` 技能体系，内置 7 项，支持自定义技能导入 / 新建 / 删除，按作用域注入提示词。
+标准 `SKILL.md` 技能体系，内置 9 项（含 `mock-interview-question` / `mock-interview-report`），支持自定义技能导入 / 新建 / 删除，按作用域注入提示词；设置页里自行导入 / 新建的技能（`userData/skills`）以及自行放进 `skills/` 目录的非出厂技能均可直接删除，出厂内置技能只提供开关停用。
 
 ### 12. 数据统计
 
@@ -195,12 +195,12 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 | 招聘平台 | 4 个（BOSS 直聘 / 猎聘 / 智联招聘 / 前程无忧） |
 | 投递节奏 | 3 档人工控制（人工确认 / 半自动 / 自动辅助）+ 1 条批量通道（自动沟通） |
 | 简历解析格式 | 5 种（PDF / DOCX / DOC / MD / TXT），全部本地执行 |
-| 内置 AI 技能 | 7 项（`SKILL.md`） |
+| 内置 AI 技能 | 9 项（`SKILL.md`） |
 | 内置模拟面试题库 | 13.6K 题（可停用） |
 | 每日投递配额 | BOSS / 猎聘 / 前程无忧 120，智联 100；上限受 `MAX_SAFE_DAILY=150` 收窄 |
 | 定时任务动作 | 3 类（投递 / 采集 / 备份） |
 | MCP 工具 | 9 个 / 3 组 |
-| 侧栏入口 | 11 个 |
+| 侧栏入口 | 12 个 |
 | 可选隐身引擎 | 2 种（Camoufox / CloakBrowser），默认关闭 |
 
 ## 适合谁与不适合谁
@@ -241,7 +241,7 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 
 - **技术栈**：Electron `^42`（Chromium 148）+ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand（persist → localStorage），本地数据零后端依赖。
 - **进程模型**：主进程（CommonJS）+ 预加载脚本（`contextBridge` 安全 IPC）+ React 渲染层；`contextIsolation: true`、`nodeIntegration: false`、`webviewTag: true`。
-- **界面**：顶部标题栏 + 左侧 11 入口侧栏 + 底部状态栏；「工作台」为三栏，其余页面为双栏。
+- **界面**：顶部标题栏 + 左侧 12 入口侧栏 + 底部状态栏；「工作台」为三栏，其余页面为双栏。
 - **内置浏览器**：Electron `<webview>`，默认加载 BOSS 直聘，可切换各已启用平台首页；登录态按平台本地持久化（免重复登录）。
 - **多平台口径**：平台差异集中在 `electron/preload/platform-adapters.cjs`（纯数据 + 纯函数）；BOSS 是唯一「列表内联详情」形态，非 BOSS 列表级采集的详情 JD 由内置浏览器按**平台同源**接口补齐（智联 = 详情 JSON、猎聘 = 同源 SSR 详情页 HTML，**与是否安装 Camoufox 无关**）。
 - **故障隔离**：平台级故障（未登录 / 4xx·5xx）只收口当前平台、后续平台继续；队列级故障（风控码 32·35·36、环境异常 37·38、未知码 fail-safe）立即中止整批交人工。
@@ -310,7 +310,7 @@ Boss-claw/
 ├── desktop-app/               当前主应用（Electron + React，v2.5.7）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs + preload/（app / webview / platform-adapters）
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
-│   ├── skills/  src/          AI 技能库（SKILL.md 内置 7 项）· React 渲染进程（store / components / pages / lib）
+│   ├── skills/  src/          AI 技能库（SKILL.md 内置 9 项）· React 渲染进程（store / components / pages / lib）
 │   └── resources/  package.json   应用图标与随包文档 · 依赖、scripts 与 electron-builder 打包目标
 ├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（9 工具 / 3 组）
 ├── docs/                      **本地内部文档，未随仓库分发**（`.gitignore` 忽略），索引见 docs/README.md
