@@ -8,7 +8,7 @@
 
 [这是什么](#这是什么) · [快速开始](#快速开始) · [使用流程](#使用流程) · [核心能力](#核心能力) · [能力规模](#当前能力规模) · [适合谁](#适合谁与不适合谁) · [架构](#架构与布局) · [安全边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.7-078A83)
+![Version](https://img.shields.io/badge/version-v2.6.0-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E42-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -20,7 +20,7 @@
 
 </div>
 
-> 本文以 `main` 分支当前实现为准，**当前版本 v2.5.7**（2026-10-13 发布，Windows x64），上一正式版 v2.5.6（2026-10-09）。本次改动要点见 [版本与更新](#版本与更新)。
+> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.0**（2026-10-22 发布，Windows x64），上一正式版 v2.5.7（2026-10-13）。本次改动要点见 [版本与更新](#版本与更新)；**新增的「模拟面试」尚未经过完整测试，属可自行试用状态**，详见该功能小节。
 
 ## 这是什么
 
@@ -54,8 +54,8 @@ BossClaw 的答案是把这四件事变成一条可审计的本地流程：**先
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.7-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.7-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面 / 开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.7-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.7-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版（推荐） | [BossClaw-2.6.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面 / 开始菜单快捷方式 |
+| 🪟 便携版 | [BossClaw-2.6.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
 
 Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目前仍为 **v2.5.3**，见 [Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases) 对应版本页；也可从源码自行打包（`npm run package:linux` / `package:mac`，macOS 的 dmg 只能在 macOS 上构建）。
 
@@ -149,10 +149,17 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 
 用正在投的岗位 JD + 自己的简历练一场会当场被追问的面试。
 
-> **状态**：`main` 分支已实现（Phase 1–4B）。**v2.5.7 正式安装包未包含** —— 该包于 2026-10-14 构建，此功能 2026-10-20 才合入 `main`；要现在用需从源码构建（见[本地开发](#本地开发)）。
+> **状态**：v2.6.0 安装包**已包含**（Phase 1–4B），但**尚未经过完整测试** —— 属「可自行试用」状态，不保证稳定，也可能存在未预料的问题；遇到问题请提 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)，并附上版本号与出错步骤。
+>
+> 该功能的部分优化与更新代码**暂不开源**，因此公开仓库中的实现与安装包内的实现可能不完全一致；能力口径仍以本文与包内实际表现为准。
 
-- **出题与追问**：两段式（通用题 → 按简历与上一轮回答深挖）；追问由本地规则优先驱动，同题 ≤2 轮。
+- **出题与追问**：两段式（通用题 → 按简历与上一轮回答深挖）；**一题只问一个问题**、题干有字数控、由浅入深；追问由本地规则优先驱动，同题 ≤2 轮，每轮标注意图（澄清 / 核对 / 深挖 / 加压 / 迁移）——**加压与迁移只在「压力」难度出现**，标准难度下答得扎实就推进。
 - **评分与报告**：结束后逐题 4+1 维四档评分 + **本地加权总分**与四档证据档，给出命中 / 漏答要点与改写建议 —— 数字必须能在原答或简历中找到。
+- **雷达图与场次对比**：维度分画成雷达图，并自动叠加**同岗位上一场**的轮廓；总分与各维差值按「面试官类型 / 难度 / 评分口径是否一致」判可比性，条件不同会明说「仅供参考」，不给一个看起来精确的假差值。
+- **报告导出**：单场可导出 Markdown（含维度表、逐题复盘、追问、反问、体征、总结），也能导出全部会话的 JSON 备份。
+- **按缺口追练**：报告页可一键用本场的「最该补的缺口 + 偏弱维度」开一场同岗位追练，出题会围着这些缺口换场景问（不直接问缺口原文），评分口径不变所以能和上一场对比。
+- **长期弱项**：同岗位近 4 场的漏答要点自动聚类（只收「至少两场都漏」的点），报告末尾列出「你总在漏什么」+ 长期维度均分，可一键按长期弱项追练。只读聚合，不是可编辑的错题本。
+- **作答节奏**：报告给出总用时 / 平均每题 / 最长一题（本地记录，不进内容分）。
 - **会话管理**：会话存主进程文件，支持断点续练、单题重答、导出。
 - **语音朗读**：题干与追问本地朗读（Kokoro + sherpa-onnx，8 个精选音色，题干预渲染并缓存 WAV）；追问走**流式合成边出边播**，首块 1.7s 出声，而不是等整句 14s。设置 → 语音可一键安装语音包。
 - **在线高音质档**（可选，**默认关闭**）：走 Edge 神经语音，开启前显式提示「题干文本会发到微软」，接口失败静默回落本地，只影响这一句。
@@ -163,7 +170,7 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 - **输入来源**：岗位 JD 可从工作台采集队列一键导入（按已投递 / 待投递排序，标注 JD 完整 / 仅摘要 / 无 JD），导入即把 JD 原文快照进本场会话 —— 工作台清缓存不影响已导入的会话。
 - **限制**：未配置 API Key 时不可用（不接 agent 代答）。
 
-> 设计与实现细节见 `docs/模拟面试方案.md`（v1.6）；在线语音引擎与打包冒烟尚未完成。
+> 设计与实现细节见 `docs/模拟面试方案.md`（v1.6）；在线语音引擎与打包冒烟尚未完成，因此本版按「可试用、不保证稳定」发布。
 
 ### 11. AI 技能
 
@@ -309,7 +316,7 @@ BossClaw 官方版本不应实现、宣传或用于：
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.5.7）
+├── desktop-app/               当前主应用（Electron + React，v2.6.0）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs + preload/（app / webview / platform-adapters）
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 9 项）· React 渲染进程（store / components / pages / lib）
@@ -362,15 +369,19 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 版本与更新
 
-**当前版本 v2.5.7**（2026-10-13 发布，Windows x64）；上一正式版 v2.5.6（2026-10-09）。
+**当前版本 v2.6.0**（2026-10-22 发布，Windows x64）；上一正式版 v2.5.7（2026-10-13）。
 
-本条目的改动主轴是**工作台岗位「定制简历」（单岗位 / 批量 / 迭代生成）+ 猎聘投递链路升级（招呼语真实输入发送、文字气泡确认才计成功）+ 控制桥 / 本地桥安全护栏批次**，另含社区贡献的 Camoufox 聊天上下文隔离修复（PR #5 / Fixes #4）与自动沟通「安全节奏」卡片排版收敛；功能表按当前实现标注。
+本条目的改动主轴是**新增「模拟面试」**——用正在投的岗位 JD + 自己的简历练题：两段式出题与动态追问、4+1 维四档评分、雷达图与同岗位场次对比、按缺口与长期弱项追练、本地语音朗读与语音作答、内置 13.6K 本地面试题库。
+
+> ⚠️ **模拟面试尚未经过完整测试**：本版按「可自行试用」发布，不保证稳定，遇到问题请提 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)。此外，该功能的部分优化与更新代码**暂不开源**，公开仓库与安装包内的实现可能不完全一致。
+
+其余改动为文档层更新：README 信息架构重排（新增「适合谁 / 与其他方案的区别 / 当前能力规模」）、架构图（浅色 / 深色 SVG）、IPC 白名单口径同步（66 → 112）与技能数 / 侧栏入口数修正（9 项 / 12 个）；功能表按当前实现标注。
 
 历史版本与产物见 [Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases)。
 
 ## 反馈与联系
 
-遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.5.7）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
+遇到问题时，建议先查阅 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提交 Issue 时请包含：BossClaw 版本（桌面版 v2.6.0）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图、完整错误信息。
 
 ## 开源许可与署名
 
