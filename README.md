@@ -20,7 +20,7 @@
 
 </div>
 
-> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.0**（2026-10-22 发布，Windows x64），上一正式版 v2.5.7（2026-10-13）。本次改动要点见 [版本与更新](#版本与更新)；**新增的「模拟面试」尚未经过完整测试，属可自行试用状态**，详见该功能小节。
+> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.0**（2026-10-22 发布，Windows / Linux / macOS），上一正式版 v2.5.7（2026-10-13）。本次改动要点见 [版本与更新](#版本与更新)；**新增的「模拟面试」尚未经过完整测试，属可自行试用状态**，详见该功能小节。
 
 ## 这是什么
 
@@ -56,8 +56,11 @@ BossClaw 的答案是把这四件事变成一条可审计的本地流程：**先
 | --- | --- | --- |
 | 🪟 安装版（推荐） | [BossClaw-2.6.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面 / 开始菜单快捷方式 |
 | 🪟 便携版 | [BossClaw-2.6.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🐧 AppImage | [BossClaw-2.6.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x86_64.AppImage) | 免安装，`chmod +x` 后直接运行 |
+| 🐧 deb | [BossClaw-2.6.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-amd64.deb) | Debian / Ubuntu：`sudo dpkg -i` 安装 |
+| 🍎 macOS 自构建档案 | [BossClaw-2.6.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-mac.tar.gz) | 源码档案，解压后执行 `./build-mac.sh` 生成 dmg + zip（Intel / Apple Silicon 双架构） |
 
-Linux（AppImage / deb / tar.gz）与 macOS（源码自构建档案）产物目前仍为 **v2.5.3**，见 [Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases) 对应版本页；也可从源码自行打包（`npm run package:linux` / `package:mac`，macOS 的 dmg 只能在 macOS 上构建）。
+macOS 的 dmg 受 electron-builder 限制只能在 macOS 上构建，档案内已含一键脚本（自动装依赖 + 打包）；也可在源码目录执行 `npm run package:linux` / `npm run package:mac` 自行打包。
 
 - **运行要求**：Windows 10/11（x64）；Linux 主流 x86_64 发行版；macOS 需自构建。
 - BossClaw 由用户主动控制，不属于任何招聘平台的官方产品，也不代表平台提供授权、合作或背书；使用者应遵守适用法律、目标网站规则及账号使用要求。
@@ -369,7 +372,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 版本与更新
 
-**当前版本 v2.6.0**（2026-10-22 发布，Windows x64）；上一正式版 v2.5.7（2026-10-13）。
+**当前版本 v2.6.0**（2026-10-22 发布，Windows / Linux / macOS）；上一正式版 v2.5.7（2026-10-13）。
 
 本条目的改动主轴是**新增「模拟面试」**——用正在投的岗位 JD + 自己的简历练题：两段式出题与动态追问、4+1 维四档评分、雷达图与同岗位场次对比、按缺口与长期弱项追练、本地语音朗读与语音作答、内置 13.6K 本地面试题库。
 
