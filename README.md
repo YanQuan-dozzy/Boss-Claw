@@ -20,7 +20,7 @@
 
 </div>
 
-> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.0**（2026-10-22 发布，Windows / Linux / macOS），上一正式版 v2.5.7（2026-10-13）。本次改动要点见 [版本与更新](#版本与更新)；**新增的「模拟面试」尚未经过完整测试，属可自行试用状态**，详见该功能小节。
+> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.0**（2026-10-22 发布，产物覆盖 Windows / Linux / macOS 三系统），上一正式版 v2.5.7（2026-10-13）。本次改动要点见 [版本与更新](#版本与更新)；**新增的「模拟面试」尚未经过完整测试，属可自行试用状态**，详见该功能小节。
 
 ## 这是什么
 
@@ -50,19 +50,24 @@ BossClaw 的答案是把这四件事变成一条可审计的本地流程：**先
 
 ### 1. 下载安装
 
-打包产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，**开箱即用，下载即可运行**：
+打包产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，v2.6.0 同时提供 **Windows / Linux / macOS** 三个系统：
 
-| 版本 | 文件 | 说明 |
-| --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.6.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面 / 开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.6.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
-| 🐧 AppImage | [BossClaw-2.6.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x86_64.AppImage) | 免安装，`chmod +x` 后直接运行 |
-| 🐧 deb | [BossClaw-2.6.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-amd64.deb) | Debian / Ubuntu：`sudo dpkg -i` 安装 |
-| 🍎 macOS 自构建档案 | [BossClaw-2.6.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-mac.tar.gz) | 源码档案，解压后执行 `./build-mac.sh` 生成 dmg + zip（Intel / Apple Silicon 双架构） |
+| 系统 | 形式 | 文件 | 说明 |
+| --- | --- | --- | --- |
+| 🪟 **Windows 10/11（x64）** | 安装版（推荐） | [BossClaw-2.6.0-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面 / 开始菜单快捷方式 |
+| 🪟 **Windows 10/11（x64）** | 便携版 | [BossClaw-2.6.0-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🐧 **Linux（x86_64）** | AppImage | [BossClaw-2.6.0-x86_64.AppImage](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-x86_64.AppImage) | 免安装，`chmod +x` 后直接运行，跨发行版通用 |
+| 🐧 **Linux（amd64，deb 系）** | deb 包 | [BossClaw-2.6.0-amd64.deb](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-amd64.deb) | Debian / Ubuntu / Linux Mint：`sudo dpkg -i` 安装 |
+| 🍎 **macOS（Intel / Apple Silicon）** | 源码自构建档案 | [BossClaw-2.6.0-mac.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.0-mac.tar.gz) | 解压后执行 `./build-mac.sh` 生成 dmg + zip（双架构） |
 
-macOS 的 dmg 受 electron-builder 限制只能在 macOS 上构建，档案内已含一键脚本（自动装依赖 + 打包）；也可在源码目录执行 `npm run package:linux` / `npm run package:mac` 自行打包。
+**各系统获取方式**
 
-- **运行要求**：Windows 10/11（x64）；Linux 主流 x86_64 发行版；macOS 需自构建。
+- **🪟 Windows**：直接下载上表 `.exe`，双击即用；安装版会创建快捷方式，便携版为单文件、可放任意目录。
+- **🐧 Linux**：AppImage 给 `chmod +x BossClaw-2.6.0-x86_64.AppImage` 后双击 / 命令行运行；deb 执行 `sudo dpkg -i BossClaw-2.6.0-amd64.deb`（缺依赖时补 `sudo apt -f install`）。
+- **🍎 macOS**：dmg / zip 受 electron-builder 限制**只能在 macOS 上构建**，官方只提供源码打包档案 —— 解压后执行 `./build-mac.sh`（自动装依赖 + 打包，支持 Intel / Apple Silicon），或在源码目录执行 `npm run package:mac`。
+
+- **运行要求**：Windows 10/11（x64）；Linux 主流 x86_64 发行版；macOS 需在 macOS 上自构建后运行。
+- 需要 rpm（RHEL / Fedora）/ pacman（Arch）等其它 Linux 格式时，自行向 `build.linux.target` 补充目标后重新打包。
 - BossClaw 由用户主动控制，不属于任何招聘平台的官方产品，也不代表平台提供授权、合作或背书；使用者应遵守适用法律、目标网站规则及账号使用要求。
 
 ### 2. 首次配置
@@ -372,7 +377,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 版本与更新
 
-**当前版本 v2.6.0**（2026-10-22 发布，Windows / Linux / macOS）；上一正式版 v2.5.7（2026-10-13）。
+**当前版本 v2.6.0**（2026-10-22 发布）；上一正式版 v2.5.7（2026-10-13）。产物覆盖三个系统：**Windows 10/11 x64**（安装版 / 便携版）、**Linux x86_64**（AppImage / deb）、**macOS**（Intel / Apple Silicon 源码自构建档案），见 [下载安装](#1-下载安装)。
 
 本条目的改动主轴是**新增「模拟面试」**——用正在投的岗位 JD + 自己的简历练题：两段式出题与动态追问、4+1 维四档评分、雷达图与同岗位场次对比、按缺口与长期弱项追练、本地语音朗读与语音作答、内置 13.6K 本地面试题库。
 

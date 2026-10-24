@@ -214,7 +214,7 @@ npm run package:all        # 打包 Windows + Linux
 
 > **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）；Windows / Linux 可在本机直接打包。
 > **打包格式**由 `package.json` 的 `build.*.target` 决定（Windows = nsis + portable，Linux = AppImage + deb，macOS = dmg + zip）；需要 rpm / pacman / tar.gz 等其它格式时，向 `build.linux.target` 补充目标后重新执行 `npm run package:linux`。
-> **已发布的 v2.5.3** 另附 `BossClaw-2.5.3-mac.tar.gz` 源码打包档案（内含该版本的 `build-mac.sh`）；`main` 分支已移除源码打包脚本，Mac 用户直接用 `npm run package:mac`。
+> **macOS 源码打包档案**：v2.6.0 的 Releases 附带 `BossClaw-2.6.0-mac.tar.gz`（档案内自带该版本的 `build-mac.sh`，解压即可一键打包）；`main` 分支已移除源码打包脚本，Mac 用户直接用 `npm run package:mac`。
 
 > **Electron dev 模式**：开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179 端口），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
 > **首次运行需在本机有 Electron 运行环境**（`npm install` 会安装 `electron` 包及其二进制）。
@@ -229,9 +229,15 @@ npm run package:all        # 打包 Windows + Linux
 
 ## 打包产出
 
-各平台打包命令均在 `release/` 目录产出产物：
+各平台打包命令均在 `release/` 目录产出产物。三个系统各自独立打包，命令与产物互不复用：
 
-### Windows（`npm run package` 或 `package:all`）
+| 系统 | 打包命令 | 产物 |
+| --- | --- | --- |
+| 🪟 Windows 10/11（x64） | `npm run package` / `package:all` | NSIS 安装包 + 绿色便携版 |
+| 🐧 Linux（x86_64） | `npm run package:linux` / `package:all` | AppImage + deb |
+| 🍎 macOS（Intel / Apple Silicon） | `npm run package:mac`（只能在 macOS 上执行） | dmg + zip |
+
+### 🪟 Windows 10/11（x64）—— `npm run package` 或 `package:all`
 
 ```
 release/
@@ -242,31 +248,32 @@ release/
 ```
 
 > `<version>` 取 `desktop-app/package.json` 的 `version`（单一来源；安装包名由 electron-builder 按同一字段生成）。
-> 示例：`version` = `2.5.7` → `BossClaw-2.5.7-x64.exe`。
+> 示例：`version` = `2.6.0` → `BossClaw-2.6.0-x64.exe`。
 
-### Linux（`npm run package:linux` 或 `package:all`）
+### 🐧 Linux（x86_64）—— `npm run package:linux` 或 `package:all`
 
 按 `build.linux.target` 产出 **AppImage + deb** 两种格式：
 
 ```
 release/
-├── BossClaw-2.5.3-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
-├── BossClaw-2.5.3-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
-└── linux-unpacked/                   # Linux 解压目录
+├── BossClaw-<version>-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
+├── BossClaw-<version>-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
+└── linux-unpacked/                      # Linux 解压目录
 ```
 
-> 已发布的 v2.5.3 另附 `BossClaw-2.5.3-x64.tar.gz` 通用压缩包。需要 rpm（RHEL / Fedora / CentOS）或 pacman（Arch / Manjaro）时，向 `build.linux.target` 补充 `rpm` / `pacman` 后重新打包。
+> 示例：`version` = `2.6.0` → `BossClaw-2.6.0-x86_64.AppImage` / `BossClaw-2.6.0-amd64.deb`（与 Releases 上的资产名一致）。
+> 需要 rpm（RHEL / Fedora / CentOS）或 pacman（Arch / Manjaro）时，向 `build.linux.target` 补充 `rpm` / `pacman` 后重新打包。
 
-### macOS（`npm run package:mac`，只能在 macOS 系统执行）
+### 🍎 macOS（Intel / Apple Silicon）—— `npm run package:mac`，只能在 macOS 系统执行
 
 ```
 release/
-├── BossClaw-2.5.3-x64.dmg / .zip    # Intel Mac（x86_64）
-├── BossClaw-2.5.3-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
-└── mac/                              # macOS 解压目录（.app）
+├── BossClaw-<version>-x64.dmg / .zip    # Intel Mac（x86_64）
+├── BossClaw-<version>-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
+└── mac/                                 # macOS 解压目录（.app）
 ```
 
-> `main` 分支不再提供「源码打包档案」脚本（历史 `package:source` / `build-mac.sh` 已移除）；无 Mac 环境时可下载已发布的 `BossClaw-2.5.3-mac.tar.gz`（内含该版本脚本），或交给有 Mac 的协作者直接用本源码执行 `npm run package:mac`。
+> `main` 分支不提供「源码打包档案」脚本（历史 `package:source` / `build-mac.sh` 已移除）；无 Mac 环境时下载 Releases 上的 `BossClaw-2.6.0-mac.tar.gz`（档案内自带该版本的 `build-mac.sh`，解压即可一键打包），或交给有 Mac 的协作者直接用本源码执行 `npm run package:mac`。
 
 ***
 
