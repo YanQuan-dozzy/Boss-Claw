@@ -6,6 +6,19 @@
 //   - 扫码登录（可见窗口）
 // 安全不变量与 Boss-claw 其余投递链路一致：code 36/32 立即停止、交人工处理。
 
+/**
+ * 单次搜索页数上限（issue #7 P2）。
+ *
+ * 与 Python 侧 `camoufox_server.py` 的 `DEFAULT_MAX_SEARCH_PAGES` 同源，
+ * 服务端还会用 `BOSCLAW_MAX_SEARCH_PAGES` 环境变量覆盖（1~20）。
+ * 前端这里只用于渲染输入框上限；最终以服务端 `clamp_pages()` 收口为准，
+ * 两边数值改动需同步（不一致不会报错，只是 UI 允许的值可能被服务端裁掉）。
+ */
+export const CAMOUFOX_MAX_PAGES = 10;
+
+/** 每页岗位数（BOSS joblist.json pageSize / 各平台列表页固定条数），用于 UI 估算覆盖量 */
+export const CAMOUFOX_PAGE_SIZE = 30;
+
 export interface CamoufoxEngineInfo {
   ok: boolean;
   version?: string;
@@ -23,6 +36,8 @@ export interface CamoufoxEngineInfo {
   platform?: string;
   /** 是否已真实登录对应平台（BOSS 看 wt2，其余平台看各自鉴权 cookie） */
   loggedIn?: boolean;
+  /** 单次搜索页数上限（服务端 max_search_pages()，缺省时前端回落到 CAMOUFOX_MAX_PAGES） */
+  maxPages?: number;
   message?: string;
 }
 

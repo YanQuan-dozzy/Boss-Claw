@@ -40,8 +40,8 @@ import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/j
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
-import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
-import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
+import { buildSearchQueue, type SearchQueueItem } from '@/lib/bossclaw/searchUrl';
+import { buildPlatformSearchQueue, bossCriteriaFromQueueItem, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
 import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
 import {
   effectiveDailyCapFor, dailySentCountFor, isLockedOut,
@@ -1681,12 +1681,16 @@ export default function Workbench() {
       const item = queue[qi];
       if (!cfxActiveRef.current) break;
       const cityCode = platform === 'boss' ? (resolveCityCode(item.location) || '100010000') : String(item.location || '全国');
-      // 非 BOSS 平台：城市/薪资/关键词在 URL 里，其余筛选（学历/经验/公司规模/公司性质/融资阶段/
-      // HR 活跃度）随 criteria 下发，由 Python 侧 platform filters 翻译成本平台筛选参数
-      // （猎聘：workYearCode / eduLevel / compScale / compKind / pubTime）。
-      // （BOSS 队列项来自 searchUrl.ts，不含 criteria —— 故按 platform 收窄类型）
-      const itemCriteria = platform === 'boss' ? undefined : (item as PlatformSearchQueueItem).criteria;
-      const criteriaNote = platform === 'boss' ? '' : describePlatformCriteria(itemCriteria);
+      // 基础求职条件：
+      //  - 非 BOSS：队列项自带 criteria（platformUrls.ts 构造，城市/薪资/关键词已在 URL 里，
+      //    其余筛选随 criteria 下发，由 Python 侧 platform filters 翻译成本平台参数）。
+      //  - BOSS：内置浏览器通道把这些筛选拼进 URL（searchUrl.ts），隐身通道此前**完全丢弃**
+      //    （issue #7 第五节）→ 这里用队列项里同一批字段拼出 criteria，让两通道筛出同一批岗位。
+      //    薪资不参与：内置浏览器通道的 BOSS 队列也不带 salary（薪资是期望值，硬筛会误杀），保持一致。
+      const itemCriteria = platform === 'boss'
+        ? bossCriteriaFromQueueItem(item as SearchQueueItem)
+        : (item as PlatformSearchQueueItem).criteria;
+      const criteriaNote = describePlatformCriteria(itemCriteria);
       addLog('info', `隐身搜索（${pfLabel}）「${item.keyword}」· ${item.location || '全国'} · ${item.employmentType || '不限'}（${qi + 1}/${queue.length}）${criteriaNote ? ` · 基础求职条件：${criteriaNote}` : ''}`);
       // 采集任务卡片（与「任务进度」页共用 taskRuns）
       const runId = collectRunId(platform, item);

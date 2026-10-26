@@ -6,7 +6,10 @@ BossClaw 隐身引擎 —— 「基础求职条件」跨平台筛选参数映射
 设置页「求职偏好 → 基础求职条件」（目标城市 / 薪资期望 / 求职类型 / 学历要求 /
 经验要求 / 公司规模）是**全平台共用**的一份配置；四个平台的筛选参数名与码值体系
 各不相同，本模块把同一份条件翻译成各平台自己的查询参数，供猎聘 / 智联 / 前程无忧
-三个隐身采集模块复用（BOSS 由 searchUrl.ts + webview.cjs 处理，不走这里）。
+三个隐身采集模块、以及 BOSS 的隐身通道（`camoufox_server.py` 自带的 `search_jobs`）复用。
+
+BOSS 的码值与内置浏览器通道 `src/lib/bossclaw/searchUrl.ts` **逐字一致** —— 同一份设置
+在两条采集通道下必须筛出同样的结果，两处改动需同步（issue #7 第五节）。
 
 统一入口
 --------
@@ -74,7 +77,7 @@ from typing import Any, Iterable
 NO_FILTER_WORDS = ('', '不限', '全部', '不限制', '所有', '不限学历', '全国')
 
 # 多值连接符（各平台多选参数的分隔符不同；猎聘用 `$`，投递类平台用 `,`）
-MULTI_SEP = {'liepin': '$', 'zhaopin': ',', 'job51': ','}
+MULTI_SEP = {'liepin': '$', 'zhaopin': ',', 'job51': ',', 'boss': ','}
 
 # 区间式**单值**维度（P6-12）：值形如「起始$结束」（猎聘 workYearCode 1$3=1-3年），
 # $ 是区间分隔而非多选分隔——摘要反查时整体展示，禁止按分隔符拆开（否则 9$12 显示成 9/12）。
@@ -303,12 +306,75 @@ def _job51_params(c: dict) -> dict:
 
 
 # ============================================================
+# BOSS 直聘 boss（隐身通道专用）
+# ============================================================
+# 为什么要在这里补一套：可视化采集走 searchUrl.ts（TS）拼 URL，筛选参数本来就带；
+# 而隐身通道走 camoufox_server.py 自己拼 /web/geek/job 与 joblist.json，
+# 历史实现只带 query / city / page → **基础求职条件对 BOSS 完全不生效**（issue #7 第五节）。
+#
+# 口径来源：`src/lib/bossclaw/searchUrl.ts`（2026-08 联网核对搜索页 URL 参数），
+# 参数名与码值与内置浏览器通道**逐字一致**，两通道对同一份设置的解释不允许分叉。
+# 置信度：jobType / experience / degree 为搜索页实测码值（ok）；
+# salary / scale 为平台面板顺位推得（partial）——设置页无对应选项时不附加，宁可多召回不误杀。
+# ⚠️ 参数**名**沿用搜索页 URL 的参数名，joblist.json 是否逐项识别未在真机逐条验证：
+#    平台若忽略某个参数，表现为「该维度不生效」，不会报错 —— 排查时先看日志里的「已应用」摘要
+#    与返回结果是否吻合，再怀疑码值。
+BOSS_JOB_TYPE = {
+    '全职': '1901', '实习': '1902', '兼职': '1903',
+}
+# 经验：码值与 searchUrl.ts 的 EXPERIENCE_CODES 一致；「经验不限」无码值 → 不附加
+BOSS_EXPERIENCE = {
+    '应届生': '102', '1年以内': '103', '1-3年': '104', '3-5年': '105',
+    '5-10年': '106', '10年以上': '107', '在校生': '108',
+}
+# 学历：别名在前、平台标签在最后（摘要反查 {v:k} 取最后一个键 → 展示平台口径）
+BOSS_DEGREE = {
+    '中专': '208', '中技': '208',
+    '大专': '202', '本科': '203', '硕士': '204', '博士': '205',
+    '高中': '206', '中专/中技': '208', '初中及以下': '209',
+}
+# 薪资：BOSS web 端 salary 编码（0 不限；1-8 由低到高）。
+# 「不限」保留只为与 searchUrl.ts 逐字对齐（normalize_criteria 会先剔掉「不限」，永不下发 salary=0）。
+BOSS_SALARY = {
+    '不限': '0',
+    '3K以下': '1', '3-5K': '2', '5-10K': '3', '10-15K': '4',
+    '15-20K': '5', '20-30K': '6', '30-50K': '7', '50K以上': '8',
+}
+# 公司规模：scale 编码（0-20人=301 … 10000人以上=306）
+BOSS_SCALE = {
+    '0-20人': '301', '20-99人': '302', '100-499人': '303',
+    '500-999人': '304', '1000-9999人': '305', '10000人以上': '306',
+}
+
+
+def _boss_params(c: dict) -> dict:
+    out: dict = {}
+    # BOSS 支持逗号分隔多值（与 searchUrl.ts 的 resolveExperienceCodes / resolveDegreeCodes 一致）
+    jt = [BOSS_JOB_TYPE[k] for k in c['job_type'] if k in BOSS_JOB_TYPE]
+    if jt:
+        out['jobType'] = MULTI_SEP['boss'].join(dict.fromkeys(jt))
+    exp = [BOSS_EXPERIENCE[k] for k in c['experience'] if k in BOSS_EXPERIENCE]
+    if exp:
+        out['experience'] = MULTI_SEP['boss'].join(dict.fromkeys(exp))
+    deg = [BOSS_DEGREE[k] for k in c['degree'] if k in BOSS_DEGREE]
+    if deg:
+        out['degree'] = MULTI_SEP['boss'].join(dict.fromkeys(deg))
+    if c['salary'] in BOSS_SALARY:
+        out['salary'] = BOSS_SALARY[c['salary']]
+    if c['scale'] in BOSS_SCALE:
+        out['scale'] = BOSS_SCALE[c['scale']]
+    # 公司性质 / 融资阶段 / HR 活跃度：BOSS 搜索接口无对应筛选参数 → 不附加
+    return out
+
+
+# ============================================================
 # 能力表 / 统一入口
 # ============================================================
 _BUILDERS = {
     'liepin': _liepin_params,
     'zhaopin': _zhaopin_params,
     'job51': _job51_params,
+    'boss': _boss_params,
 }
 
 # ok = 码值有权威来源或实测；partial = 部分取值有实测；inferred = 顺位推得待校准；
@@ -320,6 +386,11 @@ FILTER_CAPABILITIES: dict[str, dict[str, str]] = {
                 'company_type': 'ok', 'financing': 'partial', 'hr_activity': 'unsupported'},
     'job51': {'experience': 'inferred', 'degree': 'inferred', 'scale': 'inferred', 'job_type': 'inferred',
               'company_type': 'unsupported', 'financing': 'unsupported', 'hr_activity': 'unsupported'},
+    # BOSS：码值与内置浏览器通道（searchUrl.ts，2026-08 联网核对）逐字一致；
+    # salary / scale 为面板顺位推得，标记 partial
+    'boss': {'experience': 'ok', 'degree': 'ok', 'job_type': 'ok', 'scale': 'partial',
+             'salary': 'partial', 'company_type': 'unsupported', 'financing': 'unsupported',
+             'hr_activity': 'unsupported'},
 }
 
 # 条件维度 → 平台查询参数名（日志 / 诊断用）
@@ -329,6 +400,8 @@ PARAM_NAMES: dict[str, dict[str, str]] = {
     'zhaopin': {'experience': 'we', 'degree': 'el', 'scale': 'cs', 'job_type': 'et',
                 'company_type': 'ct', 'financing': 'fs'},
     'job51': {'experience': 'workYear', 'degree': 'degree', 'scale': 'companySize', 'job_type': 'jobType'},
+    'boss': {'experience': 'experience', 'degree': 'degree', 'scale': 'scale', 'job_type': 'jobType',
+             'salary': 'salary'},
 }
 
 
@@ -352,6 +425,11 @@ _REVERSE_CODES: dict[tuple[str, str], dict] = {
     ('job51', 'degree'): {v: k for k, v in JOB51_DEGREE.items()},
     ('job51', 'scale'): {v: k for k, v in JOB51_SCALE.items()},
     ('job51', 'job_type'): {v: k for k, v in JOB51_JOB_TYPE.items()},
+    ('boss', 'experience'): {v: k for k, v in BOSS_EXPERIENCE.items()},
+    ('boss', 'degree'): {v: k for k, v in BOSS_DEGREE.items()},
+    ('boss', 'scale'): {v: k for k, v in BOSS_SCALE.items()},
+    ('boss', 'job_type'): {v: k for k, v in BOSS_JOB_TYPE.items()},
+    ('boss', 'salary'): {v: k for k, v in BOSS_SALARY.items()},
 }
 
 

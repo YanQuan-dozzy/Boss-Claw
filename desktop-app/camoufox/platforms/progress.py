@@ -19,9 +19,21 @@ Boss-claw 的采集是**整批返回**架构：Python 侧把一轮所有岗位�
 因此 Boss-claw 只实现**安全的词级断点**：只有「整轮完整成功返回」才标记完成，
 风控/异常一律清除该组合断点（下次重头采，宁重复不遗漏）。
 
+为什么断点要带页数（见 issue #7）
+---------------------------------
+断点最小单元是「平台 × 城市 × 关键词」，**不含页数**。只按该单元判完成的话，
+用户把「搜索结果页数」从 1 调到 3 后重跑，会因为 24h 内已采完而**整词跳过**，
+日志显示「已采完」，看起来像调参没生效——这是 issue #7 用户实际踩到的坑。
+
+因此 `completed_combo()` 增加 `min_pages` 判据：只有「上次完整采完的页数 ≥ 本次要求的页数」
+才算采完。页数变大 → 视为未采完，重新采（重复入库由 jobId 去重，宁重复不遗漏）；
+页数变小 → 仍算采完（覆盖范围没扩大，不必重跑）。条目本身保留，等新一轮采完覆盖 `pages`。
+
 语义
 ----
-- `completed_combo(platform, city, keyword)`：TTL 窗口内整轮采完过 → 跳过（不再打开搜索页）。
+- `completed_combo(platform, city, keyword, min_pages=0)`：TTL 窗口内整轮采完过、
+  且采完的页数 ≥ `min_pages` → 跳过（不再打开搜索页）。`min_pages=0` 时等价于只判完成。
+- `combo_entry(...)`：读原始条目（UI / 日志诊断用，判断「为什么跳过 / 为什么重采」）。
 - `mark_combo_done(...)`：整轮成功返回后调用（唯一推进点）。
 - `clear_combo(...)`：命中风控/环境异常时调用 → 下次重头采。
 - `force=True`（「定向重新采集」语义）：忽略断点，强制重采。
@@ -44,7 +56,9 @@ DEFAULT_TTL_HOURS = 24
 MIN_TTL_HOURS = 1
 MAX_TTL_HOURS = 720
 
-PROGRESS_VERSION = 1
+# 存储版本：2 = 条目新增 `pages` 参与完成判定（v1 条目读入后 `pages` 缺省按 0 处理，
+# 即「任何页数要求都视为未采完」→ 老用户升级后首次运行会重采一遍，属预期行为，不丢数据）
+PROGRESS_VERSION = 2
 
 
 def progress_file() -> Path:
@@ -170,12 +184,39 @@ class ProgressStore:
     def path(self) -> Path:
         return self._path
 
-    def completed_combo(self, platform: str, city: str, keyword: str) -> bool:
-        """TTL 窗口内是否已整轮采完（→ 任务级跳过）。"""
+    def combo_entry(self, platform: str, city: str, keyword: str) -> dict | None:
+        """读该组合在 TTL 内的原始条目（深拷贝；无有效条目返回 None）。
+
+        供调用方判断「为什么跳过 / 为什么重采」并给出可读日志，避免 UI 只显示
+        「已采完」而用户看不出是页数不够（issue #7）。
+        """
         with self._lock:
             self._load()
             entry = self._valid(combo_key(platform, city, keyword), fresh=True)
-            return bool(entry and entry.get('done'))
+            return copy.deepcopy(entry) if isinstance(entry, dict) else None
+
+    def completed_combo(self, platform: str, city: str, keyword: str,
+                        min_pages: int = 0) -> bool:
+        """TTL 窗口内是否已整轮采完（→ 任务级跳过）。
+
+        `min_pages` > 0 时额外要求「上次采完的页数 ≥ min_pages」：
+        断点键不含页数，若不比对页数，用户调大页数后会被整词跳过（issue #7）。
+        页数不足时**不删除**条目——新一轮采完会以更大的 `pages` 覆盖；
+        中途失败则由 `clear_combo()` 清除（宁重复不遗漏）。
+        """
+        with self._lock:
+            self._load()
+            entry = self._valid(combo_key(platform, city, keyword), fresh=True)
+            if not entry or not entry.get('done'):
+                return False
+            if min_pages > 0:
+                try:
+                    done_pages = int(entry.get('pages') or 0)
+                except (TypeError, ValueError):
+                    done_pages = 0
+                if done_pages < int(min_pages):
+                    return False
+            return True
 
     def mark_combo_done(self, platform: str, city: str, keyword: str,
                         pages: int = 0, count: int = 0) -> None:

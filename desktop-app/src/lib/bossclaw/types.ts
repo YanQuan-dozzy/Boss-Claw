@@ -187,7 +187,11 @@ export interface AppConfig {
     enabled: boolean;
     /** 指纹伪装的操作系统（windows / macos / linux），默认 windows（与国内求职者真实环境一致） */
     os: string;
-    /** 隐身搜索页数（1-5），默认 1 */
+    /**
+     * 搜索结果页数（仅 Camoufox 隐身采集生效；每页约 30 条），默认 1。
+     * 上限见 camoufox.ts 的 CAMOUFOX_MAX_PAGES（=10，服务端 BOSCLAW_MAX_SEARCH_PAGES 可覆盖）。
+     * 内置浏览器可视化采集不走本字段：BOSS 无限加载靠滚动、猎聘/智联/51Job 只采第 1 页。
+     */
     pages: number;
     /** 隐身搜索/发送时是否强制走 Camoufox（true）或仅在 webview 失败时兜底（false） */
     prefer: boolean;

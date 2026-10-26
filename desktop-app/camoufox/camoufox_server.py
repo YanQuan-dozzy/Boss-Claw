@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 
 # ===== 平台公共基座（浏览器 / 人类化 / Cookie 按平台持久化）=====
 # BOSS 之外的平台（猎聘/智联/51Job）在 platforms/ 包内实现，复用本基座
@@ -53,6 +53,9 @@ from platforms.common import (
     cookie_file, detect_kernel, PLATFORMS,
 )
 import platforms as platform_mods
+# BOSS 隐身通道的「基础求职条件」翻译层（issue #7 第五节）：
+# 与 platform_mods 内部同一份实现，码值口径与 src/lib/bossclaw/searchUrl.ts 逐字一致。
+from platforms.filters import build_filter_params, summarize_applied
 
 # ============================================================
 # BOSS 直聘专用风控文案与外部网申检测（聊天投递链路用）
@@ -61,10 +64,72 @@ VERSION = '2.2.0'
 
 
 # ============================================================
+# 单次搜索页数上限（issue #7 P2）
+# ============================================================
+# 历史实现把上限硬编码成 min(5)，用户改配置/改前端都突破不了 5 页，
+# 而「多翻几页才能捞到标题偏离关键词的岗位」是真实需求（issue #7）。
+# 现在改成「默认常量 + 环境变量 BOSSCLAW_MAX_SEARCH_PAGES 覆盖」。
+#
+# 上限本身仍然保留：每页约 30 条，单页之间有多秒类人节奏延迟，无节制翻页会
+# 显著抬高风控暴露面（更快命中 code 36/32/35），所以不是「越大越好」。
+# 前端 Settings 的输入框上限与此处同源（camoufox.ts 的 CAMOUFOX_MAX_PAGES），改动需同步。
+DEFAULT_MAX_SEARCH_PAGES = 10
+HARD_MAX_SEARCH_PAGES = 20
+
+
+def max_search_pages() -> int:
+    """单次搜索页数上限（环境变量优先，夹在 1~20，非法值回落默认 10）。"""
+    try:
+        value = int(os.environ.get('BOSSCLAW_MAX_SEARCH_PAGES') or DEFAULT_MAX_SEARCH_PAGES)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_SEARCH_PAGES
+    return max(1, min(value, HARD_MAX_SEARCH_PAGES))
+
+
+def clamp_pages(raw) -> int:
+    """把请求里的 pages 归一化到 `[1, max_search_pages()]`（bool / 字符串 / 负数都兜住）。"""
+    try:
+        pages = int(raw or 1)
+    except (TypeError, ValueError):
+        pages = 1
+    return max(1, min(pages, max_search_pages()))
+
+
+
+# ============================================================
 # 搜索（对齐 search_camoufox.py：joblist API + code 37 自动处理）
 # ============================================================
-def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None) -> dict:
-    log('🔍', f'搜索：{query} / city={city} / pages={pages}')
+def boss_search_params(query: str, city: str, page_num: int, filters: dict | None = None) -> dict:
+    """BOSS 列表页 URL 与 joblist 接口共用的查询参数。
+
+    筛选参数必须**同时**出现在列表页与接口请求里：只筛页面会出现「页面显示本科、
+    抓回来却是全学历」；只筛接口则页面翻页时平台可能按未筛选条件重排（issue #7 第五节）。
+    """
+    return {'query': query, 'city': city, 'page': int(page_num), **(filters or {})}
+
+
+def boss_api_params(query: str, city: str, page_num: int, filters: dict | None = None) -> dict:
+    """joblist.json 参数 = 搜索参数 + 接口固定参数（scene / pageSize）。"""
+    params = boss_search_params(query, city, page_num, filters)
+    params['scene'] = 1
+    params['pageSize'] = 30
+    return params
+
+
+def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = None,
+                criteria: dict | None = None) -> dict:
+    """BOSS 隐身搜索：逐页请求 joblist.json。
+
+    `criteria` = 设置页「基础求职条件」，由 `platforms.filters` 翻译成 BOSS 的
+    `jobType / experience / degree / salary / scale`（码值与 `searchUrl.ts` 逐字一致）。
+
+    历史缺陷（issue #7 第五节）：本函数原先只拼 query / city / page，criteria 被完全忽略，
+    导致隐身通道采回来的是**未过滤**结果 —— 同一份设置在内置浏览器通道生效、隐身通道不生效。
+    """
+    boss_filters = build_filter_params('boss', criteria)
+    applied = summarize_applied('boss', boss_filters)
+    log('🔍', f'搜索：{query} / city={city} / pages={pages}'
+             + (f' / 已应用：{applied}' if applied else ' / 未设置筛选条件'))
     all_jobs = []
     last_code = None
     last_msg = ''
@@ -79,7 +144,8 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
                     except Exception as e:
                         log('⚠️', f'注入 Cookie 失败：{e}')
 
-                url = f"https://www.zhipin.com/web/geek/job?query={query}&city={city}&page={page_num}"
+                # 列表页 URL 与接口共用同一份参数（筛选在两处都必须带，否则页面与数据不一致）
+                url = f"https://www.zhipin.com/web/geek/job?{urlencode(boss_search_params(query, city, page_num, boss_filters))}"
                 log('📄', f'Page {page_num}: {url}')
 
                 # BOSS 页面有持续轮询脚本（warlock/patas 心跳），networkidle 不可靠 → domcontentloaded
@@ -114,13 +180,15 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
 
                 # 调用岗位列表 API（DOM 是 canvas 渲染，无法抓取）。
                 # evaluate 可能因页面持续导航抛 Execution context destroyed，重试最多 3 次。
-                # B2（转义正确性）：query/city 走 evaluate 参数传参 + encodeURIComponent，禁止 f-string 拼 JS。
+                # B2（转义正确性）：参数走 evaluate 传参 + URLSearchParams，禁止 f-string 拼 JS/URL。
+                # issue #7 第五节：接口必须带上与列表页相同的筛选参数，否则筛了页面不筛数据。
+                api_params = boss_api_params(query, city, page_num, boss_filters)
                 api_result = None
                 for attempt in range(3):
                     try:
                         api_result = page.evaluate(
-                            "({q, c, p}) => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query=' + encodeURIComponent(q) + '&city=' + encodeURIComponent(c) + '&page=' + p + '&pageSize=30').then(r => r.json()).catch(e => ({error: e.message}))",
-                            {"q": query, "c": city, "p": page_num},
+                            "({p}) => fetch('/wapi/zpgeek/search/joblist.json?' + new URLSearchParams(p).toString()).then(r => r.json()).catch(e => ({error: e.message}))",
+                            {"p": api_params},
                         )
                         break
                     except Exception as e:
@@ -163,8 +231,8 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
                         time.sleep(8)
                         if "security-check" not in page.url:
                             retry = page.evaluate(
-                                "({q, c, p}) => fetch('/wapi/zpgeek/search/joblist.json?scene=1&query=' + encodeURIComponent(q) + '&city=' + encodeURIComponent(c) + '&page=' + p + '&pageSize=30').then(r => r.json())",
-                                {"q": query, "c": city, "p": page_num},
+                                "({p}) => fetch('/wapi/zpgeek/search/joblist.json?' + new URLSearchParams(p).toString()).then(r => r.json())",
+                                {"p": api_params},
                             )
                             if retry.get('code') == 0:
                                 jobs = retry.get('zpData', {}).get('jobList', [])
@@ -2153,7 +2221,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
             if parsed.path == '/search':
                 query = str(body.get('query') or '').strip()
                 city = str(body.get('city') or '101010100').strip()
-                pages = max(1, min(5, int(body.get('pages') or 1)))
+                # issue #7 P2：上限由 clamp_pages() 统一收口（默认 10，BOSSCLAW_MAX_SEARCH_PAGES 可覆盖）
+                pages = clamp_pages(body.get('pages'))
                 os_name = body.get('os') or None
                 # 设置页「基础求职条件」（全平台共用）：猎聘/智联/前程无忧 由 platforms.filters
                 # 翻译为各平台筛选参数（BOSS 走 searchUrl.ts + webview，此处忽略）。
@@ -2163,7 +2232,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 if not query:
                     return self._send(400, {"ok": False, "error": "缺少 query"})
                 if platform == 'boss':
-                    result = search_jobs(query, city, pages, os_name)
+                    # issue #7 第五节：BOSS 分支原先丢弃 criteria → 隐身通道不筛基础求职条件
+                    result = search_jobs(query, city, pages, os_name, criteria)
                 else:
                     # M-11：透传配置（渲染层只发非敏感子集 {platforms}），供断点续采 TTL 读取
                     cfg = body.get('config') if isinstance(body.get('config'), dict) else None
@@ -2337,6 +2407,8 @@ def engine_status(platform: str = 'boss') -> dict:
         "cookies": cf.exists(),
         "cookieCount": cookie_count,
         "loggedIn": logged_in,
+        # issue #7 P2：单次搜索页数上限（前端用它渲染输入框上限，避免两处各写一个 5）
+        "maxPages": max_search_pages(),
         "message": "",
     }
     spec = importlib.util.find_spec('camoufox')

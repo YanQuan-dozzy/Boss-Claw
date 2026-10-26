@@ -15,7 +15,7 @@
 import type { AppConfig, DirectionPlan, HrActivityFilter, JobPlatform } from './types';
 import { HR_ACTIVITY_FILTER_LABEL } from './hrActivity';
 import { selectedDirectionItems } from './directions';
-import { buildJobSearchUrl, RANDOM_COLLECT_LABEL } from './searchUrl';
+import { buildJobSearchUrl, RANDOM_COLLECT_LABEL, type SearchQueueItem } from './searchUrl';
 
 // ==================== 猎聘 liepin ====================
 export const LIEPIN_BASE_URL = 'https://www.liepin.com/zhaopin/';
@@ -404,6 +404,27 @@ export function platformSearchCriteria(config: AppConfig): PlatformSearchCriteri
     companyType: config.companyType,
     financing: config.financing ?? [],
     hrActivity: config.hrActivityFilter,
+  };
+}
+
+/**
+ * BOSS 队列项 → 「基础求职条件」（供 **Camoufox 隐身通道** 下发）。
+ *
+ * 为什么需要它：BOSS 的队列项来自 `searchUrl.ts`，筛选已经拼进 URL（内置浏览器通道直接生效），
+ * 但 `camoufox_server.py` 自建搜索 URL 与 joblist 请求，此前完全拿不到这些条件 ——
+ * 同一份设置在内置浏览器通道生效、在隐身通道不生效（issue #7 第五节）。
+ *
+ * 取值与内建浏览器通道**同源**：都来自队列项里的 employmentType / experience / degree / scale，
+ * 因此两通道筛出的是同一批岗位。薪资不在此列 —— 内置浏览器通道的 BOSS 队列同样不带 salary
+ * （薪资是期望值，硬筛会误杀），保持两通道一致比单侧「更严」更重要。
+ */
+export function bossCriteriaFromQueueItem(item: SearchQueueItem): PlatformSearchCriteria {
+  const split = (v: string | undefined) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return {
+    employmentTypes: item.employmentType && item.employmentType !== '不限' ? [item.employmentType] : [],
+    experiences: split(item.experience),
+    degrees: split(item.degree),
+    companyScale: item.scale,
   };
 }
 

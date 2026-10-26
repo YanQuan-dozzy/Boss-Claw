@@ -98,7 +98,7 @@ import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
 import { writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
-import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
+import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, CAMOUFOX_MAX_PAGES, CAMOUFOX_PAGE_SIZE, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
 import {
   PLATFORM_META, PLATFORM_IDS, platformEnabled, platformPriority,
   platformDailyCap, PLATFORM_DEFAULT_DAILY_TARGET,
@@ -326,6 +326,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const [cfxLoading, setCfxLoading] = useState(false);
   const [cfxLogining, setCfxLogining] = useState(false);
   const cfxConfig = config.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
+  // issue #7 P2：页数上限以服务端 max_search_pages() 为准（BOSCLAW_MAX_SEARCH_PAGES 可覆盖），
+  // 拿不到状态时回落到前端常量，避免两处各写一个 5。
+  const cfxMaxPages = cfx?.engine?.maxPages && cfx.engine.maxPages > 0 ? cfx.engine.maxPages : CAMOUFOX_MAX_PAGES;
 
   // ===== 多平台适配：各平台 Camoufox 登录态与登录动作 =====
   const [cfxPlatforms, setCfxPlatforms] = useState<Record<string, CamoufoxStatus | null>>({});
@@ -1550,7 +1553,12 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-              开启后，每次「搜索采集」会自动将 BOSS 岗位列表向下滑动以加载无限列表。已入库岗位将自动根据 URL 去重跳过。
+              开启后，每次「搜索采集」会自动将岗位列表向下滑动以加载更多。已入库岗位将自动根据 URL 去重跳过。
+            </Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>
+              两条采集通道的「加载更多」模型不同：<b>BOSS 直聘是无限加载</b>，滚动会持续追加岗位，轮数调大即可拿到远超首屏的量；
+              <b>猎聘 / 智联 / 前程无忧是真分页</b>，内置浏览器的可视化采集只采第 1 页，要多页请改用
+              Camoufox 隐身采集并在上方「搜索结果页数」里设置翻页数。
             </Paragraph>
           </div>
         </div>
@@ -2117,86 +2125,106 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </div>
             )}
 
-            {config.engineMode === 'camoufox' && (
-              <div className="field-group" style={{ marginTop: 14 }}>
-                <div className="field-group__title">
-                  <ThunderboltOutlined className="fg-icon" /> Camoufox 隐身引擎面板
-                </div>
-                <div className="setting-actions" style={{ marginBottom: 12 }}>
-                  <Space>
-                    <Button size="middle" onClick={() => refreshCamoufox()} loading={cfxLoading}>
-                      检测状态
+            {/* issue #7 P0：面板常驻渲染。原先包在 `engineMode === 'camoufox'` 里，
+                默认 WebView 模式下整块不存在 —— 用户「找不到翻页设置」的根因。 */}
+            <div className="field-group" style={{ marginTop: 14 }}>
+              <div className="field-group__title">
+                <ThunderboltOutlined className="fg-icon" /> Camoufox 隐身引擎面板
+                <Tag
+                  color={config.engineMode === 'camoufox' ? 'green' : 'default'}
+                  style={{ marginLeft: 8 }}
+                >
+                  {config.engineMode === 'camoufox' ? '当前引擎' : '当前未启用'}
+                </Tag>
+              </div>
+              {config.engineMode !== 'camoufox' && (
+                <Paragraph type="secondary" style={{ margin: '0 0 10px', fontSize: 12 }}>
+                  下列参数暂不生效（当前引擎不是 Camoufox）。搜索结果页数只在切换为 Camoufox 并使用隐身采集时生效；
+                  内置浏览器的可视化采集不分页 —— BOSS 靠页内滚动持续加载，猎聘 / 智联 / 前程无忧只采第 1 页。
+                </Paragraph>
+              )}
+              <div className="setting-actions" style={{ marginBottom: 12 }}>
+                <Space>
+                  <Button size="middle" onClick={() => refreshCamoufox()} loading={cfxLoading}>
+                    检测状态
+                  </Button>
+                  {cfx?.running && (
+                    <Button size="middle" danger icon={<PoweroffOutlined />} onClick={onCamoufoxStop}>
+                      停止桥
                     </Button>
-                    {cfx?.running && (
-                      <Button size="middle" danger icon={<PoweroffOutlined />} onClick={onCamoufoxStop}>
-                        停止桥
-                      </Button>
-                    )}
-                  </Space>
-                </div>
-                {!cfx?.ready && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ borderRadius: 8, marginBottom: 10 }}
-                    message="隐身引擎未就绪"
-                    description={cfx?.message || '请先下载 Camoufox 隐身引擎内核（暂未下载），或点击「检测状态」。'}
+                  )}
+                </Space>
+              </div>
+              {/* 未就绪告警只在用户**真的选了 Camoufox** 时给：
+                  面板现在常驻，若 WebView 用户也看到黄色「未就绪」，会误以为哪里坏了。 */}
+              {config.engineMode === 'camoufox' && !cfx?.ready && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ borderRadius: 8, marginBottom: 10 }}
+                  message="隐身引擎未就绪"
+                  description={cfx?.message || '请先下载 Camoufox 隐身引擎内核（暂未下载），或点击「检测状态」。'}
+                />
+              )}
+              <div className="settings-grid">
+                <div className="sg-item">
+                  <span className="field-label">指纹伪装系统</span>
+                  <Select
+                    style={{ width: '100%' }}
+                    value={cfxConfig.os}
+                    onChange={(v) => setConfig({ camoufox: { ...cfxConfig, os: v } })}
+                    options={[
+                      { label: 'Windows（推荐）', value: 'windows' },
+                      { label: 'macOS', value: 'macos' },
+                      { label: 'Linux', value: 'linux' },
+                    ]}
                   />
-                )}
-                <div className="settings-grid">
-                  <div className="sg-item">
-                    <span className="field-label">指纹伪装系统</span>
-                    <Select
-                      style={{ width: '100%' }}
-                      value={cfxConfig.os}
-                      onChange={(v) => setConfig({ camoufox: { ...cfxConfig, os: v } })}
-                      options={[
-                        { label: 'Windows（推荐）', value: 'windows' },
-                        { label: 'macOS', value: 'macos' },
-                        { label: 'Linux', value: 'linux' },
-                      ]}
-                    />
-                  </div>
-                  <div className="sg-item">
-                    <span className="field-label">隐身搜索页数</span>
-                    <InputNumber
-                      min={1}
-                      max={5}
-                      value={cfxConfig.pages}
-                      onChange={(v) => setConfig({ camoufox: { ...cfxConfig, pages: v ?? 1 } })}
-                      style={{ width: '100%' }}
-                    />
-                  </div>
                 </div>
-                <div className="setting-actions" style={{ marginTop: 12 }}>
-                  <Space wrap>
-                    <Text>优先隐身通道</Text>
-                    <Switch
-                      checked={cfxConfig.prefer}
-                      onChange={(v) => setConfig({ camoufox: { ...cfxConfig, prefer: v } })}
-                    />
-                    <Button
-                      size="middle"
-                      icon={<QrcodeOutlined />}
-                      loading={cfxLogining}
-                      disabled={Boolean(cfx?.engine?.loggedIn) || (!cfx?.ready && !cfxConfig.enabled)}
-                      onClick={onCamoufoxLogin}
-                    >
-                      {cfx?.engine?.loggedIn ? '已登录' : '隐身扫码登录'}
-                    </Button>
-                    <Button
-                      size="middle"
-                      danger
-                      icon={<StopOutlined />}
-                      disabled={!cfx?.engine?.loggedIn}
-                      onClick={onCamoufoxLogout}
-                    >
-                      退出登录
-                    </Button>
-                  </Space>
+                <div className="sg-item">
+                  <span className="field-label">搜索结果页数</span>
+                  <InputNumber
+                    min={1}
+                    max={cfxMaxPages}
+                    value={cfxConfig.pages}
+                    onChange={(v) => setConfig({ camoufox: { ...cfxConfig, pages: v ?? 1 } })}
+                    addonAfter="页"
+                    style={{ width: '100%' }}
+                  />
+                  <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
+                    每个「关键词 × 城市」逐页采集，每页约 {CAMOUFOX_PAGE_SIZE} 条，最多 {cfxMaxPages} 页。
+                    默认 1 页（只采首屏）；搜到的岗位偏少时可调到 3~5 页。
+                    页数调大后，24 小时内采过的组合会重新采集，不会被断点跳过。
+                  </Text>
                 </div>
               </div>
-            )}
+              <div className="setting-actions" style={{ marginTop: 12 }}>
+                <Space wrap>
+                  <Text>优先隐身通道</Text>
+                  <Switch
+                    checked={cfxConfig.prefer}
+                    onChange={(v) => setConfig({ camoufox: { ...cfxConfig, prefer: v } })}
+                  />
+                  <Button
+                    size="middle"
+                    icon={<QrcodeOutlined />}
+                    loading={cfxLogining}
+                    disabled={Boolean(cfx?.engine?.loggedIn) || (!cfx?.ready && !cfxConfig.enabled)}
+                    onClick={onCamoufoxLogin}
+                  >
+                    {cfx?.engine?.loggedIn ? '已登录' : '隐身扫码登录'}
+                  </Button>
+                  <Button
+                    size="middle"
+                    danger
+                    icon={<StopOutlined />}
+                    disabled={!cfx?.engine?.loggedIn}
+                    onClick={onCamoufoxLogout}
+                  >
+                    退出登录
+                  </Button>
+                </Space>
+              </div>
+            </div>
           </div>
 
           <div className="settings-section-card">

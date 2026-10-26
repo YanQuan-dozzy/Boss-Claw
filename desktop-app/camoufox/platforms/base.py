@@ -23,12 +23,12 @@ BossClaw 隐身引擎 —— 多平台采集/投递统一骨架
 4. 平台侧每日上限提示（智联）→ 立即停止交人工。
 5. 外部网申岗位 → 跳过（不投递第三方）。
 
-断点续采（对齐 BossHunter 的词级 / 页级断点）
+断点续采（对齐 BossHunter 的词级断点口径）
 --------------------------------------------
-- `completed_combo` → 整词跳过（TTL 内已采完）；
-- `resume_page` → 从上次**完整成功**的页的下一页继续；
-- 只有「本页全部处理完 + 无保存缺口」才 `mark_page` 推进断点；
-- 列表未就绪 / 详情页临时失败 → `completed_with_shortage` 并保留上一完整页断点。
+- `completed_combo` → 整词跳过（TTL 内已采完**且**采完页数 ≥ 本次要求页数）；
+- 只有「整轮全部页处理完、无采集缺口」才 `mark_combo_done` 推进断点；
+- 列表未就绪 / 详情页临时失败 / 风控 → `clear_combo`（下次重头采，宁重复不遗漏）；
+- **不做页级断点**：采集是整批返回架构，页级推进会在崩溃时静默丢数据（见 progress.py 头注）。
 """
 from __future__ import annotations
 
@@ -189,15 +189,28 @@ class CollectorBase:
         store = progress_store(self.config, self.platform)
         store.prune([query])
 
-        # 词级断点：TTL 内已整轮采完 → 直接跳过（不打开搜索页）
+        # 词级断点：TTL 内已整轮采完 → 直接跳过（不打开搜索页）。
+        # issue #7：断点键不含页数，必须比对「已采页数 vs 本次要求页数」——
+        # 否则用户把页数调大后仍会被整词跳过，看起来像调参没生效。
         if force:
             store.clear_combo(self.platform, city, query)
-        elif store.completed_combo(self.platform, city, query):
-            log('⏭️', f'[{self.platform}] {query} / {city}：{store.ttl_hours}h 内已采完，整词跳过（断点续采）')
-            return {
-                'ok': True, 'code': 0, 'jobs': [], 'skipped': True,
-                'message': f'{store.ttl_hours} 小时内已采集过「{query}·{city}」，本次跳过重复采集',
-            }
+        else:
+            prev = store.combo_entry(self.platform, city, query)
+            if prev and prev.get('done'):
+                try:
+                    prev_pages = int(prev.get('pages') or 0)
+                except (TypeError, ValueError):
+                    prev_pages = 0
+                if prev_pages >= pages:
+                    log('⏭️', f'[{self.platform}] {query} / {city}：{store.ttl_hours}h 内已采完 '
+                             f'{prev_pages} 页（本次要求 {pages} 页），整词跳过（断点续采）')
+                    return {
+                        'ok': True, 'code': 0, 'jobs': [], 'skipped': True,
+                        'message': (f'{store.ttl_hours} 小时内已采集过「{query}·{city}」'
+                                    f'（{prev_pages} 页，覆盖本次要求的 {pages} 页），本次跳过重复采集'),
+                    }
+                log('🔄', f'[{self.platform}] {query} / {city}：上次仅采 {prev_pages} 页，'
+                         f'本次要求 {pages} 页 → 断点不跳过，重新采集')
 
         c = normalize_criteria(criteria)
         applied = summarize_applied(self.platform, build_filter_params(self.platform, criteria))

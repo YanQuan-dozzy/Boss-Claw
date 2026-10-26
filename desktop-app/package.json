@@ -42,7 +42,9 @@
     "test:mock-interview-clone": "node scripts/mock-interview-clone-smoke.mjs",
     "test:mock-interview-stream": "node scripts/tts-stream-regression.mjs && node scripts/tts-pcm-regression.mjs",
     "test:voice": "node scripts/voice-repo-regression.mjs && node scripts/voice-pack-regression.mjs",
-    "test:edge-tts": "node scripts/edge-tts-protocol-regression.mjs && node scripts/edge-tts-service-regression.mjs"
+    "test:edge-tts": "node scripts/edge-tts-protocol-regression.mjs && node scripts/edge-tts-service-regression.mjs",
+    "test:boss-filters": "python -m unittest discover -s camoufox/tests -p \"test_boss_filters.py\"",
+    "test:camo-progress": "python -m unittest discover -s camoufox/tests -p \"test_progress_resume.py\""
   },
   "build": {
     "appId": "com.bossclaw.desktop",
