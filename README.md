@@ -183,7 +183,7 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 - **输入来源**：岗位 JD 可从工作台采集队列一键导入（按已投递 / 待投递排序，标注 JD 完整 / 仅摘要 / 无 JD），导入即把 JD 原文快照进本场会话 —— 工作台清缓存不影响已导入的会话。
 - **限制**：未配置 API Key 时不可用（不接 agent 代答）。
 
-> 设计与实现细节见 `docs/模拟面试方案.md`（v1.6）；在线语音引擎与打包冒烟尚未完成，因此本版按「可试用、不保证稳定」发布。
+> 该功能的完整设计文档与实现细节不随仓库分发；在线语音引擎与打包冒烟尚未完成，因此本版按「可试用、不保证稳定」发布。
 
 ### 11. AI 技能
 
@@ -335,7 +335,6 @@ Boss-claw/
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 9 项）· React 渲染进程（store / components / pages / lib）
 │   └── resources/  package.json   应用图标与随包文档 · 依赖、scripts 与 electron-builder 打包目标
 ├── mcp/bossclaw-mcp/          可选：零依赖 stdio MCP 服务器（9 工具 / 3 组）
-├── docs/                      **本地内部文档，未随仓库分发**（`.gitignore` 忽略），索引见 docs/README.md
 ├── install-deps.cmd           一键安装依赖（Node + Electron，可选 Python 隐身引擎）
 ├── start-bossclaw.cmd         一键启动脚本（默认开启控制桥，`--dev` / `--visible` 可选）
 ├── ATTRIBUTION.md / NOTICE    署名与 Apache-2.0 通知

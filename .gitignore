@@ -55,7 +55,7 @@ venv/
 .jobclaw/
 **/.jobclaw/
 
-# Local user data and private artifacts
+# Local user data and stray artifacts
 # 误传清理：CI 工作流与顶层 skills / scripts（软件内置技能在 desktop-app/skills；scripts 为本地沙箱辅助，均不入仓库根）
 .github/
 /skills/
@@ -69,14 +69,6 @@ venv/
 
 # MCP 本地持久化残留（bossclaw_workspace 已删除，仅保留忽略规则防历史文件入库）
 mcp/bossclaw-mcp/.workspace-root
-
-# Internal dev docs (kept local, not committed)
-/docs/
-# 细分忽略（保留仅为记录；/docs/ 已整体忽略）
-/docs/仓库清理执行报告.md
-/docs/沟通功能对齐检查报告.md
-/docs/桌面版改造需求文档.md
-/docs/src/
 
 # Editors
 .vscode/
