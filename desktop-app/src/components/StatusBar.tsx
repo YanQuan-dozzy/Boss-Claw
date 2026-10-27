@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { useDataStore } from '../store/useDataStore';
 import { usePersistFailures } from '../lib/hooks';
-import { measureStorageUsage } from '../lib/storage';
+import { measureStorageUsage, formatStorageSize, LOCAL_STORAGE_QUOTA_UNITS } from '../lib/storage';
 import { PLATFORM_IDS, PLATFORM_META } from '../lib/bossclaw/platforms';
 
 /** 本地存储占用预警阈值：写满（100%）后所有写入都会被静默丢弃，80% 起提前提示 */
@@ -88,7 +88,7 @@ export default memo(function StatusBar() {
             <button
               type="button"
               className="status-warn is-warning"
-              title={`本地存储已用 ${storagePercent}%（配额约 5 MB）。写满后所有数据都无法落盘，重启会回退到旧数据。请点开清理岗位队列。`}
+              title={`本地存储已用 ${storagePercent}%（同源上限 ${formatStorageSize(LOCAL_STORAGE_QUOTA_UNITS)}）。写满后所有数据都无法落盘，重启会回退到旧数据。请点开清理岗位队列。`}
               onClick={() => openSettings('data')}
             >
               本地存储 {storagePercent}%

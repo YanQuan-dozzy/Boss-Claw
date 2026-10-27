@@ -4,7 +4,8 @@
 // 这些 set() 会让 zustand persist 对「整个 bossclaw-data」做一次同步 JSON.stringify +
 // localStorage.setItem（含 base64 图片简历 imageResumes、resumeText 16 万字符、双 500 条日志、
 // pending 大数组，单次可达数百 KB~数 MB）。高频触发时渲染进程主线程被大对象序列化反复阻塞，
-// 表现为界面点击无反应、甚至被系统判定无响应；localStorage 写满（5MB 配额）后 setItem 抛
+// 表现为界面点击无反应、甚至被系统判定无响应；localStorage 写满（实测单源上限
+// 52,428,800 个 UTF-16 码元，见 storage.ts 的口径注释）后 setItem 抛
 // QuotaExceededError 还会沿调用链冒泡，拖垮正在运行的引擎/UI。
 //
 // 对策：

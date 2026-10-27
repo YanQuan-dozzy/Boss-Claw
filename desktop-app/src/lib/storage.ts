@@ -103,23 +103,30 @@ export function clearAllData(): void {
 }
 
 // ===== 本地存储用量（issue #10）=====
-// localStorage 配额按 UTF-16 码元计 2 字节，Chromium 的 5MB 即 5_242_880 字节。
+// 配额口径（2026-10-27 在本机实测，Electron 42.11.10 + file:// 源，方法见 docs/issue-10-修复记录.md §7）：
+//   · 计费单位 = 键名 + 值的 UTF-16 码元总数（不是磁盘字节数）；
+//   · 单源上限 **52,428,800 码元**（= 50 Mi 码元，即常说的「50MB 额度」）：单键最多 52,428,799 字符
+//     （键名占 1），多键加总同样卡在这个数 → 「所有键共用一份额度」；
+//   · 中文与英文占用相同（均按 1 码元/字计），emoji（代理对）按 2 码元计；
+//   · `--unlimited-storage` 开关**无效**（实测数字一模一样）→ 无法靠命令行调大；
+//   · 历史代码/文档里的「5MB」是旧口径，实际是它的 10 倍。
+// 展示口径：1 码元按 1 字节折算成 MB（52,428,800 码元 = 50.00 MB），与内核那边的「50MB」表述对齐。
 // 配额写满后所有键的写入都会失败（persistSafe 会静默丢弃并登记健康状态），
 // 因此这里给出「哪个键吃掉了多少」的可视化，让用户在写失败前就能看到并清理。
-export const LOCAL_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024;
+export const LOCAL_STORAGE_QUOTA_UNITS = 52_428_800;
 
 export interface StorageUsageRow {
   key: string;
-  /** 估算占用字节数（字符串 UTF-16 长度 × 2） */
-  bytes: number;
+  /** 占用码元数（含键名，对齐 Chromium 的计费口径） */
+  units: number;
   /** 是否纳入「导出 JSON 备份」 */
   exportable: boolean;
 }
 
 export interface StorageUsage {
   rows: StorageUsageRow[];
-  totalBytes: number;
-  quotaBytes: number;
+  totalUnits: number;
+  quotaUnits: number;
   /** 占用率 0~1 */
   ratio: number;
 }
@@ -127,30 +134,33 @@ export interface StorageUsage {
 /** 估算各存储键的占用（按登记表枚举，缺失键也列出 0 值，便于用户理解结构） */
 export function measureStorageUsage(): StorageUsage {
   const rows: StorageUsageRow[] = [];
-  let totalBytes = 0;
+  let totalUnits = 0;
   for (const spec of STORAGE_KEYS) {
-    let bytes = 0;
+    let units = 0;
     try {
       const raw = localStorage.getItem(spec.key);
-      if (raw != null) bytes = raw.length * 2;
+      if (raw != null) units = spec.key.length + raw.length;
     } catch {
-      bytes = 0;
+      units = 0;
     }
-    totalBytes += bytes;
-    rows.push({ key: spec.key, bytes, exportable: spec.export });
+    totalUnits += units;
+    rows.push({ key: spec.key, units, exportable: spec.export });
   }
-  rows.sort((a, b) => b.bytes - a.bytes);
+  rows.sort((a, b) => b.units - a.units);
   return {
     rows,
-    totalBytes,
-    quotaBytes: LOCAL_STORAGE_QUOTA_BYTES,
-    ratio: Math.min(1, totalBytes / LOCAL_STORAGE_QUOTA_BYTES),
+    totalUnits,
+    quotaUnits: LOCAL_STORAGE_QUOTA_UNITS,
+    ratio: Math.min(1, totalUnits / LOCAL_STORAGE_QUOTA_UNITS),
   };
 }
 
-/** 人类可读的容量文案（KB / MB） */
-export function formatStorageBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} B`;
+/** 人类可读的占用文案（MB 记法：1 码元按 1 字节折算，与 Chromium「50MB 额度」的表述同口径） */
+const UNITS_PER_KB = 1024;
+const UNITS_PER_MB = 1024 * 1024;
+
+export function formatStorageSize(units: number): string {
+  if (units >= UNITS_PER_MB) return `${(units / UNITS_PER_MB).toFixed(2)} MB`;
+  if (units >= UNITS_PER_KB) return `${Math.round(units / UNITS_PER_KB)} KB`;
+  return `${units} B`;
 }

@@ -16,8 +16,10 @@ import type {
 import { DEFAULT_STATS, DEFAULT_PROFILE, DEFAULT_PROFILE_DRAFT, DEFAULT_DIRECTION_PLAN, today } from '@/lib/bossclaw/defaults';
 import { cleanCompanyName } from '@/lib/bossclaw/jobDisplay';
 
-/** 达标岗位本地缓存上限：最多保留最近 N 天（按日期分组）的达标岗位数据，超出自动清理更早几天的数据，防止 localStorage 撑爆。
- *  实测按每天约 460 个达标岗位、叠加图片简历+导入文件后，保留 7 天（≈3200 条）仍能把整 store 稳定在 5MB 配额约 60% 以内；90 天会随累计溢出。 */
+/** 达标岗位本地缓存上限：最多保留最近 N 天（按日期分组）的达标岗位数据，超出自动清理更早几天的数据，
+ *  防止 localStorage 体积无限膨胀（写盘体积直接决定每次 persist 的主线程序列化开销）。
+ *  口径修正（2026-10-27）：localStorage 的真实上限是 52,428,800 码元（≈50 Mi，见 lib/storage.ts 实测），
+ *  不是历史文档里的 5 MB；按每天约 460 条估算，7 天（≈3200 条）只占约 0.6%，7 天并非配额压力点。 */
 const MAX_QUALIFIED_CACHE_DAYS = 7;
 
 /** 裁剪达标岗位缓存：日期键多于上限时，删除最早（更久之前）的日期分组 */
@@ -128,7 +130,7 @@ export const useDataStore = create<DataState>()(
       setResumeText: (text, fileName) =>
         set((s) => {
           // 本地存储容量保护（借鉴 AI-BossJob 的自动截断降级方案）：
-          // 简历原文过长时截断保存，避免撑爆 localStorage（约 5MB 配额）
+          // 简历原文过长时截断保存，避免单次写盘体积过大（配额口径见 lib/storage.ts 实测值）
           const MAX_RESUME_CHARS = 160_000;
           const raw = String(text || '');
           const stored = raw.length > MAX_RESUME_CHARS ? raw.slice(0, MAX_RESUME_CHARS) : raw;

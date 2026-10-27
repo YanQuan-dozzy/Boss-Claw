@@ -1,17 +1,19 @@
 // 「本地存储用量」卡片（issue #10）
 // ---------------------------------------------------------
-// 背景：所有业务数据都存在 localStorage（Chromium 同源配额 5MB）。配额写满后
-// persistSafe 会静默丢弃写入（为了不把异常冒泡进引擎），界面上却毫无痕迹——
-// 用户看到队列一直在推进，重启后整段进度回退到配额耗尽那一刻，连「基础求职条件」
-// 也跟着倒退（bossclaw-settings-v2 同样写不进）。
+// 背景：所有业务数据都存在 localStorage。配额写满后 persistSafe 会静默丢弃写入
+// （为了不把异常冒泡进引擎），界面上却毫无痕迹——用户看到队列一直在推进，重启后
+// 整段进度回退到配额耗尽那一刻，连「基础求职条件」也跟着倒退（bossclaw-settings-v2
+// 同样写不进）。
 // 这张卡片把「谁吃掉了配额」摊开给用户看，让清理有据可依；写失败时置顶红色提示，
 // 并给出可执行的处置路径（导出备份 → 清理队列 → 恢复）。
+// 口径（实测，见 lib/storage.ts 注释）：Chromium 按「键名 + 值的 UTF-16 码元」计费，
+// 单源上限 52,428,800 码元 = 50 MB（1 码元按 1 字节折算展示，与内核的「50MB 额度」表述一致）。
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Progress, Tag, Typography } from 'antd';
 import { DatabaseOutlined, SyncOutlined } from '@ant-design/icons';
 import {
   measureStorageUsage,
-  formatStorageBytes,
+  formatStorageSize,
   type StorageUsage,
 } from '@/lib/storage';
 import { usePersistFailures } from '@/lib/hooks';
@@ -48,7 +50,7 @@ export default function StorageUsageCard() {
   const failing = failures.length > 0;
   const nearLimit = !failing && usage.ratio >= 0.8;
   const percent = Math.round(usage.ratio * 1000) / 10;
-  const rows = usage.rows.filter((r) => r.bytes > 0);
+  const rows = usage.rows.filter((r) => r.units > 0);
 
   return (
     <div className="settings-section-card">
@@ -81,7 +83,7 @@ export default function StorageUsageCard() {
         percent={percent}
         status={failing ? 'exception' : nearLimit ? 'normal' : 'success'}
         strokeColor={nearLimit ? 'var(--status-warning)' : undefined}
-        format={() => `${formatStorageBytes(usage.totalBytes)} / ${formatStorageBytes(usage.quotaBytes)}`}
+        format={() => `${formatStorageSize(usage.totalUnits)} / ${formatStorageSize(usage.quotaUnits)}`}
         style={{ marginTop: 6, marginBottom: 10 }}
       />
 
@@ -95,7 +97,7 @@ export default function StorageUsageCard() {
                 {KEY_LABELS[r.key] || r.key}
               </span>
               <span className="storage-usage-row__key">{r.key}</span>
-              <span className="storage-usage-row__size">{formatStorageBytes(r.bytes)}</span>
+              <span className="storage-usage-row__size">{formatStorageSize(r.units)}</span>
             </div>
           ))
         )}
@@ -108,7 +110,8 @@ export default function StorageUsageCard() {
       </div>
 
       <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-        配额按浏览器同源计算，约 <strong>5 MB</strong>；写满后所有键（含「基础求职条件」）都会写不进去。
+        上限 <strong>50 MB</strong>（Chromium 对同源所有键合计计算，按字符计费：52,428,800 个字符），
+        写满后所有键（含「基础求职条件」）都会写不进去。
         占用主要由<strong>岗位队列的完整 JD 与分析结果</strong>和<strong>达标岗位缓存</strong>构成——
         定期清理已处理岗位、缩短达标岗位保留天数即可长期保持充足余量。
       </Paragraph>

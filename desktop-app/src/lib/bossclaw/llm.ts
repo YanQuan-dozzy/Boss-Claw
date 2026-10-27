@@ -782,7 +782,9 @@ interface AICacheEntry {
 const AI_CACHE_KEY = 'bossclaw-ai-cache-v1';
 const AI_CACHE_STATS_KEY = 'bossclaw-ai-cache-stats';
 const AI_CACHE_MAX_ENTRIES = 300;
-const AI_CACHE_MAX_BYTES = 2_500_000; // localStorage 建议上限 5MB，缓存控制在 2.5MB 内
+// 单键体积自设上限：与 localStorage 配额无关（实测配额 52,428,800 码元，见 lib/storage.ts），
+// 只为压低每次缓存刷新时对整键 JSON.stringify 的主线程开销
+const AI_CACHE_MAX_BYTES = 2_500_000;
 
 const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {  // 画像 / 打招呼语：key 已含简历与画像全文哈希，内容不变结果必然有效，仅设长 TTL 防陈旧
   profile: 90 * 24 * 3600 * 1000,
