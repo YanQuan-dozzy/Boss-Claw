@@ -2745,7 +2745,76 @@ safeHandle('jc:bridge-token', () => resolveBridgeToken());
 // 说明：不启用 app.requestSingleInstanceLock()——该 API 在部分受限/沙箱环境下
 // 无其他实例时也会返回 false 导致主进程直接退出（实测 WorkBuddy 沙箱复现）。
 // 进程去重由启动脚本 start-bossclaw.cmd 在启动前统一清理旧进程完成。
+
+// ===== 单实例守卫（issue #10）=====
+// 启动脚本的去重只在「经由脚本启动」时生效；安装版被双击两次（或从快捷方式+安装目录各开一个）时
+// 会有两个实例读同一份 localStorage，各自持有内存副本——任何一方写入都会把对方的进度覆盖回
+// **自己的启动快照**，表现就是「重启后队列/基础条件退回前一天」。
+// 这里用「userData 下的心跳锁文件」兜底，而不用 requestSingleInstanceLock（原因见上）：
+//   写 <userData>/.bossclaw-instance.lock（内容=pid），存活实例每 20s 触碰一次 mtime；
+//   启动时若锁文件存在、mtime 在 120s 内、且记录的 pid 仍存活 → 判定已有实例，提示后退出。
+// 三重条件（存在 + 心跳新鲜 + pid 存活）保证崩溃残留的锁最迟 2 分钟后自动失效，不会永久挡住启动。
+const INSTANCE_LOCK_FILE = path.join(app.getPath('userData'), '.bossclaw-instance.lock');
+const INSTANCE_HEARTBEAT_MS = 20_000;
+const INSTANCE_STALE_MS = 120_000;
+let instanceLockTimer = null;
+/** 锁是否由本进程持有：被第二个实例挡下时**绝不能**删掉对方的锁文件 */
+let instanceLockOwned = false;
+
+/** pid 是否仍存活（EPERM 表示存在但无权限，同样算存活） */
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === 'EPERM';
+  }
+}
+
+function acquireInstanceLock() {
+  try {
+    if (fs.existsSync(INSTANCE_LOCK_FILE)) {
+      const age = Date.now() - fs.statSync(INSTANCE_LOCK_FILE).mtimeMs;
+      let pid = 0;
+      try { pid = parseInt(fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim(), 10); } catch { pid = 0; }
+      if (age < INSTANCE_STALE_MS && isProcessAlive(pid)) return { ok: false, pid, age };
+      dlog('warn', 'stale instance lock taken over', { pid, ageMs: age });
+    }
+  } catch (e) { dlog('warn', 'inspect instance lock failed', { message: e?.message }); }
+  try {
+    fs.writeFileSync(INSTANCE_LOCK_FILE, String(process.pid));
+    instanceLockOwned = true;
+  } catch (e) { dlog('warn', 'write instance lock failed', { message: e?.message }); }
+  instanceLockTimer = setInterval(() => {
+    try { const now = new Date(); fs.utimesSync(INSTANCE_LOCK_FILE, now, now); } catch {}
+  }, INSTANCE_HEARTBEAT_MS);
+  if (instanceLockTimer.unref) instanceLockTimer.unref();
+  return { ok: true };
+}
+
+function releaseInstanceLock() {
+  if (instanceLockTimer) { clearInterval(instanceLockTimer); instanceLockTimer = null; }
+  if (!instanceLockOwned) return; // 锁不属于本进程（被挡下的第二个实例）→ 不动别人的文件
+  instanceLockOwned = false;
+  try { fs.unlinkSync(INSTANCE_LOCK_FILE); } catch {}
+}
+
 app.whenReady().then(async () => {
+  // 单实例守卫：必须在任何窗口/服务创建之前（否则两个实例都会先写一遍数据）
+  const lock = acquireInstanceLock();
+  if (!lock.ok) {
+    dlog('warn', 'second instance blocked', { pid: lock.pid });
+    try {
+      dialog.showErrorBox(
+        'BossClaw 已在运行',
+        `检测到另一个 BossClaw 窗口（进程 ${lock.pid}）正在使用同一份本地数据。\n` +
+          '同时开两个实例会互相覆盖投递队列与进度，请改用已打开的那个窗口。'
+      );
+    } catch {}
+    app.quit();
+    return;
+  }
   // 数据版本重置：v3 重建后首次启动清空旧登录态/缓存（一次性，见 resetDataForVersion）。
   // 必须 await 完成后再创建窗口——否则清理会与用户「首次启动后立即登录」的写入竞态。
   await resetDataForVersion();
@@ -2864,6 +2933,12 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopBackgroundServices();
+});
+
+// 单实例锁清理（issue #10）：放在 will-quit —— before-quit 里业务服务仍在收尾，
+// 此处进程即将退出，删锁不会有第二个实例趁隙插进来（锁的 mtime 仍是新鲜的）。
+app.on('will-quit', () => {
+  releaseInstanceLock();
 });
 
 /** 统一停掉所有后台服务（本地桥 / 隐身引擎 / 隐身浏览器 / 本地控制桥） */

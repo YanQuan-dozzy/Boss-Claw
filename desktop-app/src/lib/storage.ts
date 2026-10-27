@@ -3,7 +3,7 @@
 //   - bossclaw-app       ← useAppStore
 //   - bossclaw-settings-v2 ← useSettingsStore（v2 含字段迁移，新老数据自动合并）
 //   - bossclaw-data      ← useDataStore
-import { discardPendingPersistWrites } from './persistSafe';
+import { discardPendingPersistWrites, persistFailureOf, getLatestPersistSnapshot } from './persistSafe';
 
 // ===== 存储键登记表（P2-03：单一事实来源）=====
 // 曾被三处重复维护（storage.ts BOSS_CLAW_KEYS / localBackup BACKUP_KEYS / clearAllData 硬编码），
@@ -55,7 +55,13 @@ const LEGACY_KEYS = ['bossclaw-settings'] as const;
 
 export function exportData(): string {
   const data: Record<string, string | null> = {};
-  for (const k of EXPORT_KEYS) data[k] = localStorage.getItem(k);
+  for (const k of EXPORT_KEYS) {
+    // issue #10：写失败期间 localStorage 是**旧快照**，此处若照读，导出出来的就是「回退版」，
+    // 用户以为救下的其实是那批已经过期的数据。改用 persist 内存中的最新值。
+    const failed = persistFailureOf(k);
+    const snap = failed ? getLatestPersistSnapshot(k) : null;
+    data[k] = snap != null ? snap : localStorage.getItem(k);
+  }
   for (const k of LEGACY_KEYS) {
     if (localStorage.getItem(k) != null) data[`__legacy__${k}`] = localStorage.getItem(k);
   }
@@ -94,4 +100,57 @@ export function clearAllData(): void {
   for (const k of keysWhere((s) => s.clear)) localStorage.removeItem(k);
   // 旧版本遗留键也一并清理（如有），防止 reset 失败导致旧数据复活
   for (const k of LEGACY_KEYS) localStorage.removeItem(k);
+}
+
+// ===== 本地存储用量（issue #10）=====
+// localStorage 配额按 UTF-16 码元计 2 字节，Chromium 的 5MB 即 5_242_880 字节。
+// 配额写满后所有键的写入都会失败（persistSafe 会静默丢弃并登记健康状态），
+// 因此这里给出「哪个键吃掉了多少」的可视化，让用户在写失败前就能看到并清理。
+export const LOCAL_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024;
+
+export interface StorageUsageRow {
+  key: string;
+  /** 估算占用字节数（字符串 UTF-16 长度 × 2） */
+  bytes: number;
+  /** 是否纳入「导出 JSON 备份」 */
+  exportable: boolean;
+}
+
+export interface StorageUsage {
+  rows: StorageUsageRow[];
+  totalBytes: number;
+  quotaBytes: number;
+  /** 占用率 0~1 */
+  ratio: number;
+}
+
+/** 估算各存储键的占用（按登记表枚举，缺失键也列出 0 值，便于用户理解结构） */
+export function measureStorageUsage(): StorageUsage {
+  const rows: StorageUsageRow[] = [];
+  let totalBytes = 0;
+  for (const spec of STORAGE_KEYS) {
+    let bytes = 0;
+    try {
+      const raw = localStorage.getItem(spec.key);
+      if (raw != null) bytes = raw.length * 2;
+    } catch {
+      bytes = 0;
+    }
+    totalBytes += bytes;
+    rows.push({ key: spec.key, bytes, exportable: spec.export });
+  }
+  rows.sort((a, b) => b.bytes - a.bytes);
+  return {
+    rows,
+    totalBytes,
+    quotaBytes: LOCAL_STORAGE_QUOTA_BYTES,
+    ratio: Math.min(1, totalBytes / LOCAL_STORAGE_QUOTA_BYTES),
+  };
+}
+
+/** 人类可读的容量文案（KB / MB） */
+export function formatStorageBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }

@@ -16,7 +16,13 @@
 //   3) 主进程写盘改异步原子写（tmp+rename），不再用 writeFileSync 阻塞主进程事件循环。
 //   4) 心跳触发重收集前让出主线程（requestIdleCallback / setTimeout 兜底），不与用户交互撞车。
 import { electronApi } from './electronApi';
-import { persistDirtyEpoch, discardPendingPersistWrites } from './persistSafe';
+import {
+  persistDirtyEpoch,
+  discardPendingPersistWrites,
+  persistFailureOf,
+  getLatestPersistSnapshot,
+  onPersistFailure,
+} from './persistSafe';
 import { BACKUP_KEYS } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
 
 export const BACKUP_INTERVAL_MS = 300_000; // 5 分钟
@@ -50,6 +56,16 @@ export async function getBackupDir(): Promise<string> {
 export function gatherBundle(): BackupBundle {
   const keys: Record<string, string | null> = {};
   for (const k of BACKUP_KEYS) {
+    // issue #10：主存储写失败（配额写满 / 存储被禁用）期间，localStorage 里是**旧快照**，
+    // 备份若照抄就等于把同一份过期数据存两遍——重启后回签也救不回来。此时改用 persist
+    // 内存中「最后一次交出的完整值」，让备份文件成为真正的第二事实来源。
+    if (persistFailureOf(k)) {
+      const snap = getLatestPersistSnapshot(k);
+      if (snap != null) {
+        keys[k] = snap;
+        continue;
+      }
+    }
     try {
       keys[k] = typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null;
     } catch {
@@ -138,6 +154,10 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
     // 全 null 备份、或各键与现状一致的备份都不算恢复成功——否则会谎报 restored，
     // 触发调用方整页 reload，落入「恢复→刷新→再恢复」的无限循环（首页假死）。
     let restoredCount = 0;
+    // issue #10：恢复同样是写 localStorage —— 若配额仍然写满（正是写失败导致丢数据的根因），
+    // 原实现的 `catch { /* 忽略 */ }` 会让「恢复成功」的提示与「其实一条都没写回来」同时出现。
+    // 这里统计失败键并在返回里如实告知，避免用户误以为已恢复。
+    const failedKeys: string[] = [];
     // M-34：只接受**白名单键**且值为字符串 —— 原实现遍历备份中所有键无脑写回 localStorage，
     // 一份被篡改/损坏的备份文件可写入任意键（如注入伪造的配置/数据键）。
     const allowed = new Set<string>(BACKUP_KEYS);
@@ -153,7 +173,7 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
           restoredCount += 1;
         }
       } catch {
-        /* 单个键恢复失败忽略 */
+        failedKeys.push(k); // 单个键恢复失败：记录后继续处理其余键
       }
     }
     // 更新脏检查基准（以 keys 内容为准），避免恢复后立即误判重复写入
@@ -161,6 +181,12 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
     // 恢复是绕过 persist 的直写：作废旧基线，令下次备份重建（避免快路径误判「无变化」跳过）
     baselineEpochs = null;
     skipChecks = 0;
+    if (failedKeys.length > 0) {
+      return {
+        restored: restoredCount > 0,
+        error: `${failedKeys.length} 个键写回失败（本地存储可能已满，请先清理队列记录或导出后清空数据）：${failedKeys.join('、')}`,
+      };
+    }
     if (restoredCount > 0) return { restored: true };
     return { restored: false, error: '备份中无有效数据（各键为空或与现有数据一致）' };
   } catch (e) {
@@ -194,6 +220,10 @@ export async function clearLocalBackup(): Promise<boolean> {
  * 启动 5 分钟备份心跳（幂等）。启动后先执行一次初次写入（建立基线），之后每
  * BACKUP_INTERVAL_MS 触发一次。
  *
+ * issue #10：同时订阅 persist 写失败事件 —— 主存储写不进的那一刻立刻把**内存态**落一份备份
+ * （force 模式），把「已确认投递但没落盘」的暴露窗口从「下一次心跳（最多 5 分钟）」压缩到
+ * 「写失败当刻」。限频 60s：配额耗尽后每次 set 都会失败，不设限频会打满 IPC 与磁盘。
+ *
  * 卡顿修复：重收集会同步 getItem + 序列化（可能占用主线程数十~数百 ms），故心跳先让出主线程
  * —— 优先等浏览器空闲（requestIdleCallback），兜底 setTimeout，避免「每到整 5 分钟」与用户
  * 输入/滚动撞车造成的掉帧；配合 writeLocalBackup 内部的快路径，无变化周期实际零开销。
@@ -215,8 +245,19 @@ export function startLocalBackup(): () => void {
       void writeLocalBackup();
     });
   }, BACKUP_INTERVAL_MS);
+  // 写失败即落盘（限频 60s）。推迟到下一轮宏任务，避免在 persist 的写盘调用栈里递归写文件。
+  let lastEmergencyAt = 0;
+  const offFailure = onPersistFailure(() => {
+    const now = Date.now();
+    if (now - lastEmergencyAt < 60_000) return;
+    lastEmergencyAt = now;
+    window.setTimeout(() => {
+      void writeLocalBackup(true);
+    }, 0);
+  });
   return () => {
     started = false;
     window.clearInterval(timer);
+    offFailure();
   };
 }

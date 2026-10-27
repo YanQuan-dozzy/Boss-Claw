@@ -1,6 +1,12 @@
 // 渲染端通用 hooks 集合。
 // 仅做无副作用、可在任意组件复用的工具函数；不包含与 BOSS/业务强耦合的逻辑。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  getPersistHealthVersion,
+  listPersistFailures,
+  subscribePersistHealth,
+  type PersistFailureInfo,
+} from './persistSafe';
 
 /**
  * 浅比较两个值是否相等。
@@ -128,6 +134,22 @@ export function useMediaQuery(query: string): boolean {
  * 单一空对象：用于 useEffect 依赖是对象/函数时的稳定占位。
  */
 export const EMPTY: Readonly<Record<string, never>> = Object.freeze({});
+
+/** 无持久化写失败时的稳定空数组（避免订阅方每轮渲染拿到新引用） */
+const NO_FAILURES: PersistFailureInfo[] = [];
+
+/**
+ * 订阅「本地存储写入失败」状态（issue #10）。
+ * 返回当前仍处于失败态的键；成功写入后自动清除（界面告警随之消失）。
+ * 用 useSyncExternalStore 而非 zustand：失败状态来自 persist 存储层，不属于任何业务 store。
+ */
+export function usePersistFailures(): PersistFailureInfo[] {
+  const version = useSyncExternalStore(subscribePersistHealth, getPersistHealthVersion, getPersistHealthVersion);
+  return useMemo(() => {
+    const list = listPersistFailures();
+    return list.length > 0 ? list : NO_FAILURES;
+  }, [version]);
+}
 
 /**
  * 同步执行但防抖的「调用一次」函数：连点按钮只触发最后一次。

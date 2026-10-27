@@ -1984,6 +1984,40 @@ html[data-theme='dark'] .direction-tag {
   box-shadow: var(--shadow-sm);
 }
 
+/* 本地存储用量明细（issue #10）：键名 + 内部键 + 占用，等宽对齐便于对比 */
+.storage-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.storage-usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 4px;
+  font-size: 13px;
+}
+.storage-usage-row + .storage-usage-row { border-top: 1px dashed var(--border); }
+.storage-usage-row__name { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-usage-row__key {
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+.storage-usage-row__size {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .settings-section-header {
   display: flex;
   align-items: center;
@@ -3128,6 +3162,42 @@ html[data-theme='dark'] .job-fit-tag {
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-subtle); }
 .status-dot.is-on { background: var(--status-success); }
 .status-dot.is-off { background: var(--status-danger); }
+/* issue #10：本地存储写入失败的常驻告警。此前写失败只在 console 里限频打一行 warn，
+   用户界面上毫无痕迹（引擎照跑、队列照推进，落盘却停在配额耗尽那一刻），重启后整段进度消失。
+   这条告警点进「设置 → 数据与备份」看各键占用并清理。 */
+.status-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--status-danger-rgb), 0.55);
+  background: rgba(var(--status-danger-rgb), 0.12);
+  color: var(--status-danger-strong);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.status-warn:hover { background: rgba(var(--status-danger-rgb), 0.2); }
+.status-warn:focus-visible { outline: 2px solid rgba(var(--status-danger-rgb), 0.5); outline-offset: 1px; }
+/* 预警态（占用 ≥80% 但尚能写入）：同一位置换成琥珀色，让用户在写满前就动手清理 */
+.status-warn.is-warning {
+  border-color: rgba(var(--status-warning-rgb), 0.55);
+  background: rgba(var(--status-warning-rgb), 0.14);
+  color: var(--status-warning-strong);
+}
+.status-warn.is-warning:hover { background: rgba(var(--status-warning-rgb), 0.24); }
+.status-warn.is-warning:focus-visible { outline-color: rgba(var(--status-warning-rgb), 0.5); }
+.status-warn i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--status-danger);
+  animation: status-warn-blink 1.6s ease-in-out infinite;
+}
+@keyframes status-warn-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .status-warn i { animation: none; }
+}
 
 /* Ant Design Override for Theme Sync */
 /* 审查 #107：此处原为 `.ant-btn { transition: transform 0.2s ease !important }` +

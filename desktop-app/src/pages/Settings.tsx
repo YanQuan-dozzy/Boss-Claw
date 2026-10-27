@@ -84,6 +84,7 @@ import { clearMockInterviewAll, exportMockSessions } from '@/lib/bossclaw/mockIn
 import { formatSpeechBytes } from '@/lib/bossclaw/mockInterviewVoice';
 import { useDataStore } from '@/store/useDataStore';
 import SpeechSettingsCard from '@/components/SpeechSettingsCard';
+import StorageUsageCard from '@/components/StorageUsageCard';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { electronApi } from '@/lib/electronApi';
 import {
@@ -2374,6 +2375,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               每个自然日一个文件（bossclaw-qualified-jobs-YYYY-MM-DD.json）；同一天重复点击只追新增并去重，当日数据累积完整，不跨天重算、不删除。
             </Paragraph>
           </div>
+
+          <StorageUsageCard />
 
           <div className="settings-section-card">
             <div className="settings-section-header">
