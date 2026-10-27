@@ -31,9 +31,15 @@ export default memo(function StatusBar() {
   const storagePercent = Math.round(usageRatio * 100);
   const warnTip = useMemo(() => {
     if (persistFailures.length === 0) return '';
-    const keys = persistFailures.map((f) => f.name).join('、');
+    const labels: Record<string, string> = {
+      'bossclaw-data': '简历/画像/设置',
+      'bossclaw-settings-v2': '基础求职条件',
+      'bossclaw-app': '界面偏好',
+      'bossclaw-queue-store': '岗位队列（文件）',
+    };
+    const keys = persistFailures.map((f) => labels[f.name] || f.name).join('、');
     const first = persistFailures[0];
-    return `本地存储写入失败（${keys}）：${first.message}\n最新进度已转存到本地备份文件，但重启后仍可能回退。请点开清理队列记录或导出备份。`;
+    return `本地数据写入失败（${keys}）：${first.message}\n最新进度已转存到本地备份文件，但重启后仍可能回退。请先导出备份，再检查磁盘空间/权限（岗位队列已不在该额度内）。`;
   }, [persistFailures]);
 
   // 全平台登录汇总：已登录数 / 平台总数 + 已登录平台简称。
@@ -88,7 +94,7 @@ export default memo(function StatusBar() {
             <button
               type="button"
               className="status-warn is-warning"
-              title={`本地存储已用 ${storagePercent}%（同源上限 ${formatStorageSize(LOCAL_STORAGE_QUOTA_UNITS)}）。写满后所有数据都无法落盘，重启会回退到旧数据。请点开清理岗位队列。`}
+              title={`本地存储已用 ${storagePercent}%（同源上限 ${formatStorageSize(LOCAL_STORAGE_QUOTA_UNITS)}）。写满后所有数据都无法落盘，重启会回退到旧数据。请点开导出备份；岗位队列已迁出该额度。`}
               onClick={() => openSettings('data')}
             >
               本地存储 {storagePercent}%

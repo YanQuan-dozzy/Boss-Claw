@@ -202,6 +202,19 @@ function clearFailure(name: string): void {
   bumpHealth();
 }
 
+/**
+ * 上报一次「外部存储」失败（issue #10：队列已迁到主进程文件，失败不再经过 localStorage 包装）。
+ * 复用同一份失败状态机，是为了让状态栏红标 / 一键备份 / 去重提示的行为保持一致。
+ */
+export function reportExternalFailure(name: string, err: unknown): void {
+  recordFailure(name, err);
+}
+
+/** 外部存储恢复成功后清除失败标记（与 reportExternalFailure 配对） */
+export function clearExternalFailure(name: string): void {
+  clearFailure(name);
+}
+
 /** 真实写盘（尽力而为，绝不抛出）。写失败时按「键的类型」处置：运行时日志键直接丢弃（重启即重新累积），业务键丢弃该次持久化。 */
 function writeWithFallback(store: Storage, name: string, value: StorageValue<unknown>): boolean {
   const payload = () => {

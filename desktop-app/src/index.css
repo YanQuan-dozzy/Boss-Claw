@@ -7047,3 +7047,26 @@ html[data-theme='dark'] .skill-chip-gap:hover {
 .mi-clone-item__main { min-width: 0; }
 .mi-clone-item__name { font-size: 13px; font-weight: 600; }
 .mi-clone-item__meta { font-size: 11px; color: var(--fg-subtle); margin-top: 1px; }
+/* 启动骨架屏（main.tsx 在队列文件水合期间先渲染，避免首帧闪出 0 条再跳变） */
+.boot-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 100%;
+  color: var(--fg-subtle);
+  font-size: 13px;
+}
+.boot-splash__spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: boot-splash-spin 0.8s linear infinite;
+}
+.boot-splash__text { letter-spacing: 0.02em; }
+@keyframes boot-splash-spin {
+  to { transform: rotate(360deg); }
+}

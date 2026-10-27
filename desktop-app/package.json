@@ -24,6 +24,7 @@
     "package:all": "npm run build && electron-builder --win --linux",
     "start": "electron .",
     "verify": "npm run typecheck && npm run build",
+    "test:queue-store": "node scripts/queue-store-regression.mjs",
     "test:theme-vars": "node scripts/theme-vars-regression.mjs",
     "test:context-budget": "node scripts/context-budget-regression.mjs",
     "test:mock-interview": "node scripts/mock-interview-score-regression.mjs",

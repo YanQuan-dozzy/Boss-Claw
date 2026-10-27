@@ -40,6 +40,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:mock-interview-voice-pack-preview', 'jc:mock-interview-voice-remove',
   'jc:mock-interview-voice-rename', 'jc:mock-interview-voice-usage',
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
+  'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-usage',
   'jc:save-file', 'jc:save-pdf', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
   'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
   'jc:webview-diag', 'jc:webview-input', 'jc:webview-input-done', 'jc:webview-open-link', 'jc:webview-source',
@@ -67,6 +68,12 @@ const api = {
 
   // 应用信息（名称、版本号）— 标题栏使用
   getAppInfo: () => ipcRenderer.invoke('jc:app-info'),
+
+  // 岗位队列存储模式（issue #10 / docs/存储迁移方案.md §5 回滚开关）：
+  // 默认 'file'（<userData>/queue/queue-store.json）；设 BOSSCLAW_QUEUE_STORE=localstorage
+  // 启动时退回旧路径（队列仍写在 bossclaw-data 里），用于发布后观察期出问题时的现场回滚。
+  // 渲染层在模块初始化时同步读取，因此不能走 IPC（异步拿不到首帧前的值）。
+  queueStoreMode: process.env.BOSSCLAW_QUEUE_STORE === 'localstorage' ? 'localstorage' : 'file',
 
   // 窗口控制（frame:false 自绘标题栏按钮）
   winMinimize: () => ipcRenderer.send('jc:window-minimize'),
@@ -194,6 +201,14 @@ const api = {
   backupWrite: (bundle) => ipcRenderer.invoke('jc:backup-write', bundle),
   backupRead: () => ipcRenderer.invoke('jc:backup-read'),
   backupDelete: () => ipcRenderer.invoke('jc:backup-delete'),
+
+  // ===== 岗位队列文件仓储（issue #10）=====
+  // load/save 走主进程 <userData>/queue/；save 交「已序列化字符串 + 单调 seq」，
+  // 主进程负责校验、轮转 .bak 与原子写。
+  queueLoad: () => ipcRenderer.invoke('jc:queue-load'),
+  queueSave: (text, seq, opts) => ipcRenderer.invoke('jc:queue-save', text, seq, opts),
+  queueClear: () => ipcRenderer.invoke('jc:queue-clear'),
+  queueUsage: () => ipcRenderer.invoke('jc:queue-usage'),
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),

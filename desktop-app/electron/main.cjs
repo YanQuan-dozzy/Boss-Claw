@@ -18,6 +18,8 @@ const stealth = require('./preload/stealth.cjs');
 const mockInterviewRepo = require('./mockInterviewRepo.cjs');
 // 模拟面试题库（内置库随包、用户库写 userData；索引缓存也是派生文件）
 const mockInterviewBankRepo = require('./mockInterviewBankRepo.cjs');
+// 岗位队列文件仓储（issue #10：把 pending / qualifiedExports 从 localStorage 迁到 <userData>/queue/）
+const queueStore = require('./queueStore.cjs');
 // 语音运行时（utilityProcess 宿主 + 模型安装）；仅在模拟面试朗读时懒加载，不影响启动
 const speechInstall = require('./speechInstall.cjs');
 const speechService = require('./speechService.cjs');
@@ -460,7 +462,13 @@ async function resetDataForVersion() {
       const cloakProfile = path.join(app.getPath('userData'), 'cloakbrowser-profile');
       if (fs.existsSync(cloakProfile)) fs.rmSync(cloakProfile, { recursive: true, force: true });
     } catch (e) { dlog('warn', 'clear cloakbrowser profile failed', { message: e?.message }); }
-    // 4) 写版本标记，避免重复清理
+    // 4) 清空岗位队列文件（issue #10：队列已迁出 localStorage，版本重建须连带删除，
+    //    否则「恢复出厂」后队列会从文件里复活）
+    try {
+      const queueDir = path.join(app.getPath('userData'), 'queue');
+      if (fs.existsSync(queueDir)) fs.rmSync(queueDir, { recursive: true, force: true });
+    } catch (e) { dlog('warn', 'clear queue store failed', { message: e?.message }); }
+    // 5) 写版本标记，避免重复清理
     try { fs.writeFileSync(marker, DATA_VERSION); } catch (e) { dlog('warn', 'write data-version marker failed', { message: e?.message }); }
   } catch (e) { dlog('warn', 'reset data for version failed', { message: e?.message }); }
 }
@@ -1919,6 +1927,41 @@ safeHandle('jc:backup-delete', async () => {
     const filep = ctl.fileIn(ctl.readPointer());
     if (fs.existsSync(filep)) fs.unlinkSync(filep);
     return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 岗位队列：文件仓储（issue #10 / docs/存储迁移方案.md）=====
+// pending + qualifiedExports 从 localStorage 迁出到这里。渲染侧只交「已序列化字符串」，
+// 避免 25MB 级对象经 IPC 结构化克隆再二次序列化。
+safeHandle('jc:queue-load', async () => {
+  try {
+    return queueStore.load();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:queue-save', async (_event, text, seq, opts) => {
+  try {
+    return await queueStore.save(text, seq, opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:queue-clear', async () => {
+  try {
+    return await queueStore.clear();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:queue-usage', async () => {
+  try {
+    return queueStore.usage();
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

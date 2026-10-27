@@ -8,6 +8,7 @@
 //   3. 任何缺失的 API 都以「默认值 + Promise.resolve() / no-op」形式降级，绝不抛错导致 UI 崩溃。
 
 import type { MockIndexEntry, MockSession } from './bossclaw/mockInterviewTypes';
+import type { QueueFilePayload } from './bossclaw/queueTypes';
 import type { BankMeta, BankQuestion } from './bossclaw/mockInterviewBank';
 import type {
   AsrResult,
@@ -336,6 +337,58 @@ export const electronApi = {
         return Boolean(r?.ok);
       } catch {
         return false;
+      }
+    },
+  },
+
+  // 岗位队列文件仓储（issue #10）：pending / qualifiedExports 存于 <userData>/queue/
+  queue: {
+    /** 'file' = 队列写主进程文件；'localstorage' = 已回滚到旧路径 */
+    mode: (): 'file' | 'localstorage' => (api().queueStoreMode === 'localstorage' ? 'localstorage' : 'file'),
+    load: async (): Promise<{ ok: boolean; data?: QueueFilePayload | null; source?: string; recovered?: boolean; error?: string }> => {
+      try {
+        const fn = api().queueLoad;
+        if (!fn) return { ok: false, error: '队列文件存储仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; data?: unknown; source?: string; recovered?: boolean; corrupt?: boolean; error?: string };
+        return {
+          ok: Boolean(r?.ok),
+          data: (r?.data as QueueFilePayload | null | undefined) ?? null,
+          source: r?.source,
+          recovered: Boolean(r?.recovered),
+          error: r?.error,
+        };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    save: async (text: string, seq: number, opts?: { migrationSnapshot?: boolean }): Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; error?: string }> => {
+      try {
+        const fn = api().queueSave;
+        if (!fn) return { ok: false, error: '队列文件存储仅桌面端可用' };
+        const r = (await fn(text, seq, opts)) as { ok?: boolean; stale?: boolean; seq?: number; bytes?: number; error?: string };
+        return { ok: Boolean(r?.ok), stale: r?.stale, seq: r?.seq, bytes: r?.bytes, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    clear: async (): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const fn = api().queueClear;
+        if (!fn) return { ok: false, error: '队列文件存储仅桌面端可用' };
+        const r = (await fn()) as { ok?: boolean; error?: string };
+        return { ok: Boolean(r?.ok), error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    usage: async (): Promise<{ ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string }> => {
+      try {
+        const fn = api().queueUsage;
+        if (!fn) return { ok: false };
+        const r = (await fn()) as { ok?: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string };
+        return { ok: Boolean(r?.ok), bytes: r?.bytes, bakBytes: r?.bakBytes, totalBytes: r?.totalBytes, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
       }
     },
   },

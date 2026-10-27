@@ -658,7 +658,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     if (!file) return;
     try {
       const json = await file.text();
-      const r = importData(json);
+      const r = await importData(json);
       if (!r.ok) { message.error('导入失败：' + (r.error || '格式错误')); return; }
       // 导入是绕过 persist 写哨兵的直写：必须作废备份基线，否则备份快路径会判「无变化」而跳过，
       // 导入的数据要等数次心跳才落进备份（见审查 #45）。
@@ -682,14 +682,15 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
       title: '清空全部本地数据？',
       content:
         '将删除简历原文、职业画像、投递方向、任务记录与全部设置（包括 LLM 配置），' +
+        '以及 <userData>/queue/ 下的岗位队列文件（issue #10 起队列不再放在 localStorage）。' +
         '并删除 <userData>/mock-interview/ 下的全部模拟面试记录、题库（含你导入/自建的题库与索引缓存）。' +
         voiceLine +
         '此操作不可恢复，建议先分别导出「JSON 备份」与「面试记录」。',
       okText: '确认清空',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => {
-        clearAllData();
+      onOk: async () => {
+        await clearAllData();
         void clearLocalBackup();
         // 面试记录是主进程文件数据，不在 localStorage 清空范围内，必须单独删目录
         void clearMockInterviewAll();

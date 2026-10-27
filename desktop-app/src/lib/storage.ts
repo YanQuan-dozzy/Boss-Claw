@@ -4,6 +4,8 @@
 //   - bossclaw-settings-v2 ← useSettingsStore（v2 含字段迁移，新老数据自动合并）
 //   - bossclaw-data      ← useDataStore
 import { discardPendingPersistWrites, persistFailureOf, getLatestPersistSnapshot } from './persistSafe';
+import { isQueueFileMode } from './bossclaw/queueMode';
+import { QUEUE_STORE_KEY, clearQueueStore, getQueueSnapshotText, importQueueData } from './bossclaw/queueRepo';
 
 // ===== 存储键登记表（P2-03：单一事实来源）=====
 // 曾被三处重复维护（storage.ts BOSS_CLAW_KEYS / localBackup BACKUP_KEYS / clearAllData 硬编码），
@@ -40,6 +42,10 @@ export const STORAGE_KEYS: StorageKeySpec[] = [
   // 运行时日志（P2-05）：从 bossclaw-data 拆出的独立小键。日志为运行时产物、重启即重新累积，
   // 不导出不备份；「清空全部数据/恢复出厂」时随业务数据一并清除
   { key: 'bossclaw-runtime-logs', export: false, backup: false, clear: true },
+  // 岗位队列（issue #10）：虚拟键 —— 文件模式下数据实际位于 <userData>/queue/queue-store.json，
+  // 不在 localStorage 里。登记在这里是为了让导出/备份/清空三处共用同一份清单，
+  // 具体读写由 lib/bossclaw/queueRepo.ts 接管（见下方各函数的 SPECIAL 分支）。
+  { key: QUEUE_STORE_KEY, export: true, backup: true, clear: true },
 ] as const;
 
 export const keysWhere = (pred: (s: StorageKeySpec) => boolean): string[] =>
@@ -56,6 +62,11 @@ const LEGACY_KEYS = ['bossclaw-settings'] as const;
 export function exportData(): string {
   const data: Record<string, string | null> = {};
   for (const k of EXPORT_KEYS) {
+    if (k === QUEUE_STORE_KEY && isQueueFileMode()) {
+      // 虚拟键：队列在文件里，直接从 store 内存同步取一份完整快照（与导出时刻一致）
+      data[k] = getQueueSnapshotText();
+      continue;
+    }
     // issue #10：写失败期间 localStorage 是**旧快照**，此处若照读，导出出来的就是「回退版」，
     // 用户以为救下的其实是那批已经过期的数据。改用 persist 内存中的最新值。
     const failed = persistFailureOf(k);
@@ -68,7 +79,7 @@ export function exportData(): string {
   return JSON.stringify(data, null, 2);
 }
 
-export function importData(json: string): { ok: boolean; error?: string } {
+export async function importData(json: string): Promise<{ ok: boolean; error?: string }> {
   // 顺序很重要：**先解析、再丢弃**。原实现先 discardPendingPersistWrites() 再 JSON.parse——
   // 一旦解析失败，防抖窗口内的合法待写值已被丢掉，等于「一次失败的导入顺带丢了最近的编辑」（见审查 #45）。
   let data: Record<string, string | null>;
@@ -77,10 +88,41 @@ export function importData(json: string): { ok: boolean; error?: string } {
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+  // 队列在文件模式下先落文件：写失败就整体中止，避免「设置/简历已导入、队列还停在旧值」的半截状态
+  if (isQueueFileMode() && QUEUE_STORE_KEY in data) {
+    const queueText = data[QUEUE_STORE_KEY];
+    if (typeof queueText === 'string' && queueText.trim()) {
+      const r = await importQueueData(queueText);
+      if (!r.ok) return { ok: false, error: `岗位队列导入失败：${r.error || '未知错误'}` };
+    } else if (queueText == null) {
+      await clearQueueStore();
+    }
+  } else if (QUEUE_STORE_KEY in data) {
+    // 回滚模式（BOSSCLAW_QUEUE_STORE=localstorage）：队列必须并回 bossclaw-data，
+    // 否则写进一个没人读的 localStorage 键等于「导入丢队列」。
+    const queueText = data[QUEUE_STORE_KEY];
+    if (typeof queueText === 'string' && queueText.trim()) {
+      try {
+        const q = JSON.parse(queueText) as { pending?: unknown; qualifiedExports?: unknown };
+        const legacyRaw = data['bossclaw-data'] ?? localStorage.getItem('bossclaw-data');
+        const legacy = legacyRaw ? (JSON.parse(legacyRaw) as { state?: Record<string, unknown>; version?: number }) : { state: {}, version: 2 };
+        legacy.state = {
+          ...(legacy.state || {}),
+          pending: Array.isArray(q.pending) ? q.pending : [],
+          qualifiedExports: q.qualifiedExports && typeof q.qualifiedExports === 'object' ? q.qualifiedExports : {},
+        };
+        data['bossclaw-data'] = JSON.stringify(legacy);
+      } catch {
+        return { ok: false, error: '备份里的岗位队列结构非法' };
+      }
+    }
+    delete data[QUEUE_STORE_KEY];
+  }
   // 解析成功：丢弃 persist 防抖窗口内残留的待写值，避免 reload 前的 pagehide flush 覆盖刚导入的数据
   discardPendingPersistWrites();
   try {
     for (const k of EXPORT_KEYS) {
+      if (k === QUEUE_STORE_KEY && isQueueFileMode()) continue; // 已由 importQueueData 写入文件
       if (k in data) {
         if (data[k] == null) localStorage.removeItem(k);
         else localStorage.setItem(k, data[k] as string);
@@ -92,7 +134,7 @@ export function importData(json: string): { ok: boolean; error?: string } {
   }
 }
 
-export function clearAllData(): void {
+export async function clearAllData(): Promise<void> {
   // P30：先丢弃 persist 防抖窗口内残留的待写值——否则清空后若窗口内有旧值，reload 前的
   // pagehide flush 会把这些旧状态写回 localStorage，导致「清空/恢复出厂」无效
   discardPendingPersistWrites();
@@ -100,6 +142,8 @@ export function clearAllData(): void {
   for (const k of keysWhere((s) => s.clear)) localStorage.removeItem(k);
   // 旧版本遗留键也一并清理（如有），防止 reset 失败导致旧数据复活
   for (const k of LEGACY_KEYS) localStorage.removeItem(k);
+  // issue #10：队列文件必须同批删除，否则清空后重新启动会从文件里读回整份队列
+  await clearQueueStore();
 }
 
 // ===== 本地存储用量（issue #10）=====
@@ -136,6 +180,8 @@ export function measureStorageUsage(): StorageUsage {
   const rows: StorageUsageRow[] = [];
   let totalUnits = 0;
   for (const spec of STORAGE_KEYS) {
+    // 文件模式下队列不占 localStorage 额度，单独由 queueRepo 统计并在用量面板单列一行
+    if (spec.key === QUEUE_STORE_KEY && isQueueFileMode()) continue;
     let units = 0;
     try {
       const raw = localStorage.getItem(spec.key);

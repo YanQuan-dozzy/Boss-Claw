@@ -104,16 +104,21 @@ export default function App() {
   // 数据版本检测：v3 重建后首次启动清空旧 localStorage 数据（任务/岗位/会话/设置），
   // 与主进程 resetDataForVersion（清 BOSS 登录态）配套，实现「数据也重置」。
   useEffect(() => {
-    try {
-      const cur = localStorage.getItem('bossclaw-data-version');
-      if (cur !== DATA_VERSION) {
-        clearAllData();
-        localStorage.setItem('bossclaw-data-version', DATA_VERSION);
-        window.location.reload();
+    const run = async () => {
+      try {
+        const cur = localStorage.getItem('bossclaw-data-version');
+        if (cur !== DATA_VERSION) {
+          // issue #10：clearAllData 现在还要删 <userData>/queue/ 的队列文件（异步），
+          // 必须等它完成再 reload，否则新进程可能从旧文件里把队列读回来
+          await clearAllData();
+          localStorage.setItem('bossclaw-data-version', DATA_VERSION);
+          window.location.reload();
+        }
+      } catch (e) {
+        console.warn('[App] 数据版本重置失败（可能导致旧数据残留）: ' + String((e && (e as Error).message) || e));
       }
-    } catch (e) {
-      console.warn('[App] 数据版本重置失败（可能导致旧数据残留）: ' + String((e && (e as Error).message) || e));
-    }
+    };
+    void run();
   }, []);
 
   // 启动即实时探测本地桥接状态（不依赖持久化、不依赖进入 OpenClaw 页），

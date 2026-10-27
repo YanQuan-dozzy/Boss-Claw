@@ -1,11 +1,12 @@
 // 「本地存储用量」卡片（issue #10）
 // ---------------------------------------------------------
-// 背景：所有业务数据都存在 localStorage。配额写满后 persistSafe 会静默丢弃写入
+// 背景：业务数据大部分在 localStorage（岗位队列自 issue #10 起已迁到主进程文件）。
+// 配额写满后 persistSafe 会静默丢弃写入
 // （为了不把异常冒泡进引擎），界面上却毫无痕迹——用户看到队列一直在推进，重启后
 // 整段进度回退到配额耗尽那一刻，连「基础求职条件」也跟着倒退（bossclaw-settings-v2
 // 同样写不进）。
 // 这张卡片把「谁吃掉了配额」摊开给用户看，让清理有据可依；写失败时置顶红色提示，
-// 并给出可执行的处置路径（导出备份 → 清理队列 → 恢复）。
+// 并给出可执行的处置路径（导出备份 → 检查磁盘/权限 → 清空运行日志）。
 // 口径（实测，见 lib/storage.ts 注释）：Chromium 按「键名 + 值的 UTF-16 码元」计费，
 // 单源上限 52,428,800 码元 = 50 MB（1 码元按 1 字节折算展示，与内核的「50MB 额度」表述一致）。
 import { useCallback, useEffect, useState } from 'react';
@@ -17,12 +18,14 @@ import {
   type StorageUsage,
 } from '@/lib/storage';
 import { usePersistFailures } from '@/lib/hooks';
+import { electronApi } from '@/lib/electronApi';
+import { isQueueFileMode } from '@/lib/bossclaw/queueMode';
 
 const { Paragraph, Text } = Typography;
 
 /** 存储键的人类可读名（未登记的键直接显示原名） */
 const KEY_LABELS: Record<string, string> = {
-  'bossclaw-data': '岗位队列 / 简历 / 画像 / 达标岗位缓存',
+  'bossclaw-data': '简历 / 画像 / 达标岗位缓存（队列已移出）',
   'bossclaw-settings-v2': '基础求职条件与模型配置',
   'bossclaw-app': '界面偏好（主题、侧栏、路由）',
   'bossclaw-schedule': '定时采集 / 投递任务',
@@ -41,11 +44,28 @@ const KEY_LABELS: Record<string, string> = {
 export default function StorageUsageCard() {
   const failures = usePersistFailures();
   const [usage, setUsage] = useState<StorageUsage>(() => measureStorageUsage());
-  const refresh = useCallback(() => setUsage(measureStorageUsage()), []);
+  // 队列已迁到 <userData>/queue/（issue #10）：它不占上文的 50MB localStorage 额度，
+  // 因此单独一行展示磁盘占用，避免用户误把「额度快满了」与「队列很大」画等号。
+  const [queueBytes, setQueueBytes] = useState<number | null>(null);
+  const refreshQueue = useCallback(async () => {
+    if (!isQueueFileMode()) {
+      setQueueBytes(null);
+      return;
+    }
+    const r = await electronApi.queue.usage();
+    if (r.ok) setQueueBytes(r.totalBytes ?? 0);
+  }, []);
+  const refresh = useCallback(() => {
+    setUsage(measureStorageUsage());
+    void refreshQueue();
+  }, [refreshQueue]);
   // 写失败状态变化时刷新：这一时刻占用通常刚跨过阈值，用户最需要看到数字
   useEffect(() => {
     refresh();
   }, [failures, refresh]);
+  useEffect(() => {
+    void refreshQueue();
+  }, [refreshQueue]);
 
   const failing = failures.length > 0;
   const nearLimit = !failing && usage.ratio >= 0.8;
@@ -74,8 +94,8 @@ export default function StorageUsageCard() {
         <Paragraph style={{ marginTop: 4, marginBottom: 12, color: 'var(--status-danger-strong)', fontSize: 13 }}>
           <strong>最新进度没有写进本地存储。</strong>
           存储空间已满（或写入被系统拦截）后，所有写入都会被丢弃——界面照常显示，重启后会回退到
-          最后一次成功写入的状态。请先点上方「导出 JSON 备份」，再清理岗位队列（工作台 → 批量删除已处理记录），
-          给存储腾出空间后写入会自动恢复。
+          最后一次成功写入的状态。请先点上方「导出 JSON 备份」。岗位队列已迁到主进程文件、
+          不再占用该额度；若仍写入失败，请检查磁盘空间与安全软件拦截，并到日志面板清空运行日志后重试。
         </Paragraph>
       )}
 
@@ -88,7 +108,7 @@ export default function StorageUsageCard() {
       />
 
       <div className="storage-usage-list">
-        {rows.length === 0 ? (
+        {rows.length === 0 && queueBytes == null ? (
           <Text type="secondary" style={{ fontSize: 13 }}>当前没有已持久化的数据。</Text>
         ) : (
           rows.map((r) => (
@@ -101,6 +121,15 @@ export default function StorageUsageCard() {
             </div>
           ))
         )}
+        {queueBytes != null && (
+          <div className="storage-usage-row" key="queue-file">
+            <span className="storage-usage-row__name" title="岗位队列（含达标岗位缓存），存于主进程文件，不占 localStorage 额度">
+              岗位队列（文件）
+            </span>
+            <span className="storage-usage-row__key">&lt;userData&gt;/queue/</span>
+            <span className="storage-usage-row__size">{formatStorageSize(queueBytes)}</span>
+          </div>
+        )}
       </div>
 
       <div className="setting-actions" style={{ marginTop: 12 }}>
@@ -112,8 +141,8 @@ export default function StorageUsageCard() {
       <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
         上限 <strong>50 MB</strong>（Chromium 对同源所有键合计计算，按字符计费：52,428,800 个字符），
         写满后所有键（含「基础求职条件」）都会写不进去。
-        占用主要由<strong>岗位队列的完整 JD 与分析结果</strong>和<strong>达标岗位缓存</strong>构成——
-        定期清理已处理岗位、缩短达标岗位保留天数即可长期保持充足余量。
+        自 issue #10 修复起，<strong>岗位队列已迁到主进程文件</strong>（&lt;userData&gt;/queue/，不占上述额度），
+        localStorage 里只剩简历、画像与设置等小数据；若上方仍提示写入失败，请先导出备份再检查磁盘权限。
       </Paragraph>
     </div>
   );
