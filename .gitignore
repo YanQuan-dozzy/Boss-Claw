@@ -81,3 +81,7 @@ mcp/bossclaw-mcp/.workspace-root
 # 封面设计草稿（本地素材，不入库）
 bossclaw-cover.miora
 /bossclaw-cover_assets/
+
+# 代码图谱分析产物（graphify 本地生成，约 8MB，不入库）
+graphify-out/
+graphify-project-graph.html
