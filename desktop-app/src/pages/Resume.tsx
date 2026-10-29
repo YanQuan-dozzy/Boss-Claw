@@ -354,18 +354,32 @@ export default function Resume() {
       setGreetingPromptStore(trimmed && trimmed !== DEFAULT_ANALYZE_GREETING_INSTRUCTIONS ? trimmed : '');
       const p = useDataStore.getState().profile;
       const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
-      // 复用工作台同一分析链路（同提示词、同校验），保证预览与工作台真实生成一致
-      const analysis = await analyzeJob(job, p, text, config, config.model, trimmed || undefined);
+      // 复用工作台同一分析链路（同提示词、同校验），保证预览与工作台真实生成一致；
+      // 但预览只验证「提示词 → 招呼语」，测试岗位命中学历/求职类型等本地硬条件时不早退，
+      // 否则恒回退本地规则、看不到提示词效果。
+      const analysis = await analyzeJob(job, p, text, config, config.model, trimmed || undefined, {
+        skipHardBlockShortCircuit: true,
+      });
       const isLocal = analysis.scoreSource === 'local';
       setPreviewGreeting(analysis.greeting);
-      setPreviewMeta(isLocal ? { method: 'local', warning: 'AI 未配置或生成失败，已使用本地规则打招呼语。' } : { method: 'ai', warning: undefined });
+      setPreviewMeta(
+        isLocal
+          ? {
+              method: 'local',
+              warning: analysis.hardBlocks?.length
+                ? `AI 未配置或生成失败；且测试岗位命中本地硬条件（${analysis.hardBlocks.slice(0, 2).join('；')}），已使用本地规则打招呼语。`
+                : 'AI 未配置或生成失败，已使用本地规则打招呼语。',
+            }
+          : { method: 'ai', warning: undefined }
+      );
       message.success(isLocal ? 'AI 不可用，已按本地规则生成打招呼语' : '已按工作台提示词生成 1 条针对该岗位 JD 的打招呼语');
     } catch (err: any) {
       const job: JobMeta = { title: testJobTitle.trim() || '测试岗位', description: testJobDesc.trim(), company: '' };
       const local = fallbackApplicantGreeting(job, useDataStore.getState().profile);
+      const reason = String(err?.message || '未知原因');
       setPreviewGreeting(local);
-      setPreviewMeta({ method: 'local', warning: `AI 生成失败（${err?.message || '未知原因'}），已回退本地规则打招呼语。` });
-      message.warning('未生成 AI 招呼语，已回退本地规则');
+      setPreviewMeta({ method: 'local', warning: `${reason.includes('职业画像') ? reason : `AI 生成失败（${reason}）`}，已回退本地规则打招呼语。` });
+      message.warning(reason.includes('职业画像') ? '请先生成并保存职业画像，再预览招呼语' : '未生成 AI 招呼语，已回退本地规则');
     } finally {
       setGreetingBusy(false);
     }
@@ -699,7 +713,7 @@ export default function Resume() {
                 <span className="resume-block__title">打招呼语预览（测试岗位 JD）</span>
               </div>
               <p className="resume-block__hint" style={{ marginTop: 0 }}>
-                按上面的提示词为指定岗位生成 1 条招呼语，与工作台真实生成完全一致。
+                按上面的提示词为指定岗位生成 1 条招呼语（与工作台同一 AI 链路；测试岗位命中本地硬条件时也不会跳过 AI）。
               </p>
               <div className="resume-preview-form">
                 <Input

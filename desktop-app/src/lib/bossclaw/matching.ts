@@ -383,13 +383,21 @@ export async function analyzeJob(
   resumeText: string,
   config: AppConfig,
   model: AppConfig['model'],
-  customGreetingPrompt?: string
+  customGreetingPrompt?: string,
+  opts?: {
+    /**
+     * 简历中心的「招呼语提示词预览」专用：跳过本地硬条件短路（不拦截、不发 AI 的早退）。
+     * 预览只验证提示词产出，测试岗位常命中学历/求职类型等硬条件；若照常早退会恒回退本地规则，
+     * 用户永远看不到提示词效果。工作台/采集链路不传该参数，行为不变。
+     */
+    skipHardBlockShortCircuit?: boolean;
+  }
 ): Promise<JobAnalysis> {
   if (!profile) throw new Error('请先生成职业画像');
   // 打招呼语/求职信提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 简历中心输入框内容 → ③ 都不满足则回退本地规则。
   // 每次调用都从磁盘重读 skills/*/SKILL.md，保证技能文档改了即时生效（不改文件即无副作用）。
   await reloadSkills();
-  const greetingsSkill = skillInstructionsFor('greetings');
+  const greetingsSkill = await skillInstructionsFor('greetings');
   const inputGreeting = greetingsSkill ? '' : (customGreetingPrompt || '').trim();
   // 系统提示词组装（skill 层优先，见 prompts.ts 分层说明）：
   //   ① buildAnalyzeSystemPrompt() —— 系统契约骨架（角色/安全/自洽/校准/schema/样例，恒在，不可被技能关闭）；
@@ -397,14 +405,21 @@ export async function analyzeJob(
   //      **技能优先**；无启用技能时注入 DEFAULT_JOB_ANALYSIS_INSTRUCTIONS 兜底（与 job-analysis 技能正文语义一致），
   //      保证评分功能不因技能全关而丢失，也让技能开关/编辑真正影响评分行为（缓存随技能开关失效，属预期语义）；
   //   ③ greeting 指令 —— 由调用方按「greetings 技能 → 输入框 → 内置默认」优先级解析后追加（不内联进骨架）。
-  const jobAnalysisScope = skillInstructionsFor('job-analysis');
+  const jobAnalysisScope = await skillInstructionsFor('job-analysis');
   const jobAnalysisRules = jobAnalysisScope || `\n\n【AI 技能 · 岗位匹配评估（默认细则兜底）】\n${DEFAULT_JOB_ANALYSIS_INSTRUCTIONS}`;
   // 校名披露规则：本地名单裁定「允许/禁止写校名」后注入（与 greetings 指令同属 greeting 口径，
   // 故紧随其后、放在 system 末尾）。仅由简历决定、与岗位无关 → 跨岗位恒定，不破坏前缀缓存。
   const schoolRule = buildSchoolDisclosureRule(
     resolveSchoolTier(normalizeStringList(profile?.facts?.education, 8), resumeText)
   );
-  const systemPrompt = buildAnalyzeSystemPrompt() + jobAnalysisRules + greetingsSkill + schoolRule;
+  // ⚠️ greeting 指令必须进入**主分析** system prompt：若只拼技能而当技能停用后丢弃输入框内容，
+  // 「设置里关闭 greetings 技能 → 简历中心提示词生效」这条优先级就是假的（输入框内容只在字数重写时被用到）。
+  // 技能停用时按优先级②注入简历中心输入框内容；②也没有时由骨架（buildAnalyzeSystemPrompt）内的精简口径兜底。
+  const greetingRule = greetingsSkill
+    || (inputGreeting
+      ? `\n\n【AI 技能 · 打招呼语（简历中心自定义提示词）】（由软件 skills 层注入，必须遵守）\n${inputGreeting}`
+      : '');
+  const systemPrompt = buildAnalyzeSystemPrompt() + jobAnalysisRules + greetingRule + schoolRule;
   // 打招呼语统一口径全文（供长度不达标时的独立重写再生成复用）：技能正文 > 简历中心输入框内容 > 内置默认。
   const greetingInstruction = greetingsSkill || inputGreeting || DEFAULT_ANALYZE_GREETING_INSTRUCTIONS;
   // 本地确定性多维匹配（deal-breaker 硬约束 + 可解释维度 + 兜底分），先于 AI 计算：
@@ -420,7 +435,7 @@ export async function analyzeJob(
   // 批量采集时每个硬拦岗位白花一次完整 LLM 调用（含重试最高 4 次）。该早退同时服务
   // 「加入任务」与「采集」两条入口：硬拦岗位最终都是 reject（手动路径照样入队、采集路径照样跳过），
   // 行为不变；输出形态与下方「AI 不可用 → 本地兜底」分支完全一致，不引入新语义。
-  if (local.hardBlocks.length) {
+  if (local.hardBlocks.length && !opts?.skipHardBlockShortCircuit) {
     const fallbackScore = Math.min(local.dimensions.overall ?? 0, HARD_BLOCK_SCORE_CAP);
     const fallbackGaps = cleanGapList(local.gaps, profile, resumeText);
     const hardReason = `本地硬条件拦截：${local.hardBlocks.slice(0, 2).join('；')}${
