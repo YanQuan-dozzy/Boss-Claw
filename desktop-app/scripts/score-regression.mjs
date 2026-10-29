@@ -435,6 +435,16 @@ try {
   check('「刚刚活跃」→ 6 级（回归既有口径）', hrActivityRank('刚刚活跃'), 6);
   check('「3日内活跃」→ 4 级', hrActivityRank('3日内活跃'), 4);
   check('「半年前活跃」→ 1 级', hrActivityRank('半年前活跃'), 1);
+  // 对齐 abclq/Boss-Claw 的 L7 修复：「N周/N月内活跃」按 N 分档，不再漏判/误判
+  check('「2周内活跃」→ 2 级（旧实现识别不到 → 放行）', hrActivityRank('2周内活跃'), 2);
+  check('「1周内活跃」→ 3 级（本周活跃档）', hrActivityRank('1周内活跃'), 3);
+  check('「5周内活跃」→ 1 级', hrActivityRank('5周内活跃'), 1);
+  check('「两周内活跃」→ 2 级（中文数字）', hrActivityRank('两周内活跃'), 2);
+  check('「2月内活跃」→ 1 级（旧实现被 /月内活跃/ 误判为 2 级）', hrActivityRank('2月内活跃'), 1);
+  check('「1个月内活跃」→ 2 级', hrActivityRank('1个月内活跃'), 2);
+  check('「半月内活跃」→ 2 级（「半」按 0.5 计）', hrActivityRank('半月内活跃'), 2);
+  check('「近半年活跃」→ 1 级', hrActivityRank('近半年活跃'), 1);
+  check('「半年内活跃」→ 1 级', hrActivityRank('半年内活跃'), 1);
   check('空值 → 0 级（不参与过滤）', hrActivityRank(''), 0);
   check(
     '无法识别活跃度时不误杀（「在线简历」在「仅在线」筛选下仍放行）',
