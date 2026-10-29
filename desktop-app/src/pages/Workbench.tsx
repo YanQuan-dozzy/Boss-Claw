@@ -283,7 +283,14 @@ export default function Workbench() {
   const commStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // BOSS DOM 投递结果等待槽：runNext 打开岗位下发 start-apply 后挂起，等 handleApplyStage 回写终态
   // （verify_result→success / risk / failed / external→skip），避免 fire-and-forget 造成 runNext 反复重入与日志重复。
-  const domWaitRef = useRef<((mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat', payload: any, tabId?: string) => void) | null>(null);
+  const domWaitRef = useRef<((mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat' | 'aborted', payload: any, tabId?: string) => void) | null>(null);
+  /** 手动暂停信号：置真后，仍在等「岗位间隔 / 页面就绪」的通道必须在沟通动作下发前退出。
+   *  每次 runNext 选中新岗位时复位（见 runNext）；不复位会让暂停后的下一次启动也被拦下。 */
+  const deliveryAbortRef = useRef(false);
+  /** 是否有投递通道正在执行（页面已打开、等终态回传）。
+   *  暂停时**不能**清 activeId：handleApplyStage 以 activeId 为事件路由键，清空会丢弃页内回传，
+   *  该岗位只能等兜底超时 → 被误判「投递失败」（用户实测现象）。收口由通道自身负责。 */
+  const deliveryInFlightRef = useRef(false);
   // 最近一次记录的投递阶段（用于进度日志去重：同一阶段反复回传时只记一条，避免刷屏）
   const lastApplyStageRef = useRef<TaskStage | ''>('');
   // P01：runNext 互斥守卫。只允许一个投递循环在途；执行中再有触发则排队，结束后续跑。
@@ -398,6 +405,10 @@ export default function Workbench() {
   }, []);
 
   const ensureBossLogin = async (): Promise<boolean> => {
+    // CloakBrowser 使用独立浏览器 profile，persist:bossclaw 里的 cookie 探测对它无效；
+    // 是否登录以页面自身 page-status.loginWall 为准（waitTabReady 命中 reason='login' 即收口）。
+    // 否则会出现「Cloak 页面已登录、却因 Electron 会话没 cookie 被拦下」的假未登录。
+    if (useSettingsStore.getState().config.engineMode === 'cloak') return true;
     let v = useAppStore.getState().bossLoggedIn;
     if (v !== true) {
       // 权威复核：缓存态可能因「DOM 误报 / 启动时序」停留在 false，现场重读 wt2 cookie 再定
@@ -457,8 +468,13 @@ export default function Workbench() {
         cfxActiveRef.current = false;
         setCfxCollecting(false);
         setRunning(false);
-        setActiveId(null);
-        setApplyStage(null);
+        // 暂停一律置位中止信号：正在等节流/页面就绪的通道会在沟通动作下发前退出
+        deliveryAbortRef.current = true;
+        // 在途投递不清 activeId：页面可能仍在回传终态（清空会让回传被丢弃、误判失败）
+        if (!deliveryInFlightRef.current) {
+          setActiveId(null);
+          setApplyStage(null);
+        }
         addLog('warn', '已停止投递');
       }
     }
@@ -863,8 +879,13 @@ export default function Workbench() {
     setVisualCollecting(false);
     setVisualPaused(false);
     setAutoAssist(false);
-    setActiveId(null);
-    setApplyStage(null);
+    // 在途投递（页面已打开、等 apply-stage 终态）绝不能在这里清 activeId/applyStage：
+    // 清空后 handleApplyStage 会丢弃页内回传 → 只能等兜底超时 → 岗位被误判失败。
+    // 这种情形由通道函数自己收口（见 deliveryInFlightRef / domResult.mode==='aborted'）。
+    if (!deliveryInFlightRef.current) {
+      setActiveId(null);
+      setApplyStage(null);
+    }
     addLog('warn', reason);
   };
 
@@ -918,6 +939,14 @@ export default function Workbench() {
    */
   const awaitDeliveryGap = async (): Promise<void> => {
     const cfg = useSettingsStore.getState().config;
+    // 可中断等待：暂停后 1s 内返回，避免「已暂停却仍白等批次休息/岗位间隔」
+    const sleepAbortable = async (ms: number): Promise<void> => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        if (deliveryAbortRef.current) return;
+        await sleep(Math.min(1000, Math.max(1, end - Date.now())));
+      }
+    };
     // ===== 批次休息（真人不会连续上百次投递而不中断）=====
     // 与「岗位间隔」是两个量级：岗位间隔是秒级抖动，批次休息是分钟级中断，后者才是打断
     // 「连续高强度作业」曲线的关键 —— 只做秒级抖动的账号，其 24h 活动曲线上仍是一条直线。
@@ -926,11 +955,13 @@ export default function Workbench() {
     if (restMs > 0) {
       const restMin = Math.round(restMs / 60000);
       addLog('info', `已连续投递 ${sinceRest} 个岗位，按防封号策略休息约 ${restMin} 分钟（模拟真人作业中断，降低风控风险）`);
-      await sleep(restMs);
+      await sleepAbortable(restMs);
+      if (deliveryAbortRef.current) return; // 暂停：不刷新 lastDeliveryAt（本岗位动作并未下发）
       resetDeliveredSinceRest();
       addLog('info', '批次休息结束，继续投递');
     }
     await sharedPacer(cfg.maxActionsPerMinute).waitForSlot();
+    if (deliveryAbortRef.current) return;
     const baseSec = Math.max(Number(cfg.betweenJobsSeconds) || SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
     const gapMs = humanDelayMs(baseSec * 1000, 0.35);
     const elapsed = Date.now() - lastDeliveryAt.current;
@@ -940,7 +971,11 @@ export default function Workbench() {
       // 用户容易以为卡死而手动重复点投递 —— 那才是真正会触发风控的高频操作。
       const waitSec = Math.ceil(wait / 1000);
       addLog('info', `为降低风控风险，本岗位将等待 ${waitSec} 秒后投递（岗位间隔约 ${Math.round(gapMs / 1000)}s，距上次投递已过 ${Math.round(elapsed / 1000)}s）。页面已在后台加载完成，期间请勿手动重复投递`);
-      await sleep(wait);
+      await sleepAbortable(wait);
+      if (deliveryAbortRef.current) {
+        addLog('warn', '已暂停投递：本次等待中断，本岗位动作未下发');
+        return;
+      }
       addLog('info', `等待结束（${waitSec}s），继续投递本岗位`);
     }
     lastDeliveryAt.current = Date.now();
@@ -1300,7 +1335,9 @@ export default function Workbench() {
     ingestedSeenRef.current = new Set(); // 新一采集批重置去重，允许重新扫描
     collectListReadyLoggedRef.current = false; // 新一批重新记录首个「列表就绪」
     visualLoginBlockedRef.current = '';
-    // BOSS 登录态由 wt2 cookie 判定（webview 与隐身引擎共用同一会话）；
+    // BOSS 登录态：内置 WebView 用 persist:bossclaw 的 wt2 cookie；CloakBrowser 使用独立 profile，
+    // 其登录态由页内 page-status / loginWallDetected() 判定（见 ensureBossLogin 的 cloak 短路）；
+    // Camoufox 走 runCamoufoxCollect 的引擎自检，不进入本函数。
     // 其余平台的登录态在各自标签页内，由页内 loginWallDetected() 判定后回传 login-required
     // —— 不能拿 BOSS cookie 口径去判断猎聘/智联/前程无忧（会误判成未登录而拒绝采集）。
     if (platform === 'boss' && !(await ensureBossLogin())) return 'skip';
@@ -1923,6 +1960,11 @@ export default function Workbench() {
         await runNextRef.current();
       } finally {
         runNextLock.current = false;
+        // 暂停态收口：本轮通道（含在途暂停）结束后统一清掉活动岗位，避免界面停留在「投递中」卡片
+        if (!useAppStore.getState().autoAssist) {
+          setActiveId(null);
+          setApplyStage(null);
+        }
         if (runNextQueued.current) {
           runNextQueued.current = false;
           requestRunNext();
@@ -1964,14 +2006,21 @@ export default function Workbench() {
     // 猎聘必须把本岗位实际招呼语传入聊天发送流程（发送+确认在 platform-apply 内完成）；
     // 智联「继续沟通」的招呼语发送仍移交「自动沟通」引擎处理，不在工作台路径携带 greeting。
     let r: any;
+    deliveryInFlightRef.current = true;
     try {
       // 非 BOSS 路径的 platformApply 内部自行「打开标签页 + 下发投递」，无法把加载与节流拆开并行，
       // 因此与串行版本保持一致：先等满岗位间隔再执行（安全语义优先于观感）。
       await awaitDeliveryGap();
+      // 暂停发生在投递动作下发之前：直接收口，岗位保持「投递中」队列态（不算失败，也不开标签页）
+      if (deliveryAbortRef.current) {
+        addLog('warn', `已暂停：${candidate.job?.title || '岗位'}（投递动作未下发，岗位仍在投递队列中）`);
+        return;
+      }
       r = await webviewApi.current?.platformApply(url, pf, candidate.job, greeting);
     } catch (e) {
       r = { ok: false, stage: 'failed', error: String((e as Error)?.message || e) };
     } finally {
+      deliveryInFlightRef.current = false;
       releaseDelivery(candidate.id, pf); // 锁绝不泄漏
     }
     const res = r || {};
@@ -2058,6 +2107,7 @@ export default function Workbench() {
     const jobId = extractEncryptJobId(candidate.job);
     if (!jobId) { pauseAssist('岗位缺少 jobId，无法通过 Camoufox 投递'); return; }
     try {
+      deliveryInFlightRef.current = true;
       setApplyStage('open_job');
       addLog('info', `通过 Camoufox 隐身通道投递：${candidate.job?.title || '岗位'}`);
       const st = await camoufoxStatus();
@@ -2076,6 +2126,10 @@ export default function Workbench() {
         // Camoufox 路径没有可并行的页面加载（发送在独立进程内完成），
         // 因此与串行版本一致：先等满岗位间隔再发送。
         await awaitDeliveryGap();
+        if (deliveryAbortRef.current) {
+          addLog('warn', `已暂停：${candidate.job?.title || '岗位'}（Camoufox 发送未下发，岗位仍在投递队列中）`);
+          return;
+        }
         cfxResult = await camoufoxSend(jobId, greeting, cfx0.os);
       } finally {
         releaseDelivery(candidate.id, pf);
@@ -2119,6 +2173,8 @@ export default function Workbench() {
       recomputeStats();
       pauseAssist('投递已暂停：Camoufox 投递异常，请人工核对后重试');
       return;
+    } finally {
+      deliveryInFlightRef.current = false;
     }
   };
 
@@ -2165,7 +2221,8 @@ export default function Workbench() {
     // 单线性等待 DOM 投递终态：runNext 在此挂起，终态由 handleApplyStage 回写 domWaitRef，
     // 避免 fire-and-forget 造成 runNext 反复重入、打开多个标签页并重复刷日志。
     const domTitle = candidate.job?.title || '岗位';
-    let domResult: { mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat'; payload: any; tabId?: string } = { mode: 'failed', payload: { error: 'DOM 沟通投递未返回终态' } };
+    let domResult: { mode: 'success' | 'risk' | 'failed' | 'skip' | 'timeout' | 'continue_chat' | 'aborted'; payload: any; tabId?: string } = { mode: 'failed', payload: { error: 'DOM 沟通投递未返回终态' } };
+    deliveryInFlightRef.current = true;
     try {
       domResult = await new Promise<typeof domResult>((resolve) => {
         let timerRef: ReturnType<typeof setTimeout> | null = null;
@@ -2193,6 +2250,8 @@ export default function Workbench() {
             const domDeadline = Date.now() + 25000;
             let lastProbeAt = 0;
             while (Date.now() < domDeadline) {
+              // 暂停即退出探测：否则 Promise.all 还要白等满 25s 才轮到中止判定
+              if (deliveryAbortRef.current) return;
               // 快速路径（原逻辑）：preload 就绪且不再 loading 直接视为可用
               if (webviewApi.current?.isPreloadReady?.(domTab) && !webviewApi.current?.isLoading?.(domTab)) return;
               // 兜底路径：preload 就绪标记 / loading 标志被卡住时，用 pageStatus 探针实测页面可用性。
@@ -2212,6 +2271,11 @@ export default function Workbench() {
           // 串行版本是「先等节流 → 再开页面」，用户要盯着空转的十几秒；并行后页面几乎立刻打开，
           // 而 start-apply（点击立即沟通）仍要等节流结束才下发 —— 投递动作的时序完全不变。
           await Promise.all([awaitDeliveryGap(), waitDomReady()]);
+          // 暂停发生在沟通动作下发之前：直接以 aborted 终态收口（岗位保持队列态，不判失败）
+          if (deliveryAbortRef.current) {
+            settle('aborted', { error: '用户已暂停投递，本岗位沟通动作未下发' });
+            return;
+          }
           if (!webviewApi.current) return;
           sendOnce();
           // 「继续沟通/立即沟通」的沟通入口常整页跳转到聊天页（app.zhipin.com / /web/geek/chat），导航会使 preload 重注入、
@@ -2239,6 +2303,7 @@ export default function Workbench() {
       });
     } finally {
       domWaitRef.current = null;
+      deliveryInFlightRef.current = false;
       releaseDelivery(candidate.id, pf);
     }
 
@@ -2249,6 +2314,17 @@ export default function Workbench() {
     if (domResult.mode === 'risk') {
       // 保留标签供人工完成安全验证
       handleRisk(domResult.payload?.code, domResult.payload?.message || '');
+      return;
+    }
+    if (domResult.mode === 'aborted') {
+      // 手动暂停发生在沟通动作下发之前：岗位保持「投递中」队列态（不判失败、不占用今日投递名额）
+      addLog('warn', `已暂停：${domTitle}（沟通动作未下发，岗位仍在投递队列中）`);
+      if (activeTabRef.current) { webviewApi.current?.closeTab(activeTabRef.current); activeTabRef.current = null; }
+      setApplyStage(null);
+      setActiveId(null);
+      recomputeStats();
+      // 暂停期间用户可能已重新启动：此时按队列继续；否则就此收口
+      if (useAppStore.getState().autoAssist) requestRunNext();
       return;
     }
     if (domResult.mode === 'skip') {
@@ -2289,6 +2365,9 @@ export default function Workbench() {
   };
 
   const runNext = async () => {
+    // 暂停守卫：暂停态下不允许再开新岗位（暂停瞬间 running 仍为 true 的路径仍可能触发本轮，
+    // 若不加守卫会再开一个岗位页并真的投递出去）
+    if (!useAppStore.getState().autoAssist) return;
     // 多平台适配：投递覆盖全部平台——BOSS 走 webview 官方接口；猎聘/智联/51Job
     // 分别新建对应平台标签页做 DOM 投递（见下方平台分派分支）。
     // 投递顺序完全由 rerankPending 决定（状态组 → 平台优先级 → priorityScore → AI 分 → 入队时间），
@@ -2310,6 +2389,8 @@ export default function Workbench() {
       return;
     }
     setActiveId(candidate.id);
+    // 复位暂停信号：上一轮暂停/停止留下的中止标记不能拦住本次重新启动
+    deliveryAbortRef.current = false;
     lastApplyStageRef.current = '';
     setApplyStage('queued');
     addLog('info', `按匹配优先级投递：${candidate.job?.title || '岗位'}（AI ${candidate.analysis?.score || 0} 分）`);
@@ -2383,16 +2464,19 @@ export default function Workbench() {
     // 诊断日志（stage:'log'）不驱动状态机，放行且不受跨标签守卫影响，便于排查外来标签的串台。
     if (stage === 'log') { addLog('info', String(data?.message || '')); return; }
     const current = useDataStore.getState();
-    const active = current.pending.find((p) => p.id === activeId);
-    if (!activeId || !active) return;
+    const active = activeId ? current.pending.find((p) => p.id === activeId) : undefined;
     // 跨标签防串台：只有「本次投递所用标签页」回传的阶段才驱动当前岗位的状态机。
     // 历史现象：上一个岗位超时/失败后其标签页虽有 closeTab，但关闭是异步的，在途回传仍会到达；
     // 这些外来事件会被当成当前岗位的进度（日志里冒出上一个岗位的标题，甚至把阶段写错）。
     // 同一次投递内整页跳转（job_detail → 聊天页）tabId 不变，故正常流程不受影响。
     if (tabId && activeTabRef.current && tabId !== activeTabRef.current) return;
+    // 暂停时会保留在途投递的 activeId；但若 activeId 已被清空而 DOM 等待槽仍在途，
+    // 终态仍必须回写 —— 否则页面照常把招呼语发出去，工作台只能等兜底超时 → 误判「投递失败」。
+    if (!active && !domWaitRef.current) return;
 
     if (stage === 'risk') {
       if (domWaitRef.current) { domWaitRef.current('risk', { code: data?.code, message: data?.message || '' }, tabId); return; }
+      if (!activeId) return;
       handleRisk(data?.code, data?.message || '');
       return;
     }
@@ -2401,6 +2485,7 @@ export default function Workbench() {
       // 不再按新投递发招呼语并计成功——移入「自动沟通」队列（status=opened，AutoChat 接管），
       // 并从工作台投递队列移除（防重复投递同一 HR、不占用今日投递名额）。
       if (domWaitRef.current) { domWaitRef.current('continue_chat', {}, tabId); return; }
+      if (!activeId) return;
       updatePending(activeId, { status: 'opened', error: '' });
       addLog('warn', `${active?.job?.title || '岗位'}：检测到「继续沟通」（已建立会话），已移入自动沟通队列`);
       setApplyStage(null);
@@ -2421,6 +2506,7 @@ export default function Workbench() {
       const error = String(data.error || '投递失败');
       if (data.external === true) {
         if (domWaitRef.current) { domWaitRef.current('skip', { error }, tabId); return; }
+        if (!activeId) return;
         updatePending(activeId, { status: 'skipped', error });
         addLog('warn', `已跳过：${active?.job?.title || ''}（${error}）`);
         setApplyStage(null);
@@ -2430,6 +2516,7 @@ export default function Workbench() {
       }
       // 有 DOM 等待槽在途（工作台 BOSS 直投）→ 只回写终态，状态/日志由 runNext 统一处理（去重）
       if (domWaitRef.current) { domWaitRef.current('failed', { error }, tabId); return; }
+      if (!activeId) return;
       updatePending(activeId, { status: 'failed', error });
       addLog('error', `投递失败：${active?.job?.title || ''}（${error}）`);
       setApplyStage(null);
@@ -2448,6 +2535,7 @@ export default function Workbench() {
     }
     if (stage === 'verify_result') {
       if (domWaitRef.current) { domWaitRef.current('success', {}, tabId); return; }
+      if (!activeId) return;
       handleDelivered(activeId, tabId);
       return;
     }
@@ -2879,7 +2967,18 @@ export default function Workbench() {
                 <div className="delivery-task-actions delivery-task-actions--single">
                   <Button size="small" icon={<EyeOutlined />} onClick={() => activeItem.job?.url && webviewApi.current?.openInNewTab(activeItem.job.url, activeItem.job?.title)}>打开岗位</Button>
                   <span className="action-spacer" />
-                  <Button size="small" danger icon={<StopOutlined />} onClick={() => pauseAssist('用户手动暂停当前投递')}>暂停投递</Button>
+                  <Button
+                    size="small"
+                    danger
+                    icon={<StopOutlined />}
+                    onClick={() => {
+                      // 先置位中止信号再暂停：在途通道若还在等节流/页面就绪，必须在沟通动作下发前退出
+                      deliveryAbortRef.current = true;
+                      pauseAssist('用户手动暂停当前投递');
+                    }}
+                  >
+                    暂停投递
+                  </Button>
                 </div>
               </div>
             </div>
