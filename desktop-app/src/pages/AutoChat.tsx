@@ -119,8 +119,12 @@ export default function AutoChat() {
     try {
       const s = await camoufoxStatus();
       setCfx(s);
-      // 依赖安装中不算「不可用」，不自动关闭引擎开关
-      if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+      // 依赖安装中不算「不可用」，不自动关闭引擎开关。
+      // Camoufox 模式下探活失败也保留用户选择：静默置 false 会让采集回退内置浏览器，
+      // 用户会误以为隐身采集生效。真实原因由采集入口提示「引擎未就绪」。
+      if (!s.ready && !s.installing && cfxConfig.enabled && config.engineMode !== 'camoufox') {
+        setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+      }
       return s;
     } catch {
       /* 探测失败：保持上一次状态，不打断页面 */
@@ -128,7 +132,7 @@ export default function AutoChat() {
     } finally {
       if (!silent) setCfxLoading(false);
     }
-  }, [cfxConfig, setConfig]);
+  }, [cfxConfig, config.engineMode, setConfig]);
 
   // 页面挂载时静默刷新引擎状态：跨路由重挂载后 `cfx` 会被重置为 null，导致误显示「引擎未就绪」。
   // 后台已预热，此处会即时返回就绪。

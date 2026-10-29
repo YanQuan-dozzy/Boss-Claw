@@ -333,6 +333,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   // ===== 多平台适配：各平台 Camoufox 登录态与登录动作 =====
   const [cfxPlatforms, setCfxPlatforms] = useState<Record<string, CamoufoxStatus | null>>({});
+  const [cfxPlatformLogining, setCfxPlatformLogining] = useState<Record<string, boolean>>({});
   // 各平台在「内置浏览器（工作台）」会话中的登录态（webview persist 分区；j.c:boss-login 返回 platforms 映射）
   const [webviewPlatforms, setWebviewPlatforms] = useState<Record<string, boolean>>({});
   const refreshWebviewStatus = useCallback(async () => {
@@ -401,8 +402,12 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     try {
       const s = await camoufoxStatus();
       setCfx(s);
-      // 依赖首次安装中不算「不可用」，不自动关闭引擎开关
-      if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+      // 依赖首次安装中不算「不可用」，不自动关闭引擎开关。
+      // 仅在「引擎模式已不是 Camoufox」时清理陈旧开关；Camoufox 模式下探活失败也保留用户选择，
+      // 由采集入口给出「引擎未就绪」的真实原因，避免静默回退内置浏览器（用户会误以为隐身采集生效）。
+      if (!s.ready && !s.installing && cfxConfig.enabled && config.engineMode !== 'camoufox') {
+        setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+      }
     } catch (e: any) {
       if (!silent) message.error(`引擎状态检测失败：${e?.message || '未知错误'}`);
     } finally {
@@ -426,6 +431,35 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     requestBrowserLogin(p as JobPlatform, meta.loginUrl);
     setRoute('workbench');
     message.info(`${meta.label} 登录页已在工作台打开，请在右侧内置浏览器中完成扫码/账号登录`);
+  };
+
+  // Camoufox 隐身通道使用**独立** Cookie 存储，与内置浏览器登录态不互通：
+  // 必须提供各平台独立的「隐身扫码登录」，否则非 BOSS 隐身采集会一直判定未登录。
+  const onPlatformCamoufoxLogin = async (p: JobPlatform) => {
+    const meta = PLATFORM_META[p];
+    setCfxPlatformLogining((prev) => ({ ...prev, [p]: true }));
+    try {
+      const r = await camoufoxLogin(180, cfxConfig.os, p);
+      if (r.ok && r.loggedIn) message.success(`${meta.label} 隐身登录成功，会话 Cookie 已持久化`);
+      else message.warning(r.message || r.error || `${meta.label} 隐身登录未完成（可能超时或取消）`);
+    } catch (e: any) {
+      message.error(`${meta.label} 隐身登录失败：${e?.message || e}`);
+    } finally {
+      setCfxPlatformLogining((prev) => ({ ...prev, [p]: false }));
+      refreshAllPlatformStatus();
+    }
+  };
+
+  const onPlatformCamoufoxLogout = async (p: JobPlatform) => {
+    const meta = PLATFORM_META[p];
+    try {
+      await camoufoxLogout(p);
+      message.success(`${meta.label} 已退出隐身登录`);
+    } catch (e: any) {
+      message.error(`${meta.label} 退出隐身登录失败：${e?.message || e}`);
+    } finally {
+      refreshAllPlatformStatus();
+    }
   };
 
   // 当前启用中的招聘平台数（用于「至少启用一个平台」约束：唯一启用平台禁止取消勾选）
@@ -1039,6 +1073,22 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                       >
                         退出
                       </Button>
+                      {config.engineMode === 'camoufox' && (
+                        <Button
+                          size="small"
+                          icon={<QrcodeOutlined />}
+                          loading={Boolean(cfxPlatformLogining[p])}
+                          disabled={cfxLoggedIn || !st?.ready}
+                          onClick={() => onPlatformCamoufoxLogin(p)}
+                        >
+                          {cfxLoggedIn ? '隐身已登录' : '隐身扫码登录'}
+                        </Button>
+                      )}
+                      {config.engineMode === 'camoufox' && cfxLoggedIn && (
+                        <Button size="small" danger onClick={() => onPlatformCamoufoxLogout(p)}>
+                          退出隐身
+                        </Button>
+                      )}
                     </div>
                     <table style={{ marginTop: 8, width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                       <thead>
@@ -1055,7 +1105,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                           </td>
                         </tr>
                         <tr>
-                          <td style={{ padding: '4px 8px' }}>自动沟通（Camoufox 隐身）</td>
+                          <td style={{ padding: '4px 8px' }}>采集 / 自动沟通（Camoufox 隐身）</td>
                           <td style={{ padding: '4px 8px' }}>
                             <Tag color={cfxLoggedIn ? 'green' : 'default'} style={{ margin: 0 }}>
                               {!st?.ready ? '引擎未就绪' : (cfxLoggedIn ? '已登录' : '未登录')}
@@ -2092,6 +2142,13 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 <div className="field-group__title">
                   <RobotOutlined className="fg-icon" /> CloakBrowser 隐身浏览器面板
                 </div>
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ borderRadius: 8, marginBottom: 12 }}
+                  message="CloakBrowser 已支持工作台采集，但暂不支持自动投递"
+                  description="采集链路已接入该通道；发送招呼 / 附件等投递动作仍需切换到 WebView 或 Camoufox 引擎。"
+                />
                 <div className="setting-actions" style={{ marginBottom: 12 }}>
                   <Space>
                     <Button size="middle" onClick={refreshCloakBinary} loading={cloakBinaryLoading}>
