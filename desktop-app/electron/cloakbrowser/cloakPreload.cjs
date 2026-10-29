@@ -40,6 +40,8 @@
     } catch (e) { /* ignore */ }
   }
   window.__bossclaw_emit = emit;
+  // 供 cloakCollector.cjs（先于本文件注入，晚于本文件执行）转交采集事件
+  window.__bossclawEmitEvent = emit;
   window.__bossclaw_dispatch = function (channel, payload) {
     const list = channelHandlers.get(channel);
     if (!list) return false;
@@ -122,10 +124,46 @@
     catch (e) { emit('apply-stage', { stage: 'log', message: 'extract-job 失败: ' + (e?.message || e) }); }
   });
 
+  // ===== 页面状态探测（page-status-probe → page-status-result）=====
+  // CloakView 没有 ipcRenderer.invoke，用 probeId 做一次性请求/响应配对。
+  // 探测口径归 cloakCollector.cjs::pageStatusData（与 webview.cjs 同源，选择器取自
+  // platform-adapters.cjs），本通道只负责配对回传，不复制选择器 / 卡片判定。
+  window.__bossclaw_listen('page-status-probe', (payload) => {
+    const probeId = String(payload?.probeId || '');
+    try {
+      const data = window.__bossclawCollector?.pageStatusData?.();
+      if (!data) {
+        // 采集器未注入（注入顺序 / 文件缺失）：回「页面已就绪」让宿主进入采集入口，
+        // 由 visual-collect 分支立即回 collect-error，避免白等 waitTabReady 超时。
+        emit('page-status-result', { probeId, url: location.href, readyState: String(document.readyState || 'complete'), bodyLen: 0, cards: 0, loginWall: false, collectorMissing: true });
+        return;
+      }
+      emit('page-status-result', { probeId, ...data });
+    } catch (e) {
+      emit('page-status-result', { probeId, error: String(e?.message || e), url: location.href });
+    }
+  });
+
+  // ===== 采集入口（visual-collect → cloakCollector 主循环）=====
+  // 采集链路（逐卡滚动 / 高亮 / 详情提取 / 列表级采集 / JD 补齐）由 cloakCollector.cjs 承载
+  // （由 launcher 先于本文件注入）。采集器缺失时立即回一条可定位的收口原因，
+  // 不静默吞掉请求（否则宿主会一直等到 15 分钟兜底超时）。
+  window.__bossclaw_listen('visual-collect', (arg) => {
+    const opts = (arg && typeof arg === 'object') ? arg : {};
+    const c = window.__bossclawCollector;
+    if (!c) {
+      emit('collect-progress', { phase: 'collect-error', status: '采集器未注入' });
+      emit('collect-done', { processed: 0, total: 0, error: 'collector-missing' });
+      return;
+    }
+    c.visualCollect(opts).catch((e) => emit('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
+  });
+  // 采集控制（暂停 / 继续 / 停止 / 调速）—— 与 webview.cjs 同口径，由采集器持有运行时状态
+  window.__bossclaw_listen('collect-control', (arg) => { window.__bossclawCollector?.setControl(arg || {}); });
+
   // ===== 占位：后续阶段从 webview.cjs 选择性搬入以下接口 =====
-  // - visual-collect 循环（visualCollectLoop / collectCtl）
   // - start-apply 全流程（open chat → write greeting → send → verify bubble → resume image）
-  // - collect-control 运行时控制
+  // （visual-collect 采集链路已由 cloakCollector.cjs 搬入，见上）
   //
   // 当前骨架已具备消息通道 + 阶段回传 + 提取基础接口；这些 Boss 业务侧方法
   // 由后续阶段按 webview.cjs 的 BossAdapter 类对照搬入，本文件不复制 2500 行

@@ -65,6 +65,7 @@ interface Props {
   onJobExtracted?: (job: any) => void;
   onJobListExtracted?: (data: { url: string; count: number; jobs: any[] }) => void;
   onApplyStage?: (stage: string, data: any, tabId?: string) => void;
+  onLoginState?: (data: any) => void;
   onCollectProgress?: (data: any) => void;
   onCollectDone?: (data: any) => void;
   apiRef?: React.MutableRefObject<WebviewApi | null>;
@@ -92,7 +93,7 @@ const makeTab = (url: string, title = ''): TabState => ({
 });
 
 export default function CloakView(props: Props) {
-  const { onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone, apiRef } = props;
+  const { onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone, apiRef } = props;
   // ===== 多平台：按设置页启用状态生成可选列表 =====
   const config0 = useSettingsStore((s) => s.config);
   const enabledPlatforms = useMemo<JobPlatform[]>(
@@ -111,10 +112,12 @@ export default function CloakView(props: Props) {
   const { tabs, activeId } = state;
 
   // P18：回调 ref（与 BrowserView 一致）。订阅仅挂载一次，事件回调经 ref 取最新 props，避免 stale closure。
-  const callbacksRef = useRef({ onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone });
+  const callbacksRef = useRef({ onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone });
   useEffect(() => {
-    callbacksRef.current = { onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone };
-  }, [onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onCollectProgress, onCollectDone]);
+    callbacksRef.current = { onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone };
+  }, [onNavigate, onJoinTask, onJobExtracted, onJobListExtracted, onApplyStage, onLoginState, onCollectProgress, onCollectDone]);
+  // 页面状态探测：cloak 通道没有 ipcRenderer.invoke，用「一次性事件 + probeId」做请求/响应配对
+  const probeResolversRef = useRef(new Map<string, (v: any) => void>());
 
   const [engine, setEngine] = useState<{ ready: boolean; binary: any; lastError: string | null }>({
     ready: false,
@@ -243,6 +246,15 @@ export default function CloakView(props: Props) {
       if (channel === 'job-extracted') callbacksRef.current.onJobExtracted?.(payload);
       if (channel === 'job-list-extracted') callbacksRef.current.onJobListExtracted?.(payload);
       if (channel === 'apply-stage') callbacksRef.current.onApplyStage?.(payload?.stage, payload, tabId);
+      if (channel === 'login-state') callbacksRef.current.onLoginState?.(payload);
+      if (channel === 'page-status-result') {
+        const probeId = String(payload?.probeId || '');
+        const resolve = probeResolversRef.current.get(probeId);
+        if (resolve) {
+          probeResolversRef.current.delete(probeId);
+          resolve(payload);
+        }
+      }
       if (channel === 'collect-progress') callbacksRef.current.onCollectProgress?.(payload);
       if (channel === 'collect-done') callbacksRef.current.onCollectDone?.(payload);
     });
@@ -438,8 +450,25 @@ export default function CloakView(props: Props) {
   const isPreloadReady = useCallback((id: string) => Boolean(id && tabsRef.current.some((t) => t.id === id) && typeof e.cloakPageSend === 'function'), []);
   // CloakBrowser 无独立加载遮罩：page 就绪统一由 isPreloadReady 表达
   const isLoading = useCallback((_id: string) => false, []);
-  // CloakBrowser 无 preload 通道，无法探测页面就绪事实（宿主会据此跳过探测、只用 isPreloadReady）
-  const pageStatus = useCallback(async (_id?: string) => ({ error: 'cloak 通道不支持页面状态探测' }), []);
+  // CloakBrowser 通道没有 ipcRenderer.invoke：用 probeId + 一次性 page-status-result 事件做请求/响应。
+  // 探测字段与 webview.cjs 的 page-status 对齐（readyState / cards / bodyLen / url），
+  // 让宿主以「页面自身事实」判定就绪，而不是只能靠 isPreloadReady 猜。
+  const pageStatus = useCallback(async (id?: string) => {
+    const target = id || activeIdRef.current;
+    if (!target || !tabsRef.current.some((t) => t.id === target)) return { error: '目标标签页不存在' };
+    const probeId = `cloak_ps_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<any>((resolve) => {
+      const timer = window.setTimeout(() => {
+        probeResolversRef.current.delete(probeId);
+        resolve({ error: '页面状态探测超时（cloak 通道无响应）' });
+      }, 3000);
+      probeResolversRef.current.set(probeId, (payload: any) => {
+        window.clearTimeout(timer);
+        resolve(payload);
+      });
+      sendInTab(target, 'page-status-probe', { probeId });
+    });
+  }, [sendInTab]);
 
   useEffect(() => {
     if (apiRef) apiRef.current = {

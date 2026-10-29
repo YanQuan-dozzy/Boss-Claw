@@ -232,17 +232,47 @@ async function newPage(tabId, url) {
   }
 }
 
+/** 读取并注入一份页面脚本（page.addInitScript）。
+ *  文件缺失 / 读取失败 / 注入失败一律带**文件路径**告警（禁止静默，否则表现为「页面无反应」无法定位）。
+ *  wrap(src) 可选：给 CommonJS 源套垫片后再注入。 */
+async function injectPageScript(page, filePath, label, wrap) {
+  let src;
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.warn(`[cloakbrowser] 注入脚本缺失：${label} (${filePath})`);
+      return false;
+    }
+    src = fs.readFileSync(filePath, 'utf8');
+  } catch (e) {
+    console.warn(`[cloakbrowser] 读取注入脚本失败：${label} (${filePath})：${String((e && e.message) || e)}`);
+    return false;
+  }
+  // M-7：注入本次启动的 emit nonce（preload / collector 均以 __BOSSCLAW_EMIT_NONCE__ 占位）
+  src = src.replace(/__BOSSCLAW_EMIT_NONCE__/g, EMIT_NONCE);
+  const content = wrap ? wrap(src) : src;
+  try {
+    await page.addInitScript({ content });
+    return true;
+  } catch (e) {
+    console.warn(`[cloakbrowser] 注入脚本失败：${label} (${filePath})：${String((e && e.message) || e)}`);
+    return false;
+  }
+}
+
 /** 实际创建（不做并发去重，只由 newPage 调用）。 */
 async function createPage(tabId, url) {
   try {
     const page = await state.context.newPage();
-    // 通过 preInitScript / cloakPreload.cjs 以 page.addInitScript 方式注入
-    const preloadPath = path.join(__dirname, 'cloakPreload.cjs');
-    if (fs.existsSync(preloadPath)) {
-      // addInitScript 支持 file / function 形式的注入；M-7：注入本次启动的 emit nonce
-      const code = fs.readFileSync(preloadPath, 'utf8').replace(/__BOSSCLAW_EMIT_NONCE__/g, EMIT_NONCE);
-      await page.addInitScript({ content: code });
-    }
+    // 注入顺序固定：平台适配表（window.__bossclawAdapters）→ 采集器（window.__bossclawCollector）
+    // → cloakPreload（事件桥 window.__bossclawEmitEvent / 调度 window.__bossclaw_listen）。
+    // 采集器在选择器 / 平台判定上依赖适配表，且通过 preload 暴露的 emit 回传事件，故顺序不可换。
+    await injectPageScript(page, path.join(__dirname, '..', 'preload', 'platform-adapters.cjs'), 'platform-adapters.cjs', (src) =>
+      // platform-adapters.cjs 是 CommonJS（module.exports）：用最小垫片包成页面脚本，
+      // 挂到 window.__bossclawAdapters（纯数据 + 纯函数、零 DOM、零 require）
+      `(function(){ const module={exports:{}}; (function(module, exports){\n${src}\n})(module, module.exports); window.__bossclawAdapters = module.exports; })();`
+    );
+    await injectPageScript(page, path.join(__dirname, 'cloakCollector.cjs'), 'cloakCollector.cjs');
+    await injectPageScript(page, path.join(__dirname, 'cloakPreload.cjs'), 'cloakPreload.cjs');
     const targetUrl = (url && /^https?:\/\//.test(url)) ? url : 'https://www.zhipin.com';
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
