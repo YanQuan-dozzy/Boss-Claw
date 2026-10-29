@@ -223,7 +223,7 @@ class CollectorBase:
         collected_pages = 0
         captured: list = []
 
-        with open_browser(os_name=os_name) as page:
+        with open_browser(os_name=os_name, platform=self.platform) as page:
             cookies = load_cookies(self.platform)
             if cookies:
                 try:
@@ -354,7 +354,7 @@ class CollectorBase:
 
         log('💬', f'[{self.platform}] 投递 → job={job_id}（{self.label}）')
 
-        with open_browser(os_name=os_name, headless=False) as page:
+        with open_browser(os_name=os_name, headless=False, platform=self.platform) as page:
             cookies = load_cookies(self.platform)
             if cookies:
                 try:
@@ -505,7 +505,7 @@ class CollectorBase:
     def do_login(self, timeout: int = 180, os_name: str | None = None) -> dict:
         """打开可见窗口扫码登录，Cookie 按平台持久化。"""
         log('🔐', f'[{self.platform}] 打开登录窗口，请用{self.label}扫码')
-        with open_browser(os_name=os_name, headless=False) as page:
+        with open_browser(os_name=os_name, headless=False, platform=self.platform) as page:
             cookies = load_cookies(self.platform)
             if cookies:
                 try:

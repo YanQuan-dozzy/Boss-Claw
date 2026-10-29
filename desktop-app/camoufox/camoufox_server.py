@@ -49,8 +49,8 @@ from urllib.parse import urlparse, parse_qs, urlencode
 # BOSS 之外的平台（猎聘/智联/51Job）在 platforms/ 包内实现，复用本基座
 from platforms.common import (
     log, human_delay, human_sleep, type_greeting_human,
-    open_browser, goto_stable, load_cookies, save_cookies, clear_cookies,
-    cookie_file, detect_kernel, PLATFORMS,
+    open_browser, goto_stable, load_cookies, save_cookies, clear_cookies, clear_session,
+    load_identity, cookie_file, detect_kernel, PLATFORMS,
 )
 import platforms as platform_mods
 # BOSS 隐身通道的「基础求职条件」翻译层（issue #7 第五节）：
@@ -134,7 +134,7 @@ def search_jobs(query: str, city: str, pages: int = 1, os_name: str | None = Non
     last_code = None
     last_msg = ''
 
-    with open_browser(os_name=os_name) as page:
+    with open_browser(os_name=os_name, platform='boss') as page:
         cookies = load_cookies()
         for page_num in range(1, pages + 1):
             try:
@@ -365,7 +365,7 @@ def send_greeting(job_id: str, greeting: str, os_name: str | None = None, send_r
 
     log('📨', f'发送招呼语 → job={job_id}（{len(greeting)} 字）')
 
-    with open_browser(os_name=os_name) as page:
+    with open_browser(os_name=os_name, platform='boss') as page:
         cookies = load_cookies()
         if cookies:
             try:
@@ -1542,7 +1542,7 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
     log('💬', f'自动沟通（{scope_label}）→ job={job_id}（{len(send_text)} 字，可见窗口）')
 
     # 可见窗口：真正的浏览器操作，用户可全程观看
-    with open_browser(os_name=os_name, headless=False) as page:
+    with open_browser(os_name=os_name, headless=False, platform='boss') as page:
         cookies = load_cookies()
         if cookies:
             try:
@@ -1726,7 +1726,7 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
 # ============================================================
 def do_login(timeout: int = 180, os_name: str | None = None) -> dict:
     log('🔐', '打开登录窗口，请用手机 BOSS App 扫码')
-    with open_browser(os_name=os_name, headless=False) as page:
+    with open_browser(os_name=os_name, headless=False, platform='boss') as page:
         cookies = load_cookies()
         if cookies:
             try:
@@ -2031,7 +2031,7 @@ def _watch_teardown() -> None:
 
 def _watch_start(os_name: str | None = None) -> dict:
     _watch_teardown()
-    cm = open_browser(os_name=os_name, headless=False)
+    cm = open_browser(os_name=os_name, headless=False, platform='boss')
     page = cm.__enter__()
     global _chat_watch_cm, _chat_watch_page
     _chat_watch_cm, _chat_watch_page = cm, page
@@ -2043,14 +2043,19 @@ def _watch_start(os_name: str | None = None) -> dict:
             log('⚠️', f'注入 Cookie 失败：{e}')
     page.goto(CHAT_WATCH_URL, wait_until="domcontentloaded", timeout=30000)
     human_sleep(3.4, 0.35, 2.0)
+    # 启动失败必须收口：否则常驻浏览器与平台 profile 目录锁一起泄漏，
+    # 后续所有 BOSS 任务都会走降级临时 profile，且「退出登录」删不掉 profile。
     if 'login' in (page.url or '').lower():
+        _watch_teardown()
         return {"ok": False, "code": 31, "message": "未登录 BOSS，请先扫码登录"}
     risk = _risk_text_hit(page)
     if risk:
+        _watch_teardown()
         return {"ok": False, "code": 35, "message": f"检测到安全验证/访问受限（{risk}），请人工完成验证"}
     if not _chat_page_ready(page):
         human_sleep(3.0, 0.3, 2.0)
     if not _chat_page_ready(page):
+        _watch_teardown()
         return {"ok": False, "code": 500, "message": "会话页未就绪（可能未登录或页面结构已变化）"}
     save_cookies(page.context)
     log('👂', '常驻会话监听已启动（BOSS 会话页）')
@@ -2149,6 +2154,24 @@ def _watch_teardown_async() -> None:
             pass
     except Exception:
         pass
+
+
+def _release_watch_before_clear(platform: str) -> None:
+    """退出登录 / 清空数据前先停掉常驻跟聊浏览器（BOSS）。
+
+    常驻浏览器持有该平台的持久 profile 目录，不先关闭会：
+    ① 目录被占用删不掉 → 「退出登录后依旧显示已登录」；
+    ② 浏览器退出时把内存里的旧 Cookie 回写，覆盖刚清理的结果。
+    Playwright 对象有线程亲和，必须经执行器线程关闭，不能在本线程直接 __exit__。
+    """
+    if str(platform or 'boss').strip().lower() != 'boss':
+        return
+    if _chat_watch_page is None:
+        return
+    try:
+        chat_watch_command('stop', {}, timeout=30.0)
+    except Exception as e:
+        log('⚠️', f'退出登录前停止会话监听失败：{str(e)[:80]}')
 
 
 # ============================================================
@@ -2313,7 +2336,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 return self._send(200, result)
 
             if parsed.path == '/logout':
-                clear_cookies(platform)
+                _release_watch_before_clear(platform)
+                clear_session(platform)
                 return self._send(200, {"ok": True, "loggedIn": False})
 
             # 常驻「AI 跟聊」会话监听：start / scan / open / send / stop / status
@@ -2326,7 +2350,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 return self._send(200, result)
 
             if parsed.path == '/clear':
-                clear_cookies(platform)
+                _release_watch_before_clear(platform)
+                clear_session(platform)
                 return self._send(200, {"ok": True})
 
             # 平台能力矩阵（对齐 BossHunter collection/capabilities.py）：
@@ -2368,11 +2393,31 @@ def _cookie_name_matches(name: str, hint: str) -> bool:
     return name.startswith(hint) or hint in name
 
 
+def _cookie_usable(c: dict) -> bool:
+    """cookie 是否既非空值、又未过期。
+
+    过期判定不能省：`wt2` 值还在文件里但早已过期时，原实现仍把它认成「已登录」，
+    界面亮着绿灯、用户点开始，平台却回「身份验证失效」—— 现场看到的正是这个矛盾。
+    `expires` 为 -1 / 缺省 = 会话 cookie（浏览器关闭即失效），仍算有效。
+    """
+    if not c.get('value'):
+        return False
+    exp = c.get('expires', -1)
+    try:
+        exp = float(exp)
+    except (TypeError, ValueError):
+        return True
+    # 兼容毫秒时间戳（个别来源会写成 ms，若不归一会被直译成公元 5 万年后的未来）
+    if exp > 1e12:
+        exp /= 1000.0
+    return exp <= 0 or exp > time.time()
+
+
 def _auth_hint_hit(cookies, hint) -> bool:
     """单个 hint（字符串=任一 cookie 命中；元组=成对条件需同时命中）。"""
     pats = hint if isinstance(hint, tuple) else (hint,)
     return all(
-        any(c.get('value') and _cookie_name_matches(str(c.get('name', '')).lower(), p) for c in cookies)
+        any(_cookie_usable(c) and _cookie_name_matches(str(c.get('name', '')).lower(), p) for c in cookies)
         for p in pats
     )
 
@@ -2455,6 +2500,16 @@ def main():
     server = ThreadingHTTPServer(('127.0.0.1', args.port), CamoufoxHandler)
     server.token = args.token
     log('🚀', f'隐身引擎桥 listening on 127.0.0.1:{args.port} (v{VERSION})')
+
+    # 预热固定浏览器身份：fpgen 首次会下载指纹模型，可能耗时数十秒。
+    # 放在后台线程做，避免用户第一次扫码/投递时才现生成（表现为「点了没反应」）。
+    def _warm_identity():
+        try:
+            load_identity('boss')
+        except Exception:
+            pass
+    threading.Thread(target=_warm_identity, name='bossclaw-identity-warm', daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -445,7 +445,7 @@ async function resetDataForVersion() {
       const camDir = path.join(app.getPath('home'), '.bossclaw');
       if (fs.existsSync(camDir)) {
         for (const f of fs.readdirSync(camDir)) {
-          if (/^camoufox-cookies.*\.json$/i.test(f)) {
+          if (/^camoufox-cookies.*\.json$/i.test(f) || /^camoufox-identity.*\.json$/i.test(f)) {
             try { fs.unlinkSync(path.join(camDir, f)); } catch {}
           }
         }
@@ -455,6 +455,13 @@ async function resetDataForVersion() {
             if (fs.existsSync(p)) fs.unlinkSync(p);
           } catch {}
         }
+        // 隐身引擎的持久 profile（浏览器本地存储 / 会话）也必须清掉：
+        // 只删 Cookie 文件的话，重建后浏览器 profile 里的 localStorage 与
+        // 浏览器级会话仍在，平台依旧认为「已登录」，清空形同虚设。
+        try {
+          const profDir = path.join(camDir, 'camoufox-profiles');
+          if (fs.existsSync(profDir)) fs.rmSync(profDir, { recursive: true, force: true });
+        } catch {}
       }
     } catch (e) { dlog('warn', 'clear camoufox files failed', { message: e?.message }); }
     // 3) 清空 CloakBrowser 隐身浏览器持久 profile

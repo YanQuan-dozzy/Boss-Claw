@@ -121,8 +121,10 @@ export default function AutoChat() {
       setCfx(s);
       // 依赖安装中不算「不可用」，不自动关闭引擎开关
       if (!s.ready && !s.installing && cfxConfig.enabled) setConfig({ camoufox: { ...cfxConfig, enabled: false } });
+      return s;
     } catch {
       /* 探测失败：保持上一次状态，不打断页面 */
+      return null;
     } finally {
       if (!silent) setCfxLoading(false);
     }
@@ -237,6 +239,7 @@ export default function AutoChat() {
       return;
     }
     const st = await camoufoxStatus();
+    setCfx(st); // 顺带把页头/平台卡状态校准到最新，避免旧状态继续误导
     if (!st.ready) {
       message.warning('隐身引擎未就绪：' + (st.message || '请先下载 Camoufox 隐身引擎内核（暂未下载）'));
       return;
@@ -246,20 +249,26 @@ export default function AutoChat() {
       return;
     }
     // 多平台适配：验证队列中各平台均已登录（独立验证，未登录平台阻断启动）
+    // BOSS 与其他平台走同一口径：**未登录就不要启动**，否则只会打开浏览器后
+    // 被平台以「身份验证失效 / 重新登录」拒掉，用户白等一轮还看不出原因。
     const involved = [...new Set(batchQueue.map((p) => String(p.job?.platform || 'boss')))];
     for (const pf of involved) {
-      // BOSS 走全局引擎就绪判断；其余平台需对应平台已登录
-      if (pf !== 'boss') {
-        let st = cfxPlatformLogin[pf];
-        if (!st) st = await refreshPlatformStatus(pf);
-        if (!st?.ready) {
-          message.warning(`平台「${platformLabel(pf as JobPlatform)}」隐身引擎未就绪：${st?.message || '请到设置页检测'}`);
+      if (pf === 'boss') {
+        if (!st.engine?.loggedIn) {
+          message.warning('BOSS 未登录或登录态已失效：请先在上方「BOSS 直聘」卡片扫码登录后再启动');
           return;
         }
-        if (!st?.engine?.loggedIn) {
-          message.warning(`平台「${platformLabel(pf as JobPlatform)}」未登录，请先在下方扫码登录后再启动`);
-          return;
-        }
+        continue;
+      }
+      let pst = cfxPlatformLogin[pf];
+      if (!pst) pst = await refreshPlatformStatus(pf);
+      if (!pst?.ready) {
+        message.warning(`平台「${platformLabel(pf as JobPlatform)}」隐身引擎未就绪：${pst?.message || '请到设置页检测'}`);
+        return;
+      }
+      if (!pst?.engine?.loggedIn) {
+        message.warning(`平台「${platformLabel(pf as JobPlatform)}」未登录，请先在下方扫码登录后再启动`);
+        return;
       }
     }
     // 启动后台持久沟通：切到工作台仍继续运行，新批准的岗位会自动加入
