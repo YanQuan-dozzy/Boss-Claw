@@ -273,10 +273,11 @@ export function latestAttempt(session: MockSession, questionId: string): MockAtt
   return list.reduce((best, cur) => (cur.submittedAt >= best.submittedAt ? cur : best), list[0]);
 }
 
-function jsonMessages(system: string, user: string): ChatMessage[] {
+async function jsonMessages(system: string, user: string): Promise<ChatMessage[]> {
   // 技能层注入（skills/mock-interview-*/SKILL.md，启用态由设置页控制）。
   // 只放在 system 尾部，不改变各调用点自己的硬约束顺序。
-  const extra = skillInstructionsFor('mock-interview');
+  // 必须 await：否则启动时技能未加载完 / 刚导入自定义技能时会退化为内置兜底，自定义技能静默漏注入。
+  const extra = await skillInstructionsFor('mock-interview');
   const sys = extra ? `${system}\n\n【技能指令】\n${extra}` : system;
   return [
     { role: 'system', content: sys },
@@ -337,7 +338,7 @@ export async function generatePhase1(
   };
 
   try {
-    let raw = await callModel(jsonMessages(PHASE1_SYSTEM, user), ctx.model, {
+    let raw = await callModel(await jsonMessages(PHASE1_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.55,
       maxTokens: 2200,
@@ -347,7 +348,7 @@ export async function generatePhase1(
     // 结构性问题（题量不足 / 缺行为题）才重试一次；字段级问题已在 normalize 里修复
     if (!phase1Acceptable(qs, want)) {
       raw = await callModel(
-        jsonMessages(PHASE1_SYSTEM, `${user}\n\n（上一次输出不符合要求：题量不足或缺行为题、或题干重复。请严格按 json 重新输出 ${want} 道不重复的题。）`),
+        await jsonMessages(PHASE1_SYSTEM, `${user}\n\n（上一次输出不符合要求：题量不足或缺行为题、或题干重复。请严格按 json 重新输出 ${want} 道不重复的题。）`),
         ctx.model,
         { jsonMode: true, temperature: 0.5, maxTokens: 2400, purpose: '模拟面试出题（阶段一重试）' },
       );
@@ -445,7 +446,7 @@ export async function generatePhase2(
   };
 
   try {
-    let raw = await callModel(jsonMessages(PHASE2_SYSTEM, user), ctx.model, {
+    let raw = await callModel(await jsonMessages(PHASE2_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.5,
       maxTokens: 2400,
@@ -454,7 +455,7 @@ export async function generatePhase2(
     let qs = parse(raw);
     if (!phase2Acceptable(qs, want)) {
       raw = await callModel(
-        jsonMessages(PHASE2_SYSTEM, `${user}\n\n（上一次输出不符合要求：需 ${want} 道题、至少 2 题带 resumeRef 且直接对应 JD。请重新输出严格 json。）`),
+        await jsonMessages(PHASE2_SYSTEM, `${user}\n\n（上一次输出不符合要求：需 ${want} 道题、至少 2 题带 resumeRef 且直接对应 JD。请重新输出严格 json。）`),
         ctx.model,
         { jsonMode: true, temperature: 0.45, maxTokens: 2600, purpose: '模拟面试出题（阶段二重试）' },
       );
@@ -616,7 +617,7 @@ export async function advance(
   ].filter(Boolean).join('\n');
 
   try {
-    const raw = await callModel(jsonMessages(ADVANCE_SYSTEM, user), ctx.model, {
+    const raw = await callModel(await jsonMessages(ADVANCE_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.3,
       maxTokens: 900,
@@ -980,7 +981,7 @@ export async function buildReport(
   ].join('\n');
 
   try {
-    const raw = await callModel(jsonMessages(REPORT_SYSTEM, user), ctx.model, {
+    const raw = await callModel(await jsonMessages(REPORT_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.2,
       maxTokens: 6000,
@@ -1028,7 +1029,7 @@ export async function rescoreAnswer(
     '请只对这一道题按 json 输出评分（questions 数组只含这一题）。',
   ].filter(Boolean).join('\n');
   try {
-    const raw = await callModel(jsonMessages(REPORT_SYSTEM, user), ctx.model, {
+    const raw = await callModel(await jsonMessages(REPORT_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.2,
       maxTokens: 1800,
@@ -1068,7 +1069,7 @@ export async function answerReverse(
     `候选人的提问：${q}`,
   ].join('\n');
   try {
-    const raw = await callModel(jsonMessages(REVERSE_SYSTEM, user), ctx.model, {
+    const raw = await callModel(await jsonMessages(REVERSE_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.4,
       maxTokens: 900,
@@ -1139,7 +1140,7 @@ export async function rewriteAnswer(
     a.answer,
   ].filter(Boolean).join('\n');
   try {
-    const raw = await callModel(jsonMessages(REWRITE_SYSTEM, user), ctx.model, {
+    const raw = await callModel(await jsonMessages(REWRITE_SYSTEM, user), ctx.model, {
       jsonMode: true,
       temperature: 0.4,
       maxTokens: 1800,

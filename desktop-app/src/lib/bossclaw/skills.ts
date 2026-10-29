@@ -280,10 +280,11 @@ export async function deleteCustomSkill(id: string): Promise<SkillOpResult> {
 /**
  * 按作用域返回启用技能的指令（含引导语），供各 AI 调用点追加到 system prompt 末尾。
  * 无启用技能时返回空串，调用点应只在非空时拼接，避免污染提示词。
- * 未加载完成时先用内置定义（与 SKILL.md 正文一致），并惰性触发磁盘加载。
+ * **必须 await**：先等磁盘加载完成再取定义——否则首次调用（启动预热未完成 / 刚导入自定义技能后）
+ * 会退化为内置 BOSS_SKILLS 兜底，用户导入/新建的自定义技能被静默漏掉（只有内置技能生效）。
  */
-export function skillInstructionsFor(scope: SkillScope): string {
-  void ensureSkillsLoaded();
+export async function skillInstructionsFor(scope: SkillScope): Promise<string> {
+  await ensureSkillsLoaded();
   const state = loadState();
   const enabled = currentDefs().filter((s) => s.scope === scope && (state[s.id] ?? s.defaultEnabled));
   if (!enabled.length) return '';

@@ -380,7 +380,7 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
     const profile = validateGeneratedProfile(
       await cachedCallModel(
         [
-          { role: 'system', content: buildProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
+          { role: 'system', content: buildProfilePromptWithAnchor(anchor) + (await skillInstructionsFor('profile')) },
           { role: 'user', content: await prepareProfileResume(text, model, 4200) },
         ],
         model,
@@ -408,7 +408,7 @@ export async function buildProfile(resumeText: string, model: AppConfig['model']
       const compact = validateCompactGeneratedProfile(
         await cachedCallModel(
           [
-            { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) + skillInstructionsFor('profile') },
+            { role: 'system', content: buildCompactProfilePromptWithAnchor(anchor) + (await skillInstructionsFor('profile')) },
             // 精简重试：输出上限收到 2200 → 可用输入预算相应放宽（同口径见 contextBudget.ts）
             { role: 'user', content: await prepareProfileResume(text, model, 2200) },
           ],

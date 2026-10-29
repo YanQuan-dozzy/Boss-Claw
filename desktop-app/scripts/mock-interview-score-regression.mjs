@@ -47,7 +47,7 @@ const stubPlugin = {
     b.onResolve({ filter: /^\.\/skills$/ }, () => ({ path: 'stub-skills', namespace: 'stub' }));
     b.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => {
       if (args.path === 'stub-skills') {
-        return { loader: 'js', contents: 'export const skillInstructionsFor = () => "";' };
+        return { loader: 'js', contents: 'export const skillInstructionsFor = async () => "";' };
       }
       return {
         loader: 'js',

@@ -822,7 +822,7 @@ export async function tailorForJob(
     // 求职信/打招呼语提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 简历中心输入框内容 → ③ 都不满足则回退本地规则。
     // 每次调用都从磁盘重读 skills/*/SKILL.md（不改文件即无副作用），保证 JD 拆解方法等技能文档改了即时生效。
     await reloadSkills();
-    const greetingsSkill = skillInstructionsFor('greetings');
+    const greetingsSkill = await skillInstructionsFor('greetings');
     const greetingInstructions = greetingsSkill || (customGreetingPrompt || '').trim();
     // 校名披露：本地名单裁定后注入（见 schoolTier.ts）——只约束 coverLetter，简历正文按原文照抄不受限
     const schoolTier = resolveSchoolTier(normalizeStringList(profile.facts?.education, 8), resumeText);
@@ -832,7 +832,7 @@ export async function tailorForJob(
     const coverHasSchoolIssue = (text: string) => !schoolTier.allowSchoolName && hasSchoolMention(text);
     const result: any = await cachedCallModel(
       [
-        { role: 'system', content: buildTailorSystemPrompt(greetingInstructions, schoolRule) + skillInstructionsFor('assistant') + (supplementCtx ? '\n' + ITERATION_RULE : '') },
+        { role: 'system', content: buildTailorSystemPrompt(greetingInstructions, schoolRule) + (await skillInstructionsFor('assistant')) + (supplementCtx ? '\n' + ITERATION_RULE : '') },
         {
           role: 'user',
           content: `职业画像：${profileCtx}
@@ -878,7 +878,7 @@ ${untrustedJobSection(JSON.stringify(jobView))}${iterationCtx}`,
     try {
       const review: any = await cachedCallModel(
         [
-          { role: 'system', content: buildReviewSystemPrompt(schoolRule) + skillInstructionsFor('assistant') + (supplementCtx ? '\n' + ITERATION_RULE : '') },
+          { role: 'system', content: buildReviewSystemPrompt(schoolRule) + (await skillInstructionsFor('assistant')) + (supplementCtx ? '\n' + ITERATION_RULE : '') },
           {
             role: 'user',
             content: `职业画像：${profileCtx}\n简历原文：${resumeCtx}${extraCtx ? `\n经历补充材料：\n${extraCtx}` : ''}${iterationCtx}
