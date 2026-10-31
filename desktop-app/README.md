@@ -42,7 +42,7 @@
 
 * **定制简历**：侧栏「定制简历」页输入岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，AI 输出不达标回退本地规则兜底。
 
-* **AI 技能体系**：`skills/` 内置 7 项（resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match，SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；jd-reading（读 JD 四层拆解，assistant 作用域，默认开启）、great-resume（经历酥化，assistant 作用域）、job-match（证据驱动岗位匹配，job-analysis 作用域）为增强技能，可在设置页手动启用；技能入口每次从磁盘重读（`reloadSkills()`）；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理。
+* **AI 技能体系**：`skills/` 内置 7 项（resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match，SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；jd-reading（读 JD 四层拆解，assistant 作用域，默认开启）、great-resume（经历酥化，assistant 作用域）、job-match（证据驱动岗位匹配，job-analysis 作用域）为增强技能，可在设置页手动启用；技能入口每次从磁盘重读（`reloadSkills()`）；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理，自行导入 / 新建的技能、以及自行放进 `skills/` 目录的非出厂技能都显示「删除」入口（出厂内置技能按 `SHIPPED_SKILL_IDS` 只读，仅可停用；目录只读时删除自动降级为屏蔽名单 `userData/skills-removed.json`）。
 
 * **LLM 预设**：OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟 / 自定义（OpenAI 兼容端点）。
 
@@ -203,6 +203,10 @@ npm start                  # 仅启动 Electron（需先 build 或 dev 服务在
 npm run typecheck          # 仅类型检查（不打包）
 npm run build              # 类型检查 + Vite 构建到 dist/
 npm run verify             # typecheck + build 组合
+npm run verify:all         # typecheck + 全部纯逻辑回归 + build（提交前跑这个）
+
+npm run test:all           # 35 个纯逻辑回归套件（约 1 分钟）；-- --list 可看清单与跳过原因
+npm run test:ipc           # IPC 通道清单一致性（白名单 vs 主进程注册 vs 渲染层直写）
 
 npm run package            # 构建并打包 Windows NSIS 安装包 + 绿色便携版
 npm run package:portable   # 仅打包绿色便携版（无需安装）
@@ -214,7 +218,7 @@ npm run package:all        # 打包 Windows + Linux
 
 > **macOS 安装包**受 electron-builder 限制，只能在 macOS 上构建（dmg 依赖 macOS 系统工具）；Windows / Linux 可在本机直接打包。
 > **打包格式**由 `package.json` 的 `build.*.target` 决定（Windows = nsis + portable，Linux = AppImage + deb，macOS = dmg + zip）；需要 rpm / pacman / tar.gz 等其它格式时，向 `build.linux.target` 补充目标后重新执行 `npm run package:linux`。
-> **macOS 源码打包档案**：v2.6.0 的 Releases 附带 `BossClaw-2.6.0-mac.tar.gz`（档案内自带该版本的 `build-mac.sh`，解压即可一键打包）；`main` 分支已移除源码打包脚本，Mac 用户直接用 `npm run package:mac`。
+> **已发布的 v2.5.3** 另附 `BossClaw-2.5.3-mac.tar.gz` 源码打包档案（内含该版本的 `build-mac.sh`）；`main` 分支已移除源码打包脚本，Mac 用户直接用 `npm run package:mac`。
 
 > **Electron dev 模式**：开发模式下 Electron 加载 `http://localhost:5173`（自动扫描 5173-5179 端口），失败则回退 `dist/index.html`；生产模式只加载 `dist/index.html`。
 > **首次运行需在本机有 Electron 运行环境**（`npm install` 会安装 `electron` 包及其二进制）。
@@ -229,15 +233,9 @@ npm run package:all        # 打包 Windows + Linux
 
 ## 打包产出
 
-各平台打包命令均在 `release/` 目录产出产物。三个系统各自独立打包，命令与产物互不复用：
+各平台打包命令均在 `release/` 目录产出产物：
 
-| 系统 | 打包命令 | 产物 |
-| --- | --- | --- |
-| 🪟 Windows 10/11（x64） | `npm run package` / `package:all` | NSIS 安装包 + 绿色便携版 |
-| 🐧 Linux（x86_64） | `npm run package:linux` / `package:all` | AppImage + deb |
-| 🍎 macOS（Intel / Apple Silicon） | `npm run package:mac`（只能在 macOS 上执行） | dmg + zip |
-
-### 🪟 Windows 10/11（x64）—— `npm run package` 或 `package:all`
+### Windows（`npm run package` 或 `package:all`）
 
 ```
 release/
@@ -248,32 +246,31 @@ release/
 ```
 
 > `<version>` 取 `desktop-app/package.json` 的 `version`（单一来源；安装包名由 electron-builder 按同一字段生成）。
-> 示例：`version` = `2.6.0` → `BossClaw-2.6.0-x64.exe`。
+> 示例：`version` = `2.6.1` → `BossClaw-2.6.1-x64.exe`。
 
-### 🐧 Linux（x86_64）—— `npm run package:linux` 或 `package:all`
+### Linux（`npm run package:linux` 或 `package:all`）
 
 按 `build.linux.target` 产出 **AppImage + deb** 两种格式：
 
 ```
 release/
-├── BossClaw-<version>-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
-├── BossClaw-<version>-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
-└── linux-unpacked/                      # Linux 解压目录
+├── BossClaw-2.5.3-x86_64.AppImage   # Linux 通用（跨发行版可执行单文件）
+├── BossClaw-2.5.3-amd64.deb         # Debian / Ubuntu / Linux Mint 等 deb 系
+└── linux-unpacked/                   # Linux 解压目录
 ```
 
-> 示例：`version` = `2.6.0` → `BossClaw-2.6.0-x86_64.AppImage` / `BossClaw-2.6.0-amd64.deb`（与 Releases 上的资产名一致）。
-> 需要 rpm（RHEL / Fedora / CentOS）或 pacman（Arch / Manjaro）时，向 `build.linux.target` 补充 `rpm` / `pacman` 后重新打包。
+> 已发布的 v2.5.3 另附 `BossClaw-2.5.3-x64.tar.gz` 通用压缩包。需要 rpm（RHEL / Fedora / CentOS）或 pacman（Arch / Manjaro）时，向 `build.linux.target` 补充 `rpm` / `pacman` 后重新打包。
 
-### 🍎 macOS（Intel / Apple Silicon）—— `npm run package:mac`，只能在 macOS 系统执行
+### macOS（`npm run package:mac`，只能在 macOS 系统执行）
 
 ```
 release/
-├── BossClaw-<version>-x64.dmg / .zip    # Intel Mac（x86_64）
-├── BossClaw-<version>-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
-└── mac/                                 # macOS 解压目录（.app）
+├── BossClaw-2.5.3-x64.dmg / .zip    # Intel Mac（x86_64）
+├── BossClaw-2.5.3-arm64.dmg / .zip  # Apple Silicon（M1/M2/M3/M4）
+└── mac/                              # macOS 解压目录（.app）
 ```
 
-> `main` 分支不提供「源码打包档案」脚本（历史 `package:source` / `build-mac.sh` 已移除）；无 Mac 环境时下载 Releases 上的 `BossClaw-2.6.0-mac.tar.gz`（档案内自带该版本的 `build-mac.sh`，解压即可一键打包），或交给有 Mac 的协作者直接用本源码执行 `npm run package:mac`。
+> `main` 分支不再提供「源码打包档案」脚本（历史 `package:source` / `build-mac.sh` 已移除）；无 Mac 环境时可下载已发布的 `BossClaw-2.5.3-mac.tar.gz`（内含该版本脚本），或交给有 Mac 的协作者直接用本源码执行 `npm run package:mac`。
 
 ***
 
@@ -295,7 +292,7 @@ release/
 
 ### IPC 总线（白名单 channel）
 
-详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**112 条** `ALLOWED_IPC_CHANNELS` 白名单，其中模拟面试 `jc:mock-interview-*` 占 46 条；新增 `jc:` 通道必须同步登记，否则运行时抛错）：
+详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**116 条** `ALLOWED_IPC_CHANNELS` 白名单，其中模拟面试 `jc:mock-interview-*` 占 47 条；新增 `jc:` 通道必须同步登记，否则运行时抛错。登记是否漏了由 `npm run test:ipc` 兜底校验）：
 
 | Channel                       | 用途                                                |
 | ----------------------------- | ------------------------------------------------- |
@@ -320,7 +317,7 @@ release/
 | `jc:skills-*`                 | AI 技能库列出 / 读取 / 导入 / 删除（防路径穿越）                  |
 | `jc:llm-proxy`                | 主进程代发用户配置模型的 HTTP 请求（统一出口）                      |
 | `jc:webview-diag` / `jc:webview-source` | webview 诊断信息 / 页面源码（复制用）                    |
-| `jc:mock-interview-*`（46 条） | 模拟面试：会话 CRUD / 导出、题库与题目、语音包安装与状态、ASR / TTS |
+| `jc:mock-interview-*`（47 条） | 模拟面试：会话 CRUD / 导出（JSON 全量 + 单场 Markdown）、题库与题目、语音包安装与状态、ASR / TTS |
 
 所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。`jc:save-pdf-batch*` 由 preload 直接 `invoke`，尚未纳入 `assertIpcChannel` 白名单校验（待统一）。
 
@@ -369,6 +366,28 @@ release/
 ***
 
 ## 变更记录
+
+* **v2.6.1（2026-10-31 发布）** — 稳定性版本：数据持久化 / 隐身登录 / 采集翻页 / 投递中断四条主线修复：
+  * **本地数据不再丢（issue #10 根治）**：岗位队列整体迁出 `localStorage`，改存主进程 `userData/queue/queue-store.json`（原子写 tmp+rename、`.bak` 回退、防抖合并 + 单飞串行）；首启自动迁移并验真后清理源数据；`clearAll` 一并删除队列目录，导入改 `await`；状态栏 / 设置页按「存储去向」展示队列文件占用。配套 `queue-store-regression.mjs`（38 断言）。
+  * **持久化健康可见**：`persistSafe` 新增失败状态（原因 / quota / 次数，成功即清）、失败订阅与内存态快照；失败当刻强制落备份（60s 限频），导出优先内存态；状态栏常驻「本地数据未保存」红标（≥80% 提前琥珀预警），设置页新增「本地存储用量」卡片；主进程 `userData` 心跳锁实现单实例守卫（存在 + mtime 120s + pid 存活三重判定）。
+  * **存储配额口径修正**：实测 Electron `localStorage` 上限 52,428,800 码元（50MB，非流传的 5MB），按「键名 + 值」码元计费；`--unlimited-storage` 实测无效。`LOCAL_STORAGE_QUOTA_BYTES` → `LOCAL_STORAGE_QUOTA_UNITS`，进度条与预警阈值同步。
+  * **隐身通道登录态**：Camoufox 指纹首次生成后落盘复用（`camoufox-identity-{platform}-{os}.json`）、profile 按平台持久化（`camoufox-profiles/{platform}`），修掉「刚扫码成功、一投递就要求重新验证」；登录态判定加入过期检查（毫秒 expires 归一秒）、`load_cookies` 跳过过期条目；退出登录连 profile 一起清；设置页为各平台补「隐身扫码登录 / 退出隐身」；自动沟通页对 BOSS 也做登录拦截。离线回归 23 例（`test_browser_identity` / `test_auth_cookie_expiry`）。
+  * **采集翻页（issue #7）**：设置页 Camoufox 面板改为常驻（不再被 `engineMode` 包裹），「隐身搜索页数」→「搜索结果页数」并补单位 / 上限 / 默认值说明；断点续采改按页数比对（`combo_entry()` 深拷贝 + `min_pages` 判据，页数不足只返 False 不删条目，`PROGRESS_VERSION` 1 → 2）；页数上限 `min(5,…)` → `clamp_pages()`（默认 10、`BOSCLAW_MAX_SEARCH_PAGES` 可覆盖、硬上限 20）；BOSS 隐身通道补回「基础求职条件」（`filters.py` 新增 `BOSS_*` 码表与 `_boss_params()`，与 `searchUrl.ts` 逐字一致并有源码级双源守卫；薪资刻意不参与 BOSS）。新增 `test_progress_resume.py`（11 例）/ `test_boss_filters.py`（12 例）。
+  * **投递可中断**：暂停 / 停止不再清 `activeId` 与 `applyStage`（避免在途回传因路由键丢失被丢弃），新增 `deliveryAbortRef` 中止信号，批次休息 / 岗位间隔 / 页面就绪等待均可在 1s 内中断；沟通动作未下发时岗位保持队列态，`runNext` 增加暂停守卫。
+  * **技能注入**：`skillInstructionsFor` 由同步改 `async` 并 `await ensureSkillsLoaded`，启动预热未完成或刚导入自定义技能时不再静默退化为内置兜底；所有调用点（画像 / 岗位分析 / 求职信 / 模拟面试）同步补 `await`。
+  * **HR 活跃度分档**：新增周 / 月数字解析（阿拉伯数字、中文数字与「半」），修掉「2周内活跃」漏判与「2月内活跃」误判为「本月活跃」；补 9 条回归断言。
+  * **简历中心预览**：新增 `skipHardBlockShortCircuit`，预览不再因学历 / 求职类型等本地硬条件早退恒回退本地规则；输入框内容按「技能 → 输入框 → 内置」优先级注入主分析 system prompt。
+  * **CloakBrowser 采集通道**：新增 `cloakCollector.cjs` 承载采集主循环（逐卡滚动 / 高亮 / 详情提取 / 列表级采集 / JD 补齐），选择器复用 `platform-adapters.cjs`；launcher 固定注入顺序（适配表 → 采集器 → preload），缺失文件带路径告警；`CloakView` 用 `probeId` + `page-status-result` 一次性事件补页面状态探测，采集器缺失立即回 `collect-error`，不再白等 15 分钟兜底超时。
+  * 门禁：`tsc -b` + `vite build` 通过；`scripts/test-all.mjs` 纯逻辑回归通过（含 `queue-store` / `persist-health` / `bank-recall` 等）。
+
+* **v2.6.0（2026-10-22 发布）** — 新增「模拟面试」+ 文档层更新：
+  * **模拟面试（Phase 1–4B 首次随包发布）**：新增 `pages/MockInterview.tsx` 与 `lib/bossclaw/mockInterview*.ts` 一整套本地链路 —— 两段式出题（通用题 → 按简历与上一轮回答深挖）、本地规则优先的动态追问、4+1 维四档评分与本地加权总分、雷达图 / 同岗位上一场对比 / 按缺口追练 / 长期弱项聚类、报告导出（单场 Markdown + 全量 JSON）、会话落盘主进程并支持断点续练与单题重答。
+  * **本地语音**：题干与追问本地朗读（Kokoro + sherpa-onnx，8 音色，题干预渲染 WAV 缓存；追问走流式合成边出边播），可选 Edge 神经语音（默认关闭，失败静默回落本地）；支持导入 Piper 转换版 / VITS 音色包；语音作答走 SenseVoice 16k 本机转写；「克隆我的声音」ZipVoice 零样本，参考音频不出本机。主进程新增 `electron/speechService.cjs` / `speechWorker.cjs` / `speechInstall.cjs` / `edgeTts.cjs` / `wav.cjs` 与 `mockInterview*Repo.cjs`，IPC 白名单 66 → 112（按模拟面试通道分组）。
+  * **本地面试题库**：`resources/bank/zh-interview-small.json`（13.6K 题，Apache-2.0，来源与清洗口径见 `resources/bank/NOTICE.md`）+ BM25 召回（召回 20 条候选，同一次 AI 调用内完成重排），支持 JSON / CSV / Markdown / docx 导入与增删改。
+  * **⚠️ 测试状态**：该功能**尚未经过完整测试**，本版按「可自行试用」发布，不保证稳定；在线语音引擎与打包冒烟尚未完成。遇到问题请提 Issue。
+  * **⚠️ 开源范围**：该功能的部分优化与更新代码**暂不开源**，公开仓库中的实现与安装包内的实现可能不完全一致。
+  * **文档**：根 README 信息架构重排（新增「为什么做 / 适合谁 / 与其他方案的区别 / 当前能力规模」四节，核心功能拆为 15 个编号小节），架构图补浅色 / 深色 SVG，技能数 7 → 9、侧栏入口 11 → 12、IPC 白名单 66 → 112 三处口径修正。
+  * 门禁：`tsc -b` + `vite build` 通过；`scripts/test-all.mjs` 纯逻辑回归通过。
 
 * **v2.5.7（2026-10-13 发布）** — 工作台岗位「定制简历」+ 猎聘投递链路升级 + 控制桥 / 本地桥安全护栏批次 + 社区贡献修复：
   * **工作台岗位「定制简历」**（`tailorJob.ts` / `tailorBatch.ts` + `TailorResultView` / `JobAssistant`）：单岗位 / 批量 / 迭代三档生成，主进程 `resume-pdf-batch.cjs` 独占写盘防竞态（`wx` + 同名自动编号），配套 `test:tailor-job` / `test:tailor-batch` / `test:tailor-iteration` 三支回归。
