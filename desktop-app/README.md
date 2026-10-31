@@ -292,7 +292,7 @@ release/
 
 ### IPC 总线（白名单 channel）
 
-详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**116 条** `ALLOWED_IPC_CHANNELS` 白名单，其中模拟面试 `jc:mock-interview-*` 占 47 条；新增 `jc:` 通道必须同步登记，否则运行时抛错。登记是否漏了由 `npm run test:ipc` 兜底校验）：
+详见 `electron/main.cjs` 与 `electron/preload/app.cjs`（**121 条** `ALLOWED_IPC_CHANNELS` 白名单，其中模拟面试 `jc:mock-interview-*` 占 48 条；新增 `jc:` 通道必须同步登记，否则运行时抛错。登记是否漏了由 `npm run test:ipc` 兜底校验）：
 
 | Channel                       | 用途                                                |
 | ----------------------------- | ------------------------------------------------- |
@@ -317,7 +317,7 @@ release/
 | `jc:skills-*`                 | AI 技能库列出 / 读取 / 导入 / 删除（防路径穿越）                  |
 | `jc:llm-proxy`                | 主进程代发用户配置模型的 HTTP 请求（统一出口）                      |
 | `jc:webview-diag` / `jc:webview-source` | webview 诊断信息 / 页面源码（复制用）                    |
-| `jc:mock-interview-*`（47 条） | 模拟面试：会话 CRUD / 导出（JSON 全量 + 单场 Markdown）、题库与题目、语音包安装与状态、ASR / TTS |
+| `jc:mock-interview-*`（48 条） | 模拟面试：会话 CRUD / 导出（JSON 全量 + 单场 Markdown）、题库与题目、语音包安装与状态 / 朗读模型切换、ASR / TTS |
 
 所有 IPC handler 统一经 `safeHandle` 包装，未捕获异常写日志后**保持原有 throw 语义**（渲染端 `invoke` reject 行为不变）。`jc:save-pdf-batch*` 由 preload 直接 `invoke`，尚未纳入 `assertIpcChannel` 白名单校验（待统一）。
 
@@ -367,6 +367,15 @@ release/
 
 ## 变更记录
 
+* **未发布（2026-11-01，待随下一版打包）** — 朗读模型可切换 + 克隆音色口径收敛：
+  * **第二套「听」包 MeloTTS**：内置朗读模型不再写死 Kokoro，新增 MeloTTS（`vits-melo-tts-zh_en`，44.1kHz 单女声，约 167MB，音色更接近真人录音）。两套包**可并存**、各自独立下载 / 删除，设置页「语音」卡片按模型行展示「当前使用 / 已下载 / 切换到这套 / 删除」；切换只写偏好 `settings.ttsPack` 并重启语音 worker（旧 `OfflineTts` 实例还占着内存），删掉当前生效的那套自动回落另一套，装完自动切到新装的那套。唯一判定点是 `speechInstall.activeTtsPack()`，UI / 合成 / 预热都从它取引擎。
+  * **引擎分派修正**：`modelConfig()` 改为返回 `{engine, config, pack, dir}`，`planVoice` / `warmup` / `status().engine` 不再写死 `kokoro`（否则切到 MeloTTS 仍拿 Kokoro 配置去加载）；MeloTTS 是单说话人，内置音色表里传的 `sid` 强制归 0，否则 sherpa 拒收。
+  * **导入包识别 MeloTTS 布局**：`mockInterviewVoicePack.isMeloLayout()` 按「`model.onnx` + `tokens.txt` + `lexicon*.txt`，无声码器 / 无 `voices.bin` / 无同名 `.onnx.json`」精确判定，不再被 Piper 规则误判成「原生包需转换」，也不与 Matcha 撞车。**MeloTTS 的 `dataDir` 必须留空** —— 包里那个 `dict/` 是 jieba 分词表，当音素目录传下去 sherpa 会报 `dict/phontab does not exist` 直接加载失败。
+  * **克隆音色**：功能名统一为「克隆音色」（原「克隆我的声音」），创建时**不再要求勾选授权声明**（`licenseAck` 从渲染层、IPC payload 与 manifest 中移除）；保留「参考音频只存本机、不上传、不建声纹库、只用于题干预生成」的数据边界说明。
+  * **开发期语音目录**：非打包运行且 `desktop-app/tmp/speech/models` 存在时直接认该目录（免在每台开发机重下三套模型）；「清空全部数据」只删落在 `userData` 下的语音目录，不连带删开发机模型，打包版行为不变。
+  * 回归：新增 `speech-pack-switch-regression.mjs`（11 条，两套并存 / 切换落盘 / 删生效包回落 / 非法包名拒绝）与 `mock-interview-voice-melo-smoke.mjs`（真模型冒烟，默认跳过）；`voice-pack-regression.mjs` 19 → 22 条（MeloTTS 判定 / `dict` 不当音素目录 / 带声码器的 `model.onnx` 不误判），`voice-repo-regression.mjs` 13 → 12 条（授权门槛用例退场）。IPC 白名单 120 → 121（新增 `jc:mock-interview-speech-set-pack`）。
+  * 门禁：`tsc -b` + `vite build` 通过；`test:ipc` / `repo-hygiene` 通过。
+
 * **v2.6.1（2026-10-31 发布）** — 稳定性版本：数据持久化 / 隐身登录 / 采集翻页 / 投递中断四条主线修复：
   * **本地数据不再丢（issue #10 根治）**：岗位队列整体迁出 `localStorage`，改存主进程 `userData/queue/queue-store.json`（原子写 tmp+rename、`.bak` 回退、防抖合并 + 单飞串行）；首启自动迁移并验真后清理源数据；`clearAll` 一并删除队列目录，导入改 `await`；状态栏 / 设置页按「存储去向」展示队列文件占用。配套 `queue-store-regression.mjs`（38 断言）。
   * **持久化健康可见**：`persistSafe` 新增失败状态（原因 / quota / 次数，成功即清）、失败订阅与内存态快照；失败当刻强制落备份（60s 限频），导出优先内存态；状态栏常驻「本地数据未保存」红标（≥80% 提前琥珀预警），设置页新增「本地存储用量」卡片；主进程 `userData` 心跳锁实现单实例守卫（存在 + mtime 120s + pid 存活三重判定）。
@@ -382,7 +391,7 @@ release/
 
 * **v2.6.0（2026-10-22 发布）** — 新增「模拟面试」+ 文档层更新：
   * **模拟面试（Phase 1–4B 首次随包发布）**：新增 `pages/MockInterview.tsx` 与 `lib/bossclaw/mockInterview*.ts` 一整套本地链路 —— 两段式出题（通用题 → 按简历与上一轮回答深挖）、本地规则优先的动态追问、4+1 维四档评分与本地加权总分、雷达图 / 同岗位上一场对比 / 按缺口追练 / 长期弱项聚类、报告导出（单场 Markdown + 全量 JSON）、会话落盘主进程并支持断点续练与单题重答。
-  * **本地语音**：题干与追问本地朗读（Kokoro + sherpa-onnx，8 音色，题干预渲染 WAV 缓存；追问走流式合成边出边播），可选 Edge 神经语音（默认关闭，失败静默回落本地）；支持导入 Piper 转换版 / VITS 音色包；语音作答走 SenseVoice 16k 本机转写；「克隆我的声音」ZipVoice 零样本，参考音频不出本机。主进程新增 `electron/speechService.cjs` / `speechWorker.cjs` / `speechInstall.cjs` / `edgeTts.cjs` / `wav.cjs` 与 `mockInterview*Repo.cjs`，IPC 白名单 66 → 112（按模拟面试通道分组）。
+  * **本地语音**：题干与追问本地朗读（Kokoro + sherpa-onnx，8 音色，题干预渲染 WAV 缓存；追问走流式合成边出边播），可选 Edge 神经语音（默认关闭，失败静默回落本地）；支持导入 Piper 转换版 / VITS 音色包；语音作答走 SenseVoice 16k 本机转写；「克隆音色」ZipVoice 零样本，参考音频不出本机。主进程新增 `electron/speechService.cjs` / `speechWorker.cjs` / `speechInstall.cjs` / `edgeTts.cjs` / `wav.cjs` 与 `mockInterview*Repo.cjs`，IPC 白名单 66 → 112（按模拟面试通道分组）。
   * **本地面试题库**：`resources/bank/zh-interview-small.json`（13.6K 题，Apache-2.0，来源与清洗口径见 `resources/bank/NOTICE.md`）+ BM25 召回（召回 20 条候选，同一次 AI 调用内完成重排），支持 JSON / CSV / Markdown / docx 导入与增删改。
   * **⚠️ 测试状态**：该功能**尚未经过完整测试**，本版按「可自行试用」发布，不保证稳定；在线语音引擎与打包冒烟尚未完成。遇到问题请提 Issue。
   * **⚠️ 开源范围**：该功能的部分优化与更新代码**暂不开源**，公开仓库中的实现与安装包内的实现可能不完全一致。

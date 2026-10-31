@@ -239,7 +239,8 @@ function status() {
   const st = install.status();
   return {
     ...st,
-    engine: 'kokoro',
+    // 当前朗读引擎：kokoro / vits（MeloTTS）。合成实际走哪条由 install.activeTtsPack() 决定
+    engine: (st.tts && st.tts.engine) || 'kokoro',
     // 在线高音质档（默认关）：值来自 <userData>/speech/settings.json，UI 据此显示开关状态
     onlineEngine: install.getOnlineEngine(),
     workerAlive: Boolean(child),
@@ -343,17 +344,23 @@ function planVoice(opts) {
         : '该音色的模型文件不完整，请重新导入',
     };
   }
-  const engine = resolved ? resolved.engine : 'kokoro';
+  // 内置朗读模型可能是 Kokoro，也可能是 MeloTTS（设置里切换）：引擎与配置都从 modelConfig 取，
+  // 不能在这里写死 kokoro —— 否则切到 MeloTTS 后仍会拿 kokoro 配置去加载。
+  const builtin = install.modelConfig();
+  const engine = resolved ? resolved.engine : (builtin ? builtin.engine : 'kokoro');
   const voiceKey = custom ? custom.id : `sid:${sid}`;
-  const cfg = resolved ? resolved.config : install.modelConfig();
+  const cfg = resolved ? resolved.config : (builtin ? builtin.config : null);
   if (!cfg) return { ok: false, error: '语音包尚未安装' };
 
   const cloned = custom && custom.kind === 'cloned' ? voiceRepo.readRef(voiceId) : null;
   if (custom && custom.kind === 'cloned' && !cloned) {
     return { ok: false, error: '克隆音色的参考音频读取失败，请重新录制' };
   }
-  // 导入包的多说话人模型用 manifest 里的 sid；内置音色用调用方传的 sid
-  const effectiveSid = custom && custom.kind === 'imported' ? Number(custom.sid) || 0 : sid;
+  // 导入包的多说话人模型用 manifest 里的 sid；内置音色用调用方传的 sid。
+  // MeloTTS 是单说话人（sid 必须 0）：内置音色表里的 sid 3 之类传下去会被 sherpa 拒掉。
+  const effectiveSid = custom && custom.kind === 'imported'
+    ? Number(custom.sid) || 0
+    : (!custom && engine === 'vits') ? 0 : sid;
   const payload = { text, sid: effectiveSid, speed, engine, engineConfig: cfg };
   if (cloned) {
     payload.referenceAudioBase64 = Buffer
@@ -511,7 +518,7 @@ async function previewPack(opts) {
   // vits 包常不自带 espeak-ng-data：借用内置包的那份，缺了就在试听这步说清楚
   const fallback = probe.needsEspeak ? install.espeakDataDir() : '';
   const cfg = voicePack.buildEngineConfig(dir, probe.engine, { sid, fallbackDataDir: fallback });
-  if (probe.engine === 'vits' && !cfg.dataDir) {
+  if (probe.needsEspeak && !cfg.dataDir) {
     return {
       ok: false,
       error: '这个音色包需要 espeak-ng-data（音素数据），但它没带、本机也没有可借用的内置语音包。请先安装「听」包（Kokoro）。',
@@ -545,9 +552,11 @@ async function previewPack(opts) {
 }
 
 /** 预热（安装完 / 打开朗读开关时后台调用，避免第一句等 2–4s） */
-async function warmup(engine = 'kokoro') {
-  const cfg = engine === 'zipvoice' ? install.zipvoiceConfig() : install.modelConfig();
-  if (!cfg) return { ok: false, error: engine === 'zipvoice' ? '克隆音色包尚未安装' : '语音包尚未安装' };
+async function warmup(engine = '') {
+  const builtin = install.modelConfig();
+  const wantZip = engine === 'zipvoice';
+  const cfg = wantZip ? install.zipvoiceConfig() : (builtin ? builtin.config : null);
+  if (!cfg) return { ok: false, error: wantZip ? '克隆音色包尚未安装' : '语音包尚未安装' };
   try {
     const info = await ensureInit(cfg);
     return { ok: true, ...info };

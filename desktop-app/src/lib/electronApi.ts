@@ -634,7 +634,7 @@ export const electronApi = {
         return { ok: false, error: (e as Error).message };
       }
     },
-    speechInstall: async (pack: 'tts' | 'asr' | 'clone' = 'tts'): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
+    speechInstall: async (pack: 'tts' | 'asr' | 'clone' | 'melo' = 'tts'): Promise<{ ok: boolean; bytes?: number; error?: string }> => {
       try {
         const fn = api().mockInterviewSpeechInstall;
         if (!fn) return { ok: false, error: '语音安装仅桌面端可用' };
@@ -652,11 +652,21 @@ export const electronApi = {
         return { ok: false, error: (e as Error).message };
       }
     },
-    speechRemove: async (pack: 'tts' | 'asr' | 'clone' = 'tts'): Promise<{ ok: boolean; error?: string }> => {
+    speechRemove: async (pack: 'tts' | 'asr' | 'clone' | 'melo' = 'tts'): Promise<{ ok: boolean; error?: string }> => {
       try {
         const fn = api().mockInterviewSpeechRemove;
         if (!fn) return { ok: false, error: '语音仅桌面端可用' };
         return (await fn(pack)) as { ok: boolean; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    /** 切换朗读模型（Kokoro ⇄ MeloTTS）。两套都装了才切得动，主进程会重启 worker */
+    speechSetPack: async (pack: 'kokoro' | 'melo'): Promise<{ ok: boolean; pack?: string; error?: string }> => {
+      try {
+        const fn = api().mockInterviewSpeechSetPack;
+        if (!fn) return { ok: false, error: '语音仅桌面端可用' };
+        return (await fn(pack)) as { ok: boolean; pack?: string; error?: string };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -768,7 +778,6 @@ export const electronApi = {
       samplesBase64: string;
       sampleRate: number;
       refText: string;
-      licenseAck: boolean;
     }): Promise<{
       ok: boolean;
       voice?: ClonedVoice;

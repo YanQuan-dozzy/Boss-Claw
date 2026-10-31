@@ -15,15 +15,51 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { app } = require('electron');
 
-/** 语音包目录（可用 BOSSCLAW_SPEECH_DIR 覆盖，便于开发期用本地已下载的模型验证） */
+/**
+ * 开发期的项目内语音目录（未打包时才认）。
+ *
+ * 为什么需要：语音包 348MB（朗读）+ 228MB（识别）+ 163MB（克隆），开发时每换一台机器都要重下三遍，
+ * 且下载目录落在 %APPDATA%\BossClaw\speech（打包版同一个坑）。把模型放项目里 `desktop-app/tmp/speech`
+ * 后，非打包运行（`start-bossclaw.cmd` / `--dev`）直接认这个目录 → 设置页立刻显示「已安装」，可试听、可朗读、可录音。
+ *
+ * 只认「已经存在 models/」的目录：首次非打包运行时不会凭空造空目录，把用户的 UI 安装引到项目里；
+ * 目录不存在就回落到 userData，行为与打包版一致。
+ *
+ * 只挂 `tmp/speech` 一处（`desktop-app/tmp/` 已 gitignore）。**不要**挂 `.local/speech`——那目录
+ * 随私有仓库分发，几百 MB 模型进去会被提交。
+ */
+function devRootDir() {
+  let packaged = true;
+  try { packaged = app.isPackaged !== false; } catch { /* app 未就绪按打包处理 */ }
+  if (packaged) return '';
+  let appPath = '';
+  try { appPath = String(app.getAppPath() || ''); } catch { return ''; }
+  if (!appPath) return '';
+  const dir = path.join(appPath, 'tmp', 'speech');
+  return fs.existsSync(path.join(dir, 'models')) ? dir : '';
+}
+
+/** 语音包目录（BOSSCLAW_SPEECH_DIR > 开发期项目内目录 > userData） */
+let devDirLogged = '';
 function rootDir() {
   const override = String(process.env.BOSSCLAW_SPEECH_DIR || '').trim();
-  return override || path.join(app.getPath('userData'), 'speech');
+  if (override) return override;
+  const dev = devRootDir();
+  if (dev) {
+    if (devDirLogged !== dev) {
+      devDirLogged = dev;
+      // 每次调用都打会刷屏；只在目录变化时提示一次，方便确认「设置页为什么显示已安装」
+      console.log(`[speech] 开发模式使用项目内语音目录：${dev}`);
+    }
+    return dev;
+  }
+  return path.join(app.getPath('userData'), 'speech');
 }
 function modelsDir() { return path.join(rootDir(), 'models'); }
 function downloadsDir() { return path.join(rootDir(), 'downloads'); }
 function cacheDir() { return path.join(rootDir(), 'cache'); }
 function ttsDir() { return path.join(modelsDir(), 'tts'); }
+function meloDir() { return path.join(modelsDir(), 'melo'); }
 function asrDir() { return path.join(modelsDir(), 'asr'); }
 function cloneDir() { return path.join(modelsDir(), 'clone'); }
 function manifestPath() { return path.join(rootDir(), 'manifest.json'); }
@@ -43,6 +79,20 @@ const PACKS = {
     // 解压后必须存在的文件/目录（缺一即判定安装不完整）
     required: ['voices.bin', 'tokens.txt', 'espeak-ng-data'],
     modelFiles: ['model.int8.onnx', 'model.onnx'],
+  },
+  // MeloTTS：第二套「听」包，可以和 Kokoro 并存，用户在设置里切换。
+  // 音色更接近真人录音（44.1kHz 单女声），代价是比 Kokoro 略慢、没有 8 个内置音色可选。
+  melo: {
+    id: 'melo',
+    name: 'MeloTTS 中英语音包',
+    desc: '本地离线朗读；44.1kHz 单女声，中英混读更自然，音色不可换',
+    url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2',
+    archiveBytes: 167006755,
+    archiveRoot: 'vits-melo-tts-zh_en',
+    required: ['model.onnx', 'tokens.txt', 'lexicon.txt'],
+    modelFiles: ['model.onnx'],
+    // MeloTTS 走 vits 引擎，且**不要** espeak-ng-data（塞进去 sherpa 会报 dict/phontab 不存在）
+    engine: 'vits',
   },
   // 「说」包：SenseVoice int8 + tokens。直接按文件下载，不打 tar（HF 镜像上就是散文件）。
   // 不用 GitHub Releases：这台机器到 release-assets 的链路会 502，HF 镜像稳定。
@@ -166,6 +216,42 @@ function isCompleteTtsDir(dir) {
   return PACKS.tts.required.every((f) => fs.existsSync(path.join(dir, f)));
 }
 
+/** 目录里是否是一个完整的 MeloTTS 包（vits 引擎，不需要 espeak-ng-data） */
+function isCompleteMeloDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return false;
+  if (!PACKS.melo.required.every((f) => fs.existsSync(path.join(dir, f)))) return false;
+  // 有 voices.bin 的是 Kokoro 布局（多音色），别混进来
+  return !fs.existsSync(path.join(dir, 'voices.bin'));
+}
+
+/**
+ * 两套「听」包。对外暴露的 pack id 用 kokoro / melo：
+ *   · kokoro —— 内置 8 音色，24kHz，408MB；
+ *   · melo   —— 单女声，44.1kHz，音色更接近真人，170MB。
+ * 二者互不替代：都装了就在设置里切换（settings.json 的 ttsPack），删一个自动回落另一个。
+ */
+const TTS_PACKS = ['kokoro', 'melo'];
+
+function packDef(pack) { return pack === 'melo' ? PACKS.melo : PACKS.tts; }
+function packDirOf(pack) { return pack === 'melo' ? meloDir() : ttsDir(); }
+function isCompletePackOf(pack, dir) {
+  return pack === 'melo' ? isCompleteMeloDir(dir) : isCompleteTtsDir(dir);
+}
+
+/** 解析某套包的目录（先看固定目录，再看 models/ 下手动放置的） */
+function resolvePackDir(pack) {
+  const fixed = packDirOf(pack);
+  if (isCompletePackOf(pack, fixed)) return fixed;
+  try {
+    for (const e of fs.readdirSync(modelsDir(), { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue;
+      const p = path.join(modelsDir(), e.name);
+      if (isCompletePackOf(pack, p)) return p;
+    }
+  } catch { /* 还没建目录 */ }
+  return null;
+}
+
 function isCompleteAsrDir(dir) {
   if (!dir || !fs.existsSync(dir)) return false;
   return PACKS.asr.required.every((f) => {
@@ -249,29 +335,84 @@ function resolveTtsDir() {
   return null;
 }
 
+/**
+ * 某套「听」包的安装信息（体积优先读 manifest 缓存，缺失才 walk）。
+ */
+function packInfo(pack, manifest) {
+  const dir = resolvePackDir(pack);
+  const def = packDef(pack);
+  const m = (manifest.packs && manifest.packs[pack]) || {};
+  let bytes = dir ? Number(m.bytes) || 0 : 0;
+  if (dir && !bytes) bytes = dirBytes(dir);
+  return {
+    installed: Boolean(dir),
+    dir: dir || '',
+    bytes,
+    version: m.version || '',
+    installedAt: m.installedAt || 0,
+    archiveBytes: def.archiveBytes,
+    name: def.name,
+    desc: def.desc,
+    engine: pack === 'melo' ? 'vits' : 'kokoro',
+  };
+}
+
+/**
+ * 当前生效的「听」包：settings.ttsPack 指定的那套，没装就回落到另一套，都没装返回 null。
+ * 这条规则是「切换朗读模型」的唯一判定点，UI / 合成 / 预热都从这里取。
+ */
+function activeTtsPack() {
+  const want = readSettings().ttsPack === 'melo' ? 'melo' : 'kokoro';
+  const other = want === 'melo' ? 'kokoro' : 'melo';
+  for (const pack of [want, other]) {
+    const dir = resolvePackDir(pack);
+    if (dir) return { pack, dir, engine: pack === 'melo' ? 'vits' : 'kokoro' };
+  }
+  return null;
+}
+
+function getTtsPack() {
+  const act = activeTtsPack();
+  return { ok: true, pack: act ? act.pack : '', engine: act ? act.engine : '', wanted: readSettings().ttsPack || '' };
+}
+
+/** 切换朗读模型（必须先装上；只切偏好，不动任何文件） */
+function setTtsPack(pack) {
+  const want = String(pack || '');
+  if (!TTS_PACKS.includes(want)) return { ok: false, error: `不支持的语音包：${want}` };
+  if (!resolvePackDir(want)) return { ok: false, error: `${packDef(want).name}尚未安装，请先下载` };
+  writeSettings({ ttsPack: want });
+  return { ok: true, pack: want, engine: want === 'melo' ? 'vits' : 'kokoro' };
+}
+
 function status() {
-  const dir = resolveTtsDir();
+  const manifest = readManifest();
   const asr = resolveAsrDir();
   const clone = resolveCloneDir();
-  const manifest = readManifest();
-  const installed = Boolean(dir);
-  // 解压目录有上万个文件，每次 status 都全量 walk 会阻塞主进程；
-  // 安装时已把体积写进 manifest，这里优先读缓存值。
-  let bytes = installed ? Number((manifest.packs && manifest.packs.tts && manifest.packs.tts.bytes) || 0) : 0;
-  if (installed && !bytes) bytes = dirBytes(dir);
+  const act = activeTtsPack();
+  const packs = {
+    kokoro: packInfo('kokoro', manifest),
+    melo: packInfo('melo', manifest),
+  };
+  const active = act ? packs[act.pack] : null;
   const cacheBytes = dirBytes(cacheDir());
   return {
     ok: true,
     tts: {
-      installed,
-      dir: dir || '',
-      bytes,
+      // 兼容旧口径：installed / dir / bytes / name / desc 一律指「当前生效的那套」
+      installed: Boolean(active),
+      dir: active ? active.dir : '',
+      bytes: active ? active.bytes : 0,
       cacheBytes,
-      version: (manifest.packs && manifest.packs.tts && manifest.packs.tts.version) || '',
-      installedAt: (manifest.packs && manifest.packs.tts && manifest.packs.tts.installedAt) || 0,
-      archiveBytes: PACKS.tts.archiveBytes,
-      name: PACKS.tts.name,
-      desc: PACKS.tts.desc,
+      version: active ? active.version : '',
+      installedAt: active ? active.installedAt : 0,
+      archiveBytes: active ? active.archiveBytes : PACKS.tts.archiveBytes,
+      name: active ? active.name : PACKS.tts.name,
+      desc: active ? active.desc : PACKS.tts.desc,
+      // 切换朗读模型用：pack = 当前生效，packs = 两套各自的安装状态
+      pack: act ? act.pack : '',
+      engine: act ? act.engine : 'kokoro',
+      packs,
     },
     asr: {
       installed: Boolean(asr),
@@ -333,14 +474,15 @@ function espeakDataDir() {
   return '';
 }
 
-/** 供 TTS worker 使用的模型配置（未安装时返回 null） */
+/**
+ * 供 TTS worker 使用的模型配置（未安装时返回 null）。
+ * 返回 `{ engine, config, pack, dir }`：engine 决定 worker 走 kokoro 还是 vits 分支，
+ * config 直接进 `buildConfig`。两条路径的字段互不相通，别在这里拼成一个「万能对象」。
+ */
 function modelConfig() {
-  const dir = resolveTtsDir();
-  if (!dir) return null;
-  const model = findModelFile(dir);
-  const dataDir = path.join(dir, 'espeak-ng-data');
-  // 优先中文词典：Kokoro 多语言包同时带 gb-en / us-en / zh，按字母序会先拿到英文词典，
-  // 中文题干会被英文音素表念错。
+  const act = activeTtsPack();
+  if (!act) return null;
+  const dir = act.dir;
   const lexicon = (() => {
     try {
       const files = fs.readdirSync(dir).filter((x) => /^lexicon.*\.txt$/i.test(x));
@@ -349,7 +491,30 @@ function modelConfig() {
       return pick ? path.join(dir, pick) : '';
     } catch { return ''; }
   })();
-  return { model, voices: path.join(dir, 'voices.bin'), tokens: path.join(dir, 'tokens.txt'), dataDir, lexicon };
+  if (act.pack === 'melo') {
+    // MeloTTS 走 vits：44.1kHz 单说话人，用 lexicon + tokens，**dataDir 必须留空**
+    return {
+      engine: 'vits',
+      pack: 'melo',
+      dir,
+      config: {
+        engine: 'vits',
+        model: path.join(dir, 'model.onnx'),
+        tokens: path.join(dir, 'tokens.txt'),
+        lexicon,
+        dataDir: '',
+      },
+    };
+  }
+  const dataDir = path.join(dir, 'espeak-ng-data');
+  // 优先中文词典：Kokoro 多语言包同时带 gb-en / us-en / zh，按字母序会先拿到英文词典，
+  // 中文题干会被英文音素表念错。
+  return {
+    engine: 'kokoro',
+    pack: 'kokoro',
+    dir,
+    config: { engine: 'kokoro', model: findModelFile(dir), voices: path.join(dir, 'voices.bin'), tokens: path.join(dir, 'tokens.txt'), dataDir, lexicon },
+  };
 }
 
 // ===== 下载 =====
@@ -465,16 +630,18 @@ function findExtractedDir(tmpDir, isComplete = isCompleteTtsDir, preferredName =
 
 /**
  * 安装「听」包（下载 → 解压 → 校验 → 落盘）。
- * @param {(p:object)=>void} onProgress
+ * Kokoro 与 MeloTTS 同一套流程：都是 tar.bz2 + 归档里一个模型目录，只是判定函数与目标目录不同。
+ * manifest 键：kokoro 沿用历史的 `packs.tts`（旧版本读得到），melo 用 `packs.melo`。
  */
-async function installTts(onProgress) {
+async function installTarTts(packKey, onProgress) {
   if (installState.active) throw new Error('已有安装任务在进行');
+  const def = packDef(packKey);
   const signal = { onAbort: null };
-  installState.active = { pack: 'tts', signal, req: null };
+  installState.active = { pack: packKey, signal, req: null };
 
   const downloads = downloadsDir();
-  const tmpDir = path.join(modelsDir(), '.tmp-tts');
-  const archive = path.join(downloads, 'kokoro-multi-lang-v1_1.tar.bz2');
+  const tmpDir = path.join(modelsDir(), `.tmp-${packKey}`);
+  const archive = path.join(downloads, `${def.archiveRoot}.tar.bz2`);
   fs.mkdirSync(downloads, { recursive: true });
   fs.mkdirSync(modelsDir(), { recursive: true });
   rmrf(tmpDir);
@@ -482,18 +649,20 @@ async function installTts(onProgress) {
 
   try {
     onProgress({ phase: 'prepare', percent: 0 });
-    const dl = await followDownload(PACKS.tts.url, archive, onProgress, signal);
+    const dl = await followDownload(def.url, archive, onProgress, signal);
     onProgress({ phase: 'verify', percent: 100 });
     const sha256 = await sha256File(archive);
 
     onProgress({ phase: 'extract', percent: 100 });
     await extractTarBz2(archive, tmpDir);
 
-    const extracted = findExtractedDir(tmpDir);
-    if (!extracted) throw new Error('解压后未找到完整的 Kokoro 模型目录（缺 model.onnx / voices.bin / tokens.txt / espeak-ng-data）');
+    const extracted = findExtractedDir(tmpDir, (p) => isCompletePackOf(packKey, p), def.archiveRoot);
+    if (!extracted) {
+      throw new Error(`解压后未找到完整的 ${def.name} 目录（缺 ${def.required.join(' / ')}）`);
+    }
 
     // 落盘：先删旧目录再 rename，避免半新半旧
-    const target = ttsDir();
+    const target = packDirOf(packKey);
     rmrf(target);
     try {
       fs.renameSync(extracted, target);
@@ -501,30 +670,38 @@ async function installTts(onProgress) {
       // 跨盘/占用时退化为复制
       fs.cpSync(extracted, target, { recursive: true });
     }
-    if (!isCompleteTtsDir(target)) throw new Error('安装校验失败：目标目录不完整');
+    if (!isCompletePackOf(packKey, target)) throw new Error('安装校验失败：目标目录不完整');
 
     const bytes = dirBytes(target);
     const manifest = readManifest();
     manifest.packs = manifest.packs || {};
-    manifest.packs.tts = {
-      version: PACKS.tts.archiveRoot,
+    manifest.packs[packKey === 'kokoro' ? 'tts' : packKey] = {
+      version: def.archiveRoot,
       installedAt: Date.now(),
       bytes,
       archiveBytes: dl.received,
       sha256,
-      source: PACKS.tts.url,
+      source: def.url,
     };
     writeManifest(manifest);
+    // 装完就把偏好切过去：用户点「下载并切换」时期望立刻生效
+    writeSettings({ ttsPack: packKey });
 
     onProgress({ phase: 'done', percent: 100, bytes });
-    // 归档已解压完，删掉 348MB 临时文件；失败时保留，便于重试不再重下
+    // 归档已解压完，删掉临时文件；失败时保留，便于重试不再重下
     rmrf(archive);
-    return { ok: true, bytes, sha256 };
+    return { ok: true, bytes, sha256, pack: packKey };
   } finally {
     rmrf(tmpDir);
     installState.active = null;
   }
 }
+
+/** 安装 Kokoro「听」包 */
+function installTts(onProgress) { return installTarTts('kokoro', onProgress); }
+
+/** 安装 MeloTTS「听」包（vits 引擎，44.1kHz 单女声） */
+function installMelo(onProgress) { return installTarTts('melo', onProgress); }
 
 /**
  * 安装「克隆」包：ZipVoice tar 解压 + vocos 声码器单独下载。
@@ -752,22 +929,31 @@ function clearCache() {
   return { ok: true, freedBytes: before };
 }
 
-function remove() {
-  rmrf(ttsDir());
-  // 兼容手动放置的目录：只删 models 下能识别为完整 TTS 的目录
+/**
+ * 删除某套「听」包。pack = 'kokoro' | 'melo'（缺省 = kokoro，保持旧调用点不变）。
+ * 删掉当前生效的那套时清掉偏好，activeTtsPack() 会自动回落到另一套（若已装）。
+ */
+function removeTts(pack = 'kokoro') {
+  const key = TTS_PACKS.includes(String(pack)) ? String(pack) : 'kokoro';
+  rmrf(packDirOf(key));
+  // 兼容手动放置的目录：只删 models 下能识别为同族完整包的目录
   try {
     for (const e of fs.readdirSync(modelsDir(), { withFileTypes: true })) {
       if (!e.isDirectory() || e.name.startsWith('.')) continue;
       const p = path.join(modelsDir(), e.name);
-      if (isCompleteTtsDir(p)) rmrf(p);
+      if (isCompletePackOf(key, p)) rmrf(p);
     }
   } catch { /* ignore */ }
   rmrf(cacheDir());
   const manifest = readManifest();
-  if (manifest.packs) delete manifest.packs.tts;
+  if (manifest.packs) delete manifest.packs[key === 'kokoro' ? 'tts' : key];
   writeManifest(manifest);
-  return { ok: true };
+  if ((readSettings().ttsPack || 'kokoro') === key) writeSettings({ ttsPack: '' });
+  return { ok: true, pack: key };
 }
+
+/** 兼容旧调用点：删除 Kokoro 包 */
+function remove() { return removeTts('kokoro'); }
 
 module.exports = {
   PACKS,
@@ -777,6 +963,7 @@ module.exports = {
   zipvoiceConfig,
   espeakDataDir,
   installTts,
+  installMelo,
   installAsr,
   installClone,
   removeAsr,
@@ -784,19 +971,25 @@ module.exports = {
   cancel,
   clearCache,
   remove,
+  removeTts,
   cacheDir,
   rootDir,
-  // 语音偏好（在线引擎开关）
+  // 语音偏好（在线引擎开关 / 朗读模型切换）
   settingsPath,
   readSettings,
   getOnlineEngine,
   setOnlineEngine,
+  getTtsPack,
+  setTtsPack,
+  activeTtsPack,
   // 诊断
   _ttsDir: ttsDir,
+  _meloDir: meloDir,
   _asrDir: asrDir,
   _cloneDir: cloneDir,
   _isCompleteClone: isCompleteCloneDir,
   _isCompleteAsr: isCompleteAsrDir,
   _isComplete: isCompleteTtsDir,
+  _isCompleteMelo: isCompleteMeloDir,
   _dirBytes: dirBytes,
 };

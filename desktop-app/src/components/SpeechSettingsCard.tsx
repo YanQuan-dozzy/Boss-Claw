@@ -20,6 +20,7 @@ import {
   previewVoice,
   removeSpeechPack,
   setOnlineEngine,
+  setSpeechPack,
   stopSpeaking,
 } from '@/lib/bossclaw/mockInterviewTts';
 import CloneVoiceCard from './CloneVoiceCard';
@@ -36,7 +37,8 @@ const PHASE_LABEL: Record<string, string> = {
 export default function SpeechSettingsCard({ active }: { active: boolean }) {
   const [status, setStatus] = useState<SpeechStatus | null>(null);
   const [loading, setLoading] = useState(false);
-  const [installing, setInstalling] = useState<'' | 'tts' | 'asr'>('');
+  const [installing, setInstalling] = useState<'' | 'tts' | 'asr' | 'melo'>('');
+  const [switching, setSwitching] = useState<'' | 'kokoro' | 'melo'>('');
   const [progress, setProgress] = useState<SpeechProgress | null>(null);
   const [previewing, setPreviewing] = useState<string>('');
   const [error, setError] = useState('');
@@ -58,7 +60,7 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
     if (active) void refresh();
   }, [active, refresh]);
 
-  const onInstall = async (pack: 'tts' | 'asr') => {
+  const onInstall = async (pack: 'tts' | 'asr' | 'melo') => {
     setInstalling(pack);
     setError('');
     setProgress({ phase: 'prepare', percent: 0, pack });
@@ -73,7 +75,7 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
           message.error(r.error || '安装失败');
         }
       } else {
-        message.success(pack === 'asr' ? '语音识别包已安装，可以语音作答了' : '语音包已安装，可以朗读题干与追问了');
+        message.success(pack === 'asr' ? '语音识别包已安装，可以语音作答了' : '语音包已安装并切换到该模型，可以朗读题干与追问了');
       }
     } finally {
       setInstalling('');
@@ -87,13 +89,28 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
     message.info('已取消安装');
   };
 
-  const onRemove = async (pack: 'tts' | 'asr') => {
+  const onRemove = async (pack: 'tts' | 'asr' | 'melo') => {
     stopSpeaking();
     const r = await removeSpeechPack(pack);
     if (!r.ok) { message.error(r.error || '删除失败'); return; }
     message.success(pack === 'asr' ? '语音识别包已删除（语音作答会重新引导安装）' : '语音包已删除（下次朗读会重新引导安装）');
     await refresh();
   };
+
+  // 切换朗读模型：只改偏好 + 重启语音进程，不动文件
+  const onSwitchPack = async (pack: 'kokoro' | 'melo') => {
+    setSwitching(pack);
+    try {
+      const r = await setSpeechPack(pack);
+      if (!r.ok) { message.error(r.error || '切换失败'); return; }
+      message.success(`已切换到 ${pack === 'melo' ? 'MeloTTS' : 'Kokoro'}，下一句立即生效`);
+      await refresh();
+    } finally {
+      setSwitching('');
+    }
+  };
+
+  const onRemovePack = (pack: 'kokoro' | 'melo') => onRemove(pack === 'kokoro' ? 'tts' : 'melo');
 
   const onClearCache = async () => {
     const r = await clearSpeechCache();
@@ -150,6 +167,15 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
   const asr = status?.asr;
   const online = status?.onlineEngine === true;
   const installed = Boolean(tts?.installed);
+  const activePack = tts?.pack || '';
+
+  // 两套「听」包：都能装、都能删，同一时间只有一套生效（切换只改偏好，不搬文件）
+  const PACK_ROWS: Array<{ id: 'kokoro' | 'melo'; title: string; badge: string; note: string }> = [
+    { id: 'kokoro', title: 'Kokoro 多语言', badge: '24kHz', note: '100+ 音色可选，速度中等 · 解压后约 408MB' },
+    { id: 'melo', title: 'MeloTTS 中英', badge: '44.1kHz', note: '单女声、更接近真人录音，略慢 · 解压后约 170MB' },
+  ];
+  const packOf = (id: 'kokoro' | 'melo') => (tts?.packs ? tts.packs[id] : undefined);
+  const installingTts = installing === 'tts' || installing === 'melo';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -161,7 +187,9 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
             </div>
             本地语音（朗读题干与追问）
           </div>
-          {installed ? <Tag color="green">已安装</Tag> : <Tag>未安装</Tag>}
+          {installed
+            ? <Tag color="green">已安装 · {tts?.name}</Tag>
+            : <Tag>未安装</Tag>}
         </div>
 
         <Alert
@@ -169,29 +197,73 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
           showIcon
           style={{ borderRadius: 8, marginBottom: 12 }}
           message="语音完全在本机合成，不上传题干或公司信息"
-          description="运行时是 sherpa-onnx + Kokoro 多语言模型。语音包不进安装包，首次使用时下载；报告不朗读，只朗读开场、题干、追问与收尾。"
+          description="运行时是 sherpa-onnx，可装两套模型并随时切换：Kokoro（24kHz、8 个内置音色）与 MeloTTS（44.1kHz、单女声、更接近真人录音）。语音包不进安装包，首次使用时下载；报告不朗读，只朗读开场、题干、追问与收尾。"
         />
 
-        {!installed && !installing && (
-          <div className="setting-actions">
-            <Space wrap>
-              <Button
-                type="primary"
-                icon={<CloudDownloadOutlined />}
-                loading={loading}
-                disabled={installing !== ''}
-                onClick={() => void onInstall('tts')}
-              >
-                下载语音包（约 {formatSpeechBytes(tts?.archiveBytes || 348 * 1024 * 1024)}）
-              </Button>
-              <span className="field-label" style={{ opacity: 0.7 }}>
-                解压后约 430MB；国内网络较慢时可先跳过，面试仍可用纯文字。
-              </span>
-            </Space>
-          </div>
-        )}
+        <div className="mi-clone-list" style={{ marginBottom: 12 }}>
+          {PACK_ROWS.map((row) => {
+            const info = packOf(row.id);
+            const isActive = activePack === row.id;
+            const rowInstalled = Boolean(info?.installed);
+            return (
+              <div className="mi-clone-item" key={row.id}>
+                <div className="mi-clone-item__main">
+                  <div className="mi-clone-item__name">
+                    {row.title}
+                    <Tag bordered={false} style={{ marginLeft: 6, fontSize: 11 }}>{row.badge}</Tag>
+                    {isActive ? <Tag color="green" style={{ marginLeft: 6 }}>当前使用</Tag> : null}
+                    {rowInstalled && !isActive ? <Tag style={{ marginLeft: 6 }}>已下载</Tag> : null}
+                  </div>
+                  <div className="mi-clone-item__meta">
+                    {row.note}
+                    {rowInstalled && info ? ` · 占用 ${formatSpeechBytes(info.bytes)}` : ''}
+                    {rowInstalled && info?.dir ? ` · ${info.dir}` : ''}
+                  </div>
+                </div>
+                <Space size={6}>
+                  {!rowInstalled && (
+                    <Button
+                      type={installed ? 'default' : 'primary'}
+                      size="small"
+                      icon={<CloudDownloadOutlined />}
+                      disabled={installing !== ''}
+                      onClick={() => void onInstall(row.id === 'melo' ? 'melo' : 'tts')}
+                    >
+                      下载（约 {formatSpeechBytes((row.id === 'melo' ? 167 : 348) * 1024 * 1024)}）
+                    </Button>
+                  )}
+                  {rowInstalled && !isActive && (
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={switching === row.id}
+                      disabled={switching !== '' || installing !== ''}
+                      onClick={() => void onSwitchPack(row.id)}
+                    >
+                      切换到这套
+                    </Button>
+                  )}
+                  {rowInstalled && (
+                    <Popconfirm
+                      title={`删除${row.title}？`}
+                      description={isActive && (packOf(row.id === 'melo' ? 'kokoro' : 'melo')?.installed)
+                        ? '删掉后会回落到另一套已装模型；面试记录与题库不受影响。'
+                        : '删掉后题干朗读会不可用，需要重新下载。面试记录与题库不受影响。'}
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => void onRemovePack(row.id)}
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                    </Popconfirm>
+                  )}
+                </Space>
+              </div>
+            );
+          })}
+        </div>
 
-        {installing === 'tts' && (
+        {installingTts && (
           <div style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
               <span style={{ fontSize: 13 }}>
@@ -215,38 +287,17 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
         )}
 
         {installed && tts && (
-          <>
-            <div className="settings-grid" style={{ marginBottom: 12 }}>
-              <div className="sg-item">
-                <span className="field-label">语音包</span>
-                <div style={{ fontSize: 13 }}>{tts.name}</div>
-              </div>
-              <div className="sg-item">
-                <span className="field-label">占用</span>
-                <div style={{ fontSize: 13 }}>{formatSpeechBytes(tts.bytes)}（缓存 {formatSpeechBytes(tts.cacheBytes)}）</div>
-              </div>
-              <div className="sg-item">
-                <span className="field-label">安装位置</span>
-                <div style={{ fontSize: 12, wordBreak: 'break-all', opacity: 0.8 }}>{tts.dir}</div>
-              </div>
-            </div>
-            <div className="setting-actions">
-              <Space wrap>
-                <Button icon={<AudioOutlined />} onClick={() => void onPreview('zf_001')}>试听默认音色</Button>
-                <Button onClick={() => void onClearCache()}>清理朗读缓存</Button>
-                <Popconfirm
-                  title="删除语音包？"
-                  description="题干朗读会不可用，需要重新下载（约 348MB）。面试记录与题库不受影响。"
-                  okText="删除"
-                  cancelText="取消"
-                  okButtonProps={{ danger: true }}
-                  onConfirm={() => void onRemove('tts')}
-                >
-                  <Button danger icon={<DeleteOutlined />}>删除语音包</Button>
-                </Popconfirm>
-              </Space>
-            </div>
-          </>
+          <div className="setting-actions">
+            <Space wrap>
+              <Button icon={<AudioOutlined />} onClick={() => void onPreview('zf_001')}>试听当前音色</Button>
+              <Button onClick={() => void onClearCache()}>清理朗读缓存</Button>
+              <span className="field-label" style={{ opacity: 0.7 }}>
+                {activePack === 'melo'
+                  ? 'MeloTTS 只有一个音色，面试页的音色下拉对它不生效；语速仍可调。'
+                  : `缓存 ${formatSpeechBytes(tts.cacheBytes)}，切换模型不会自动清缓存。`}
+              </span>
+            </Space>
+          </div>
         )}
 
         {error ? (

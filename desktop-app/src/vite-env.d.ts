@@ -128,6 +128,7 @@ interface ElectronBridgeApi {
   mockInterviewSpeechCancel?: () => Promise<{ ok: boolean; canceled?: boolean; error?: string }>;
   mockInterviewSpeechRemove?: (pack?: string) => Promise<{ ok: boolean; error?: string }>;
   mockInterviewSpeechSetOnline?: (on: boolean) => Promise<{ ok: boolean; onlineEngine?: boolean; error?: string }>;
+  mockInterviewSpeechSetPack?: (pack: string) => Promise<{ ok: boolean; pack?: string; error?: string }>;
   mockInterviewTts?: (opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string }) => Promise<unknown>;
   mockInterviewTtsStream?: (opts: { text: string; sid?: number; speed: number; voiceId?: string; numSteps?: number; engine?: string; onlineVoice?: string; streamId?: string }) => Promise<unknown>;
   mockInterviewTtsCancel?: (streamId: string) => Promise<{ ok: boolean; error?: string }>;

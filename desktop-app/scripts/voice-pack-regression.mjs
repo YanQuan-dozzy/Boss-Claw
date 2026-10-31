@@ -114,6 +114,35 @@ check('vits 缺音素数据时回落到调用方给的内置包', () => {
   ok(own.dataDir.endsWith('espeak-ng-data') && !own.dataDir.startsWith('/fake'), '包内自带的优先');
 });
 
+// MeloTTS 走 vits 引擎，但布局独立：没有 `.onnx.json`，且 `dict/` 是分词表不是音素数据。
+// 2026-10-31 实测：把 dict/ 当 dataDir 传下去，sherpa 报 `dict/phontab does not exist` 直接加载失败。
+const melo = makePack('melo', ['model.onnx', 'tokens.txt', 'lexicon.txt', 'dict/']);
+
+check('MeloTTS 布局判定可用（不要求 .onnx.json）', () => {
+  const p = pack.probe(melo);
+  eq(p.ok, true, p.error || '');
+  eq(p.engine, 'vits');
+  eq(p.kind, 'melo');
+  eq(p.needsEspeak, false, 'MeloTTS 不需要 espeak-ng-data');
+  eq(pack.needsEspeakData(melo, 'vits'), false, '也不该去借内置包音素数据');
+});
+
+check('MeloTTS 的 dict/ 不会被当音素目录传下去', () => {
+  const cfg = pack.buildEngineConfig(melo, 'vits', { fallbackDataDir: '/fake/espeak-ng-data' });
+  eq(cfg.dataDir, '', 'dataDir 必须为空，否则 sherpa 报 phontab 不存在');
+  ok(/^model\.onnx$/i.test(cfg.model.split(/[\\/]/).pop()), '主模型要取 model.onnx');
+  ok(cfg.lexicon.endsWith('lexicon.txt'), 'lexicon.txt 要带上');
+});
+
+check('带声码器的 model.onnx 不被误判成 MeloTTS（仍是 Matcha）', () => {
+  // Matcha 的声学模型常叫 model-steps-N.onnx，但社区包里也有改名成 model.onnx 的；
+  // 它同时有 tokens + lexicon，光看这三样会和 MeloTTS 撞车 —— 靠「有没有声码器」区分。
+  const matchaLex = makePack('matcha-lexicon', ['model.onnx', 'vocoder.onnx', 'tokens.txt', 'lexicon.txt']);
+  const p = pack.probe(matchaLex);
+  eq(p.family, 'matcha');
+  eq(p.ok, false, 'Matcha 仍明确不支持');
+});
+
 check('ZipVoice 布局判定可用', () => {
   const p = pack.probe(zv);
   eq(p.ok, true, p.error || '');

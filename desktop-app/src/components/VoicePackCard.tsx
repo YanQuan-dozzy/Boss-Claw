@@ -144,7 +144,7 @@ export default function VoicePackCard({ active }: { active: boolean }) {
         type="info"
         showIcon
         style={{ borderRadius: 8, marginBottom: 12 }}
-        message="支持 Piper / VITS、Kokoro 布局；Matcha / Kitten / Pocket 本版不导入"
+        message="支持 Piper / VITS / MeloTTS、Kokoro 布局；Matcha / Kitten / Pocket 本版不导入"
         description="选一个目录（不是单个文件）。会先探测模型族并试听，通过后才复制到本机音色库。音色包版权由你自行确认，BossClaw 不分发、不推荐下载源。"
       />
 
@@ -190,7 +190,7 @@ export default function VoicePackCard({ active }: { active: boolean }) {
                     <div className="mi-clone-item__name">
                       {v.name}
                       <Tag bordered={false} style={{ marginLeft: 6, fontSize: 11 }}>
-                        {v.engine === 'vits' ? 'Piper' : v.engine === 'kokoro' ? 'Kokoro' : 'ZipVoice'}
+                        {v.engine === 'vits' ? 'VITS' : v.engine === 'kokoro' ? 'Kokoro' : 'ZipVoice'}
                       </Tag>
                     </div>
                     <div className="mi-clone-item__meta">

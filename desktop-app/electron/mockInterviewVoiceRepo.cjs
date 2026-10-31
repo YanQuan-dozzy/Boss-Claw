@@ -188,11 +188,10 @@ function rmsOf(samples) {
 
 /**
  * 创建克隆音色。
- * @param {{name?:string, samplesBase64:string, sampleRate?:number, refText:string, licenseAck:boolean}} payload
+ * @param {{name?:string, samplesBase64:string, sampleRate?:number, refText:string}} payload
  */
 function create(payload) {
   const p = payload || {};
-  if (!p.licenseAck) return { ok: false, error: '需要先确认「这是本人声音或已获得授权」' };
   const refText = String(p.refText || '').trim();
   if (refText.length < 10) return { ok: false, error: '参考文本过短' };
 
@@ -238,7 +237,6 @@ function create(payload) {
       sampleRate,
       durationSec: Number(durationSec.toFixed(2)),
       sha256: crypto.createHash('sha256').update(wav).digest('hex'),
-      licenseAckAt: Date.now(),
       createdAt: Date.now(),
     };
     fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
@@ -354,9 +352,11 @@ function engineConfig(id) {
   if (m.kind === 'imported') {
     // vits 包经常不自带 espeak-ng-data：先借用已装内置包的音素数据，借不到就把原因带回去，
     // 而不是让 worker 抛出一句英文错误（"Not a model using characters as modeling unit..."）。
-    const fallback = pack.needsEspeakData(m.dir, m.engine) ? install.espeakDataDir() : '';
+    const needsEspeak = pack.needsEspeakData(m.dir, m.engine);
+    const fallback = needsEspeak ? install.espeakDataDir() : '';
     const config = pack.buildEngineConfig(m.dir, m.engine, { sid: m.sid || 0, fallbackDataDir: fallback });
-    if (m.engine === 'vits' && !config.dataDir) {
+    // 只有真的依赖 espeak 的 vits 包才拦；MeloTTS 用 lexicon，dataDir 本就该为空
+    if (needsEspeak && !config.dataDir) {
       return {
         engine: 'vits',
         config: null,

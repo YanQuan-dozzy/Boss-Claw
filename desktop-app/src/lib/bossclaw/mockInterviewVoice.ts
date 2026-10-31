@@ -63,6 +63,18 @@ export interface SpeechPackInfo {
   archiveBytes: number;
   name: string;
   desc: string;
+  /** 该包对应的本地引擎：Kokoro / MeloTTS 那套是 vits */
+  engine?: 'kokoro' | 'vits';
+}
+
+/** 「听」包 id：Kokoro 与 MeloTTS 可并存，用户在设置里切换 */
+export type TtsPackId = 'kokoro' | 'melo';
+
+export interface SpeechPackInfoTts extends SpeechPackInfo {
+  /** 当前生效的包（空串 = 一个都没装） */
+  pack?: TtsPackId | '';
+  /** 两套包各自的安装状态（切换朗读模型用） */
+  packs?: Record<TtsPackId, SpeechPackInfo>;
 }
 
 export interface SpeechPackInfoAsr extends SpeechPackInfo {}
@@ -130,7 +142,7 @@ export const CLONE_REFERENCE_TEXT =
 
 export interface SpeechStatus {
   ok: boolean;
-  tts?: SpeechPackInfo;
+  tts?: SpeechPackInfoTts;
   asr?: SpeechPackInfoAsr;
   clone?: SpeechPackInfoClone;
   speechDir?: string;
@@ -223,8 +235,8 @@ export function describeProbe(p: VoicePackProbe | null): string {
 
 export interface SpeechProgress {
   phase: SpeechInstallPhase;
-  /** 哪一包（tts=听 / asr=说 / clone=克隆音色） */
-  pack?: 'tts' | 'asr' | 'clone';
+  /** 哪一包（tts=Kokoro / melo=MeloTTS / asr=说 / clone=克隆音色） */
+  pack?: 'tts' | 'asr' | 'clone' | 'melo';
   file?: string;
   received?: number;
   total?: number;

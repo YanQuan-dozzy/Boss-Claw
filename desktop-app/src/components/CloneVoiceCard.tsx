@@ -1,12 +1,11 @@
-// 设置页「克隆我的声音」（P4-B）
+// 设置页「克隆音色」（P4-B）
 //
 // 三段式：装模型（ZipVoice ~163MB 下载）→ 录 3–10 秒参考音频 → 命名保存。
-// 三条约束直接写在界面上（方案 6.5.3）：
-//   · 必须勾选授权声明，否则不能保存；
+// 两条口径直接写在界面上（方案 6.5.3）：
 //   · 克隆只用于题干预生成，追问固定回落到内置音色（RTF≈1.0，现场等不起）；
 //   · 不承诺「和真人一模一样」，不满意就重录。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Checkbox, Empty, Input, Popconfirm, Progress, Space, Tag, Tooltip, message } from 'antd';
+import { Alert, Button, Empty, Input, Popconfirm, Progress, Space, Tag, Tooltip, message } from 'antd';
 import {
   AudioOutlined,
   CloudDownloadOutlined,
@@ -64,7 +63,6 @@ export default function CloneVoiceCard({
   const [level, setLevel] = useState(0);
   const [hasClip, setHasClip] = useState(false);
   const [name, setName] = useState('我的声音');
-  const [licenseAck, setLicenseAck] = useState(false);
   const [busy, setBusy] = useState<'' | 'create' | 'preview'>('');
   const [previewing, setPreviewing] = useState('');
   const [renaming, setRenaming] = useState('');
@@ -167,7 +165,6 @@ export default function CloneVoiceCard({
   const onCreate = async () => {
     const clip = clipRef.current;
     if (!clip) { message.warning('请先录一段 3–10 秒的参考音频'); return; }
-    if (!licenseAck) { message.warning('请先确认「这是本人声音，或我已获得授权」'); return; }
     setBusy('create');
     try {
       const b64 = (() => {
@@ -184,7 +181,6 @@ export default function CloneVoiceCard({
         samplesBase64: b64,
         sampleRate: clip.sampleRate,
         refText: CLONE_REFERENCE_TEXT,
-        licenseAck,
       });
       if (!r.ok) { message.error(r.error || '创建失败'); return; }
       setHasClip(false);
@@ -237,17 +233,17 @@ export default function CloneVoiceCard({
           <div className="section-icon-box">
             <SoundOutlined />
           </div>
-          克隆我的声音
+          克隆音色
         </div>
         {installed ? <Tag color="green">模型已安装</Tag> : <Tag>未安装</Tag>}
       </div>
 
       <Alert
-        type="warning"
+        type="info"
         showIcon
         style={{ borderRadius: 8, marginBottom: 12 }}
-        message="仅用于本人声音或已获授权的声音；禁止用于冒充他人"
-        description="参考音频只存在本机（userData/speech/voices/），不上传、不建声纹库、不分享。克隆音色只用于题干预生成——追问仍用内置音色，否则每句要多等 3–5 秒。克隆与朗读两族模型会同时驻留内存（约 500MB），低配机器可随时删掉克隆包。"
+        message="参考音频只存在本机，不上传"
+        description="克隆音色只用于题干预生成——追问仍用内置音色，否则每句要多等 3–5 秒。克隆与朗读两族模型会同时驻留内存（约 500MB），低配机器可随时删掉克隆包。"
       />
 
       {!installed && (
@@ -334,7 +330,7 @@ export default function CloneVoiceCard({
           <div className="mi-clone-steps">
             <div className="mi-clone-step">
               <span className="mi-clone-step__no">2</span>
-              命名并确认授权
+              命名并保存
             </div>
             <Space wrap style={{ marginTop: 6 }}>
               <Input
@@ -345,14 +341,11 @@ export default function CloneVoiceCard({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="音色名称"
               />
-              <Checkbox checked={licenseAck} onChange={(e) => setLicenseAck(e.target.checked)}>
-                这是本人声音，或我已获得授权
-              </Checkbox>
               <Button
                 type="primary"
                 size="small"
                 loading={busy === 'create'}
-                disabled={!hasClip || !licenseAck || recording}
+                disabled={!hasClip || recording}
                 onClick={() => void onCreate()}
               >
                 创建并试听

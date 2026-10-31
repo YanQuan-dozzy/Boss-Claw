@@ -2150,7 +2150,8 @@ safeHandle('jc:mock-interview-speech-status', async () => {
 safeHandle('jc:mock-interview-speech-install', async (event, pack) => {
   try {
     const raw = String(pack || 'tts');
-    const which = raw === 'asr' ? 'asr' : raw === 'clone' ? 'clone' : 'tts';
+    // 两套「听」包：tts = Kokoro，melo = MeloTTS。装完自动切到新装的那套（见 install* 里的 writeSettings）
+    const which = raw === 'asr' ? 'asr' : raw === 'clone' ? 'clone' : raw === 'melo' ? 'melo' : 'tts';
     const sender = event.sender;
     const onProgress = (p) => {
       try { if (!sender.isDestroyed()) sender.send('jc:mock-interview-speech-progress', p); } catch { /* 窗口已关 */ }
@@ -2159,7 +2160,9 @@ safeHandle('jc:mock-interview-speech-install', async (event, pack) => {
       ? await speechInstall.installAsr(onProgress)
       : which === 'clone'
         ? await speechInstall.installClone(onProgress)
-        : await speechInstall.installTts(onProgress);
+        : which === 'melo'
+          ? await speechInstall.installMelo(onProgress)
+          : await speechInstall.installTts(onProgress);
     // 装完立刻预热，用户点第一句/第一次录音时不用再等模型加载
     if (which === 'asr') void speechService.warmupAsr();
     else if (which === 'clone') void speechService.warmup('zipvoice');
@@ -2168,6 +2171,20 @@ safeHandle('jc:mock-interview-speech-install', async (event, pack) => {
   } catch (e) {
     const msg = String((e && e.message) || e);
     return { ok: false, error: msg === '已取消' ? '已取消安装' : msg };
+  }
+});
+
+// 切换朗读模型（Kokoro ⇄ MeloTTS）：只改偏好不搬文件；两套都装了才有意义。
+// 切换后必须重启 worker —— 旧的 OfflineTts 实例还占着内存里的模型。
+safeHandle('jc:mock-interview-speech-set-pack', async (_event, pack) => {
+  try {
+    const r = speechInstall.setTtsPack(String(pack || ''));
+    if (!r.ok) return r;
+    speechService.shutdown();
+    void speechService.warmup();
+    return r;
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
@@ -2189,7 +2206,8 @@ safeHandle('jc:mock-interview-speech-remove', async (_event, pack) => {
       // 删模型包不动已录的参考音频（用户可能只是换模型重装），音色单独删
       return speechInstall.removeClone();
     }
-    return speechInstall.remove();
+    // kokoro / melo：删哪套由调用方指定，删当前生效的会自动回落另一套
+    return speechInstall.removeTts(which === 'melo' ? 'melo' : 'kokoro');
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

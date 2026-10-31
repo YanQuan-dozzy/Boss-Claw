@@ -24,7 +24,7 @@ const MAX_FILES = 4000;
 
 const FAMILY_LABEL = {
   kokoro: 'Kokoro',
-  vits: 'Piper / VITS',
+  vits: 'Piper / VITS / MeloTTS',
   zipvoice: 'ZipVoice（零样本克隆）',
   matcha: 'Matcha',
   kitten: 'Kitten',
@@ -71,6 +71,24 @@ const find = (files, re) => files.find((f) => atRoot(f) && re.test(f.name)) || n
 function findLexicon(files) {
   const all = files.filter((f) => atRoot(f) && /^lexicon.*\.txt$/i.test(f.name));
   return all.find((f) => /zh/i.test(f.name)) || all[0] || null;
+}
+
+/**
+ * MeloTTS 布局：根目录有**恰好叫 model.onnx** 的主模型 + tokens.txt + lexicon*.txt，
+ * 但没有 voices.bin / 声码器 / 同名 .onnx.json。
+ *
+ * 为什么要单独判（2026-10-31 实测）：
+ *   ① 它没有 `.onnx.json`，按 Piper 规则会落进「原生 Piper 包，需转换」被错拒；
+ *   ② 它**不需要 espeak-ng-data**（音素走 lexicon + 自带分词表）。而 buildEngineConfig 原本会把
+ *      包里的 `dict/`（jieba 词表）当音素目录传下去，sherpa 直接报
+ *      `dict/phontab does not exist. Please check --vits-data-dir` 加载失败。
+ * 主模型必须精确叫 `model.onnx`：Matcha 的叫 `model-steps-<N>.onnx`，且带声码器，两条都能区分。
+ */
+function isMeloLayout(files) {
+  if (has(files, /^voices\.bin$/i)) return false;
+  if (files.some((f) => atRoot(f) && /\.onnx\.json$/i.test(f.name))) return false;
+  if (has(files, /^(vocoder|vocos).*\.onnx$/i)) return false;
+  return has(files, /^model\.onnx$/i) && has(files, /^tokens\.txt$/i) && has(files, /^lexicon.*\.txt$/i);
 }
 
 /**
@@ -167,6 +185,17 @@ function detect(files) {
       missing: [],
     };
   }
+  if (isMeloLayout(files)) {
+    return {
+      family: 'vits',
+      engine: 'vits',
+      kind: 'melo',
+      supported: true,
+      reason: '',
+      required: ['model.onnx', 'tokens.txt', 'lexicon.txt'],
+      missing: [],
+    };
+  }
   if (has(files, /^model.*\.onnx$/i) && hasVocoder && hasTokens) {
     return {
       family: 'matcha',
@@ -234,8 +263,9 @@ function probe(dir) {
     error: det.supported ? '' : det.reason,
     required: det.required,
     missing: det.missing,
-    /** vits 需要 espeak-ng-data 做音素化；包内没带时要回落到已安装的内置包 */
-    needsEspeak: det.engine === 'vits' && !files.some((f) => f.dir && /^espeak-ng-data$/i.test(baseName(f))),
+    /** vits 需要 espeak-ng-data 做音素化；包内没带时要回落到已安装的内置包（MeloTTS 例外：它不需要）*/
+    needsEspeak: det.engine === 'vits' && det.kind !== 'melo'
+      && !files.some((f) => f.dir && /^espeak-ng-data$/i.test(baseName(f))),
     numSpeakers,
     bytes,
     fileCount: files.filter((f) => !f.dir).length,
@@ -247,6 +277,8 @@ function probe(dir) {
 function needsEspeakData(dir, engine) {
   if (engine !== 'vits') return false;
   const { files } = listFiles(dir);
+  // MeloTTS 用 lexicon + 自带分词表，塞 espeak 目录反而加载失败
+  if (isMeloLayout(files)) return false;
   return !files.some((f) => f.dir && /^espeak-ng-data$/i.test(baseName(f)));
 }
 
@@ -275,17 +307,21 @@ function buildEngineConfig(dir, engine, opts = {}) {
   }
   if (engine === 'vits') {
     const model = files.find((f) => atRoot(f) && /\.onnx$/i.test(f.name) && files.some((x) => x.name === `${f.name}.json`));
+    // MeloTTS 没有 .onnx.json（上面那条按同名 json 找不到 model），单独取精确名 model.onnx
+    const melo = isMeloLayout(files);
+    const meloModel = melo ? find(files, /^model\.onnx$/i) : null;
     const tokens = find(files, /^tokens\.txt$/i);
     const lexicon = findLexicon(files);
     const espeak = files.find((f) => f.dir && /^espeak-ng-data$/i.test(baseName(f)));
     const dictDir = files.find((f) => f.dir && /^(dict|espeak-ng-data)$/i.test(baseName(f)));
     return {
       engine: 'vits',
-      model: model ? abs(model) : '',
+      model: model ? abs(model) : meloModel ? abs(meloModel) : '',
       tokens: tokens ? abs(tokens) : '',
       lexicon: lexicon ? abs(lexicon) : '',
-      // 自己带的优先；包内没有时借用调用方给的内置包（社区包常常只发模型，不发 13MB 音素数据）
-      dataDir: espeak ? path.join(dir, espeak.rel) : dictDir ? path.join(dir, dictDir.rel) : String(opts.fallbackDataDir || ''),
+      // 自己带的优先；包内没有时借用调用方给的内置包（社区包常常只发模型，不发 13MB 音素数据）。
+      // MeloTTS 一律留空：它的 dict/ 是分词表不是音素数据，传下去必报 dict/phontab 不存在。
+      dataDir: melo ? '' : espeak ? path.join(dir, espeak.rel) : dictDir ? path.join(dir, dictDir.rel) : String(opts.fallbackDataDir || ''),
       numThreads,
     };
   }
@@ -314,6 +350,7 @@ module.exports = {
   buildEngineConfig,
   needsEspeakData,
   findLexicon,
+  isMeloLayout,
   listFiles,
   MAX_PACK_BYTES,
   FAMILY_LABEL,

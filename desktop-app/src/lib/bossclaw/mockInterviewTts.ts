@@ -397,7 +397,6 @@ export async function createClonedVoice(payload: {
   samplesBase64: string;
   sampleRate: number;
   refText: string;
-  licenseAck: boolean;
 }): Promise<{
   ok: boolean;
   voice?: ClonedVoice;
@@ -428,7 +427,7 @@ export async function getSpeechStatus(): Promise<SpeechStatus> {
 }
 
 export async function installSpeechPack(
-  pack: 'tts' | 'asr' | 'clone' = 'tts',
+  pack: 'tts' | 'asr' | 'clone' | 'melo' = 'tts',
   onProgress?: (p: SpeechProgress) => void,
 ): Promise<{ ok: boolean; error?: string }> {
   const off = onProgress ? electronApi.mockInterview.onSpeechProgress(onProgress) : () => {};
@@ -443,9 +442,15 @@ export async function cancelSpeechInstall(): Promise<{ ok: boolean }> {
   return electronApi.mockInterview.speechCancel();
 }
 
-export async function removeSpeechPack(pack: 'tts' | 'asr' | 'clone' = 'tts'): Promise<{ ok: boolean; error?: string }> {
+export async function removeSpeechPack(pack: 'tts' | 'asr' | 'clone' | 'melo' = 'tts'): Promise<{ ok: boolean; error?: string }> {
   stopSpeaking();
   return electronApi.mockInterview.speechRemove(pack);
+}
+
+/** 切换朗读模型（Kokoro ⇄ MeloTTS）；切换会清空朗读队列并重启语音进程 */
+export async function setSpeechPack(pack: 'kokoro' | 'melo'): Promise<{ ok: boolean; pack?: string; error?: string }> {
+  stopSpeaking();
+  return electronApi.mockInterview.speechSetPack(pack);
 }
 
 /** 在线高音质引擎开关（默认关；开启前由设置页弹隐私提示） */

@@ -3,7 +3,6 @@
 // 覆盖的是「录进来的东西能不能安全落盘」这一层：
 //   · 时长窗口 3–10s（短了音色不稳、长了没意义）；
 //   · 静音/几乎没声音必须拒绝（否则克隆出来是电流声，用户以为是模型坏了）；
-//   · 授权声明是硬门槛；
 //   · WAV 编解码往返一致（16-bit 量化误差 < 1/32767）；
 //   · 路径穿越（id 里的 ../）必须被挡住。
 //
@@ -71,27 +70,21 @@ check('WAV 编解码往返（16-bit 量化误差 < 2/32768）', () => {
   ok(maxErr < 2 / 32768, `往返最大误差 ${maxErr}`);
 });
 
-check('拒绝未勾选授权声明', () => {
-  const r = repo.create({ samplesBase64: b64(sine(5)), sampleRate: 16000, refText: REF_TEXT, licenseAck: false });
-  eq(r.ok, false);
-  ok(/授权/.test(r.error), r.error);
-});
-
 check('拒绝短于 3 秒的录音', () => {
-  const r = repo.create({ samplesBase64: b64(sine(2)), sampleRate: 16000, refText: REF_TEXT, licenseAck: true });
+  const r = repo.create({ samplesBase64: b64(sine(2)), sampleRate: 16000, refText: REF_TEXT });
   eq(r.ok, false);
   ok(/至少需要 3 秒/.test(r.error), r.error);
 });
 
 check('拒绝超过 10 秒的录音', () => {
-  const r = repo.create({ samplesBase64: b64(sine(11)), sampleRate: 16000, refText: REF_TEXT, licenseAck: true });
+  const r = repo.create({ samplesBase64: b64(sine(11)), sampleRate: 16000, refText: REF_TEXT });
   eq(r.ok, false);
   ok(/超过 10 秒/.test(r.error), r.error);
 });
 
 check('拒绝几乎静音的录音', () => {
   const quiet = new Float32Array(16000 * 5).fill(0);
-  const r = repo.create({ samplesBase64: b64(quiet), sampleRate: 16000, refText: REF_TEXT, licenseAck: true });
+  const r = repo.create({ samplesBase64: b64(quiet), sampleRate: 16000, refText: REF_TEXT });
   eq(r.ok, false);
   ok(/没声音/.test(r.error), r.error);
 });
@@ -103,7 +96,6 @@ check('4 秒有效录音可创建音色', () => {
     samplesBase64: b64(sine(4)),
     sampleRate: 16000,
     refText: REF_TEXT,
-    licenseAck: true,
   });
   eq(r.ok, true, r.error || '');
   ok(/^clone_[a-f0-9]{12}$/.test(r.voice.id), `id 形态 ${r.voice.id}`);
@@ -161,7 +153,6 @@ check('clearAll 清空全部音色并返回体积', () => {
       samplesBase64: b64(sine(3.5)),
       sampleRate: 16000,
       refText: REF_TEXT,
-      licenseAck: true,
     });
   }
   eq(repo.usage().count, 2, '清理前');
