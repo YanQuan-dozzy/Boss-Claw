@@ -216,6 +216,8 @@ for (const response of [{ ok: false, stage: 'failed', needsReview: true, error: 
   const context = vm.createContext({
     claimDelivery: () => true, releaseDelivery: () => calls.released++, setApplyStage: () => {}, addLog: () => {},
     awaitDeliveryGap: async () => {}, platformLabel: () => '猎聘',
+    // 暂停可中断投递（2026-10-30）引入的两个模块级 ref：在途标记 + 中止信号，宿主侧由 Workbench 自身持有。
+    deliveryInFlightRef: { current: false }, deliveryAbortRef: { current: false },
     useDataStore: { getState: () => ({ pending: [{ id: 'test', deliveryGreeting: currentGreeting }] }) },
     webviewApi: { current: { platformApply: async (...args) => {calls.applyArgs=args;return response;}, closeTab: () => calls.closed++ } },
     useAppStore: { getState: () => ({ autoAssist: true }) },
