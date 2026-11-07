@@ -30,7 +30,7 @@ import { useSettingsStore } from '@/store/useSettingsStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { pendingStatusMeta } from '@/lib/bossclaw/taskState';
-import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
+import { jobCardStatus, scoreChip, JOB_ACTION_TIPS } from '@/lib/bossclaw/statusMeta';
 import PlatformChip from '@/components/PlatformChip';
 import { cleanTitle, cleanSalary } from '@/lib/bossclaw/jobDisplay';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
@@ -127,6 +127,8 @@ export default function Tasks() {
   const profile = useDataStore((s) => s.profile);
   const updatePending = useDataStore((s) => s.updatePending);
   const setPending = useDataStore((s) => s.setPending);
+  const removePending = useDataStore((s) => s.removePending);
+  const removePendingMany = useDataStore((s) => s.removePendingMany);
   const updateTaskRun = useDataStore((s) => s.updateTaskRun);
   const removeTaskRun = useDataStore((s) => s.removeTaskRun);
   const addLog = useRuntimeLogsStore((s) => s.addLog);
@@ -167,6 +169,13 @@ export default function Tasks() {
   // 否则会造成状态机倒流、污染投递漏斗与统计口径（Workbench 侧已对 sent 做同类防御，此处对齐）。
   const isTerminalForActions = (status: string) => status === 'sent' || status === 'approved_queue';
 
+  // 「忽略 / 跳过」是同一语义（把岗位从流程里收口）的两个出口，同一行只保留一个，避免并排造成选择困难：
+  // - 待确认 / 待投递 → 忽略（与工作台同口径；跳过留给投递失败的岗位）
+  // - 失败 / 已打开未沟通 / AI 已拒 → 跳过（失败已说明没投成，再给忽略是同义重复）
+  // - 已跳过 / 已忽略 → 两个都不给（已收口，需要恢复请用「重试」）
+  const canIgnoreStatus = (status: PendingStatus) => status === 'pending' || status === 'approved' || status === 'approved_queue';
+  const canSkipStatus = (status: PendingStatus) => status === 'failed' || status === 'opened' || status === 'rejected';
+
   const onRetry = (id: string) => {
     const cur = pending.find((p) => p.id === id);
     if (cur && isTerminalForActions(cur.status)) {
@@ -196,6 +205,34 @@ export default function Tasks() {
     setPending(next);
     message.info('已撤回岗位，退回「待确认」');
     recomputeStats();
+  };
+
+  // ===== 已投递岗位删除（终态清理）=====
+  // 已投递是终态，重试/忽略/跳过对它均禁用，此前没有任何出口，记录只增不减。
+  // 删除仅移除本地记录，不影响已发出的招呼语与平台上的真实投递。
+  const onDeleteSent = (p: PendingItem) => {
+    removePending(p.id);
+    addLog('warn', `已删除已投递岗位：${cleanTitle(p.job?.title, p.job?.salary)}${p.job?.company ? ` @ ${p.job.company}` : ''}`);
+    message.success('已删除该岗位记录');
+    recomputeStats();
+  };
+
+  const onClearSent = () => {
+    const sentItems = pending.filter((p) => p.status === 'sent');
+    if (!sentItems.length) { message.info('暂无已投递岗位'); return; }
+    Modal.confirm({
+      title: `清理全部「已投递」岗位（${sentItems.length} 个）？`,
+      content: '仅删除本地岗位记录，不影响已发出的招呼语与平台上的实际投递；删除后「已投递」计数同步减少，且不可恢复。',
+      okText: '确认清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => {
+        removePendingMany(sentItems.map((p) => p.id));
+        addLog('warn', `已清理 ${sentItems.length} 个已投递岗位记录`);
+        message.success(`已清理 ${sentItems.length} 个已投递岗位`);
+        recomputeStats();
+      },
+    });
   };
 
   // ===== 执行任务列表：开始/继续 + 删除 =====
@@ -394,6 +431,18 @@ export default function Tasks() {
           </Space>
         </div>
       </Card>
+
+      {/* 已投递筛选下的批量清理入口：独立一行，避免第 4 个按钮挤压上方筛选工具栏 */}
+      {filter === 'sent' && (
+        <div className="delivered-cleanup-bar">
+          <span className="delivered-cleanup-bar__text">
+            共 {counts.sent} 个已投递岗位记录；可逐条删除，也可一次清理全部。
+          </span>
+          <Button size="small" danger type="text" icon={<DeleteOutlined />} onClick={onClearSent} disabled={!counts.sent}>
+            清理已投递
+          </Button>
+        </div>
+      )}
 
       {/* 岗位记录列表 */}
       {list.length === 0 ? (
@@ -653,18 +702,45 @@ export default function Tasks() {
               {/* 操作按钮栏 */}
               <div className="job-actions job-actions--tasks">
                 <div className="task-actions-left">
-                  <Button size="small" className="task-ghost-btn" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
-                    查看详情
-                  </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)} disabled={isTerminalForActions(p.status)}>
-                    重试
-                  </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<StopOutlined />} onClick={() => onIgnore(p.id)} disabled={isTerminalForActions(p.status)}>
-                    忽略
-                  </Button>
-                  <Button size="small" className="task-ghost-btn" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)} disabled={isTerminalForActions(p.status)}>
-                    跳过
-                  </Button>
+                  <Tooltip title={JOB_ACTION_TIPS.openExternal}>
+                    <Button size="small" className="task-ghost-btn" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)}>
+                      查看详情
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title={JOB_ACTION_TIPS.retry}>
+                    <Button size="small" className="task-ghost-btn" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)} disabled={isTerminalForActions(p.status)}>
+                      重试
+                    </Button>
+                  </Tooltip>
+                  {canIgnoreStatus(p.status) && (
+                    <Tooltip title={JOB_ACTION_TIPS.ignore}>
+                      <Button size="small" className="task-ghost-btn" icon={<StopOutlined />} onClick={() => onIgnore(p.id)} disabled={isTerminalForActions(p.status)}>
+                        忽略
+                      </Button>
+                    </Tooltip>
+                  )}
+                  {canSkipStatus(p.status) && (
+                    <Tooltip title={JOB_ACTION_TIPS.skip}>
+                      <Button size="small" className="task-ghost-btn" icon={<ForwardOutlined />} onClick={() => onSkip(p.id)} disabled={isTerminalForActions(p.status)}>
+                        跳过
+                      </Button>
+                    </Tooltip>
+                  )}
+                  {/* 已投递为终态：其余动作均禁用，只保留「删除」，作为终态记录的唯一出口 */}
+                  {p.status === 'sent' && (
+                    <Popconfirm
+                      title="删除该已投递岗位？"
+                      description="仅删除本地记录，不影响已发出的招呼语与平台上的实际投递；删除后「已投递」计数同步减少。"
+                      okText="确认删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => onDeleteSent(p)}
+                    >
+                      <Button size="small" danger className="task-ghost-btn" icon={<DeleteOutlined />}>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  )}
                 </div>
                 <div className="task-actions-right">
                   {p.status === 'pending' ? (

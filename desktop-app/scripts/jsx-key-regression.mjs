@@ -36,6 +36,9 @@ const INDEX_NAMES = new Set(['i', 'j', 'idx', 'index', 'itemIndex', 'rowIndex', 
 const ALLOWLIST = new Map([
   // 示例格式（当前为空 —— 所有 index key 已在批次 11 修完）：
   // ['pages/Foo.tsx', new Set(['i'])],
+  // 采样回放层的帧数据行：源自编译期常量 STREAM_LINES（固定切分、既不排序也不增删），
+  // 行号即语义（重组进度按行推进溶解）。位置稳定，下标可作 key。
+  ['components/RuntimeTrace.tsx', new Set(['i'])],
 ]);
 
 function walk(dir, out = []) {
