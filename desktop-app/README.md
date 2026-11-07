@@ -246,7 +246,7 @@ release/
 ```
 
 > `<version>` 取 `desktop-app/package.json` 的 `version`（单一来源；安装包名由 electron-builder 按同一字段生成）。
-> 示例：`version` = `2.6.1` → `BossClaw-2.6.1-x64.exe`。
+> 示例：`version` = `2.6.2` → `BossClaw-2.6.2-x64.exe`。
 
 ### Linux（`npm run package:linux` 或 `package:all`）
 
@@ -367,7 +367,7 @@ release/
 
 ## 变更记录
 
-* **未发布（2026-11-07，待随下一版打包）** — 后台常驻 + 系统通知 + 更新检查：
+* **v2.6.2（2026-11-08 发布）** — 后台常驻 + 系统通知 + 更新检查 + 语音模型可切换：
   * **关窗收进托盘**：原来的 `window-all-closed → app.quit()` 让「定时任务」只在窗口开着时生效，误关（或点标题栏 ×）会直接停掉在途投递。现在主进程增加 `Tray`，`close` 事件只有在「非退出中 + 用户开启常驻 + 托盘创建成功」**三条同时成立**时才 `preventDefault()` 并 `hide()`；真正退出只走托盘菜单 / 系统退出（`before-quit` 置 `isQuitting` 放行）。任一条不满足就照常关窗 —— 宁可退出，也不能出现「窗口藏了但唤不回」。偏好为 `AppConfig.closeToTray`（默认开），渲染层启动与变更时经 `jc:tray-prefs-set` 推镜像。
   * **系统通知**：新增 `src/lib/notify.ts` 作为唯一入口（主进程 `jc:notify` → `Notification`，点击唤回窗口）。只在这三处发：首次投递验收暂停、风控命中暂停、定时任务触发 / 备份完成；`AppConfig.systemNotify` 可关，主进程侧按同一份镜像二次拦截。不做「每条投递成功都弹」。
   * **检查更新**：设置页「版本与更新」经主进程 `jc:fetch-url` 读 GitHub Releases 最新 tag，有新版本给下载入口；**不自动下载或替换程序文件**（未签名 + `asar:false`，静默替换易被拦截且不利于回退）。版本比较走 `parseVersion` / `isNewerVersion` 的三段数字，避免 `"2.10.0" < "2.9.0"` 的字典序错误；结果缓存 6 小时。
@@ -376,7 +376,7 @@ release/
   * 回归：新增 `update-check-regression.mjs`（27 条：版本解析 / 三段比较 / 网络失败与限流降级 / 缓存命中不重复请求）。IPC 白名单 121 → 123（新增 `jc:notify` / `jc:tray-prefs-set`）。
   * 门禁：`tsc -b` + `vite build` + `test:all` 通过。
 
-* **未发布（2026-11-01，待随下一版打包）** — 朗读模型可切换 + 克隆音色口径收敛：
+* **v2.6.2（同上版次，2026-11-01 入库）** — 朗读模型可切换 + 克隆音色口径收敛：
   * **第二套「听」包 MeloTTS**：内置朗读模型不再写死 Kokoro，新增 MeloTTS（`vits-melo-tts-zh_en`，44.1kHz 单女声，约 167MB，音色更接近真人录音）。两套包**可并存**、各自独立下载 / 删除，设置页「语音」卡片按模型行展示「当前使用 / 已下载 / 切换到这套 / 删除」；切换只写偏好 `settings.ttsPack` 并重启语音 worker（旧 `OfflineTts` 实例还占着内存），删掉当前生效的那套自动回落另一套，装完自动切到新装的那套。唯一判定点是 `speechInstall.activeTtsPack()`，UI / 合成 / 预热都从它取引擎。
   * **引擎分派修正**：`modelConfig()` 改为返回 `{engine, config, pack, dir}`，`planVoice` / `warmup` / `status().engine` 不再写死 `kokoro`（否则切到 MeloTTS 仍拿 Kokoro 配置去加载）；MeloTTS 是单说话人，内置音色表里传的 `sid` 强制归 0，否则 sherpa 拒收。
   * **导入包识别 MeloTTS 布局**：`mockInterviewVoicePack.isMeloLayout()` 按「`model.onnx` + `tokens.txt` + `lexicon*.txt`，无声码器 / 无 `voices.bin` / 无同名 `.onnx.json`」精确判定，不再被 Piper 规则误判成「原生包需转换」，也不与 Matcha 撞车。**MeloTTS 的 `dataDir` 必须留空** —— 包里那个 `dict/` 是 jieba 分词表，当音素目录传下去 sherpa 会报 `dict/phontab does not exist` 直接加载失败。
