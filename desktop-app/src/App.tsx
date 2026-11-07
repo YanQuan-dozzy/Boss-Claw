@@ -9,7 +9,7 @@ import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
 import { startScheduler } from './lib/scheduler';
 import { useScheduleStore } from './store/useScheduleStore';
-import { consumeLegacyBatchDelivery } from './store/useSettingsStore';
+import { consumeLegacyBatchDelivery, useSettingsStore } from './store/useSettingsStore';
 import { restoreFromLocalBackup, startLocalBackup } from './lib/localBackup';
 import { syncTargetLocationsOnStart } from './lib/bossclaw/targetLocationSync';
 import Sidebar from './components/Sidebar';
@@ -70,6 +70,18 @@ export default function App() {
     Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
     root.setAttribute('data-theme', effective);
   }, [effective]);
+
+  // 托盘常驻 / 系统通知偏好同步到主进程（权威值在 AppConfig，主进程只做镜像）。
+  // 主进程的关窗拦截与通知发送都读这份镜像，因此这里必须「一变更就推」：
+  // 用户刚在设置页关掉常驻、立刻点关闭窗口，不能还按旧值把窗口收进托盘。
+  const closeToTray = useSettingsStore((s) => s.config.closeToTray);
+  const systemNotify = useSettingsStore((s) => s.config.systemNotify);
+  useEffect(() => {
+    window.electron?.setTrayPrefs?.({
+      closeToTray: closeToTray !== false,
+      notify: systemNotify !== false,
+    });
+  }, [closeToTray, systemNotify]);
 
   // 侧边栏按窗口宽度自适应：窗口窄于断点（主窗口 minWidth 960）自动收起为图标栏，
   // 恢复宽度自动展开。跨断点翻转时才改状态，避免覆盖用户在同一侧的手动切换。

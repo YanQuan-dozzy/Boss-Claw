@@ -652,7 +652,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     // 表现为智联等站点的 target=_blank 链接「点了没反应」。真正处理在主进程
     // did-attach-webview 的 guest.setWindowOpenHandler：http(s) 弹窗在当前标签内 loadURL，
     // 其余 deny。此处不再挂无效监听。
-  }, [patchTab, touchTab]); // 唯一依赖是最新的 patchTab / 稳定的 touchTab
+  }, [patchTab, touchTab, reportNavigate, forceResizeWebview]); // 四个都是 `[]` 依赖的稳定 useCallback，列入不会引起重建
 
   // ===== 每标签一个「身份稳定」的 ref 回调 =====
   // 根因（非 BOSS「一键投递」恒报「详情页加载超时」）：

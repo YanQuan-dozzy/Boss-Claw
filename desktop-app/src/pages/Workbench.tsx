@@ -19,6 +19,7 @@ import { useRuntimeLogsStore, type LogLevel } from '@/store/useRuntimeLogsStore'
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAppStore } from '@/store/useAppStore';
 import { useScheduleStore } from '@/store/useScheduleStore';
+import { notifyRiskPaused, notifyValidationPaused } from '@/lib/notify';
 import BrowserView, { WebviewApi } from '@/components/BrowserView';
 import GreetingEditor from '@/components/GreetingEditor';
 import PlatformChip from '@/components/PlatformChip';
@@ -340,19 +341,21 @@ export default function Workbench() {
   }, []);
   // 跳过日志合并：连续同因跳过只打一条，切换原因时再补「同类跳过 ×N」，避免刷屏
   const lastSkipLogRef = useRef<{ msg: string; count: number } | null>(null);
-  const flushLastSkipLog = () => {
+  // 包 useCallback：它被 addSkipLogOnce 与 ingestJob 两个 useCallback 引用，
+  // 普通函数每渲染换引用会让这两者的依赖恒变（等于没缓存）。
+  const flushLastSkipLog = useCallback(() => {
     const cur = lastSkipLogRef.current;
     if (!cur) return;
     if (cur.count > 1) addLog('info', `${cur.msg}（同因跳过 ×${cur.count}）`);
     lastSkipLogRef.current = null;
-  };
+  }, [addLog]);
   const addSkipLogOnce = useCallback((level: LogLevel, msg: string) => {
     const cur = lastSkipLogRef.current;
     if (cur && cur.msg === msg) { cur.count += 1; return; }
     flushLastSkipLog();
     lastSkipLogRef.current = { msg, count: 1 };
     addLog(level, msg);
-  }, [addLog]);
+  }, [addLog, flushLastSkipLog]);
 
   // ===== Camoufox 隐身采集（可选增强）=====
   const [cfxCollecting, setCfxCollecting] = useState(false);
@@ -874,7 +877,10 @@ export default function Workbench() {
     startDelivery();
   };
 
-  const pauseAssist = (reason: string) => {
+  // 包 useCallback：pauseAssist 被 handleRisk / handleDelivered 等多个 useCallback 引用，
+  // 普通函数每渲染换引用会让那些回调的依赖恒变（React 每次都重建，缓存失效）。
+  // 内部只用到 setState / store action / ref，没有随渲染变化的值，[] + addLog 即可。
+  const pauseAssist = useCallback((reason: string) => {
     visualActiveRef.current = false;
     setVisualCollecting(false);
     setVisualPaused(false);
@@ -887,7 +893,7 @@ export default function Workbench() {
       setApplyStage(null);
     }
     addLog('warn', reason);
-  };
+  }, [addLog, setAutoAssist]);
 
   // ===== 投递节流：拆成「预检」+「间隔等待」两段 =====
   // 拆分动机（09-17 实测）：岗位间隔节流（betweenJobsSeconds，默认 20s）原本发生在**打开标签页之前**，
@@ -1081,7 +1087,7 @@ export default function Workbench() {
       addLog('error', `分析失败「${meta.title}」：${err?.message || err}`);
       return false;
     }
-  }, [addPendingItem, addLog, addSkipLogOnce]);
+  }, [addPendingItem, addLog, addSkipLogOnce, flushLastSkipLog]);
 
   // 提取纯 encryptJobId（对齐旧 webview.cjs 口径）
   const extractEncryptJobId = useCallback((job: JobMeta): string => {
@@ -1148,6 +1154,8 @@ export default function Workbench() {
     } else {
       pauseAssist(`${msg}。已暂停投递：若右侧浏览器出现安全验证，请人工完成后再点"重新投递"。`);
     }
+    // 窗口可能在托盘里：风控暂停必须让人看见（不是程序坏了，是被平台拦了，需要人工处理）
+    notifyRiskPaused(code ?? '-', msg);
   }, [activeId, updatePending, addLog, recomputeStats, pauseAssist]);
 
   // ===== 投递成功处理（API / DOM 兜底共用）=====
@@ -1175,9 +1183,14 @@ export default function Workbench() {
       // 历史 bug：此处曾直接 return，跳过上面的标签收尾，导致 activeId/activeTabRef 悬挂、
       // 引擎停在已 sent 的岗位上无法推进（表现为「投递一个就要重新确认」）。
       pauseAssist('首次投递成功，已暂停投递：请核对右侧沟通对象、文字气泡与附件，确认无误后再启动');
+      // 首次验收是唯一「必须人来拍板」的节点：窗口可能已收进托盘，用系统通知把人叫回来
+      notifyValidationPaused(c?.job?.title);
       return;
     }
     if (useAppStore.getState().autoAssist) requestRunNext();
+    // requestRunNext 是函数声明（`function requestRunNext()`），只读写 ref 与 getState，语义上等价稳定引用；
+    // 写成依赖会让本回调每次渲染都重建（函数声明每渲染都是新引用），等于没缓存。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updatePending, addLog, recomputeStats, pauseAssist]);
 
   // ===== 可视化采集（对齐 job-claw-main：逐卡片滚动 + 高亮 + 点击展开详情）=====

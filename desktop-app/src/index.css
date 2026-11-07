@@ -1984,6 +1984,83 @@ html[data-theme='dark'] .direction-tag {
   box-shadow: var(--shadow-sm);
 }
 
+/* 设置页说明条（SettingsNote）：一句话常驻 + ⓘ 悬停看详情。
+   替代原先的大块 <Alert> 长文案——常驻信息只保留「必须被看见的那一句」。 */
+.settings-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+.settings-note__icon {
+  flex: none;
+  margin-top: 3px;
+  font-size: 13px;
+}
+
+.settings-note__text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 说明条的「详情」入口：与 .field-label__hint 同一视觉语言，但独立命名，
+   避免它被误当成字段标签的附属图标去改字号。 */
+.settings-note__hint {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  opacity: 0.7;
+  cursor: help;
+  vertical-align: -1px;
+  transition: opacity 0.15s ease;
+}
+
+.settings-note__hint:hover,
+.settings-note__hint:focus-visible {
+  opacity: 1;
+  color: var(--brand);
+  outline: none;
+}
+
+.settings-note--info .settings-note__icon {
+  color: var(--status-info);
+}
+
+.settings-note--warning {
+  border-color: rgba(var(--status-warning-rgb), 0.32);
+  background: rgba(var(--status-warning-rgb), 0.08);
+  color: var(--fg);
+}
+
+.settings-note--warning .settings-note__icon {
+  color: var(--status-warning-strong);
+}
+
+/* 间距交给卡片关系决定，避免每个调用点手写 style：
+   紧跟卡片标题时的说明条贴住标题（原 <Alert> 的观感），其余位置统一留 12px；
+   作为卡片最后一个元素时去掉下边距，免得底部多出一截空白。 */
+.settings-section-card > .settings-note {
+  margin-top: 12px;
+}
+
+.settings-section-header + .settings-note {
+  margin-top: 0;
+}
+
+.settings-section-card > .settings-note:last-child {
+  margin-bottom: 0;
+}
+
 /* 本地存储用量明细（issue #10）：键名 + 内部键 + 占用，等宽对齐便于对比 */
 .storage-usage-list {
   display: flex;

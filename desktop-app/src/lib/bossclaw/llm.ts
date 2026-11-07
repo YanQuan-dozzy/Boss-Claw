@@ -566,7 +566,7 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   };
 
   // ---- 第 1 次调用 ----
-  let attempt = await requestOnce();
+  const attempt = await requestOnce();
   let content = attempt.content;
   let finishReason = attempt.finishReason;
   let payload = attempt.payload;
@@ -896,7 +896,7 @@ function flushCacheNow(): void {
 }
 
 // 命中统计内存累加 + 定期落盘：hits/misses 不再每次 bump 都同步读写 stats key
-let statsAccum: {
+const statsAccum: {
   hits: number;
   misses: number;
   loaded: boolean;

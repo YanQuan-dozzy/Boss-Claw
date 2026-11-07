@@ -70,6 +70,14 @@ export interface AppConfig {
   financing: string[];
   sendResumeImage: boolean;
   sendOnlineResume: boolean;
+  /**
+   * 关闭窗口时收进系统托盘（默认 true）。
+   * 定时任务调度器是渲染层单例、投递引擎也在窗口里 —— 关窗即退出会让「半夜定时投递」必须一直开着窗口。
+   * 关掉此项回到「关窗即退出」。主进程侧还会校验托盘是否真的创建成功，失败时同样按关窗退出处理。
+   */
+  closeToTray?: boolean;
+  /** 关键事件发系统通知（首次投递验收 / 风控暂停 / 定时任务完成），默认 true；关掉即静默 */
+  systemNotify?: boolean;
   betweenJobsSeconds: number;
   /**
    * 活跃时段（模拟真人作息）：时段外**自动暂停投递**。

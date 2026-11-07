@@ -3,8 +3,8 @@
 // 这一块刻意独立成组件：设置页已经有 6 个分区、体量很大，语音只依赖 3 个 IPC，
 // 单独放可以让「是否安装 / 装到哪 / 占了多大」这三件事在一屏内说清楚。
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Modal, Popconfirm, Progress, Space, Switch, Tag, message } from 'antd';
-import { AudioOutlined, CloudDownloadOutlined, DeleteOutlined, SoundOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Alert, Button, Modal, Popconfirm, Progress, Space, Switch, Tag, Tooltip, message } from 'antd';
+import { AudioOutlined, CloudDownloadOutlined, DeleteOutlined, QuestionCircleOutlined, SoundOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import {
   MOCK_SPEECH_RATES,
   MOCK_VOICES,
@@ -24,6 +24,7 @@ import {
   stopSpeaking,
 } from '@/lib/bossclaw/mockInterviewTts';
 import CloneVoiceCard from './CloneVoiceCard';
+import SettingsNote from './SettingsNote';
 import VoicePackCard from './VoicePackCard';
 
 const PHASE_LABEL: Record<string, string> = {
@@ -170,9 +171,10 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
   const activePack = tts?.pack || '';
 
   // 两套「听」包：都能装、都能删，同一时间只有一套生效（切换只改偏好，不搬文件）
-  const PACK_ROWS: Array<{ id: 'kokoro' | 'melo'; title: string; badge: string; note: string }> = [
-    { id: 'kokoro', title: 'Kokoro 多语言', badge: '24kHz', note: '100+ 音色可选，速度中等 · 解压后约 408MB' },
-    { id: 'melo', title: 'MeloTTS 中英', badge: '44.1kHz', note: '单女声、更接近真人录音，略慢 · 解压后约 170MB' },
+  // desc 常驻；体积二选一显示 —— 未装时给「解压后」预期，已装后给实际占用，避免同一行说两遍体积。
+  const PACK_ROWS: Array<{ id: 'kokoro' | 'melo'; title: string; badge: string; desc: string; size: string }> = [
+    { id: 'kokoro', title: 'Kokoro 多语言', badge: '24kHz', desc: '100+ 音色可选，速度中等', size: '解压后约 408MB' },
+    { id: 'melo', title: 'MeloTTS 中英', badge: '44.1kHz', desc: '单女声、更接近真人录音，略慢', size: '解压后约 170MB' },
   ];
   const packOf = (id: 'kokoro' | 'melo') => (tts?.packs ? tts.packs[id] : undefined);
   const installingTts = installing === 'tts' || installing === 'melo';
@@ -192,12 +194,9 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
             : <Tag>未安装</Tag>}
         </div>
 
-        <Alert
-          type="info"
-          showIcon
-          style={{ borderRadius: 8, marginBottom: 12 }}
-          message="语音完全在本机合成，不上传题干或公司信息"
-          description="运行时是 sherpa-onnx，可装两套模型并随时切换：Kokoro（24kHz、8 个内置音色）与 MeloTTS（44.1kHz、单女声、更接近真人录音）。语音包不进安装包，首次使用时下载；报告不朗读，只朗读开场、题干、追问与收尾。"
+        <SettingsNote
+          text="语音完全在本机合成，不上传题干或公司信息"
+          detail="运行时是 sherpa-onnx，可装两套模型并随时切换：Kokoro（24kHz、8 个内置音色）与 MeloTTS（44.1kHz、单女声、更接近真人录音）。语音包不进安装包，首次使用时下载；报告不朗读，只朗读开场、题干、追问与收尾。"
         />
 
         <div className="mi-clone-list" style={{ marginBottom: 12 }}>
@@ -215,9 +214,21 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
                     {rowInstalled && !isActive ? <Tag style={{ marginLeft: 6 }}>已下载</Tag> : null}
                   </div>
                   <div className="mi-clone-item__meta">
-                    {row.note}
-                    {rowInstalled && info ? ` · 占用 ${formatSpeechBytes(info.bytes)}` : ''}
-                    {rowInstalled && info?.dir ? ` · ${info.dir}` : ''}
+                    {row.desc}
+                    {rowInstalled && info
+                      ? ` · 占用 ${formatSpeechBytes(info.bytes)}`
+                      : ` · ${row.size}`}
+                    {rowInstalled && info?.dir ? (
+                      // 安装路径只用于诊断，常驻会把这一行撑成一条长串
+                      <Tooltip
+                        title={`安装位置：${info.dir}`}
+                        styles={{ body: { maxWidth: 420, wordBreak: 'break-all', fontSize: 12 } }}
+                      >
+                        <span className="settings-note__hint" tabIndex={0} role="button" aria-label="查看安装位置">
+                          安装位置
+                        </span>
+                      </Tooltip>
+                    ) : null}
                   </div>
                 </div>
                 <Space size={6}>
@@ -293,8 +304,8 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
               <Button onClick={() => void onClearCache()}>清理朗读缓存</Button>
               <span className="field-label" style={{ opacity: 0.7 }}>
                 {activePack === 'melo'
-                  ? 'MeloTTS 只有一个音色，面试页的音色下拉对它不生效；语速仍可调。'
-                  : `缓存 ${formatSpeechBytes(tts.cacheBytes)}，切换模型不会自动清缓存。`}
+                  ? 'MeloTTS 仅一个音色：面试页的音色下拉不生效，语速仍可调。'
+                  : `缓存 ${formatSpeechBytes(tts.cacheBytes)}（切换模型不会自动清）`}
               </span>
             </Space>
           </div>
@@ -319,17 +330,11 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
           </Space>
         </div>
 
-        <Alert
-          type="warning"
-          showIcon
-          style={{ borderRadius: 8, marginBottom: 12 }}
-          message="开启后朗读文本会发送到微软的语音接口"
-          description="这是本项目「本地优先」定位下唯一允许的联网例外，且必须由你主动开启。它不是官方接口，鉴权或返回结构随时可能变；任何失败都会静默回落本地 Kokoro，只影响这一句，不影响面试本身。"
+        <SettingsNote
+          tone="warning"
+          text="开启后朗读文本（含岗位名、公司名与题干）会发送到微软的语音接口"
+          detail="这是本项目「本地优先」定位下唯一允许的联网例外，且必须由你主动开启。它不是官方接口，鉴权或返回结构随时可能变；任何失败都会静默回落本地 Kokoro，只影响这一句，不影响面试本身。在线档只服务内置的 8 个精选音色，克隆与导入的音色仍走本地模型。"
         />
-
-        <div style={{ fontSize: 12, opacity: 0.65 }}>
-          在线档只服务内置的 8 个精选音色；克隆与导入的音色仍走本地模型。音色与语速沿用上面的设置，缓存与播放队列共用。
-        </div>
       </div>
 
       <div className="settings-section-card">
@@ -343,12 +348,9 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
           {asr?.installed ? <Tag color="green">已安装</Tag> : <Tag>未安装</Tag>}
         </div>
 
-        <Alert
-          type="info"
-          showIcon
-          style={{ borderRadius: 8, marginBottom: 12 }}
-          message="录音只在本机转写，不上传音频"
-          description="运行时是 sherpa-onnx + SenseVoice（中/英/日/韩/粤，自带标点）。转写结果会填进作答框，可修改后再提交；语速 / 长停顿 / 口头禅由本地 VAD 与文本计算，不参与内容分。"
+        <SettingsNote
+          text="录音只在本机转写，不上传音频"
+          detail="运行时是 sherpa-onnx + SenseVoice（中/英/日/韩/粤，自带标点）。转写结果会填进作答框，可修改后再提交；语速 / 长停顿 / 口头禅由本地 VAD 与文本计算，不参与内容分。"
         />
 
         {!asr?.installed && installing !== 'asr' && (
@@ -364,7 +366,7 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
                 下载识别包（约 {formatSpeechBytes(asr?.archiveBytes || 228 * 1024 * 1024)}）
               </Button>
               <span className="field-label" style={{ opacity: 0.7 }}>
-                解压后约 229MB；不装也能用文字作答。
+                不装也能用文字作答
               </span>
             </Space>
           </div>
@@ -471,7 +473,15 @@ export default function SpeechSettingsCard({ active }: { active: boolean }) {
           ))}
         </div>
         <div style={{ fontSize: 12, opacity: 0.65, marginTop: 8 }}>
-          音色全局生效，<b>会话内不可切换</b>（下一场生效）：一场面试的面试官不该中途换嗓子，锁定音色也能让题干预渲染全部命中缓存。
+          音色全局生效，<b>会话内不可切换</b>（下一场生效）
+          <Tooltip
+            title="一场面试的面试官不该中途换嗓子；锁定音色也能让题干预渲染全部命中缓存。"
+            styles={{ body: { maxWidth: 320, fontSize: 12.5, lineHeight: 1.7 } }}
+          >
+            <span className="settings-note__hint" tabIndex={0} role="button" aria-label="查看说明">
+              <QuestionCircleOutlined />
+            </span>
+          </Tooltip>
         </div>
       </div>
     </div>

@@ -124,7 +124,7 @@ export interface CsvTable {
 
 /** 手写 CSV 解析：必须处理 BOM（否则首列表头变成 \ufeff题目）与引号内的逗号/换行 */
 export function parseCsv(text: string, delimiter?: string): CsvTable {
-  let src = String(text || '').replace(/^\ufeff/, '');
+  const src = String(text || '').replace(/^\ufeff/, '');
   const firstLine = src.split(/\r?\n/)[0] || '';
   const sep =
     delimiter ||

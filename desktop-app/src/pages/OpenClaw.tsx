@@ -57,6 +57,9 @@ export default function OpenClaw() {
     }
   };
 
+  // 挂载时探测一次桥接状态。refresh 是组件内普通函数（每次渲染新引用），写进依赖会形成
+  // 「拉状态 → setState → 重渲染 → 再拉」的无限请求；这里的语义就是「只在挂载时跑一次」。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { refresh(); }, []);
 
   const control = async (type: string) => {

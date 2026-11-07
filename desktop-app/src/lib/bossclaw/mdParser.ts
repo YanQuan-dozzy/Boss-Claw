@@ -87,7 +87,7 @@ export function markdownToPlainText(md: string): string {
   }
 
   // 清理：去除多余空行、每行尾随空格
-  let result = out
+  const result = out
     .join('\n')
     .replace(/[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')

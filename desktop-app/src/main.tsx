@@ -104,7 +104,7 @@ async function boot(): Promise<void> {
 
   // 迁移失败时文件内容不可信（可能只写了一半），本会话必须以 localStorage 副本为准
   const mayReadFile = !migrationError && queueFileAvailable();
-  let hydrated = mayReadFile
+  const hydrated = mayReadFile
     ? await withTimeout(
         queueRepo.hydrateQueue(),
         3000,

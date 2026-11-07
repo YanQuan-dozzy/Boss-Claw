@@ -263,6 +263,8 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
       setRecLevel(0);
       stopRecTimer();
     }
+  // 依赖刻意只取「会话状态」：session 是每次作答都会换引用的对象，整体列入会让录音在每答一题后被重置。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.status]);
 
   useEffect(() => () => {
@@ -291,6 +293,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
     if (customVoices.some((v) => v.id === id)) return;
     updateConfig({ voiceId: MOCK_VOICES[0].id });
     message.info('这场面试用的克隆音色已被删除，已回落到默认内置音色');
+    // 只按「锁定的音色 / 可用音色列表」重跑：整个 session 每答一题都换引用，
+    // 会让这段检查反复执行（提示语重复弹、updateConfig 反复写）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.config.voiceId, customVoices, updateConfig]);
 
   /**
@@ -325,6 +330,8 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
       }
     })();
     return () => { cancelled = true; };
+  // 预取只看「题目集合 / 音色 / 语速」这几个真正影响合成结果的字段，不看整个 session。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speechReady, onlineSpeech, session?.status, session?.questions.length, session?.config.voiceId, session?.config.speechRate]);
 
   // 自动朗读：进入一道新题 / 追问时朗读；离开进行态立即停（朗读与作答硬互斥）
@@ -356,6 +363,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
       return () => stopSpeaking();
     }
     return undefined;
+  // 自动朗读的重跑点用 activeQuestionId / probeAskedAt 精确控制：整个 session 换引用（每答一题都换）
+  // 会让正在播报的题干被中途打断重播。voiceFor 依赖 voiceId，已由 voiceId 字段覆盖。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVisible, speechReady, session?.status, activeQuestionId, probeAskedAt, onlineSpeech]);
 
   // ===== 工作台「面试」入口：带入岗位并新建草稿（旧会话仍在历史里，不删除） =====

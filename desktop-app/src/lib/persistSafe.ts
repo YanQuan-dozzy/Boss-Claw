@@ -224,7 +224,7 @@ function writeWithFallback(store: Storage, name: string, value: StorageValue<unk
       return null;
     }
   };
-  let json = payload();
+  const json = payload();
   if (json == null) {
     // 序列化失败同样是「落盘没跟上内存」，必须计入健康状态，否则用户永远看不到告警
     recordFailure(name, new Error('序列化失败（值中含不可序列化内容）'));

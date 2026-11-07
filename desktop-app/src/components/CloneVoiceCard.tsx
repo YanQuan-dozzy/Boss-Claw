@@ -5,7 +5,7 @@
 //   · 克隆只用于题干预生成，追问固定回落到内置音色（RTF≈1.0，现场等不起）；
 //   · 不承诺「和真人一模一样」，不满意就重录。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Empty, Input, Popconfirm, Progress, Space, Tag, Tooltip, message } from 'antd';
+import { Button, Empty, Input, Popconfirm, Progress, Space, Tag, Tooltip, message } from 'antd';
 import {
   AudioOutlined,
   CloudDownloadOutlined,
@@ -33,6 +33,7 @@ import {
   stopSpeaking,
 } from '@/lib/bossclaw/mockInterviewTts';
 import { VoiceRecorder } from '@/lib/bossclaw/mockInterviewRecorder';
+import SettingsNote from './SettingsNote';
 
 const PHASE_LABEL: Record<string, string> = {
   prepare: '准备中…',
@@ -238,12 +239,9 @@ export default function CloneVoiceCard({
         {installed ? <Tag color="green">模型已安装</Tag> : <Tag>未安装</Tag>}
       </div>
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ borderRadius: 8, marginBottom: 12 }}
-        message="参考音频只存在本机，不上传"
-        description="克隆音色只用于题干预生成——追问仍用内置音色，否则每句要多等 3–5 秒。克隆与朗读两族模型会同时驻留内存（约 500MB），低配机器可随时删掉克隆包。"
+      <SettingsNote
+        text="参考音频只存在本机，不上传；克隆声只用于题干预生成"
+        detail="追问仍用内置音色，否则每句要多等 3–5 秒。克隆与朗读两族模型会同时驻留内存（约 500MB），低配机器可随时删掉克隆包。"
       />
 
       {!installed && (
@@ -259,7 +257,7 @@ export default function CloneVoiceCard({
               下载克隆音色包（约 {formatSpeechBytes(clone?.archiveBytes || 163 * 1024 * 1024)}）
             </Button>
             <span className="field-label" style={{ opacity: 0.7 }}>
-              解压后约 197MB；不装也能用内置的 8 个音色。
+              解压后约 197MB
             </span>
             {installing && (
               <Button size="small" icon={<StopOutlined />} onClick={() => void cancelSpeechInstall()}>
@@ -321,7 +319,6 @@ export default function CloneVoiceCard({
                     {hasClip ? `重新录制（已录 ${clipRef.current ? (clipRef.current.samples.length / clipRef.current.sampleRate).toFixed(1) : 0}s）` : '开始录音'}
                   </Button>
                   {hasClip ? <Tag color="green">已录制</Tag> : null}
-                  <span className="mi-caption">录音只在本机处理，创建后参考片段保存在本机</span>
                 </>
               )}
             </div>
@@ -352,7 +349,7 @@ export default function CloneVoiceCard({
               </Button>
             </Space>
             <div className="mi-caption" style={{ marginTop: 6 }}>
-              创建后会立刻用克隆声合成一句试听；如果声音不像或没声音，删掉重录即可（不承诺与真人完全一致）。
+              创建后会立刻试听一句；不满意可删掉重录。
             </div>
           </div>
 

@@ -49,6 +49,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:window-always-on-top', 'jc:window-always-on-top-changed', 'jc:window-always-on-top-set',
   'jc:window-close', 'jc:window-focus-changed', 'jc:window-is-maximized', 'jc:window-maximize',
   'jc:window-maximized-changed', 'jc:window-minimize',
+  'jc:notify', 'jc:tray-prefs-set',
 ]);
 
 const assertIpcChannel = (method, channel) => {
@@ -82,6 +83,10 @@ const api = {
   winMaximize: () => ipcRenderer.send('jc:window-maximize'),
   winClose: () => ipcRenderer.send('jc:window-close'),
   winIsMaximized: () => ipcRenderer.invoke('jc:window-is-maximized'),
+  // 系统通知 / 托盘常驻（设置页开关；主进程按同一份偏好再拦截一次）
+  notify: (payload) => ipcRenderer.invoke('jc:notify', payload || {}),
+  setTrayPrefs: (prefs) => ipcRenderer.send('jc:tray-prefs-set', prefs || {}),
+
   // 窗口置顶（标题栏图钉按钮）：查询状态 / 设置 / 订阅变化
   winAlwaysOnTop: () => ipcRenderer.invoke('jc:window-always-on-top'),
   winAlwaysOnTopSet: (value) => ipcRenderer.send('jc:window-always-on-top-set', Boolean(value)),

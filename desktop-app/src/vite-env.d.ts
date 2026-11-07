@@ -25,6 +25,9 @@ interface ElectronBridgeApi {
   winAlwaysOnTop?: () => Promise<boolean>;
   winAlwaysOnTopSet?: (value: boolean) => void;
   onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
+  // 系统通知 / 托盘常驻（设置页开关；主进程按同一份偏好再拦截一次）
+  notify?: (payload: { title?: string; body?: string }) => Promise<{ ok: boolean; skipped?: string; error?: string }>;
+  setTrayPrefs?: (prefs: { closeToTray?: boolean; notify?: boolean }) => void;
   // Camoufox 隐身引擎（可选增强，Python 桥）——platform 参数（boss/liepin/zhaopin/job51）
   camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;  camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;

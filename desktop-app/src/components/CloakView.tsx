@@ -271,8 +271,8 @@ export default function CloakView(props: Props) {
         setStarting(false);
       }
     });
-    return () => { off(); offStatus && offStatus(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { off(); offStatus?.(); };
+     
   }, []);
 
   const activeIdRef = useRef(activeId);

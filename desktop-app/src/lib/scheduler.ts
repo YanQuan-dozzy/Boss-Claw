@@ -15,6 +15,7 @@ import { getBackupDir, writeLocalBackup } from './localBackup';
 import { platformLabel } from './bossclaw/platforms';
 import type { ScheduleEntry } from '@/store/useScheduleStore';
 import type { JobPlatform } from '@/lib/bossclaw/types';
+import { notifyScheduleEvent } from '@/lib/notify';
 
 const TICK_MS = 15_000;
 const GRACE_MS = 90_000; // 目标时刻后的容差窗口（应对节流/半分延迟）
@@ -85,6 +86,7 @@ async function fireAction(entry: ScheduleEntry): Promise<boolean> {
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已启动批量自动投递（平台：${platformText(targetPlatforms(entry))}${maxCount > 0 ? `；本次上限 ${maxCount} 条` : ''}）。`,
       });
+      notifyScheduleEvent('定时任务已触发：自动投递', `「${entry.name}」已开始批量投递（平台：${platformText(targetPlatforms(entry))}）。`);
       return true;
     }
     case 'collect': {
@@ -95,6 +97,7 @@ async function fireAction(entry: ScheduleEntry): Promise<boolean> {
         stage: 'system',
         msg: `⏰ 定时任务「${entry.name}」触发：已请求搜索采集（平台：${platformText(targetPlatforms(entry))}）。`,
       });
+      notifyScheduleEvent('定时任务已触发：搜索采集', `「${entry.name}」已请求采集（平台：${platformText(targetPlatforms(entry))}）。`);
       return true;
     }
     case 'backup': {
@@ -106,6 +109,7 @@ async function fireAction(entry: ScheduleEntry): Promise<boolean> {
       const r = await writeLocalBackup();
       if (r.wrote) {
         useRuntimeLogsStore.getState().addLog('success', `定时备份「${entry.name}」已写入本地备份（${dir}）`);
+        notifyScheduleEvent('定时任务已完成：本地备份', `「${entry.name}」已写入 ${dir}`);
       } else {
         useRuntimeLogsStore.getState().addLog('info', `定时备份「${entry.name}」：内容未变化，未重写文件`);
       }

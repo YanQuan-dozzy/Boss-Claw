@@ -43,6 +43,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   financing: [],
   sendResumeImage: true,
   sendOnlineResume: false,
+  // 关窗收进托盘：让定时任务 / 投递引擎在窗口隐藏后继续跑（设置页可关，关掉即关窗退出）
+  closeToTray: true,
+  // 系统通知：首次投递验收 / 风控暂停 / 定时任务完成时弹一条，用户不必一直盯着窗口
+  systemNotify: true,
   betweenJobsSeconds: 20,
   // 活跃时段（模拟真人作息）：时段外自动暂停投递。
   // 依据：操作时间戳分布是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」；

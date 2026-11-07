@@ -260,7 +260,7 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
     attemptId: string,
     res: Awaited<ReturnType<typeof advance>>,
   ): Promise<void> => {
-    let attempts = s.attempts.map((a) =>
+    const attempts = s.attempts.map((a) =>
       a.id === attemptId
         ? { ...a, evidenceState: res.evidenceState, evidenceSource: res.evidenceSource }
         : a,

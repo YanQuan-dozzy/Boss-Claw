@@ -23,6 +23,7 @@ import {
   renameClonedVoice,
   stopSpeaking,
 } from '@/lib/bossclaw/mockInterviewTts';
+import SettingsNote from './SettingsNote';
 
 export default function VoicePackCard({ active }: { active: boolean }) {
   const [voices, setVoices] = useState<ImportedVoice[]>([]);
@@ -140,12 +141,9 @@ export default function VoicePackCard({ active }: { active: boolean }) {
         <Tag>{voices.length} 个已导入</Tag>
       </div>
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ borderRadius: 8, marginBottom: 12 }}
-        message="支持 Piper / VITS / MeloTTS、Kokoro 布局；Matcha / Kitten / Pocket 本版不导入"
-        description="选一个目录（不是单个文件）。会先探测模型族并试听，通过后才复制到本机音色库。音色包版权由你自行确认，BossClaw 不分发、不推荐下载源。"
+      <SettingsNote
+        text="支持 Piper / VITS / MeloTTS、Kokoro 布局（Matcha / Kitten / Pocket 本版不导入）"
+        detail="选一个目录（不是单个文件）。会先探测模型族并试听，通过后才复制到本机音色库。音色包版权由你自行确认，BossClaw 不分发、不推荐下载源。"
       />
 
       <div className="setting-actions" style={{ marginBottom: 12 }}>
@@ -160,7 +158,7 @@ export default function VoicePackCard({ active }: { active: boolean }) {
             选择音色包目录…
           </Button>
           <span className="field-label" style={{ opacity: 0.7 }}>
-            单个音色包通常 60–120MB（Kokoro 多语言包约 407MB），上限 600MB；一次只导一个，避免把磁盘塞满。
+            单包 60–120MB（Kokoro 约 407MB），上限 600MB
           </span>
         </Space>
       </div>

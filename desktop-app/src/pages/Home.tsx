@@ -307,7 +307,7 @@ export default function Home() {
     recomputeStats();
   };
 
-  useEffect(() => { recomputeStats(); }, []);
+  useEffect(() => { recomputeStats(); }, [recomputeStats]);
 
   // 「状态事实」提醒：首页挂载时若大模型未配置 → 写一条 WARN + 弹一次顶部通知（各只一次）。
   // 与 llm.ts 里「AI 真回落本地时」的那条（行为事实）分工不同：这条在用户还没用任何 AI 功能时

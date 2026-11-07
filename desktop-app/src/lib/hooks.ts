@@ -146,6 +146,9 @@ const NO_FAILURES: PersistFailureInfo[] = [];
 export function usePersistFailures(): PersistFailureInfo[] {
   const version = useSyncExternalStore(subscribePersistHealth, getPersistHealthVersion, getPersistHealthVersion);
   return useMemo(() => {
+    // version 是「外部存储变过」的信号：回调内容不读它，但必须留在依赖里 ——
+    // 否则写入失败态更新后列表永远不刷新。显式 void 一下，既满足 exhaustive-deps 也不改行为。
+    void version;
     const list = listPersistFailures();
     return list.length > 0 ? list : NO_FAILURES;
   }, [version]);

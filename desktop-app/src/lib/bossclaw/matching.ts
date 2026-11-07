@@ -513,7 +513,7 @@ ${untrustedJobSection(parts.jobJson)}${localAnchorSection}`,
     // 复用上方已算好的 local 多维匹配（含硬约束/证据/缺口），打分口径与 AI 融合路径一致：
     // 硬约束存在 → score ≤35 / reject；否则按四档区间（不推荐 <50 / 谨慎 50-64 / 匹配 65-80 / 推荐 >80）落档。
     const localOverall = local.dimensions.overall ?? 0;
-    let localScore = local.hardBlocks.length ? Math.min(localOverall, HARD_BLOCK_SCORE_CAP) : localOverall;
+    const localScore = local.hardBlocks.length ? Math.min(localOverall, HARD_BLOCK_SCORE_CAP) : localOverall;
     // 本地兜底同样产出档位（AI 未参与时，档位由本地确定性分反推，保证 UI 与分数一致）
     const fallbackLevel = fitLevelFromScore(localScore);
     const decision: Decision = fallbackLevel === 'unfit' ? 'reject' : fallbackLevel === 'cautious' ? 'cautious' : 'recommend';

@@ -20,6 +20,7 @@ import {
 import { usePersistFailures } from '@/lib/hooks';
 import { electronApi } from '@/lib/electronApi';
 import { isQueueFileMode } from '@/lib/bossclaw/queueMode';
+import SettingsNote from './SettingsNote';
 
 const { Paragraph, Text } = Typography;
 
@@ -138,12 +139,10 @@ export default function StorageUsageCard() {
         </Button>
       </div>
 
-      <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
-        上限 <strong>50 MB</strong>（Chromium 对同源所有键合计计算，按字符计费：52,428,800 个字符），
-        写满后所有键（含「基础求职条件」）都会写不进去。
-        自 issue #10 修复起，<strong>岗位队列已迁到主进程文件</strong>（&lt;userData&gt;/queue/，不占上述额度），
-        localStorage 里只剩简历、画像与设置等小数据；若上方仍提示写入失败，请先导出备份再检查磁盘权限。
-      </Paragraph>
+      <SettingsNote
+        text="上限 50 MB（Chromium 按字符计费、所有键合计），写满后含「基础求职条件」都会写不进去"
+        detail="自 issue #10 起岗位队列已迁到主进程文件（<userData>/queue/，不占上述额度），localStorage 里只剩简历、画像与设置等小数据；若上方仍提示写入失败，请先导出备份再检查磁盘权限。"
+      />
     </div>
   );
 }

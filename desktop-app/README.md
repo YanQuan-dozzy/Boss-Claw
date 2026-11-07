@@ -367,6 +367,15 @@ release/
 
 ## 变更记录
 
+* **未发布（2026-11-07，待随下一版打包）** — 后台常驻 + 系统通知 + 更新检查：
+  * **关窗收进托盘**：原来的 `window-all-closed → app.quit()` 让「定时任务」只在窗口开着时生效，误关（或点标题栏 ×）会直接停掉在途投递。现在主进程增加 `Tray`，`close` 事件只有在「非退出中 + 用户开启常驻 + 托盘创建成功」**三条同时成立**时才 `preventDefault()` 并 `hide()`；真正退出只走托盘菜单 / 系统退出（`before-quit` 置 `isQuitting` 放行）。任一条不满足就照常关窗 —— 宁可退出，也不能出现「窗口藏了但唤不回」。偏好为 `AppConfig.closeToTray`（默认开），渲染层启动与变更时经 `jc:tray-prefs-set` 推镜像。
+  * **系统通知**：新增 `src/lib/notify.ts` 作为唯一入口（主进程 `jc:notify` → `Notification`，点击唤回窗口）。只在这三处发：首次投递验收暂停、风控命中暂停、定时任务触发 / 备份完成；`AppConfig.systemNotify` 可关，主进程侧按同一份镜像二次拦截。不做「每条投递成功都弹」。
+  * **检查更新**：设置页「版本与更新」经主进程 `jc:fetch-url` 读 GitHub Releases 最新 tag，有新版本给下载入口；**不自动下载或替换程序文件**（未签名 + `asar:false`，静默替换易被拦截且不利于回退）。版本比较走 `parseVersion` / `isNewerVersion` 的三段数字，避免 `"2.10.0" < "2.9.0"` 的字典序错误；结果缓存 6 小时。
+  * **CI 入库**：`.gitignore` 的 `.github/` 改为 `.github/*` + `!.github/workflows/` —— 之前 workflow 写了但被整体忽略，GitHub Actions 上从未跑过。
+  * **ESLint 接入**：新增 `eslint.config.mjs`（flat config）与 `npm run lint` / `lint:fix`，`verify` / `verify:all` 前置 lint（CI 因此自动带上）。基线取 `typescript-eslint` recommended **不带 type-checked**（数万行 + 多 tsconfig 引用会让单次 lint 到分钟级），定位是「补 tsc 看不见的问题」而非造第二套类型检查 —— 只保留 React Hooks 依赖数组、显式 `any`、主进程 CJS 未定义变量三类。为适配本仓库刻意关掉三条并写明理由：`no-control-regex`（JD 清洗必须写 `\x00`）、`no-useless-escape`（改正则纯风险）、`no-empty` 只留「非 catch 的空块」；`no-fallthrough` 开 `allowEmptyCase`（消息分发 switch 大量空 case 穿透）、`prefer-const` 开 `ignoreReadBeforeAssign`（`let timer` 被闭包先读后赋值）。`electron/preload/webview.cjs` 与 `electron/cloakbrowser/*.cjs` 补 browser globals（内含注入页面执行的函数体）。当前基线 **0 error / 267 warning**（全部是 `no-explicit-any`），warning 不阻断构建。17 处 hooks 依赖告警已逐条处理完毕：5 条真漏依赖补齐（`BrowserView` / `Workbench` / `Home`）、`MetricCard` 数字动画改用 ref 读起点（否则每帧重启动画）、`hooks.ts` 用 `void version` 显式声明「重算信号」、8 条刻意的细粒度依赖加 disable + 理由（`AutoChat` / `OpenClaw` / `Settings` / `MockInterview`）；另把 `flushLastSkipLog` 与 `pauseAssist` 包成 `useCallback`，消除「普通函数每渲染换引用 → 上层 useCallback 缓存全失效」的级联问题。
+  * 回归：新增 `update-check-regression.mjs`（27 条：版本解析 / 三段比较 / 网络失败与限流降级 / 缓存命中不重复请求）。IPC 白名单 121 → 123（新增 `jc:notify` / `jc:tray-prefs-set`）。
+  * 门禁：`tsc -b` + `vite build` + `test:all` 通过。
+
 * **未发布（2026-11-01，待随下一版打包）** — 朗读模型可切换 + 克隆音色口径收敛：
   * **第二套「听」包 MeloTTS**：内置朗读模型不再写死 Kokoro，新增 MeloTTS（`vits-melo-tts-zh_en`，44.1kHz 单女声，约 167MB，音色更接近真人录音）。两套包**可并存**、各自独立下载 / 删除，设置页「语音」卡片按模型行展示「当前使用 / 已下载 / 切换到这套 / 删除」；切换只写偏好 `settings.ttsPack` 并重启语音 worker（旧 `OfflineTts` 实例还占着内存），删掉当前生效的那套自动回落另一套，装完自动切到新装的那套。唯一判定点是 `speechInstall.activeTtsPack()`，UI / 合成 / 预热都从它取引擎。
   * **引擎分派修正**：`modelConfig()` 改为返回 `{engine, config, pack, dir}`，`planVoice` / `warmup` / `status().engine` 不再写死 `kokoro`（否则切到 MeloTTS 仍拿 Kokoro 配置去加载）；MeloTTS 是单说话人，内置音色表里传的 `sid` 强制归 0，否则 sherpa 拒收。

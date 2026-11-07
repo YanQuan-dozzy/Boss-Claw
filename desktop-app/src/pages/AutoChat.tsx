@@ -50,6 +50,11 @@ import PlatformChip from '@/components/PlatformChip';
 
 const { Text, Paragraph } = Typography;
 
+// 图片简历上限：张数与单张体积。放在模块级 —— 写在组件体内会让每个读取它的 useCallback
+// 依赖一个「每渲染都新建的绑定」，既触发 exhaustive-deps，也让回调无谓重建。
+const MAX_IMAGE_RESUMES = 4;
+const MAX_IMAGE_BYTES = 1024 * 1024;
+
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   pending: { color: 'gold', label: '待确认' },
   approved: { color: 'processing', label: '待沟通' },
@@ -136,6 +141,9 @@ export default function AutoChat() {
 
   // 页面挂载时静默刷新引擎状态：跨路由重挂载后 `cfx` 会被重置为 null，导致误显示「引擎未就绪」。
   // 后台已预热，此处会即时返回就绪。
+  // 依赖刻意留空：refreshCamoufox 依赖 cfxConfig / engineMode，而它内部失败时会 setConfig 关掉增强，
+  // 一旦把函数写进依赖，就会「探测 → 改配置 → 探测」自激。这里只要挂载时那一次。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { refreshCamoufox(true); }, []);
   // 多平台：挂载时加载各平台登录态
   useEffect(() => {
@@ -164,8 +172,6 @@ export default function AutoChat() {
   }, [refreshPlatformStatus]);
 
   // ===== 图片简历管理 =====
-  const MAX_IMAGE_RESUMES = 4;
-  const MAX_IMAGE_BYTES = 1024 * 1024;
   const onImageResumeFile = useCallback((file: File) => {
     if (imageResumes.length >= MAX_IMAGE_RESUMES) { message.warning(`最多保存 ${MAX_IMAGE_RESUMES} 张图片简历`); return; }
     if (!/image\/(jpeg|jpg|png)/.test(file.type || '')) { message.warning('仅支持 JPG / PNG 图片简历'); return; }

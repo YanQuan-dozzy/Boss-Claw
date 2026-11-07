@@ -152,7 +152,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(err: Error, info: ErrorInfo) {
     // 静默打印到 console（生产可替换为 Sentry 上报）
-    // eslint-disable-next-line no-console
+     
     console.error(`[ErrorBoundary${this.props.label ? `:${this.props.label}` : ''}]`, err, info);
     this.props.onError?.(err, info);
   }

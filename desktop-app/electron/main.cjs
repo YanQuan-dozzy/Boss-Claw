@@ -4,7 +4,7 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage, Tray, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -383,6 +383,21 @@ let mainWindow = null;
 let bridgeProcess = null;
 // 本地控制桥句柄（BOSSCLAW_CONTROL=1 时才非空）
 let controlBridge = null;
+
+// ===== 托盘常驻 / 系统通知 =====
+// 背景：定时任务调度器（src/lib/scheduler.ts）是渲染层模块级单例，投递引擎也跑在渲染层，
+// 而原实现「关窗 → window-all-closed → app.quit()」。于是「半夜跑定时投递」必须一直开着窗口：
+// 点标题栏 × 或误按 Alt+F4 会直接停掉在途投递，且首次投递验收 / 风控暂停 / 任务完成都没有窗口外提示。
+// 现在的口径：关窗默认收进托盘（主进程与渲染层都存活，定时器继续走），真正退出只走托盘菜单或系统退出。
+// 偏好由渲染层经 jc:tray-prefs-set 推送（设置页可关；关掉即回到原「关窗即退出」行为）。
+let tray = null;
+/** 正在真正退出（托盘菜单 → before-quit）：close 拦截必须放行，否则窗口永远关不掉 */
+let isQuitting = false;
+/** 托盘偏好的主进程镜像（权威副本在渲染层 AppConfig，这里只接收推送结果） */
+const trayPrefs = { closeToTray: true, notify: true };
+/** 「已收进托盘」提示只弹一次，避免每次关窗都打扰 */
+let trayTipShown = false;
+
 
 // Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口 18767
 let camoufoxProcess = null;
@@ -842,6 +857,71 @@ safeHandle('jc:camoufox-call', async (_event, action, payload) => {
     return { ok: false, error: String((e && e.message) || e) };
   }
 });
+
+// ===== 托盘常驻 / 系统通知 =====
+
+/** 显示并聚焦主窗口（托盘点击、通知点击、二次启动都走这里） */
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) { createMainWindow(); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
+ * 发一条系统通知。渲染层用 `window.electron.notify({title, body})` 调用。
+ * 失败一律返回 { ok:false }，不抛错 —— 通知属锦上添花，不能因为系统不支持就中断业务流程。
+ */
+function showSystemNotification(title, body) {
+  try {
+    if (!Notification.isSupported()) return { ok: false, error: 'notification-unsupported' };
+    const n = new Notification({
+      title: String(title || 'BossClaw').slice(0, 80),
+      body: String(body || '').slice(0, 300),
+      icon: APP_ICON.isEmpty() ? undefined : APP_ICON,
+    });
+    // 点通知 = 回到应用（用户看到「投递已暂停，待核对」时的下一步就是来界面确认）
+    n.on('click', () => showMainWindow());
+    n.show();
+    return { ok: true };
+  } catch (e) {
+    dlog('warn', 'system notification failed', { message: e?.message });
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/**
+ * 创建托盘图标（幂等）。
+ * 图标用 resources/icon.ico：.ico 内含多尺寸，Windows 会按 DPI 自行挑选；
+ * 不要 resize（会把 16px 图标放大糊掉，且托盘对非方形缩放很敏感）。
+ */
+function createTray() {
+  if (tray && !tray.isDestroyed()) return tray;
+  try {
+    const image = APP_ICON.isEmpty() ? nativeImage.createFromPath(APP_ICON_ICO) : APP_ICON;
+    tray = new Tray(image);
+    tray.setToolTip('BossClaw · 后台运行中');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示主界面', click: () => showMainWindow() },
+      { label: '收进托盘', click: () => mainWindow?.hide() },
+      { type: 'separator' },
+      { label: '退出 BossClaw', click: () => { isQuitting = true; app.quit(); } },
+    ]));
+    tray.on('click', () => showMainWindow());
+    tray.on('double-click', () => showMainWindow());
+    return tray;
+  } catch (e) {
+    // 托盘创建失败不能影响主流程：保持「关窗即退出」，避免窗口隐藏后无法唤回
+    dlog('warn', 'create tray failed', { message: e?.message });
+    tray = null;
+    return null;
+  }
+}
+
+function destroyTray() {
+  try { tray?.destroy(); } catch {}
+  tray = null;
+}
 
 async function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1353,6 +1433,22 @@ async function createMainWindow() {
     // 显式重设窗口图标：确保 Windows 任务栏缩略图/右键预览小窗（取 ICON_SMALL）也用 BossClaw 而非 Electron 默认。
     if (process.platform === 'win32' && !APP_ICON.isEmpty()) mainWindow.setIcon(APP_ICON);
     mainWindow.show();
+  });
+  // ===== 关窗收进托盘（见文件上方 trayPrefs 说明）=====
+  // 拦截条件必须同时满足三条，任一不满足就放行关窗 —— 宁可退出也不能出现「窗口藏了但唤不回」：
+  //   ① 不是真正退出；② 用户开了常驻；③ 托盘图标真的创建成功。
+  mainWindow.on('close', (e) => {
+    if (isQuitting) return;
+    if (!trayPrefs.closeToTray) return;
+    if (!tray || tray.isDestroyed()) return;
+    e.preventDefault();
+    mainWindow.hide();
+    if (!trayTipShown) {
+      trayTipShown = true;
+      if (trayPrefs.notify) {
+        showSystemNotification('BossClaw 仍在后台运行', '已收进系统托盘，定时任务与投递继续执行；右键托盘图标可退出。');
+      }
+    }
   });
   mainWindow.on('closed', () => { mainWindow = null; });
 
@@ -2541,6 +2637,24 @@ ipcMain.handle('jc:window-is-maximized', () => mainWindow?.isMaximized() ?? fals
 ipcMain.handle('jc:window-always-on-top', () => mainWindow?.isAlwaysOnTop() ?? false);
 ipcMain.on('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwaysOnTop(Boolean(value)));
 
+// ===== 托盘 / 系统通知 =====
+// 偏好权威在渲染层 AppConfig（closeToTray / systemNotify），这里收推送后镜像：
+// 关掉常驻就销毁托盘图标 —— 否则会出现「图标还在，但点关闭反而直接退出」的割裂行为。
+ipcMain.on('jc:tray-prefs-set', (_event, prefs) => {
+  if (prefs && typeof prefs === 'object') {
+    if (typeof prefs.closeToTray === 'boolean') trayPrefs.closeToTray = prefs.closeToTray;
+    if (typeof prefs.notify === 'boolean') trayPrefs.notify = prefs.notify;
+  }
+  if (trayPrefs.closeToTray) createTray();
+  else destroyTray();
+});
+// 渲染层主动发通知（首次投递验收 / 风控暂停 / 定时任务完成）。
+// 主进程侧再校验一次 notify：偏好推送有延迟（设置页刚关就触发通知时不能漏拦）。
+ipcMain.handle('jc:notify', (_event, payload) => {
+  if (!trayPrefs.notify) return { ok: false, skipped: 'disabled' };
+  return showSystemNotification(payload?.title, payload?.body);
+});
+
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。
 // 多平台适配：同分区同时上报 猎聘/智联/51Job 的登录态（各自鉴权 cookie 名）。
@@ -2877,7 +2991,8 @@ app.whenReady().then(async () => {
       dialog.showErrorBox(
         'BossClaw 已在运行',
         `检测到另一个 BossClaw 窗口（进程 ${lock.pid}）正在使用同一份本地数据。\n` +
-          '同时开两个实例会互相覆盖投递队列与进度，请改用已打开的那个窗口。'
+          '同时开两个实例会互相覆盖投递队列与进度。\n' +
+          '若窗口已收进系统托盘，请双击托盘里的 BossClaw 图标唤回（或右键托盘图标 → 显示主界面）。'
       );
     } catch {}
     app.quit();
@@ -2965,6 +3080,9 @@ app.whenReady().then(async () => {
   // 桥接服务改为按需启动：由用户在 OpenClaw / 设置页主动「启动/连接」后，
   // 经 jc:bridge-control(start) IPC 才 spawn；避免「未连接却显示已连接」。
   createMainWindow();
+  // 托盘常驻：必须在 createMainWindow 之后（close 拦截依赖 tray 已存在才 hide，
+  // 创建失败时保持「关窗即退出」，不会让窗口藏起来唤不回）。
+  createTray();
   // 后台预热隐身引擎（读取持久化状态 + 预拉起 Python 桥），登录不再承担冷启动卡顿
   warmUpCamoufox();
 
@@ -3000,6 +3118,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // 放行 close 拦截：托盘菜单「退出」/ 系统关机 / macOS Cmd+Q 都经过这里。
+  // 不置位的话 close 里还会 e.preventDefault()，表现为「点了退出没反应」。
+  isQuitting = true;
   stopBackgroundServices();
 });
 
