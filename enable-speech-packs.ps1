@@ -61,7 +61,8 @@ param(
     [switch]$KeepArchive,
 
     [string]$Repo = 'YanQuan-dozzy/Boss-Claw',
-    [string]$Tag = 'speech-packs-v1'
+    # 语音资源包已并入应用自身的 Release（不再单独发资源包条目）
+    [string]$Tag = 'v2.6.2'
 )
 
 $ErrorActionPreference = 'Stop'

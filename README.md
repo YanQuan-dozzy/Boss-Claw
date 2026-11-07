@@ -197,7 +197,7 @@ AI 生成个性化招呼语（求职者口吻、**≤250 字**）。工作台「
 .\enable-speech-packs.cmd -Proxy http://127.0.0.1:7890   # 有本机代理时兜底
 ```
 
-资源与校验清单在 [语音资源包 v1](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/speech-packs-v1)。脚本装到 `%APPDATA%\BossClaw\speech\models`，与应用内「设置 → 语音」看到的安装状态完全一致。
+资源与校验清单在 [v2.6.2 Release](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.2)（与应用安装包同一页）。脚本装到 `%APPDATA%\BossClaw\speech\models`，与应用内「设置 → 语音」看到的安装状态完全一致。
 
 > 该功能的完整设计文档与实现细节不随仓库分发；在线语音引擎与打包冒烟尚未完成，因此本版按「可试用、不保证稳定」发布。
 
@@ -410,7 +410,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 - **系统通知**：只在这三类节点播报 —— 首次投递验收暂停、风控命中暂停、定时任务触发 / 备份完成；不做「每条投递成功都弹」。通知点击唤回窗口，可在设置页关闭。
 - **检查更新**：设置页「版本与更新」读 GitHub Releases 最新 tag，三段数字比较（避免 `2.10.0 < 2.9.0` 的字典序错误），6 小时缓存，网络失败降级为可读错误。**不自动下载或替换程序文件**（未签名 + `asar:false`，静默替换易被拦截且不利于回退）。
 - **两套朗读模型可切换**：内置朗读模型不再写死 Kokoro，新增 MeloTTS（`vits-melo-tts-zh_en`，44.1kHz 单女声，约 167MB）。两套包可并存、各自独立下载 / 删除，切换只写偏好并重启语音 worker；删掉当前生效的那套自动回落另一套。唯一判定点 `speechInstall.activeTtsPack()`。
-- **语音资源包一键启用**：新增 `enable-speech-packs.cmd` / `.ps1`（四套资源约 900MB，走加速镜像顺序重试 + 断点续传 + 体积与 sha256 双校验 + 落位写 manifest），资源本体发布在 [Releases 的语音资源包条目](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/speech-packs-v1)。
+- **语音资源包一键启用**：新增 `enable-speech-packs.cmd` / `.ps1`（四套资源约 900MB，走加速镜像顺序重试 + 断点续传 + 体积与 sha256 双校验 + 落位写 manifest），资源本体随本版安装包发布在同一个 [Release](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.2)。
 - **工程与规范化**：接入 ESLint（flat config，`npm run lint` 进入 `verify` 前置，基线 0 error / 267 warning），17 处 hooks 依赖逐条收口；`.gitignore` 放行 `.github/workflows`（此前 workflow 写了却被整体忽略，从未在 Actions 上跑过）；`.cmd` / `.ps1` 固定 CRLF 检出，避免批处理被按 LF 落到工作区。
 
 > ⚠️ **模拟面试仍未经过完整测试**：v2.6.0 首次随包发布时的状态不变，本版按「可自行试用」发布，不保证稳定，遇到问题请提 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)。此外，该功能的部分优化与更新代码**暂不开源**，公开仓库与安装包内的实现可能不完全一致。
