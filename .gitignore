@@ -56,10 +56,13 @@ venv/
 **/.jobclaw/
 
 # Local user data and stray artifacts
-# 误传清理：CI 工作流与顶层 skills / scripts（软件内置技能在 desktop-app/skills；scripts 为本地沙箱辅助，均不入仓库根）
-.github/
+# 顶层 skills / scripts 为本地沙箱辅助，不入仓库根（软件内置技能在 desktop-app/skills）
 /skills/
 /scripts/
+# GitHub Actions 构建流水线随仓库分发（workflow 只含构建步骤与校验和，无用户数据）。
+# 注意写法：必须先排除 .github/* 再包含 workflows —— 直接排除 .github/ 后无法再用 ! 取回子目录。
+.github/*
+!.github/workflows/
 *resume*.pdf
 *resume*.docx
 *简历*.pdf

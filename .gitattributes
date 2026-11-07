@@ -1,6 +1,10 @@
 * text=auto eol=lf
 *.command text eol=lf
 *.sh text eol=lf
+# Windows 批处理必须 CRLF 检出（cmd.exe 的多行块对 LF 敏感；项目约定 GBK+CRLF）
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
 *.png binary
 *.jpg binary
 *.jpeg binary
