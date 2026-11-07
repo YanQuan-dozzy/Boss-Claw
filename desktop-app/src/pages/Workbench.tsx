@@ -8,11 +8,11 @@
  * 右栏子模块：内置浏览器（BrowserView 多平台标签 webview，含 BOSS 等平台登录态与岗位详情页）
  */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
-import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Select, Alert, Modal } from 'antd';
+import { Button, Card, Empty, Progress, Tag, Typography, message, Segmented, Tooltip, Space, Select, Alert, Modal, Popconfirm } from 'antd';
 import {
   CheckOutlined, ReloadOutlined, EyeOutlined, SearchOutlined,
   StopOutlined, UndoOutlined, ThunderboltOutlined,
-  PauseOutlined, CaretRightOutlined, InfoCircleOutlined,
+  PauseOutlined, CaretRightOutlined, InfoCircleOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import { useDataStore } from '@/store/useDataStore';
 import { useRuntimeLogsStore, type LogLevel } from '@/store/useRuntimeLogsStore';
@@ -36,7 +36,7 @@ import { checkJobExpiry, isExpiryFilterEnabled, PLATFORM_EXPIRY_DEFAULT } from '
 import { makePendingItem, jobUrlKey, sameJobSoft } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
 import { stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
-import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
+import { jobCardStatus, scoreChip, JOB_ACTION_TIPS } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/jobDisplay';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
@@ -250,6 +250,8 @@ export default function Workbench() {
   const addPendingItem = useDataStore((s) => s.addPendingItem);
   const updatePending = useDataStore((s) => s.updatePending);
   const setPending = useDataStore((s) => s.setPending);
+  const removePending = useDataStore((s) => s.removePending);
+  const removePendingMany = useDataStore((s) => s.removePendingMany);
   const addLog = useRuntimeLogsStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
   // 采集任务联动：与「任务进度」页共用 taskRuns（采集时写入，任务进度页实时出现卡片）
@@ -827,6 +829,48 @@ export default function Workbench() {
     addLog('info', '已撤回岗位，退回「待确认」');
     recomputeStats();
     if (useAppStore.getState().autoAssist) requestRunNext();
+  };
+
+  // ===== 已投递岗位删除（终态清理）=====
+  // 已投递（sent）是终态，重试/忽略/跳过对它恒禁用，此前没有任何出口，「已投递」列表只增不减。
+  // 删除仅移除本地岗位记录：不影响已发出的消息，也不影响平台上的真实投递；
+  // 「已投递」计数随 pending 一起重算（数据源只有 pending 一处）。
+  const onDeleteDelivered = (id: string) => {
+    const item = useDataStore.getState().pending.find((p) => p.id === id);
+    if (!item) return;
+    if (item.status !== 'sent') { message.warning('仅「已投递」岗位支持删除'); return; }
+    removePending(id);
+    // 防御：极端情况下引擎仍指向该卡（如刚投递完成即被删除），一并释放，避免残留 activeId 指向已删数据
+    if (id === activeId) {
+      setActiveId(null);
+      setApplyStage(null);
+    }
+    addLog('warn', `已删除已投递岗位：${cleanTitle(item.job?.title, item.job?.salary)}`);
+    message.success('已删除该岗位记录');
+    recomputeStats();
+  };
+
+  const onClearDelivered = () => {
+    const sentItems = useDataStore.getState().pending.filter((p) => p.status === 'sent');
+    if (!sentItems.length) { message.info('暂无已投递岗位'); return; }
+    // 批量删除不可恢复，前置二次确认（与「批量忽略」同一口径）
+    Modal.confirm({
+      title: `清理全部「已投递」岗位（${sentItems.length} 个）？`,
+      content: '仅删除本地岗位记录，不影响已发出的招呼语与平台上的实际投递；删除后「已投递」计数同步减少，且不可恢复。',
+      okText: '确认清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => {
+        removePendingMany(sentItems.map((p) => p.id));
+        if (activeId && sentItems.some((p) => p.id === activeId)) {
+          setActiveId(null);
+          setApplyStage(null);
+        }
+        addLog('warn', `已清理 ${sentItems.length} 个已投递岗位记录`);
+        message.success(`已清理 ${sentItems.length} 个已投递岗位`);
+        recomputeStats();
+      },
+    });
   };
 
   // 兼容入口：现在「批准」已直接入队，正常情况下不会有 approved 残留。
@@ -2654,12 +2698,14 @@ export default function Workbench() {
 
   // 标签数字与各自列表同源：全部 = 未投递总数；其余 = 对应状态总数（含已投递）
   const visibleAllCount = showIgnored ? activeAll.length : activeAll.filter((p) => !isHiddenStatus(p.status)).length;
+  // 「已投递」总数：标签计数与「清理已投递」入口共用同一口径
+  const sentTotal = pending.filter((p) => p.status === 'sent').length;
   const WB_FILTERS = [
     { key: 'all', label: `全部 ${visibleAllCount}` },
     { key: 'pending', label: `待确认 ${pending.filter((p) => p.status === 'pending').length}` },
     { key: 'approved', label: `待投递 ${pending.filter((p) => p.status === 'approved').length}` },
     { key: 'approved_queue', label: `投递中 ${pending.filter((p) => p.status === 'approved_queue').length}` },
-    { key: 'sent', label: `已投递 ${pending.filter((p) => p.status === 'sent').length}` },
+    { key: 'sent', label: `已投递 ${sentTotal}` },
     { key: 'failed', label: `失败 ${pending.filter((p) => p.status === 'failed').length}` },
   ];
 
@@ -3029,8 +3075,25 @@ export default function Workbench() {
         <div className="wb-sort-hint">
           <InfoCircleOutlined className="wb-sort-hint__icon" />
           <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.4 }}>
-            待确认岗位按 AI 匹配分从高到低排列；点「确认」即加入「投递中」队列，确认前可先修改求职招呼语（招呼语为空则无法确认）。
+            {filter === 'sent'
+              ? `共 ${sentTotal} 个已投递岗位记录；可逐条删除，也可一次清理全部。`
+              : '待确认岗位按 AI 匹配分从高到低排列；点「确认」即加入「投递中」队列，确认前可先修改求职招呼语（招呼语为空则无法确认）。'}
           </Text>
+          {/* 批量清理入口挂在提示条右侧：只在「已投递」标签下出现，不挤占上方 3 列主操作按钮组 */}
+          {filter === 'sent' && (
+            <Button
+              size="small"
+              danger
+              type="text"
+              className="wb-sort-hint__action"
+              icon={<DeleteOutlined />}
+              onClick={onClearDelivered}
+              disabled={!sentTotal}
+              title="一次删除全部已投递岗位记录（清空已投递列表）"
+            >
+              清理已投递
+            </Button>
+          )}
         </div>
         <div className="wb-jobs">
           {ranked.length === 0 ? (
@@ -3142,9 +3205,9 @@ export default function Workbench() {
                             <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => onApprove(p.id)}>确认沟通</Button>
                           </div>
                           <div className="job-actions-left">
-                            <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
-                            <Button size="small" onClick={openMockInterview}>面试</Button>
-                            <Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button>
+                            <Tooltip title={JOB_ACTION_TIPS.openInApp}><Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button></Tooltip>
+                            <Tooltip title={JOB_ACTION_TIPS.mockInterview}><Button size="small" onClick={openMockInterview}>面试</Button></Tooltip>
+                            <Tooltip title={JOB_ACTION_TIPS.ignore}><Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button></Tooltip>
                           </div>
                         </>
                       ) : p.status === 'approved_queue' || p.status === 'approved' ? (
@@ -3157,9 +3220,9 @@ export default function Workbench() {
                             <Button size="small" icon={<UndoOutlined />} onClick={() => onRevert(p.id)}>撤回</Button>
                           </div>
                           <div className="job-actions-left">
-                            <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
-                            <Button size="small" onClick={openMockInterview}>面试</Button>
-                            <Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button>
+                            <Tooltip title={JOB_ACTION_TIPS.openInApp}><Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button></Tooltip>
+                            <Tooltip title={JOB_ACTION_TIPS.mockInterview}><Button size="small" onClick={openMockInterview}>面试</Button></Tooltip>
+                            <Tooltip title={JOB_ACTION_TIPS.ignore}><Button size="small" onClick={() => onIgnore(p.id)}>忽略</Button></Tooltip>
                           </div>
                         </>
                       ) : (
@@ -3172,14 +3235,32 @@ export default function Workbench() {
                               // 失败等非终态：允许重新投递（回到投递队列）。
                               // 不再叫「批准」——该岗位已确认过，此时只是重跑投递，叫「重试」才不会
                               // 与待确认卡的「确认沟通」混淆（用户反馈：已确认的岗位还显示「批准」很怪）。
-                              <Button size="small" type="primary" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>重试</Button>
+                              <Tooltip title={JOB_ACTION_TIPS.retry}><Button size="small" type="primary" icon={<ReloadOutlined />} onClick={() => onRetry(p.id)}>重试</Button></Tooltip>
                             )}
                           </div>
                           <div className="job-actions-right">
-                            <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button>
-                            <Button size="small" onClick={openMockInterview}>面试</Button>
-                            <Button size="small" onClick={() => onIgnore(p.id)} disabled={p.status === 'sent'}>忽略</Button>
-                            <Button size="small" onClick={() => onSkip(p.id)} disabled={p.status === 'sent'}>跳过</Button>
+                            <Tooltip title={JOB_ACTION_TIPS.openInApp}><Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && webviewApi.current?.openInNewTab(p.job.url, p.job?.title)}>打开</Button></Tooltip>
+                            <Tooltip title={JOB_ACTION_TIPS.mockInterview}><Button size="small" onClick={openMockInterview}>面试</Button></Tooltip>
+                            {p.status === 'sent' ? (
+                              // 已投递是终态：忽略/跳过对它无意义（此前两个按钮恒灰），替换为可用的「删除」
+                              <Popconfirm
+                                title="删除该已投递岗位？"
+                                description="仅删除本地记录，不影响已发出的招呼语与平台上的实际投递；删除后「已投递」计数同步减少。"
+                                okText="确认删除"
+                                cancelText="取消"
+                                okButtonProps={{ danger: true }}
+                                onConfirm={() => onDeleteDelivered(p.id)}
+                              >
+                                <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                              </Popconfirm>
+                            ) : p.status === 'skipped' || p.status === 'ignored' ? (
+                              // 已跳过 / 已忽略本就收口，再给「忽略 / 跳过」是同义重复；要恢复请用左侧「重试」
+                              null
+                            ) : (
+                              // 失败等未收口终态只留「跳过」一个出口：失败已说明这次投递没成，
+                              // 再并排一个「忽略」是同义分支，只会让用户在两枚按钮之间犹豫。
+                              <Tooltip title={JOB_ACTION_TIPS.skip}><Button size="small" onClick={() => onSkip(p.id)}>跳过</Button></Tooltip>
+                            )}
                           </div>
                         </>
                       )}

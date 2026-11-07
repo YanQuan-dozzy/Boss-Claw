@@ -31,8 +31,13 @@ export function tailorJobTitle(job: JobMeta): string {
   return decodeSalaryDigits(job.title).replace(/\s*\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?K.*$/i, '').trim();
 }
 
+/** 投递状态中文名（工作台队列状态 → 展示文案）：定制简历与模拟面试共用，避免两处各写一份 */
+export function pendingStatusLabel(status: PendingItem['status']): string {
+  return STATUS_LABELS[status] || String(status || '');
+}
+
 export function tailorJobLabel(p: PendingItem): string {
-  return `${tailorJobTitle(p.job) || '未命名岗位'} · ${p.job.company || '未知公司'}（${STATUS_LABELS[p.status] || p.status}）`;
+  return `${tailorJobTitle(p.job) || '未命名岗位'} · ${p.job.company || '未知公司'}（${pendingStatusLabel(p.status)}）`;
 }
 
 /** 统一工作台跳转和下拉选择的输入，保留公司/薪资/地点等结构化岗位信息。 */

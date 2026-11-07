@@ -3657,7 +3657,11 @@ ipcRenderer.on('ui-eval', (_e, arg) => {
   let res = { error: '未知操作' };
   try {
     if (op === 'query') {
-      res = { elements: uvSnapshot(selector, arg.limit), count: uvSnapshot(selector, arg.limit).length };
+      // 审查 2026-10-21 C-4：旧实现把 uvSnapshot 调了两次（两次全 DOM 扫描），
+      // 且 count 取的是「截断后」的数量。这里只扫一次：count 明确表示「本次返回的条数」
+      // （受 limit 上限约束，不是页面上的元素总数）。
+      const elements = uvSnapshot(selector, arg.limit);
+      res = { elements, count: elements.length };
     } else if (op === 'click') {
       const el = uvPick(selector, label, index);
       if (!el) res = { error: '未命中元素' };

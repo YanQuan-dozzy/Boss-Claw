@@ -96,6 +96,10 @@ interface DataState {
   addPendingItem: (item: PendingItem) => void;
   updatePending: (id: string, patch: Partial<PendingItem>) => void;
   setPending: (items: PendingItem[]) => void;
+  /** 删除单条岗位记录（含已投递终态）：仅从队列移除，不改动其它岗位 */
+  removePending: (id: string) => void;
+  /** 批量删除岗位记录（如清理「已投递」堆积）：按 id 移除，未命中的 id 自动忽略 */
+  removePendingMany: (ids: string[]) => void;
 
   upsertTaskRun: (run: TaskRun) => void;
   updateTaskRun: (id: string, patch: Partial<TaskRun>) => void;
@@ -196,6 +200,20 @@ export const useDataStore = create<DataState>()(
       updatePending: (id, patch) =>
         set((s) => ({ pending: s.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
       setPending: (items) => set({ pending: items }),
+      removePending: (id) =>
+        set((s) => {
+          // 无变化时返回原 state，避免无意义地触发一次整包持久化
+          if (!s.pending.some((p) => p.id === id)) return s;
+          return { pending: s.pending.filter((p) => p.id !== id) };
+        }),
+      removePendingMany: (ids) =>
+        set((s) => {
+          const targets = new Set((Array.isArray(ids) ? ids : []).map(String));
+          if (!targets.size) return s;
+          const next = s.pending.filter((p) => !targets.has(p.id));
+          if (next.length === s.pending.length) return s;
+          return { pending: next };
+        }),
 
       upsertTaskRun: (run) =>
         set((s) => {

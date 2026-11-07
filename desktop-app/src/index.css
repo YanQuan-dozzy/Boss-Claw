@@ -2913,6 +2913,47 @@ html[data-theme='dark'] .direction-tag {
   flex-shrink: 0;
 }
 
+/* 「已投递」提示条右侧的批量清理入口：不参与宽度等分，避免挤占主操作按钮组；
+   提示文字区内允许换行（min-width:0 才能让长文案正常收缩） */
+.wb-sort-hint > .ant-typography {
+  min-width: 0;
+}
+.wb-sort-hint__action {
+  margin-left: auto;
+  flex: 0 0 auto;
+  align-self: center;
+  padding-inline: 6px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  white-space: nowrap;
+}
+
+/* 「任务进度」页的已投递批量清理条：独立一行，与筛选工具栏分开，
+   避免把第 4 个按钮塞进 Segmented 右侧那一排而撑破卡片 */
+.delivered-cleanup-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+.delivered-cleanup-bar__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.delivered-cleanup-bar .ant-btn {
+  flex: 0 0 auto;
+  padding-inline: 6px !important;
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+
 /* ===== 岗位列表 ===== */
 .job-card {
   position: relative;
