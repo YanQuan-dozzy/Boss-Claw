@@ -343,16 +343,33 @@ app.setName('BossClaw');
 // Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
 const APP_ICON_ICO = path.join(__dirname, '..', 'resources', 'icon.ico');
 const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
-// Windows 任务栏按钮图标机制（重要）：
-// - 调用 setAppUserModelId 后，任务栏按钮图标改从「与该 AUMID 匹配的快捷方式(.lnk)」获取；
-//   打包安装版由 NSIS 注册了同 AUMID 的快捷方式 → 显示嵌入 exe 的项目图标（正常）。
-// - dev / 便携运行（electron.exe .）没有该快捷方式 → Explorer 回退显示 exe 图标
-//   （electron.exe = Electron 默认图标），BrowserWindow.icon 不生效 → 任务栏图标错误。
-// 故仅在打包（app.isPackaged）时设置 AUMID；非打包运行让任务栏跟随窗口图标
-// （resources/icon.ico），从而在 start-bossclaw.cmd 下也能显示项目图标。
-if (process.platform === 'win32' && app.isPackaged) {
+// Windows 应用身份（AUMID）——决定任务栏按钮、通知弹窗顶部「小图标 + 应用名」归属于谁。
+// 只传 Notification.icon 不够：它只填弹窗里的大图（Electron 生成的 appLogoOverride），
+// 顶部那行身份信息由 Windows 按 AUMID 反查。dev / 便携运行（electron.exe .）没注册身份时
+// 会被归属到 Electron，通知顶部就显示 Electron 的图标与名字。
+// 注册 HKCU\Software\Classes\AppUserModelId\<APP_ID>（DisplayName + IconUri）后，即使没有
+// 开始菜单快捷方式，Explorer 与通知中心也能取到 BossClaw 名称和项目图标；安装版由 NSIS 注册
+// 同 AUMID 的快捷方式（build.appId 与 APP_ID 一致），两者指向同一图标。
+function registerWindowsAppIdentity() {
+  if (process.platform !== 'win32') return;
   app.setAppUserModelId(APP_ID);
+  if (!fs.existsSync(APP_ICON_ICO)) return;
+  try {
+    const key = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_ID}`;
+    const write = (name, value) => execFile(
+      'reg.exe',
+      ['add', key, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'],
+      { windowsHide: true },
+      // 注册失败只影响通知归属的图标/名称，静默降级，不阻断启动
+      (err) => { if (err) dlog('warn', 'register app identity failed', { message: err.message }); }
+    );
+    write('DisplayName', 'BossClaw');
+    write('IconUri', APP_ICON_ICO);
+  } catch (e) {
+    dlog('warn', 'register app identity failed', { message: e?.message });
+  }
 }
+registerWindowsAppIdentity();
 
 
 // dev 模式下 Vite 可能因 5173 被占用而自动换端口（5174/5175…），
