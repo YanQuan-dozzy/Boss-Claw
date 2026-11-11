@@ -16,6 +16,8 @@ import { ThemeProvider } from './context/ThemeContext';
 // 渲染层控制运行时：为「本地控制桥」(BOSSCLAW_CONTROL=1) 提供状态快照与白名单动作。
 // 未开启控制桥时它只是挂一个 window.__bossclawControl，不产生任何副作用。
 import { installControlRuntime } from './lib/controlRuntime';
+// issue #13：antd Select 弹层偶发停在未对齐的默认位置（-1000vw/-1000vh），全局兜底补对齐
+import { installAntdPopupAlignGuard } from './lib/antdPopupAlignGuard';
 
 type AppComponent = React.ComponentType;
 
@@ -42,6 +44,7 @@ function installGlobalErrorCatch(): void {
 }
 installGlobalErrorCatch();
 installControlRuntime();
+installAntdPopupAlignGuard();
 
 const root = document.getElementById('root')!;
 
