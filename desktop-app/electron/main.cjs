@@ -343,15 +343,17 @@ app.setName('BossClaw');
 // Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
 const APP_ICON_ICO = path.join(__dirname, '..', 'resources', 'icon.ico');
 const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
-// Windows 应用身份（AUMID）——决定任务栏按钮、通知弹窗顶部「小图标 + 应用名」归属于谁。
-// 只传 Notification.icon 不够：它只填弹窗里的大图（Electron 生成的 appLogoOverride），
-// 顶部那行身份信息由 Windows 按 AUMID 反查。dev / 便携运行（electron.exe .）没注册身份时
-// 会被归属到 Electron，通知顶部就显示 Electron 的图标与名字。
-// 注册 HKCU\Software\Classes\AppUserModelId\<APP_ID>（DisplayName + IconUri）后，即使没有
-// 开始菜单快捷方式，Explorer 与通知中心也能取到 BossClaw 名称和项目图标；安装版由 NSIS 注册
-// 同 AUMID 的快捷方式（build.appId 与 APP_ID 一致），两者指向同一图标。
+// Windows 应用身份（AUMID）。
+// 进程一旦设置显式 AUMID，Explorer 会按「应用身份」解析任务栏按钮图标：根目录 start-bossclaw.cmd
+// 是直跑 electron.exe 的未安装形态，该身份没有对应的安装快捷方式，Explorer 会回退到 electron.exe
+// 的内嵌图标（Electron 原子），BrowserWindow 的 icon（resources/icon.ico）被忽略 → 任务栏图标错误。
+// 安装版由 NSIS 注册同 AUMID 的开始菜单快捷方式、且 exe 内嵌项目图标，图标正常，同时保证通知
+// 弹窗顶部显示 BossClaw 名称与图标，所以 AUMID 只在安装版注册。
+// 注意：不能用 app.isPackaged 判断（Electron 42 在 `electron .` 下也返回 true），
+// process.defaultApp 才准确表示「用 electron.exe 直跑目录/脚本」的未安装运行。
 function registerWindowsAppIdentity() {
   if (process.platform !== 'win32') return;
+  if (process.defaultApp) return;
   app.setAppUserModelId(APP_ID);
   if (!fs.existsSync(APP_ICON_ICO)) return;
   try {
