@@ -119,6 +119,24 @@ AI 生成求职者口吻的个性化招呼语（**≤250 字**），「一键投
 
 **语音资源包下载慢**：四套资源共约 900MB（朗读 Kokoro 359MB · MeloTTS 167MB · 识别 SenseVoice 240MB · 克隆音色 158MB）。根目录脚本会依次尝试加速镜像、断点续传、校验 sha256 后落位到 `%APPDATA%\BossClaw\speech\models`，与应用内「设置 → 语音」状态一致；资源清单在 [v2.6.2 Release](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.2)。
 
+也可以直接用 Release 直链下载后离线安装：
+
+| 资源包 | 用途 | 体积 | 下载 |
+| --- | --- | --- | --- |
+| Kokoro 多语言（朗读，默认） | 题干 / 追问本地朗读，24kHz、8 个精选音色 | 359MB | [kokoro-multi-lang-v1_1.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/kokoro-multi-lang-v1_1.tar.gz) |
+| MeloTTS 中英（朗读，可选） | 44.1kHz 单女声，更接近真人录音，可与 Kokoro 并存 | 167MB | [vits-melo-tts-zh_en.tar.bz2](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/vits-melo-tts-zh_en.tar.bz2) |
+| SenseVoice 语音识别 | 语音作答的本地转写（中 / 英 / 日 / 韩 / 粤） | 240MB | [sensevoice-model.int8.onnx](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/sensevoice-model.int8.onnx) · [sensevoice-tokens.txt](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/sensevoice-tokens.txt) |
+| ZipVoice 克隆音色 | 3–10 秒参考音频零样本克隆，仅用于题干朗读 | 158MB | [zipvoice-clone-int8.tar.gz](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/zipvoice-clone-int8.tar.gz) |
+| 校验清单 | 版本 / 体积 / sha256，脚本优先读取 | 2KB | [speech-packs.json](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.2/speech-packs.json) |
+
+下载后把文件放在同一目录（SenseVoice 的 `.onnx` 与 `tokens.txt` 两个都要），用脚本离线安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\enable-speech-packs.ps1 -Packs all -SourceDir D:\downloads
+```
+
+也可以让脚本在线下载：
+
 ```powershell
 .\enable-speech-packs.cmd                                # 朗读 + 识别（默认）
 .\enable-speech-packs.cmd --all                          # 四套全装（含 MeloTTS、克隆音色）
@@ -267,6 +285,8 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 - **检查更新**：设置页读取 GitHub Releases 最新版本并跳转下载，**不自动下载或替换程序文件**（未签名 + `asar:false`，静默替换易被拦截且不利于回退）。
 - **两套朗读模型可切换**：新增 MeloTTS（44.1kHz 单女声，约 167MB），与 Kokoro 并存、一键切换，删掉当前这套自动回落另一套。
 - **工程**：接入 ESLint（`npm run lint` 进 `verify` 前置）、hooks 依赖收口、`.github/workflows` 入库、`.cmd` / `.ps1` 固定 CRLF。
+
+- **语音资源包一键启用**：新增 `enable-speech-packs.cmd` / `.ps1`（镜像重试 + 断点续传 + 体积 / sha256 校验），四套资源随本版 [Release](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.2) 同页发布，直链见「模拟面试」小节。
 
 > ⚠️ **模拟面试仍未经过完整测试**，按「可自行试用」发布；部分优化代码暂不开源。
 

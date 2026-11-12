@@ -363,6 +363,8 @@ release/
 
 * **采集卡住很久才报超时？**：先确认 `visual-collect` / `collect-control` 是否已注册（全平台注册是硬约束，漏注册会静默等到最长 15 分钟兜底超时）；preload 改动后必须重启 Electron（`webview.cjs` 是 CommonJS，HMR 不覆盖）。
 
+* **模拟面试语音包下载慢 / 失败？**：应用内「设置 → 语音」走 `sherpa-onnx` 上游 / hf-mirror 下载，国内直连常常只有几十 KB/s。可改用根目录 `enable-speech-packs.cmd`（镜像重试 + 断点续传 + 体积与 sha256 双校验），或从 [v2.6.2 Release](https://github.com/YanQuan-dozzy/Boss-Claw/releases/tag/v2.6.2) 直接下载四套资源包（Kokoro 359MB / MeloTTS 167MB / SenseVoice 240MB / ZipVoice 158MB，外加 `speech-packs.json` 校验清单），再用 `powershell -ExecutionPolicy Bypass -File .\enable-speech-packs.ps1 -Packs all -SourceDir <下载目录>` 离线安装。落位目录为 `%APPDATA%\BossClaw\speech\models`，与应用内状态一致。
+
 ***
 
 ## 变更记录
