@@ -324,17 +324,23 @@ const server = http.createServer((request, response) => {
   if (request.method === 'OPTIONS') return reply(200, {});
   if (!tokenEqual(requestToken(request, requestUrl), TOKEN)) return reply(403, { ok: false, error: 'token denied' });
 
-  let body = '';
+  // 请求体收集：用 chunk 数组 + 长度累加，而不是 `body += chunk` 后再对整个字符串算字节数。
+  // 原写法在每个分片都对「已累积的整串」做一次 Buffer.byteLength 扫描（O(n²)）：18MB 简历按
+  // 64KB 分片约 280 次全串遍历，同步阻塞事件循环数秒，期间 /status、/report 全部无响应（审查 #3）。
+  const chunks = [];
+  let size = 0;
   let tooLarge = false;
   request.on('data', (chunk) => {
     if (tooLarge) return; // 已超限则丢弃后续数据，避免无限累积（内存放大）
-    body += chunk;
-    if (Buffer.byteLength(body) > 28 * 1024 * 1024) { tooLarge = true; body = ''; }
+    size += chunk.length;
+    if (size > 28 * 1024 * 1024) { tooLarge = true; chunks.length = 0; return; }
+    chunks.push(chunk);
   });
   request.on('end', async () => {
     if (tooLarge) return reply(413, { ok: false, error: 'request too large' });
     try {
       const database = loadDatabase();
+      const body = chunks.length ? Buffer.concat(chunks).toString('utf8') : '';
       const payload = body ? JSON.parse(body) : {};
       if (requestUrl.pathname === '/status') {
         return reply(200, {

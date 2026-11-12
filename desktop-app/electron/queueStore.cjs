@@ -27,6 +27,26 @@ const MAX_BYTES = 100 * 1024 * 1024;
 /** 已落盘的最大 seq（进程内缓存；load 时与文件对齐） */
 let lastSeq = 0;
 
+/**
+ * 主进程侧写串行链。
+ *
+ * 为什么必须在这里串行（审查 #2）：`save()` 的「seq 单调守卫」与真正的 `await atomicWrite()` 之间
+ * 会让出事件循环。两个 IPC 并发到达时（典型：恢复备份的 importQueueData 与 800ms 防抖 autosave 重叠
+ * —— 导入路径不经过渲染侧的 inFlight 单飞），两笔都能通过 `n > lastSeq` 判定，较小 seq 的那笔若
+ * 后完成，会把 `lastSeq` 改小、内容也覆盖回旧值。渲染侧的自律不能作为唯一防线。
+ */
+let writeChain = Promise.resolve();
+
+/** 把一次写操作排进串行链（前一笔失败不影响后续；返回本次任务的结果） */
+function enqueueWrite(task) {
+  const next = writeChain.then(task, task);
+  writeChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 function baseDir() {
   return path.join(app.getPath('userData'), 'queue');
 }
@@ -144,6 +164,12 @@ async function save(text, seq, opts) {
   const parsed = parsePayload(text);
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const n = Math.max(0, Number(seq) || 0);
+  // 载荷校验在入队前做（无副作用），seq 判定必须放进串行链内 —— 否则并发两笔都会看到同一个旧 lastSeq
+  return enqueueWrite(() => saveNow(text, n, opts));
+}
+
+/** 串行链内执行的实际写盘（seq 判定 + .bak 轮转 + 原子写） */
+async function saveNow(text, n, opts) {
   if (n <= lastSeq) {
     // 迟到包：旧值不得覆盖新值。对渲染侧不算失败（它的新值早已落盘）
     return { ok: true, stale: true, seq: lastSeq };
@@ -170,11 +196,14 @@ async function save(text, seq, opts) {
 
 /** 清空队列（主文件 + .bak；迁移兜底副本保留，供观察期内人工核对） */
 async function clear() {
-  lastSeq = 0;
-  for (const f of [storePath(), bakPath()]) {
-    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch { /* 忽略单个文件删除失败 */ }
-  }
-  return { ok: true };
+  // 与 save 同链串行：否则一笔在途写可能在清空之后落盘，把队列「复活」
+  return enqueueWrite(async () => {
+    lastSeq = 0;
+    for (const f of [storePath(), bakPath()]) {
+      try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch { /* 忽略单个文件删除失败 */ }
+    }
+    return { ok: true };
+  });
 }
 
 /** 文件占用（设置页用量面板） */

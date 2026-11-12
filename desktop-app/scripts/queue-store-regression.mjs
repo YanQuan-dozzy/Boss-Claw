@@ -77,6 +77,24 @@ console.log('[1] queueStore.cjs（主进程文件仓储）');
   await queueStore.clear();
   const cleared = queueStore.load();
   check('清空后读回为空', cleared.ok && cleared.data === null);
+
+  // 并发串行化（审查 #2）：主进程侧写入必须按调用顺序串行，否则「在途写」会在清空之后落盘、
+  // 把队列复活；两笔并发 save 也可能让较小 seq 后完成并把内容覆盖回旧值。
+  const inFlight = queueStore.save(payload(30, [{ id: 'late' }]), 30);
+  const clearedAgain = queueStore.clear();
+  await Promise.all([inFlight, clearedAgain]);
+  const afterRace = queueStore.load();
+  check('清空与在途写并发：最终状态为空（在途写不得复活队列）', afterRace.ok && afterRace.data === null);
+
+  const s1 = queueStore.save(payload(41, [{ id: 'seq41' }]), 41);
+  const s2 = queueStore.save(payload(40, [{ id: 'seq40' }]), 40);
+  await Promise.all([s1, s2]);
+  const afterOrder = queueStore.load();
+  check(
+    '较小 seq 迟到包在并发下也被拒绝',
+    afterOrder.ok && afterOrder.data.seq === 41 && afterOrder.data.pending[0].id === 'seq41',
+    JSON.stringify(afterOrder.data && { seq: afterOrder.data.seq, id: afterOrder.data.pending[0] && afterOrder.data.pending[0].id })
+  );
 }
 
 // ===== 2/3. 渲染侧（esbuild 打包 + 假环境）=====

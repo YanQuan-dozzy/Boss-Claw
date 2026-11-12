@@ -276,6 +276,9 @@ export function createSafePersistStorage<S = unknown>(options: SafeStorageOption
   // 待写缓冲：name -> 序列化后的完整 StorageValue 对象。写盘前合并同一 key 的最新值。
   const pending = new Map<string, StorageValue<unknown>>();
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** 存储暂不可用时的重试定时器（见 flushNow 的 !store 分支） */
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const STORAGE_RETRY_MS = 5000;
 
   const flushNow = (): void => {
     if (timer) {
@@ -288,7 +291,17 @@ export function createSafePersistStorage<S = unknown>(options: SafeStorageOption
     // 不可用（隐私模式 / 存储被禁用 / 测试注入返回 null）时会把待写值直接从缓冲里抹掉：
     // 之后即便存储恢复可用，这些变更也再无机会落盘（静默丢写）。保留 pending 则可由下一次
     // set/flush 一并写出；缓冲体积受「每键保留最新值」约束，不会无限增长。
-    if (!store) return;
+    // 审查 #9：保留 pending 还不够 —— 若此后没有新的 set，这批变更会一直滞留到页面隐藏/关闭。
+    // 这里补一次延迟重试（幂等：pending 为空时立即返回，不会空转）。
+    if (!store) {
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          flushNow();
+        }, STORAGE_RETRY_MS);
+      }
+      return;
+    }
     const batch = Array.from(pending.entries());
     pending.clear();
     for (const [name, value] of batch) {
@@ -324,6 +337,10 @@ export function createSafePersistStorage<S = unknown>(options: SafeStorageOption
     if (timer) {
       clearTimeout(timer);
       timer = null;
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
     }
     pending.clear();
   };

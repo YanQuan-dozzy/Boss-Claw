@@ -1590,22 +1590,94 @@ function withTimeout(promise, ms, label) {
 // 排版完全由 HTML/CSS 控制（resumePdf.ts 的 moderncv 风格模板），@page 控制页边距，
 // printToPDF 传 margins:'none' 避免与 CSS 边距叠加。零额外依赖、中文由系统字体渲染。
 const { validatePdfItem, writeUniquePdf } = require('./resume-pdf-batch.cjs');
-async function renderResumePdf(htmlText) {
-  const printWin = new BrowserWindow({
-    show: false, width: 842, height: 1191,
+
+// ===== 隐藏打印窗口（进程级复用，审查 #6）=====
+// 原实现每份简历都 new BrowserWindow → printToPDF → destroy：批量导出 N 份就是 N 次窗口/渲染进程
+// 创建销毁，每次都要重建渲染进程、字体缓存与 GPU 上下文，耗时与内存抖动随份数线性放大
+// （批量上限 1000 份时尤其明显）。现在整个进程共用一个隐藏窗口：
+//   · 导出任务经串行链排队——同一时刻只有一个文档在窗口里，两次导出不会互相 loadURL 打断；
+//   · 按任务切换内容尺寸（简历 A4 竖版 / 统计报表 A4 横版），纸张方向仍由 printToPDF 参数决定；
+//   · 任务结束后空闲 20s 自动销毁，避免为「偶尔导出一次」长期占住一个渲染进程；
+//   · 单次任务失败（加载超时 / 渲染进程异常）即丢弃窗口，下一次任务自动重建，坏状态不会被复用。
+const PRINT_SIZES = {
+  portrait: { width: 842, height: 1191 },
+  landscape: { width: 1191, height: 842 },
+};
+/** 空闲多久后释放隐藏打印窗口（毫秒） */
+const PRINT_WINDOW_IDLE_MS = 20_000;
+let printWindow = null;
+let printIdleTimer = null;
+/** 打印任务串行链（共享窗口是单一资源，必须排队使用） */
+let printChain = Promise.resolve();
+
+function destroyPrintWindow() {
+  if (printIdleTimer) { clearTimeout(printIdleTimer); printIdleTimer = null; }
+  try { if (printWindow && !printWindow.isDestroyed()) printWindow.destroy(); } catch { /* 忽略 */ }
+  printWindow = null;
+}
+
+/** 取（或重建）共享打印窗口，并把内容尺寸切到本次任务需要的方向 */
+function getPrintWindow({ width, height }) {
+  if (printWindow && !printWindow.isDestroyed() && !printWindow.webContents.isDestroyed()) {
+    try {
+      const [w, h] = printWindow.getContentSize();
+      // 尺寸只影响视口相关 CSS（如 100vh）；最终纸张由 printToPDF 的 pageSize/landscape 决定
+      if (w !== width || h !== height) printWindow.setContentSize(width, height);
+    } catch { /* 尺寸调整失败不影响打印 */ }
+    return printWindow;
+  }
+  const win = new BrowserWindow({
+    show: false, width, height,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
-  try {
-    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '打印页加载');
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    const pdf = await withTimeout(printWin.webContents.printToPDF({
-      pageSize: 'A4', printBackground: true, margins: { marginType: 'none' },
-    }), 30_000, 'PDF 生成');
-    if (!pdf || !pdf.length) throw new Error('PDF 生成结果为空');
-    return pdf;
-  } finally {
-    try { printWin.destroy(); } catch {}
-  }
+  printWindow = win;
+  // 外部销毁（渲染进程崩溃后窗口被回收等）时清掉引用，避免下次复用死窗口
+  win.once('closed', () => { if (printWindow === win) printWindow = null; });
+  return win;
+}
+
+/** 在共享窗口里把一份 HTML 渲染成 PDF（调用方保证串行） */
+async function printHtmlToPdf(win, htmlText, { landscape = false, label = '打印' } = {}) {
+  await withTimeout(win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, `${label}页加载`);
+  // 等一帧 + 布局/字体稳定（沿用原有 400ms 经验值，保证中文字体已就绪）
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const pdf = await withTimeout(win.webContents.printToPDF({
+    pageSize: 'A4', landscape, printBackground: true, margins: { marginType: 'none' },
+  }), 30_000, `${label}PDF 生成`);
+  if (!pdf || !pdf.length) throw new Error('PDF 生成结果为空');
+  return pdf;
+}
+
+/** 排队渲染一份 HTML → PDF（简历竖版 / 统计报表横版共用同一隐藏窗口） */
+function renderPdfShared(htmlText, opts = {}) {
+  const { landscape = false, label = '打印' } = opts;
+  const size = landscape ? PRINT_SIZES.landscape : PRINT_SIZES.portrait;
+  const task = async () => {
+    if (printIdleTimer) { clearTimeout(printIdleTimer); printIdleTimer = null; }
+    const win = getPrintWindow(size);
+    try {
+      return await printHtmlToPdf(win, htmlText, { landscape, label });
+    } catch (e) {
+      // 加载超时 / 渲染异常后的窗口状态不可信，直接丢弃，下次任务重建
+      destroyPrintWindow();
+      throw e;
+    } finally {
+      // 任务结束后启动空闲回收；下一个任务开始时会在 task 顶部清掉它
+      if (printWindow && !printWindow.isDestroyed()) {
+        if (printIdleTimer) clearTimeout(printIdleTimer);
+        printIdleTimer = setTimeout(() => { printIdleTimer = null; destroyPrintWindow(); }, PRINT_WINDOW_IDLE_MS);
+        if (printIdleTimer.unref) printIdleTimer.unref();
+      }
+    }
+  };
+  const next = printChain.then(task, task);
+  printChain = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/** 简历 PDF（A4 竖版） */
+function renderResumePdf(htmlText) {
+  return renderPdfShared(htmlText, { landscape: false, label: '打印' });
 }
 
 safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
@@ -1741,30 +1813,15 @@ safeHandle('jc:save-report-pdf', async (_event, defaultName, html) => {
   });
   if (canceled || !filePath) return { ok: false, canceled: true };
 
-  // 隐藏打印窗口：不启用 Node 能力，纯渲染 HTML（无脚本），保证安全；横版按 842×1191 倒置预置
-  const printWin = new BrowserWindow({
-    show: false,
-    width: 1191,
-    height: 842,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-  });
+  // 与简历导出共用同一个隐藏打印窗口（横版尺寸 + landscape 由 renderPdfShared 处理）；
+  // 串行链保证两个导出通道同时触发时不会互相 loadURL 打断。
   try {
-    await withTimeout(printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText)), 15_000, '报表页加载');
-    await new Promise((r) => setTimeout(r, 400));
-    const pdf = await withTimeout(printWin.webContents.printToPDF({
-      pageSize: 'A4',
-      landscape: true,
-      printBackground: true,
-      margins: { marginType: 'none' },
-    }), 30_000, '报表 PDF 生成');
-    if (!pdf || !pdf.length) return { ok: false, error: 'PDF 生成结果为空' };
+    const pdf = await renderPdfShared(htmlText, { landscape: true, label: '报表' });
     await fs.promises.writeFile(filePath, pdf);
     return { ok: true, filePath };
   } catch (e) {
     dlog('error', 'report printToPDF failed', { message: (e && e.message) || String(e) });
     return { ok: false, error: String((e && e.message) || e) };
-  } finally {
-    try { printWin.destroy(); } catch {}
   }
 });
 
@@ -3157,6 +3214,8 @@ function stopBackgroundServices() {
   if (controlBridge) { try { controlBridge.stop(); } catch {} controlBridge = null; }
   // 关闭语音运行时（utilityProcess）；模型常驻内存，不主动退出会留下子进程
   try { speechService.shutdown(); } catch {}
+  // 释放复用的隐藏打印窗口（正常退出会销毁所有窗口，这里显式收口并清掉空闲定时器）
+  try { destroyPrintWindow(); } catch {}
 }
 
 // ===== CloakBrowser 隐身浏览器 IPC（可选增强）=====

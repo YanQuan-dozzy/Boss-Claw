@@ -617,7 +617,13 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   if (!truncatedByFinish) {
     try {
       const ex = extractJsonWithMeta(content);
-      parsed = ex.value;
+      // 与 extractJson 同口径（审查 #7）：顶层必须是普通对象。数组/标量属于「模型没按对象输出」，
+      // 不能当成功结果返回 —— 上层按对象取值会全部落空，且后续给结果挂 _usage 也会失败。
+      const v = ex.value;
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+        throw new AIError('AI_INVALID_JSON', 'AI 返回的 JSON 顶层不是对象', { partial: content });
+      }
+      parsed = v;
       tailCut = ex.tailCut;
     } catch {
       parsed = undefined;

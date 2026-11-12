@@ -228,7 +228,18 @@ async function aiReplyAndSend(args: {
     addLog('error', `发送 AI 回复时引擎多次重启失败，自动沟通已停止：${title}`);
     return { outcome: 'stop', result: replySend.result };
   }
-  // 成功：记录「已回复的 HR 消息指纹」，防止同一条消息被重复回复
+  // 审查 #1：只有**真正发送成功**才记录「已回复的 HR 消息指纹」。
+  // 原实现不校验 result.ok/sent 就落指纹：发送失败时该条消息会被后续轮次判成「已回复」跳过，
+  // 而岗位又已按失败收口 —— 等于这条 HR 消息永久得不到回复。失败时不落指纹，下一轮可重试。
+  const replySentOk = Boolean(replySend.result?.ok && replySend.result?.sent);
+  if (!replySentOk) {
+    addChatLog({
+      level: 'error', stage: 'confirm', jobId, jobTitle: title, company,
+      msg: `AI 回复发送未确认成功：${String(replySend.result?.message || replySend.result?.error || '未知原因')}`,
+      errorDetail: '未记录「已回复」指纹，下一轮会重新尝试发送。',
+    });
+    return { outcome: 'none', result: replySend.result };
+  }
   updatePending(item.id, { hrRepliedFingerprint: hrMessage });
   return { outcome: 'sent', result: replySend.result };
 }

@@ -31,9 +31,18 @@ function freshnessPriority(job: JobMeta = {}): number {
   return 0;
 }
 
+/**
+ * 单项优先级缓存（审查 #5）：computeJobPriority 是 item 的纯函数，且 store 侧所有变更都产出新对象
+ * （updatePending / setPending 均为展开复制，无就地改写）——按对象身份缓存即可。
+ * 没有缓存时，工作台每次 pending 变化与自动沟通每轮循环都要为上千条岗位重新解析薪资区间、
+ * 探测工作制度（O(n) 次字符串解析 + 正则），是列表卡顿的主要来源之一。WeakMap 不阻止 GC。
+ */
+const priorityCache = new WeakMap<object, number>();
+
 export function computeJobPriority(
   item: { analysis?: JobAnalysis; job?: JobMeta; retryCount?: number } = {},
 ): number {
+  if (priorityCache.has(item)) return priorityCache.get(item) as number;
   const analysis: Partial<JobAnalysis> = item.analysis || {};
   const job: Partial<JobMeta> = item.job || {};
   const hardBlocks = Array.isArray(analysis.hardBlocks) ? analysis.hardBlocks.length : 0;
@@ -51,7 +60,9 @@ export function computeJobPriority(
   priority += freshnessPriority(job);
   if (/外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)) priority -= 6000;
   priority -= Number(item.retryCount || 0) * 120;
-  return Math.round(priority);
+  const result = Math.round(priority);
+  priorityCache.set(item, result);
+  return result;
 }
 
 function pendingStatusRank(status: string): number {

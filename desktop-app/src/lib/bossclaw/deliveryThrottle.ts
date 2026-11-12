@@ -32,12 +32,16 @@ export function sharedPacer(perMinute?: number): ActionPacer {
   return pacer;
 }
 
-/** 自上次批次休息以来的**账号级**连续投递数（跨引擎累计）。 */
+/** 自上次批次休息以来的**账号级**连续投递尝试数（跨引擎累计）。 */
 export function deliveredSinceRest(): number {
   return deliveredCount;
 }
 
-/** 记录一次成功投递动作，返回累计值（批次休息判定用）。 */
+/**
+ * 记录一次**投递尝试**（审查 #8：调用点位于发送动作下发之前，见 useAutoChatStore）。
+ * 批次休息必须在「发送前」判定（休息发生在第 N 次动作之前），因此这里统计的是尝试次数而不是
+ * 成功次数——失败/被取消的尝试也会计入。该口径偏保守（休息早于设置值触发），不会削弱防封号效果。
+ */
 export function markDelivered(): number {
   deliveredCount += 1;
   return deliveredCount;

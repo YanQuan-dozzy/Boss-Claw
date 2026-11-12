@@ -296,7 +296,13 @@ export const useDataStore = create<DataState>()(
             pending: s.pending.map((p) => {
               if (p?.job && typeof p.job.company === 'string') {
                 const cleaned = cleanCompanyName(p.job.company);
-                if (cleaned === undefined) return { ...p, job: { ...p.job, company: '' } };
+                // cleanCompanyName 有两个出口：undefined（判脏：地名/保留字/长度不合理 → 置空）
+                // 与规范化后的字符串（压缩空白）。原实现只处理了前者，后者的返回值被直接丢弃，
+                // 「清洗」对合法但含多余空白的公司名完全不生效（审查 #4）。
+                return {
+                  ...p,
+                  job: { ...p.job, company: cleaned === undefined ? '' : cleaned },
+                };
               }
               return p;
             }),
@@ -383,23 +389,44 @@ function jobCompleteness(job?: Pick<JobMeta, 'url' | 'company' | 'location' | 's
   return n;
 }
 
-/** pending 折叠重复（v2 迁移）：精确键（归一化 URL / jobId）或软匹配命中即视为同一岗位，保留更完整的一条 */
+/** pending 折叠重复（v2 迁移）：精确键（归一化 URL / jobId）或软匹配命中即视为同一岗位，保留更完整的一条。
+ *  性能（审查 #13）：精确键改走 Map 索引，避免对每条记录都在 `kept.some` 里重算 `jobUrlKey`（O(n²)，
+ *  每次比较都要 split/trim 字符串）；软匹配只对「至少一方是弱身份」的少量记录生效，保留原语义。
+ */
 function dedupePendingItems(pending: PendingItem[]): PendingItem[] {
   const kept: PendingItem[] = [];
+  const byUrl = new Map<string, number>();
+  const byJid = new Map<string, number>();
+  const jidOf = (p: PendingItem) => String(p.job?.jobId || '').trim().toLowerCase();
+  const dropIndex = (idx: number, prev: PendingItem) => {
+    const prevUrl = jobUrlKey(prev.job);
+    if (prevUrl && byUrl.get(prevUrl) === idx) byUrl.delete(prevUrl);
+    const prevJid = jidOf(prev);
+    if (prevJid && byJid.get(prevJid) === idx) byJid.delete(prevJid);
+  };
+  const addIndex = (idx: number, item: PendingItem) => {
+    const key = jobUrlKey(item.job);
+    if (key) byUrl.set(key, idx);
+    const jid = jidOf(item);
+    if (jid) byJid.set(jid, idx);
+  };
   for (const item of pending) {
     // L-27：迁移/损坏数据可能含 null 元素，先跳过，避免 `item.job` 抛 TypeError 使整次迁移失败
     if (!item || typeof item !== 'object') continue;
     const key = jobUrlKey(item.job);
-    const jid = String(item.job?.jobId || '').trim().toLowerCase();
-    const exactHit = kept.some(
-      (p) => (key && jobUrlKey(p.job) === key) || (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid)
-    );
-    if (exactHit) continue;
+    const jid = jidOf(item);
+    const exactIdx = (key ? byUrl.get(key) : undefined) ?? (jid ? byJid.get(jid) : undefined);
+    if (exactIdx !== undefined) continue;
     const softIdx = kept.findIndex((p) => sameJobSoft(item.job, p.job));
     if (softIdx >= 0) {
-      if (jobCompleteness(item.job) > jobCompleteness(kept[softIdx].job)) kept[softIdx] = item;
+      if (jobCompleteness(item.job) > jobCompleteness(kept[softIdx].job)) {
+        dropIndex(softIdx, kept[softIdx]);
+        kept[softIdx] = item;
+        addIndex(softIdx, item);
+      }
       continue;
     }
+    addIndex(kept.length, item);
     kept.push(item);
   }
   return kept;
