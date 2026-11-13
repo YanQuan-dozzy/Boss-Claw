@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Button, notification } from 'antd';
 import { useAppStore } from './store/useAppStore';
 import { cssVars } from './theme';
 import { useTheme } from './context/ThemeContext';
@@ -6,6 +7,7 @@ import { bridgeStatus } from './lib/bridgeClient';
 import { checkAllPlatformsLogin } from './lib/bossLogin';
 import { clearAllData } from './lib/storage';
 import { ensureSkillsLoaded } from './lib/bossclaw/skills';
+import { checkForUpdatesDaily, openReleasesPage } from './lib/bossclaw/updateCheck';
 import { useInterval } from './lib/hooks';
 import { startScheduler } from './lib/scheduler';
 import { useScheduleStore } from './store/useScheduleStore';
@@ -157,6 +159,44 @@ export default function App() {
   // 启动即预热 AI Skills 层：从 skills/*/SKILL.md 加载技能定义（调用 AI 时按作用域启用注入）
   useEffect(() => {
     ensureSkillsLoaded().catch(() => {});
+  }, []);
+
+  // 每日自动检查更新：进入应用后延迟 2 秒跑一次（避开首屏水合/资源竞争），
+  // 同一自然日只查一次（见 checkForUpdatesDaily），有新版本才用右上角通知提示。
+  // 只提示 + 给下载入口，不自动下载 / 替换程序文件（未签名 + asar:false，替换易被拦截且无法回退）。
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void checkForUpdatesDaily()
+        .then((r) => {
+          if (cancelled || !r?.ok || !r.hasUpdate) return;
+          const key = 'bossclaw-update-available';
+          notification.info({
+            key,
+            message: `发现新版本 v${r.latest}`,
+            description: `当前版本 v${r.current}。可前往发布页下载安装包，应用不会自动替换程序。`,
+            placement: 'topRight',
+            duration: 0,
+            btn: (
+              <Button
+                type="primary"
+                size="small"
+                onClick={() => {
+                  openReleasesPage(r.url);
+                  notification.destroy(key);
+                }}
+              >
+                前往下载
+              </Button>
+            ),
+          });
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   // 目标城市同源（设置页「基础求职条件」⇄ 职业画像）：启动时对存量数据做一次并集补齐。
