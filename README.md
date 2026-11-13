@@ -20,7 +20,7 @@
 
 </div>
 
-> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.3**（2026-11-13 发布，Windows / Linux / macOS 源码包由 CI 统一构建）。
+> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.3**（2026-11-13 发布，Windows / Linux / macOS 均由 CI 统一构建）。
 
 ## 这是什么
 
@@ -38,7 +38,7 @@
 
 ### 1. 下载安装
 
-产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，v2.6.3 由 CI 统一构建 Windows / Linux / macOS 源码包：
+产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，v2.6.3 由 CI 统一构建 Windows / Linux / macOS 安装包：
 
 | 系统 | 文件 | 说明 |
 | --- | --- | --- |
@@ -46,9 +46,11 @@
 | 🪟 **Windows 10/11（x64）** | [便携版 BossClaw-2.6.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-portable.exe) | 绿色单文件，解压即用 |
 | 🐧 **Linux（x86_64）** | [AppImage（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-x86_64.AppImage) | `chmod +x` 后直接运行 |
 | 🐧 **Linux（amd64，deb 系）** | [deb（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-amd64.deb) | `sudo dpkg -i`，缺依赖补 `sudo apt -f install` |
-| 🍎 **macOS（Intel / Apple Silicon）** | [源码档案（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-mac.tar.gz) | 解压后执行 `./build-mac.sh` 生成 dmg + zip |
+| 🍎 **macOS（Apple Silicon）** | [dmg（arm64，v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-arm64.dmg) | 未签名：首次打开需右键「打开」，或执行 `xattr -dr com.apple.quarantine` |
+| 🍎 **macOS（Intel）** | [dmg（x64，v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-x64.dmg) | 未签名：首次打开需右键「打开」，或执行 `xattr -dr com.apple.quarantine` |
+| 🍎 **macOS 源码档案** | [mac.tar.gz（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-mac.tar.gz) | 需要自行构建时使用，解压后执行 `./build-mac.sh` |
 
-> 所有产物均由同一 tag 的 CI 构建：Windows / Linux 直接可用；macOS 提供源码档案，需在 macOS 上执行 `./build-mac.sh` 生成 dmg / zip（**只能在 macOS 上构建**，且产物架构与构建所用 Mac 一致）。运行要求：Windows 10/11（x64）或主流 x86_64 Linux；要 rpm / pacman 等其它格式，向 `build.linux.target` 补目标后重新打包。
+> 所有产物均由同一 tag 的 CI 构建：Windows / Linux 直接可用；macOS 提供 arm64 / x64 dmg（未签名、未公证，首次打开需右键「打开」或移除 quarantine 属性），另附源码档案供自行构建。运行要求：Windows 10/11（x64）、主流 x86_64 Linux，或 macOS 10.15+；要 rpm / pacman 等其它格式，向 `build.linux.target` 补目标后重新打包。
 
 ### 2. 首次配置
 
@@ -283,7 +285,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 - **下拉弹层修复**：设置页「HR 活跃度过滤」用真实鼠标点开时，预挂载的 antd Select 弹层可能停在视口外；现在监听展开动作并直接定位到触发器附近，每次打开只补救一次，避免重复 resize 叠加偏移。
 - **任务栏图标**：AUMID 仅安装版注册，修复便携版启动后通知 / 任务栏图标回退为 Electron 默认图标。
 - **稳定性**：修复评审发现的静默数据错误，PDF 导出复用同一隐藏窗口。
-- **跨平台 CI**：新增 Build 工作流（Windows NSIS / portable、Linux AppImage / deb、macOS 源码包），打 `v*` tag 自动创建 Release；打包改为 asar + asarUnpack，体积更小。
+- **跨平台 CI**：新增 Build 工作流（Windows NSIS / portable、Linux AppImage / deb、macOS arm64 / x64 dmg + zip 与源码包），打 `v*` tag 自动创建 Release；打包改为 asar + asarUnpack，体积更小。
 - **打包细节**：打包态 Python venv 改落 `%APPDATA%\BossClaw\python-venv`；workflow 写权限收敛到发布 job。
 
 v2.6.2 引入的主要能力（仍在当前版本中）：
