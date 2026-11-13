@@ -8,7 +8,7 @@
 
 [这是什么](#这是什么) · [快速开始](#快速开始) · [使用流程](#使用流程) · [核心能力](#核心能力) · [能力规模](#当前能力规模) · [适合谁](#适合谁与不适合谁) · [架构](#架构与布局) · [安全边界](#安全与使用边界) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答) · [桌面版说明](desktop-app/README.md) · [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki)
 
-![Version](https://img.shields.io/badge/version-v2.6.2-078A83)
+![Version](https://img.shields.io/badge/version-v2.6.3-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E42-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -20,7 +20,7 @@
 
 </div>
 
-> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.2**（2026-11-08 发布，Linux / macOS 产物沿用 v2.6.0）。
+> 本文以 `main` 分支当前实现为准，**当前版本 v2.6.3**（2026-11-13 发布，Windows / Linux / macOS 源码包由 CI 统一构建）。
 
 ## 这是什么
 
@@ -38,17 +38,17 @@
 
 ### 1. 下载安装
 
-产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，v2.6.2 提供 Windows 产物，Linux / macOS 沿用 v2.6.0：
+产物发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，v2.6.3 由 CI 统一构建 Windows / Linux / macOS 源码包：
 
 | 系统 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 **Windows 10/11（x64）** | [安装版 BossClaw-2.6.2-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.2-x64.exe) | 推荐：NSIS 安装包，可自定义目录、创建快捷方式 |
-| 🪟 **Windows 10/11（x64）** | [便携版 BossClaw-2.6.2-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.2-portable.exe) | 绿色单文件，解压即用 |
-| 🐧 **Linux（x86_64）** | [AppImage（v2.6.0）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.0/BossClaw-2.6.0-x86_64.AppImage) | `chmod +x` 后直接运行 |
-| 🐧 **Linux（amd64，deb 系）** | [deb（v2.6.0）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.0/BossClaw-2.6.0-amd64.deb) | `sudo dpkg -i`，缺依赖补 `sudo apt -f install` |
-| 🍎 **macOS（Intel / Apple Silicon）** | [源码档案（v2.6.0）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/download/v2.6.0/BossClaw-2.6.0-mac.tar.gz) | 解压后执行 `./build-mac.sh` 生成 dmg + zip |
+| 🪟 **Windows 10/11（x64）** | [安装版 BossClaw-2.6.3-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-x64.exe) | 推荐：NSIS 安装包，可自定义目录、创建快捷方式 |
+| 🪟 **Windows 10/11（x64）** | [便携版 BossClaw-2.6.3-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-portable.exe) | 绿色单文件，解压即用 |
+| 🐧 **Linux（x86_64）** | [AppImage（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-x86_64.AppImage) | `chmod +x` 后直接运行 |
+| 🐧 **Linux（amd64，deb 系）** | [deb（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-amd64.deb) | `sudo dpkg -i`，缺依赖补 `sudo apt -f install` |
+| 🍎 **macOS（Intel / Apple Silicon）** | [源码档案（v2.6.3）](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.6.3-mac.tar.gz) | 解压后执行 `./build-mac.sh` 生成 dmg + zip |
 
-> 表中三个 v2.6.0 资产是既有产物：v2.6.2 只重建了 Windows。需要其它平台的 v2.6.2 时，在对应系统执行 `npm run package:linux` / `package:mac`；macOS 的 dmg / zip **只能在 macOS 上构建**。运行要求：Windows 10/11（x64）或主流 x86_64 Linux；要 rpm / pacman 等其它格式，向 `build.linux.target` 补目标后重新打包。
+> 所有产物均由同一 tag 的 CI 构建：Windows / Linux 直接可用；macOS 提供源码档案，需在 macOS 上执行 `./build-mac.sh` 生成 dmg / zip（**只能在 macOS 上构建**，且产物架构与构建所用 Mac 一致）。运行要求：Windows 10/11（x64）或主流 x86_64 Linux；要 rpm / pacman 等其它格式，向 `build.linux.target` 补目标后重新打包。
 
 ### 2. 首次配置
 
@@ -109,7 +109,7 @@ AI 生成求职者口吻的个性化招呼语（**≤250 字**），「一键投
 
 用正在投的岗位 JD + 自己的简历练一场会当场被追问的面试。
 
-> **状态**：v2.6.2 安装包**已包含**（Phase 1–4B），但**尚未经过完整测试**，属「可自行试用」，不保证稳定；部分优化与更新代码**暂不开源**，公开仓库与包内实现可能不完全一致。问题请附版本号与出错步骤提 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)。
+> **状态**：v2.6.3 安装包**已包含**（Phase 1–4B），但**尚未经过完整测试**，属「可自行试用」，不保证稳定；部分优化与更新代码**暂不开源**，公开仓库与包内实现可能不完全一致。问题请附版本号与出错步骤提 [Issue](https://github.com/YanQuan-dozzy/Boss-Claw/issues)。
 
 - **出题与追问**：两段式（通用题 → 按简历与上一轮回答深挖），一题一问、由浅入深；追问由本地规则优先驱动，同题 ≤2 轮，加压 / 迁移只在「压力」难度出现。
 - **评分与报告**：逐题 4+1 维四档评分 + 本地加权总分，给出命中 / 漏答要点与改写建议（结论必须能在原答或简历中找到）；含雷达图、同岗位上一场对比、作答节奏，可导出单场 Markdown 与全量 JSON。
@@ -236,7 +236,7 @@ powershell -ExecutionPolicy Bypass -File .\enable-speech-packs.ps1 -Packs all -S
 
 ```
 Boss-claw/
-├── desktop-app/               当前主应用（Electron + React，v2.6.2）
+├── desktop-app/               当前主应用（Electron + React，v2.6.3）
 │   ├── electron/              主进程 main.cjs + control-bridge.cjs + preload/（app / webview / platform-adapters）
 │   ├── bridge/  camoufox/     OpenClaw Node 桥接后端 · Python 隐身引擎桥（camoufox_server.py + platforms/ 多平台采集层）
 │   ├── skills/  src/          AI 技能库（SKILL.md 内置 9 项）· React 渲染进程（store / components / pages / lib）
@@ -278,11 +278,19 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 版本与更新
 
-**当前版本 v2.6.2**（2026-11-08 发布），上一正式版 v2.6.1（2026-10-31）。Windows 10/11 x64（安装版 / 便携版）已更新，Linux / macOS 沿用 v2.6.0 资产，见 [下载安装](#1-下载安装)。本版两条主线是**让应用能长期挂着跑**和**模拟面试补齐第二套朗读模型**：
+**当前版本 v2.6.3**（2026-11-13 发布），上一正式版 v2.6.2（2026-11-08）。Windows / Linux / macOS 源码包统一由 CI 构建并随 tag 自动发布，见 [下载安装](#1-下载安装)。本版以**修复与工程收敛**为主：
+
+- **下拉弹层修复**：设置页「HR 活跃度过滤」用真实鼠标点开时，预挂载的 antd Select 弹层可能停在视口外；现在监听展开动作并直接定位到触发器附近，每次打开只补救一次，避免重复 resize 叠加偏移。
+- **任务栏图标**：AUMID 仅安装版注册，修复便携版启动后通知 / 任务栏图标回退为 Electron 默认图标。
+- **稳定性**：修复评审发现的静默数据错误，PDF 导出复用同一隐藏窗口。
+- **跨平台 CI**：新增 Build 工作流（Windows NSIS / portable、Linux AppImage / deb、macOS 源码包），打 `v*` tag 自动创建 Release；打包改为 asar + asarUnpack，体积更小。
+- **打包细节**：打包态 Python venv 改落 `%APPDATA%\BossClaw\python-venv`；workflow 写权限收敛到发布 job。
+
+v2.6.2 引入的主要能力（仍在当前版本中）：
 
 - **关窗收进托盘**：关窗不再直接退出，收进托盘继续跑定时任务与在途投递；右键托盘才真正退出，设置页可关闭。
 - **系统通知**：仅在首次投递验收暂停、风控命中暂停、定时任务触发 / 备份完成时提醒，点击唤回窗口。
-- **检查更新**：设置页读取 GitHub Releases 最新版本并跳转下载，**不自动下载或替换程序文件**（未签名 + `asar:false`，静默替换易被拦截且不利于回退）。
+- **检查更新**：设置页读取 GitHub Releases 最新版本并跳转下载，**不自动下载或替换程序文件**（未签名 + 便携分发，静默替换易被拦截且不利于回退）。
 - **两套朗读模型可切换**：新增 MeloTTS（44.1kHz 单女声，约 167MB），与 Kokoro 并存、一键切换，删掉当前这套自动回落另一套。
 - **工程**：接入 ESLint（`npm run lint` 进 `verify` 前置）、hooks 依赖收口、`.github/workflows` 入库、`.cmd` / `.ps1` 固定 CRLF。
 
@@ -294,7 +302,7 @@ npm run package:mac     # 打包 macOS（dmg + zip，需在 macOS 上执行）
 
 ## 反馈与联系
 
-先查 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提 Issue 请附：版本号（当前 v2.6.2）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图与完整错误信息。
+先查 [Wiki](https://github.com/YanQuan-dozzy/Boss-Claw/wiki) 与 [`desktop-app/README.md`](desktop-app/README.md) 的「常见问题」。提 Issue 请附：版本号（当前 v2.6.3）、操作系统与 Electron 版本、出错步骤、**已隐藏隐私信息**的截图与完整错误信息。
 
 ## 开源许可与署名
 
