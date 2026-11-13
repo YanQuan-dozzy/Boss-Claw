@@ -1,0 +1,171 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*', 'release-*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: desktop-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # afterPack 用 rcedit 写入 exe 图标/版本信息；CI 干净环境没有缓存，下载失败也不阻塞构建
+      - name: Prepare rcedit (best effort)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'rcedit-x64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/electron/rcedit/releases/latest/download/rcedit-x64.exe' -OutFile $dest
+          "RCEDIT_EXE=$dest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build & package (Windows)
+        run: npm run package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: List release files
+        run: Get-ChildItem release | Select-Object Name,Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-Windows-${{ github.sha }}
+          path: |
+            desktop-app/release/*.exe
+            desktop-app/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: desktop-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools fakeroot
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build & package (Linux)
+        run: npm run package:linux
+
+      - name: List release files
+        run: ls -lh release
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-Linux-${{ github.sha }}
+          path: |
+            desktop-app/release/*.AppImage
+            desktop-app/release/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  mac-source:
+    name: macOS source archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Create macOS source archive
+        run: |
+          VERSION=$(node -p "require('./desktop-app/package.json').version")
+          chmod +x desktop-app/build-mac.sh
+          cd desktop-app
+          tar \
+            --exclude=node_modules \
+            --exclude=dist \
+            --exclude=release \
+            --exclude=.venv \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            -czf "../BossClaw-${VERSION}-mac.tar.gz" .
+          cd ..
+          ls -lh "BossClaw-${VERSION}-mac.tar.gz"
+
+      - name: Upload macOS source archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-macOS-source-${{ github.sha }}
+          path: BossClaw-*-mac.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: [windows, linux, mac-source]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh release-assets
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: BossClaw ${{ github.ref_name }}
+          files: release-assets/*
+          fail_on_unmatched_files: false
+          draft: false
+          prerelease: false
