@@ -552,11 +552,18 @@ function startBridge() {
 
 // ===== Camoufox 隐身引擎（Python 桥）=====
 
+// 本地 venv 目录：开发态用项目内 .venv；打包后 app 目录在 app.asar 内（不可写），
+// 必须落到可写的 userData，否则 python -m venv 必失败、依赖自愈只能回退系统 Python。
+function venvDir() {
+  return app.isPackaged ? path.join(app.getPath('userData'), 'python-venv') : path.join(__dirname, '..', '.venv');
+}
+
 // 项目本地 venv 的 python 可执行文件（install-deps.cmd 把 camoufox/playwright 装到这里）
 function venvPython() {
+  const dir = venvDir();
   return process.platform === 'win32'
-    ? path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe')
-    : path.join(__dirname, '..', '.venv', 'bin', 'python');
+    ? path.join(dir, 'Scripts', 'python.exe')
+    : path.join(dir, 'bin', 'python');
 }
 
 function detectPython() {
@@ -643,13 +650,13 @@ function probeMissingDeps(python) {
 // 后台真正安装依赖：优先装进程 playwright（Chromium 回退必需、体积小、快）；
 // camoufox 为可选增强（native 内核才需要），尽力安装，失败静默不阻塞。
 async function installCamoufoxDeps(python) {
-  // 决定安装目标：项目 .venv（干净、可复现）→ 否则退回所选 Python
+  // 决定安装目标：本地 venv（干净、可复现）→ 否则退回所选 Python
   let target = python;
   const venv = venvPython();
   if (python !== venv) {
     try {
       if (!fs.existsSync(venv)) {
-        await runPythonAsync(python, ['-m', 'venv', path.join(__dirname, '..', '.venv')], { timeout: 120000 });
+        await runPythonAsync(python, ['-m', 'venv', venvDir()], { timeout: 120000 });
       }
       if (fs.existsSync(venv)) target = venv;
     } catch (e) {

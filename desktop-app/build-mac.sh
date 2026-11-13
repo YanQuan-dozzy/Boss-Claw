@@ -4,7 +4,7 @@
 # 用法：在 macOS 上解压 `BossClaw-<版本>-mac.tar.gz` 源码档案后，
 #       在解压目录内执行 `./build-mac.sh`，即可完成：
 #         1) 安装 Node 依赖（含 Electron 二进制，国内网络自动回退 npmmirror 镜像）
-#         2) 打包 macOS 安装产物（dmg + zip，Intel x64 + Apple Silicon arm64 双架构）
+#         2) 打包 macOS 安装产物（dmg + zip，按当前 Mac 架构构建：Intel x64 或 Apple Silicon arm64）
 # 产物输出到 release/ 目录。
 #
 # 前置要求：macOS 10.15+，Node.js 20+（https://nodejs.org）
@@ -37,11 +37,11 @@ if ! npm install; then
   node node_modules/electron/install.js
 fi
 
-echo "==> 2/2 打包 macOS dmg + zip（x64 + arm64 双架构）"
+echo "==> 2/2 打包 macOS dmg + zip（按当前 Mac 架构）"
 npm run package:mac
 
 echo ""
 echo "==> 构建完成，产物如下："
 ls -lh release/ 2>/dev/null | grep -E "BossClaw-.*\.(dmg|zip)$" || true
 echo ""
-echo "==> 可将 release/ 中的 dmg/zip 分发给 Mac 用户使用。"
+echo "==> 可将 release/ 中的 dmg/zip 分发给 Mac 用户使用（架构与本次构建所用 Mac 一致）。"
