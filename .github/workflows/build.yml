@@ -106,6 +106,56 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  mac:
+    name: macOS package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+    defaults:
+      run:
+        working-directory: desktop-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # 无 Developer ID：显式 ad-hoc 签名并关闭 hardened runtime；
+      # 产物仍未公证，首次打开需右键「打开」或 xattr -dr com.apple.quarantine。
+      - name: Build & package (macOS ${{ matrix.arch }})
+        run: npm run build && npx electron-builder --mac --${{ matrix.arch }} -c.mac.identity=- -c.mac.hardenedRuntime=false
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: List release files
+        run: ls -lh release
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-macOS-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            desktop-app/release/*.dmg
+            desktop-app/release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
   mac-source:
     name: macOS source archive
     runs-on: ubuntu-latest
@@ -147,7 +197,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: [windows, linux, mac-source]
+    needs: [windows, linux, mac, mac-source]
     runs-on: ubuntu-latest
     # 仅发布 job 需要写权限；构建 job 只读，降低依赖供应链风险
     permissions:
