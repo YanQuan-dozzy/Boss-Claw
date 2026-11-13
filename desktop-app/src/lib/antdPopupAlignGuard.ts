@@ -34,37 +34,102 @@ export const VISIBLE_SELECT_POPUP_SELECTOR = '.ant-select-dropdown:not(.ant-sele
  */
 const RECHECK_DELAYS_MS = [120, 450, 1200] as const;
 
-type PopupStyle = { left?: string; top?: string };
-type PopupLike = { style: PopupStyle; isConnected?: boolean };
+type PopupStyle = {
+  left?: string;
+  top?: string;
+  right?: string;
+  bottom?: string;
+  inset?: string;
+};
+type PopupRect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+type PopupLike = {
+  style: PopupStyle;
+  isConnected?: boolean;
+  offsetHeight?: number;
+  getBoundingClientRect?: () => PopupRect;
+};
 
 /** 供离线回归使用的极小 Document 视图（真实 document 天然满足） */
 export type PopupDocLike = {
   querySelectorAll(selectors: string): ArrayLike<PopupLike>;
 };
 
-/** 弹层是否仍停在 rc-trigger 的未对齐默认位置 */
-export function isPopupUnpositioned(popup: { style: PopupStyle }): boolean {
-  return popup.style.left === UNPOSITIONED_LEFT && popup.style.top === UNPOSITIONED_TOP;
+/**
+ * 弹层是否仍停在 rc-trigger 的未对齐默认位置。
+ *
+ * 注意：CSS 里的 `left: -1000vw; top: -1000vh` 在真实 DOM 的 `style.left/top` 中会被
+ * 浏览器解析成像素值（1440×900 视口下是 `-14400px / -9000px`），不再保留 `vw` 单位。
+ * 因此不能只比较字符串，还要按「-1000vw = -10 × 视口宽」判断像素值。
+ */
+export function isPopupUnpositioned(
+  popup: { style: PopupStyle },
+  viewport?: { width: number; height: number },
+): boolean {
+  const left = popup.style.left || '';
+  const top = popup.style.top || '';
+  // 兼容 mock / 少数浏览器保留单位的形态
+  if (left === UNPOSITIONED_LEFT && top === UNPOSITIONED_TOP) return true;
+
+  const width = viewport?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 0);
+  const height = viewport?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 0);
+  if (!(width > 0 && height > 0)) return false;
+
+  const leftPx = Number.parseFloat(left);
+  const topPx = Number.parseFloat(top);
+  if (!Number.isFinite(leftPx) || !Number.isFinite(topPx)) return false;
+
+  // 1vw = 1% 视口宽；-1000vw = -10 × 视口宽（同理 -1000vh = -10 × 视口高）
+  return leftPx <= -10 * width + 1 && topPx <= -10 * height + 1;
 }
 
-/** 当前是否存在「可见但未对齐」的 Select 弹层（true = 首帧对齐丢失，需要补发 resize） */
+/** 弹层是否已完全离开视口（含未对齐默认位置与 rc-trigger 偏移叠加后的正/负远端） */
+export function isPopupOffscreen(popup: PopupLike): boolean {
+  if (isPopupUnpositioned(popup)) return true;
+  if (typeof popup.getBoundingClientRect !== 'function') return false;
+  if (typeof window === 'undefined') return false;
+  const rect = popup.getBoundingClientRect();
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  if (!(width > 0 && height > 0)) return false;
+  return rect.right <= 0 || rect.left >= width || rect.bottom <= 0 || rect.top >= height;
+}
+
+/** 当前是否存在「可见但未对齐」的 Select 弹层（true = 首帧对齐丢失，需要补救） */
 export function hasStuckSelectPopup(doc: PopupDocLike): boolean {
   const popups = doc.querySelectorAll(VISIBLE_SELECT_POPUP_SELECTOR);
   for (let i = 0; i < popups.length; i += 1) {
     const popup = popups[i];
-    // isConnected === false（已从文档移除）时跳过：rc-trigger 此时不会再对齐，补发也无意义
-    if (popup.isConnected !== false && isPopupUnpositioned(popup)) return true;
+    // isConnected === false（已从文档移除）时跳过：rc-trigger 此时不会再对齐，补救也无意义
+    if (popup.isConnected !== false && isPopupOffscreen(popup)) return true;
   }
   return false;
 }
 
 /**
- * 检测并补发一次 resize（rc-trigger 的 useWatch 监听 window resize 后会重新对齐弹层）。
- * @returns 是否真的补发（false = 当前没有未对齐弹层，调用方无需处理）
+ * 检测并补救可见但位置错误的弹层。
+ *
+ * 优先直接按当前打开的 Select 定位（比补发 resize 更可靠：rc-trigger 在弹层已预挂载时
+ * 会把旧偏移再叠加一次，实测 -14400 → +15417）。没有定位回调或找不到 trigger 时，
+ * 才退回原来的「补发一次 resize」。
+ *
+ * @returns 是否真的执行了补救（false = 当前没有未对齐弹层，调用方无需处理）
  */
-export function rescueStuckSelectPopups(doc: PopupDocLike, dispatchResize: () => void): boolean {
-  if (!hasStuckSelectPopup(doc)) return false;
-  dispatchResize();
+export function rescueStuckSelectPopups(
+  doc: PopupDocLike,
+  dispatchResize: () => void,
+  position?: (popup: PopupLike) => boolean,
+): boolean {
+  const popups = doc.querySelectorAll(VISIBLE_SELECT_POPUP_SELECTOR);
+  let rescued = false;
+  let positioned = false;
+  for (let i = 0; i < popups.length; i += 1) {
+    const popup = popups[i];
+    if (popup.isConnected === false || !isPopupOffscreen(popup)) continue;
+    rescued = true;
+    if (position && position(popup)) positioned = true;
+  }
+  if (!rescued) return false;
+  if (!positioned) dispatchResize();
   return true;
 }
 
@@ -78,16 +143,61 @@ export function installAntdPopupAlignGuard(): () => void {
   }
 
   let disposed = false;
+  let batchActive = false;
+  let batchRescued = false;
   const timers = new Set<number>();
 
-  const scheduleChecks = (): void => {
+  const clearTimers = (): void => {
+    for (const timer of timers) window.clearTimeout(timer);
+    timers.clear();
+  };
+
+  /** 直接把弹层放到当前打开的 Select 下方/上方；成功返回 true。 */
+  const positionNearTrigger = (popup: PopupLike): boolean => {
+    const trigger = document.querySelector('.ant-select-open');
+    if (!trigger) return false;
+    const el = popup as unknown as HTMLElement;
+    if (typeof el.getBoundingClientRect !== 'function') return false;
+    const rect = trigger.getBoundingClientRect();
+    const height = el.offsetHeight || 260;
+    const gap = 4;
+    const below = rect.bottom + gap;
+    const top = below + height <= window.innerHeight ? below : Math.max(gap, rect.top - height - gap);
+    el.style.position = 'absolute';
+    el.style.inset = 'auto';
+    el.style.left = `${Math.round(rect.left + window.scrollX)}px`;
+    el.style.top = `${Math.round(top + window.scrollY)}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    el.style.zIndex = '1050';
+    return true;
+  };
+
+  const scheduleChecks = (force = false): void => {
+    // 同一次打开可能同时命中 pointerdown 和 MutationObserver；两次批次会各补发一次
+    // resize，rc-trigger 会把第二次偏移再叠加一次（实测 -14400 → +15417）。
+    // 因此安装级只允许一个批次；用户新开下拉（pointerdown/keydown）时 force 重置。
+    if (batchActive && !force) return;
+    if (force) clearTimers();
+    batchActive = true;
+    batchRescued = false;
     for (const delay of RECHECK_DELAYS_MS) {
       const timer = window.setTimeout(() => {
         timers.delete(timer);
         if (disposed) return;
-        rescueStuckSelectPopups(document, () => {
-          window.dispatchEvent(new Event('resize'));
-        });
+        if (!batchRescued) {
+          if (rescueStuckSelectPopups(
+            document,
+            () => {
+              window.dispatchEvent(new Event('resize'));
+            },
+            positionNearTrigger,
+          )) {
+            batchRescued = true;
+          }
+        }
+        // 最后一个复查点结束后释放批次，下一次打开可重新调度
+        if (delay === RECHECK_DELAYS_MS[RECHECK_DELAYS_MS.length - 1]) batchActive = false;
       }, delay);
       timers.add(timer);
     }
@@ -110,10 +220,27 @@ export function installAntdPopupAlignGuard(): () => void {
   // 不用 subtree 观察整个应用 DOM（那是每次渲染都触发的无谓开销）。
   observer.observe(document.body, { childList: true });
 
+  // 关键补充：antd 的 Select 弹层 portal / 弹层 DOM 可能是预挂载的——打开时只改 style/class，
+  // 不新增任何 DOM 节点，MutationObserver 不会触发（实测 v2.6.3：打开前后 mutDirect/mutSub 都为空）。
+  // 因此再监听用户展开动作：鼠标 pointerdown + 键盘 ArrowDown/Enter/Space，直接安排复查。
+  const onPointerDown = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks(true);
+  };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'ArrowDown' && event.key !== 'Enter' && event.key !== ' ') return;
+    const target = event.target;
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks(true);
+  };
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
+
   return () => {
     disposed = true;
     observer.disconnect();
-    for (const timer of timers) window.clearTimeout(timer);
-    timers.clear();
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    clearTimers();
+    batchActive = false;
   };
 }

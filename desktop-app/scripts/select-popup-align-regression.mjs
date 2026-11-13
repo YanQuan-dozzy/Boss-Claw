@@ -49,7 +49,11 @@ const docWith = (popups) => ({ querySelectorAll: () => popups });
 // ===== A. 单弹层判定：只有「左右都停在默认位置」才算未对齐 =====
 {
   ok('默认位置（-1000vw/-1000vh）判为未对齐', G.isPopupUnpositioned(popup('-1000vw', '-1000vh')));
-  ok('已对齐（px 值）判为正常', !G.isPopupUnpositioned(popup('1017px', '108px')));
+  ok(
+    '真实 DOM 像素值（-14400px/-9000px）判为未对齐',
+    G.isPopupUnpositioned(popup('-14400px', '-9000px'), { width: 1440, height: 900 }),
+  );
+  ok('已对齐（px 值）判为正常', !G.isPopupUnpositioned(popup('1017px', '108px'), { width: 1440, height: 900 }));
   ok('仅 left 为默认值不算（half 状态不误判）', !G.isPopupUnpositioned(popup('-1000vw', '0px')));
   ok('仅 top 为默认值不算', !G.isPopupUnpositioned(popup('0px', '-1000vh')));
   ok('空 style 不算', !G.isPopupUnpositioned({ style: {} }));
