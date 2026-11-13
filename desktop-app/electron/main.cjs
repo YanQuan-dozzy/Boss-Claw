@@ -136,6 +136,18 @@ function safeOn(channel, handler) {
 // 读取，指令正文经 jc:skills-read 读取后注入 system prompt。仅允许白名单目录，防路径穿越。
 // 内置技能（只读）位于 appPath/skills；自定义技能（用户导入/新建，可写）位于 userData/skills。
 const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
+
+/**
+ * ASAR：app.asar 内的路径不能直接交给 Python / 子进程。
+ * 打包后把 `app.asar` 段替换为 `app.asar.unpacked`（与 electron-builder 的 asarUnpack 对应），
+ * 开发态保持原路径不变。
+ */
+function unpackedResourcePath(p) {
+  if (!app.isPackaged) return p;
+  const asar = `${path.sep}app.asar${path.sep}`;
+  const unpacked = `${path.sep}app.asar.unpacked${path.sep}`;
+  return p.includes(asar) ? p.replace(asar, unpacked) : p;
+}
 const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
 const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'];
@@ -341,7 +353,7 @@ const APP_ID = 'com.bossclaw.desktop';
 app.setName('BossClaw');
 // 主窗口图标（nativeImage 加载 .ico，可同时作为大/小图标源：
 // Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
-const APP_ICON_ICO = path.join(__dirname, '..', 'resources', 'icon.ico');
+const APP_ICON_ICO = unpackedResourcePath(path.join(__dirname, '..', 'resources', 'icon.ico'));
 const APP_ICON = nativeImage.createFromPath(APP_ICON_ICO);
 // Windows 应用身份（AUMID）。
 // 进程一旦设置显式 AUMID，Explorer 会按「应用身份」解析任务栏按钮图标：根目录 start-bossclaw.cmd
@@ -711,7 +723,7 @@ async function startCamoufoxBridge(pythonOverride) {
   const available = await checkCamoufoxEngine(python);
   if (!available) return { running: false, error: '隐身引擎未就绪：暂未下载 Camoufox 内核，请安装 Camoufox 隐身引擎内核：pip install "camoufox[geoip]" && camoufox fetch' };
   try {
-    const server = path.join(__dirname, '..', 'camoufox', 'camoufox_server.py');
+    const server = unpackedResourcePath(path.join(__dirname, '..', 'camoufox', 'camoufox_server.py'));
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
     // 会被拦截导致 camoufox fetch 等清理逻辑失败；spawn 时剥离该注入，不影响正常用户环境。
     const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN };

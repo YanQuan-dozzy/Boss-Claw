@@ -60,7 +60,7 @@
     "icon": "resources/icon.ico",
     "afterPack": "build/after-pack-win-icon.js",
     "publish": null,
-    "asar": false,
+    "asar": true,
     "directories": {
       "output": "release",
       "buildResources": "resources"
@@ -76,7 +76,8 @@
       "package.json",
       "!**/*.pyc",
       "!**/__pycache__",
-      "!**/.venv/**"
+      "!**/.venv/**",
+      "!camoufox/tests/**"
     ],
     "extraResources": [
       {
@@ -124,7 +125,13 @@
       "maintainer": "YanQuan <yanquan@bossclaw.dev>",
       "synopsis": "BossClaw 求职投递助手",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
-    }
+    },
+    "asarUnpack": [
+      "camoufox/**",
+      "resources/icon.ico",
+      "resources/icon.png",
+      "node_modules/sherpa-onnx-*/**"
+    ]
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
@@ -150,5 +157,6 @@
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.72.1",
     "vite": "^5.4.9"
-  }
+  },
+  "homepage": "https://github.com/YanQuan-dozzy/Boss-Claw"
 }
