@@ -142,6 +142,56 @@ try {
   check('缓存：不再发请求', globalThis.__fetchCount, before);
   check('缓存：内容与首次一致', r6.latest, r5.latest);
   ok('缓存：命中时带 checkedAt', typeof r6.checkedAt === 'number', String(r6.checkedAt));
+
+  // ===== 4. 每日自动检查（进入应用时触发） =====
+  const AUTO_KEY = 'bossclaw-update-auto-check-day';
+  const today = (() => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${dd}`;
+  })();
+
+  // 4.1 当天首次进入：真正检查一次并写「已检查日」
+  store.delete(AUTO_KEY);
+  globalThis.__fetchResult = { ok: true, status: 200, text: JSON.stringify({ tag_name: 'v2.9.0' }) };
+  const beforeDaily = globalThis.__fetchCount;
+  const d1 = await m.checkForUpdatesDaily();
+  ok('每日检查：首次返回结果', d1 && d1.ok === true, JSON.stringify(d1));
+  check('每日检查：hasUpdate=true', d1 && d1.hasUpdate, true);
+  check('每日检查：发出一次请求', globalThis.__fetchCount, beforeDaily + 1);
+  check('每日检查：写入当天标记', store.get(AUTO_KEY), today);
+
+  // 4.2 同日再次进入：不请求、返回 null（不重复提示）
+  const beforeSecond = globalThis.__fetchCount;
+  const d2 = await m.checkForUpdatesDaily();
+  check('每日检查：同日第二次返回 null', d2, null);
+  check('每日检查：同日第二次不再请求', globalThis.__fetchCount, beforeSecond);
+
+  // 4.3 跨天（清标记模拟新的一天）：再次真正检查
+  store.delete(AUTO_KEY);
+  const beforeNextDay = globalThis.__fetchCount;
+  const d3 = await m.checkForUpdatesDaily();
+  ok('每日检查：跨天重新检查', d3 && d3.ok === true, JSON.stringify(d3));
+  check('每日检查：跨天发出一次请求', globalThis.__fetchCount, beforeNextDay + 1);
+
+  // 4.4 读不到当前版本：不占当天额度（本次不请求，标记清空，下次启动重试）
+  store.delete(AUTO_KEY);
+  const originalGetAppInfo = globalThis.__electronApi.getAppInfo;
+  globalThis.__electronApi.getAppInfo = async () => ({});
+  const beforeNoVersion = globalThis.__fetchCount;
+  const d4 = await m.checkForUpdatesDaily();
+  check('每日检查：读不到版本返回 null', d4, null);
+  check('每日检查：读不到版本不发请求', globalThis.__fetchCount, beforeNoVersion);
+  check('每日检查：读不到版本不占当天额度', store.get(AUTO_KEY) || '', '');
+  globalThis.__electronApi.getAppInfo = originalGetAppInfo;
+
+  // 4.5 网络失败：仍占用当天额度（避免一天内反复联网）
+  store.delete(AUTO_KEY);
+  globalThis.__fetchResult = { ok: false, error: 'offline' };
+  const d5 = await m.checkForUpdatesDaily();
+  ok('每日检查：网络失败返回 ok=false', d5 && d5.ok === false, JSON.stringify(d5));
+  check('每日检查：失败也记当天标记', store.get(AUTO_KEY), today);
 } finally {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 偶发占用，忽略 */ }
 }
