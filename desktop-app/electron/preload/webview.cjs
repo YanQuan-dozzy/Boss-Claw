@@ -1030,10 +1030,16 @@ function chatSendEditors(root) {
 }
 
 function chatSendPanel(input) {
-  const panels = '.chat-conversation,[class*="chat-panel"],[class*="chat-window"],.startchat-content';
+  // 面板形态只放宽「容器叫什么」，不放宽确认口径：
+  // 「立即沟通」弹窗（.startchat-content）、岗位页右侧会话（.chat-conversation）与
+  // 完整聊天页（/web/geek/chat，主区常命名为 chat-content / chat-main）都要能命中；
+  // 会话列表侧栏不是发送面板（它没有消息列表 + 头部的成对结构）。
+  const panels = '.chat-conversation,[class*="chat-conversation"],[class*="chatConversation"],'
+    + '[class*="chat-panel"],[class*="chatPanel"],[class*="chat-window"],[class*="chatWindow"],'
+    + '[class*="chat-content"],[class*="chatContent"],[class*="chat-main"],[class*="chatMain"],.startchat-content';
   for (let panel = input?.parentElement; panel && !panel.matches('body,html'); panel = panel.parentElement) {
     if (!panel.matches(panels) || !chatSendVisible(panel)) continue;
-    const messages = all('.im-list,.message-list,[class*="message-list"]', panel).filter(chatSendVisible);
+    const messages = all('.im-list,.message-list,[class*="message-list"],[class*="messageList"],[class*="msg-list"],[class*="msgList"]', panel).filter(chatSendVisible);
     const headers = all('.chat-header,[class*="chatHeader"],.conversation-header,[class*="chat-title"]', panel)
       .filter(el => chatSendVisible(el) && !el.querySelector('input,textarea,[contenteditable],.im-list,.message-list'));
     // 当前 BOSS 的 .chat-conversation 首个直接子节点是收件人/岗位头部。
@@ -1066,29 +1072,32 @@ function currentChatSendInput(context) {
   return scope?.panel === context.panel && scope.header === context.header && scope.messages === context.messages ? editors[0] : null;
 }
 
+// 发送按钮候选：只认「指定面板内、语义唯一」的文字发送控件。
+// 安全口径：找不到唯一目标就返回空数组（上层转 failed），绝不退回到页面全局按钮。
+function textSendCandidates(root, input, header, messages) {
+  const selector = 'button,[role="button"],.send-message,[class*="send-message"],[class*="sendMessage"],.send-btn,.btn-send,[class*="sendBtn"],[class*="chat-send"],[aria-label],[title]';
+  const matches = all(selector, root).filter(el => {
+    if (!chatSendVisible(el) || el === input || input.contains(el) || el.closest('[contenteditable],textarea,input')) return false;
+    if ((header && header.contains(el)) || (messages && messages.contains(el))
+      || !el.matches('button,[role="button"],[class*="send"],[class*="Send"]')) return false;
+    const labels = [textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].map(normalizeChatText);
+    if (labels.some(label => /图片|图像|附件|简历|电话|微信|image|photo|attach|resume|phone|wechat/i.test(label))) return false;
+    return labels.some(label => /^(发送|发送消息|发送文字|发送文本|发送招呼语|send|send message|send text)$/i.test(label));
+  });
+  // 内层有相同语义的 span 时只保留其真实 button/role=button，避免祖先重复。
+  return matches.filter(el => !matches.some(other => other !== el && other.contains(el)
+    && other.matches('button,[role="button"]')));
+}
+
+// 发送按钮定位：只认「当前聊天面板内、语义唯一」的文字发送控件。
+// 「立即沟通」弹窗的发送是 <div class="send-message disable">发送</div>（非 button），
+// allowDisabled=true 时也返回该元素，由调用方 waitFor 其启用后再点击。
 function sendButton(input, opts = {}) {
-  const allowDisabled = Boolean(opts && opts.allowDisabled);
-  if (!input) return null;
-  // 「立即沟通」弹窗的发送是 <div class="send-message disable">发送</div>（非 button），
-  // 初始带 disable 类、由页面框架在输入内容后移除；allowDisabled=true 时也返回该元素，
-  // 由调用方 waitFor 其启用后再点击（默认 false 保持原有语义：只认已启用按钮）。
-  const usable = (el) => visible(el) && (allowDisabled || !isDisabledish(el));
-  const sels = '.send-message, [class*="send-message"], [class*="sendMessage"], .send-btn, .btn-send, [class*="sendBtn"], [class*="btn-send"], [class*="chatSend"], [class*="chat-send"]';
-  // 优先输入框所属编辑区/弹窗内的按钮（避免被页面底部全局的「发送」误命中）
-  const scope = input.closest('[class*="edit-area"], [class*="editArea"], .startchat-content, [class*="startchat"], [class*="chat-input"], [class*="input-box"], [class*="editor"]');
-  const scoped = scope ? all(sels).filter((el) => scope.contains(el)).find(usable) : null;
-  const labelMatch = scoped || all(sels).find(usable);
-  if (labelMatch) {
-    const label = textOf(labelMatch);
-    if (!/发送简历|发送附件|发送在线简历|发简历|图片/.test(label) && (/^发送$/.test(label) || /send/i.test(String(labelMatch.className || '')))) return labelMatch;
-  }
-  // 兜底：输入框右下方最近的「发送」按钮
-  const inputRect = input.getBoundingClientRect();
-  return all('button,[role="button"],[class*="send"]').find((el) => {
-    if (!usable(el)) return false;
-    const rect = el.getBoundingClientRect();
-    return /^发送$/.test(textOf(el)) && Math.abs(rect.top - inputRect.bottom) < 200 && rect.left > inputRect.left - 60;
-  }) || null;
+  const context = opts.context || createChatSendContext(input);
+  if (!context || currentChatSendInput(context) !== input) return null;
+  const candidates = textSendCandidates(context.panel, input, context.header, context.messages);
+  if (candidates.length !== 1 || (!opts.allowDisabled && isDisabledish(candidates[0]))) return null;
+  return candidates[0];
 }
 
 // 文本归一化：去掉零宽字符/统一空白，用于气泡级匹配招呼文案
@@ -1131,19 +1140,28 @@ function focusEditableScoped(input) {
   } catch {}
   return editor;
 }
-function ownMessageEntries(context) {
-  if (!currentChatSendInput(context)) return [];
-  const own = '.item-myself,.item-self,.item-own,.message-self,[data-direction="outgoing"],[data-from="self"]';
-  return all(own, context.messages).filter(node => chatSendVisible(node)
+const OWN_MESSAGE_SELECTOR = '.item-myself,.item-self,.item-own,.message-self,[data-direction="outgoing"],[data-from="self"]';
+
+function ownMessageEntriesIn(root) {
+  const own = OWN_MESSAGE_SELECTOR;
+  return all(own, root).filter(node => chatSendVisible(node)
     && !node.parentElement?.closest(own) && !node.closest('[contenteditable],textarea,input')
     && !node.matches('.failed,.sending,[data-status="failed"],[data-status="sending"]')).flatMap(node => {
       const texts = all('.text,.message-content,.message-text,.text-content,[data-message-text],.bubble-text', node)
         .filter(el => chatSendVisible(el) && !el.closest('[contenteditable],textarea,input'));
       const leaves = texts.filter(el => !texts.some(other => other !== el && el.contains(other)));
-      if (leaves.length !== 1) return [];
-      const text = normalizeChatText(textOf(leaves[0]));
-      return text ? [{ node, text, id: node.getAttribute('data-message-id') || node.getAttribute('data-mid') || '' }] : [];
+      // 气泡内可能同时有正文与状态/时间（「已发送」等）两个叶子节点：
+      // 逐叶子返回并按全文精确匹配，避免整条气泡因叶子数 != 1 被丢弃（有气泡却判失败）。
+      return leaves.flatMap(el => {
+        const text = normalizeChatText(textOf(el));
+        return text ? [{ node, text, id: node.getAttribute('data-message-id') || node.getAttribute('data-mid') || '' }] : [];
+      });
     });
+}
+
+function ownMessageEntries(context) {
+  if (!currentChatSendInput(context)) return [];
+  return ownMessageEntriesIn(context.messages);
 }
 
 function captureOwnMessages(context) {
@@ -1153,34 +1171,149 @@ function captureOwnMessages(context) {
     messages: context.messages, tail: context.messages.lastElementChild };
 }
 
-// 文字气泡确认：发送后聊天记录里出现刚发送的文字（安全不变量：未确认不计成功）。
-// BOSS 聊天 DOM 屡次改版，气泡节点语义类各不相同：按「气泡级选择器 + 文本归一化」匹配，
-// 避免只按固定的容器选择器整段判断而漏掉（导致已成功发送却被误判失败、未写入已投递）。
-function confirmOwnMessage(greeting) {
-  const needle = normalizeChatText(greeting).slice(0, 30);
-  if (!needle || needle.length < 12) return false;
-  // 聊天气泡节点语义类（对齐 job-claw-main chatMessageNodes 的选择器集）
-  const bubbleSelectors = [
-    '.message-content', '.chat-message', '.message-item', '.message-text',
-    '[class*="message-content"]', '[class*="messageContent"]',
-    '[class*="chat-message"]', '[class*="chatMessage"]',
-    '[class*="message-item"]', '[class*="messageItem"]',
-    '[class*="message-text"]', '[class*="messageText"]',
-    '[class*="bubble"]', '[class*="chat-record"]', '[class*="chatRecord"]',
-    '[class*="item-myself"]', '[class*="itemMyself"]',
-    '[class*="msg-item"]', '[class*="msgItem"]', '[data-message-id]',
-    '[class*="conversation"] .msg', '[class*="chat-list"] [class*="item"]',
-  ];
-  // 1) 气泡级精确匹配：某个消息节点正文等于招呼语或其前 30 字
-  const nodes = new Set();
-  for (const sel of bubbleSelectors) { for (const el of all(sel)) nodes.add(el); }
-  for (const el of nodes) {
-    if (!visible(el)) continue;
-    const t = normalizeChatText(el.innerText || el.textContent || '');
-    if (t && t.includes(needle)) return true;
+// 文字气泡确认：只认「本次新增的完整己方气泡」（安全不变量：未确认不计成功）。
+// 判据必须同时满足：
+//   ① 编辑器已清空（草稿留在输入框 ≠ 已发送，issue #22 的假成功就出在这里）；
+//   ② 目标面板与会话身份未变（currentChatSendInput 复核）；
+//   ③ 气泡是基线之后新增的节点（节点身份 + 消息 ID + DOCUMENT_POSITION_FOLLOWING）；
+//   ④ 正文与招呼语全文精确相等（不设长度阈值，也不做前缀截断）。
+// 明确禁止：整页 innerText 兜底、按钮状态推断、长度阈值 —— 它们都会把「写进编辑框」
+// 或「页面上任意位置出现过这句话」误判成发送成功。
+function confirmOwnMessage(greeting, context, before) {
+  const input = currentChatSendInput(context);
+  const needle = normalizeChatText(greeting);
+  if (!input || !needle || !before || before.messages !== context.messages
+    || normalizeChatText(input.value || input.innerText || '') || before.entries.some(entry => entry.text === needle)) return false;
+  // 历史列表整段重建/虚拟滚动不能证明本次新增；证据不足时交人工核对。
+  if (before.tail && (!before.tail.isConnected || before.tail.parentElement !== context.messages)) return false;
+  return ownMessageEntries(context).some(entry => entry.text === needle && !before.nodes.has(entry.node)
+    && !(entry.id && before.ids.has(entry.id))
+    && (!before.tail || Boolean(before.tail.compareDocumentPosition(entry.node) & Node.DOCUMENT_POSITION_FOLLOWING)));
+}
+
+// ===== 首次沟通弹窗通道（issue #6 / #22）=====
+// 弹窗（.startchat-content）只有 editor + 发送按钮，没有消息列表，无法建立 chatSendPanel 上下文。
+// 但不能因此退回 2.5.5 的「整页正文包含招呼语」兜底 —— 那正是 #22 把「写进编辑框」误判成功的成因。
+// 弹窗通道的确认口径与主通道一致：编辑器必须清空 + 页面出现「本次新增的完整己方气泡」。
+// 聊天页 URL（BOSS 桌面站 /web/geek/chat，移动站 app.zhipin.com）。
+// 只有这类页面才要求「新增己方气泡」级确认；岗位详情页的首次沟通弹窗没有稳定的
+// 己方气泡语义（实测有气泡但不带 item-myself 等类），按编辑框是否清空收口。
+function isChatPageUrl(url = location.href) {
+  const href = String(url || '');
+  return /app\.zhipin\.com/i.test(href) || /(\/web\/geek\/chat|\/chat(?:\/|\?|#|$))/i.test(href);
+}
+
+function startChatDialog(input) {
+  for (let panel = input?.parentElement; panel && !panel.matches('body,html'); panel = panel.parentElement) {
+    if (!chatSendVisible(panel) || !panel.matches('.startchat-content, [class*="startchat"]')) continue;
+    if (!panel.querySelector('textarea,[contenteditable="true"],[contenteditable="plaintext-only"]')) continue;
+    return panel;
   }
-  // 2) 兜底：整篇页面正文包含招呼语（发送成功后输入框已清空，正文仅剩发出的气泡；覆盖选择器未命中的改版 DOM）
-  return normalizeChatText(document.body?.innerText).includes(needle);
+  return null;
+}
+
+function ownMessageNodes() {
+  return ownMessageEntriesIn(document).map(entry => entry.node);
+}
+
+function confirmDialogGreeting(greeting, input, beforeNodes) {
+  if (!input || !input.isConnected) return false;
+  // 草稿留在编辑框 ≠ 已发送（#22 的假成功就出在这里）。
+  if (normalizeChatText(input.value || input.innerText || '')) return false;
+  const needle = normalizeChatText(greeting);
+  if (!needle) return false;
+  return ownMessageEntriesIn(document).some(entry => !beforeNodes.has(entry.node) && entry.text === needle);
+}
+
+// 非聊天页（岗位详情 + 首次沟通弹窗）：按产品口径不启用气泡确认。
+// 仍需「可信点击回执 + 编辑器已清空」——「文字已输入但未发送」时编辑器不会被清空，
+// 这条判据正是 #22 的假成功特征，比整页正文匹配更可靠。
+function confirmDialogAccepted(input) {
+  if (!input || !input.isConnected) return false;
+  return !normalizeChatText(input.value || input.innerText || '');
+}
+
+async function sendDialogGreeting(input, dialog, greeting) {
+  const fail = (reason, clicked = false, sent = clicked ? null : false) => {
+    notify('apply-stage', { stage: 'log', message: `弹窗文字发送停止：${reason}`, sent });
+    return { ok: false, reason, clicked, sent };
+  };
+  const expected = normalizeChatText(greeting);
+  if (!expected || !dialog || !input?.isConnected) return fail('沟通弹窗已变化');
+  const beforeNodes = new Set(ownMessageNodes());
+  if (ownMessageEntriesIn(document).some(entry => entry.text === expected)) {
+    return fail('历史消息已包含相同文字，请人工核对避免重复发送');
+  }
+  notify('apply-stage', { stage: 'fill_message', label: '填写招呼语' });
+  input.scrollIntoView?.({ block: 'center' });
+  await trustedHoverElement(input);
+  if (!dialog.isConnected || !chatSendVisible(dialog) || !input.isConnected) return fail('输入前沟通弹窗已关闭');
+  const editor = focusEditableScoped(input);
+  const needle20 = expected.slice(0, 20);
+  let ins = { ok: false };
+  for (let i = 0; i < 3 && !ins.ok; i++) {
+    if (i > 0) { focusEditableScoped(editor); await jitterDelay(400); }
+    ins = await trustedInput('insertText', greeting);
+    if (ins.ok) {
+      const got = normalizeChatText(editor?.innerText || editor?.value || '');
+      if (got && got.includes(needle20)) break;
+      ins = { ok: false };
+      await jitterDelay(300);
+    }
+  }
+  if (!ins.ok) {
+    notify('apply-stage', { stage: 'failed', error: '真实输入写入失败，已暂停' });
+    return fail('真实输入写入失败');
+  }
+  notify('apply-stage', { stage: 'send_message', label: '发送招呼语' });
+  // 弹窗发送按钮是 <div class="send-message disable">发送</div>，由页面按输入值切掉 disable。
+  const candidates = textSendCandidates(dialog, input, null, null);
+  if (candidates.length !== 1) return fail('未找到唯一的弹窗发送按钮，已停止');
+  const btn = candidates[0];
+  try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
+  await waitFor(() => !isDisabledish(btn), 4000, '发送按钮启用');
+  if (isDisabledish(btn)) return fail('弹窗发送按钮未启用，已停止');
+  const clicked = await trustedClickElement(btn, { guard: () => {
+    if (!dialog.isConnected || !chatSendVisible(dialog) || !input.isConnected) return false;
+    const current = textSendCandidates(dialog, input, null, null);
+    return current.length === 1 && current[0] === btn
+      && normalizeChatText(input.value || input.innerText || '') === expected;
+  } });
+  if (!clicked) return fail('弹窗文字发送可信点击失败，已停止；请人工核对消息状态', false, null);
+  // 气泡确认只在聊天页启用；岗位详情弹窗按「编辑框已清空」收口（见 confirmDialogAccepted）。
+  const requireBubble = isChatPageUrl();
+  notify('apply-stage', { stage: 'verify_message', label: requireBubble ? '确认新增完整己方文字气泡' : '确认点击后编辑框已清空', sent: null });
+  const confirmed = await waitFor(
+    () => (requireBubble ? confirmDialogGreeting(greeting, input, beforeNodes) : confirmDialogAccepted(input)),
+    8000,
+    requireBubble ? '新增完整文字气泡确认' : '编辑框已清空确认'
+  );
+  if (!confirmed) {
+    return fail(requireBubble
+      ? '未能确认新增完整己方文字气泡，请人工核对，禁止自动重发'
+      : '发送后编辑框未清空，无法确认已发送，请人工核对', true);
+  }
+  return { ok: true, clicked: true, sent: true };
+}
+
+function confirmEditorCleared(context) {
+  const input = currentChatSendInput(context);
+  if (!input) return false;
+  return !normalizeChatText(input.value || input.innerText || '');
+}
+
+// 队列岗位进入的必须是「对应会话」：会话头文本要能对上岗位的 HR 名或公司。
+// 产品口径：只做判定，不点击左侧会话列表、不自行切换会话；对不上就停发（可重试，不转人工）。
+const GENERIC_RECRUITER_NAME = /^(hr|hrbp|boss|招聘者|招聘专员|人事|人事专员|先生|女士)$/i;
+function contextMatchesJob(context, job) {
+  const header = normalizeChatText(textOf(context?.header));
+  if (!header) return false;
+  const name = normalizeChatText(job?.recruiterName);
+  const company = normalizeChatText(job?.company);
+  const usableName = name && !GENERIC_RECRUITER_NAME.test(name) ? name : '';
+  // 没有任何可用于判定的身份字段时保持原行为（不额外拦截）。
+  if (!usableName && !company) return true;
+  return Boolean((company && header.includes(company)) || (usableName && header.includes(usableName)));
 }
 
 async function sendChatMessage(context, greeting, before) {
@@ -1215,9 +1348,22 @@ async function sendChatMessage(context, greeting, before) {
   } });
   notify('apply-stage', { stage: 'log', message: `文字发送可信点击回执：${clicked ? '成功' : '失败'}`, trustedClick: clicked, sent: null });
   if (!clicked) return fail('文字发送可信点击失败，已停止；请人工核对消息状态', false, null);
-  notify('apply-stage', { stage: 'verify_message', label: '确认新增完整己方文字气泡', sent: null });
-  const confirmed = await waitFor(() => confirmOwnMessage(greeting, context, before), 8000, '新增完整文字气泡确认');
-  if (!confirmed) return fail('未能确认新增完整己方文字气泡，请人工核对，禁止自动重发', true);
+  // 气泡确认只在聊天页启用；非聊天页（岗位详情右侧会话等）按「编辑框已清空」或
+  // 「新增己方气泡」任一证据收口 —— 两者都比整页正文匹配强，且不会把草稿当成功。
+  const requireBubble = isChatPageUrl();
+  notify('apply-stage', { stage: 'verify_message', label: requireBubble ? '确认新增完整己方文字气泡' : '确认点击后编辑框已清空', sent: null });
+  const confirmed = await waitFor(
+    () => (requireBubble
+      ? confirmOwnMessage(greeting, context, before)
+      : (confirmEditorCleared(context) || confirmOwnMessage(greeting, context, before))),
+    8000,
+    requireBubble ? '新增完整文字气泡确认' : '编辑框已清空确认'
+  );
+  if (!confirmed) {
+    return fail(requireBubble
+      ? '未能确认新增完整己方文字气泡，请人工核对，禁止自动重发'
+      : '发送后编辑框未清空，无法确认已发送，请人工核对', true);
+  }
   return { ok: true, clicked: true, sent: true };
 }
 
@@ -1512,7 +1658,8 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
     }
     notify('apply-stage', { stage: 'open_chat', label: '打开沟通窗口' });
     let input = chatInput();
-    // 已进入聊天页但输入框未就绪（渲染慢）：给足等待，不立即失败
+    // 已进入聊天页但输入框未就绪（渲染慢 / 正在进入对应会话）：给足等待，不立即失败。
+    // 产品口径：不自行点击左侧会话列表切换会话，只等岗位自己的会话加载出来。
     if (!input && /(\/web\/geek\/chat|\/chat(?:\/|\?|$))/i.test(location.href)) {
       input = await waitFor(() => chatInput(), 30000, '聊天输入框就绪');
     }
@@ -1528,19 +1675,63 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
       return;
     }
 
+    // 首次沟通弹窗（.startchat-content）没有消息列表，走独立的弹窗通道；
+    // 它的确认口径同样是「编辑器清空 + 新增完整己方气泡」，不退回整页正文兜底。
+    const dialog = startChatDialog(input);
+    if (dialog) {
+      const result = await sendDialogGreeting(input, dialog, safeGreeting);
+      if (!result.ok) {
+        const needsReview = result.clicked === true && result.sent !== true;
+        notify('apply-stage', { stage: 'failed', error: result.reason, sent: result.sent, needsReview });
+        return;
+      }
+      notify('apply-stage', { stage: 'verify_result', label: '确认投递结果', ok: true, sent: true });
+      return;
+    }
+
+    // 聊天面板/消息区可能比输入框晚挂载（issue #6）：这里等「唯一面板 + 基线快照」同时就绪，
+    // 而不是看到输入框就立刻判失败；等不到唯一面板才 failed。
+    const preflight = await waitFor(() => {
+      const context = createChatSendContext(input);
+      const before = context ? captureOwnMessages(context) : null;
+      return context && before ? { context, before } : null;
+    }, 10000, '聊天面板与消息基线就绪');
+    if (!preflight) {
+      notify('apply-stage', { stage: 'failed', error: '无法确定唯一的当前聊天面板，已停止输入和发送', sent: false });
+      return;
+    }
+    const { context, before } = preflight;
+    // 只判定、不自行点击/切换会话：当前面板对不上岗位的 HR 或公司时停发。
+    if (!contextMatchesJob(context, job)) {
+      notify('apply-stage', { stage: 'failed', error: '当前会话与岗位不匹配（未能对上 HR 或公司），已停止输入和发送', sent: false });
+      return;
+    }
+    if (before.entries.some(entry => entry.text === normalizeChatText(safeGreeting))) {
+      notify('apply-stage', { stage: 'failed', error: '历史消息已包含相同招呼语，请人工核对避免重复发送', sent: false });
+      return;
+    }
     notify('apply-stage', { stage: 'fill_message', label: '填写招呼语' });
     // 仅编辑区内清空/聚焦（严禁整页 selectAll）；随后可信 insertText 插入。
     input.scrollIntoView({ block: 'center' });
+    // 先把光标真实移过去再输入：否则序列是「点按钮 → 鼠标不动 → 文字凭空出现」，
+    // 这是行为层很显眼的一条（真人必然先移动鼠标）。纯移动、不按键，失败也不影响后续写入。
+    await trustedHoverElement(input);
+    if (currentChatSendInput(context) !== input) {
+      notify('apply-stage', { stage: 'failed', error: '输入前聊天会话或输入框发生变化，已停止', sent: false });
+      return;
+    }
     const editor = focusEditableScoped(input);
     // 沟通窗口渲染慢时 Slate 编辑器可能未完全就绪，单次 insertText 易失权：带重试 + 落盘文本校验。
     const needle20 = normalizeChatText(safeGreeting).slice(0, 20);
     let ins = { ok: false };
     for (let i = 0; i < 3 && !ins.ok; i++) {
+      if (currentChatSendInput(context) !== input) break;
       if (i > 0) { focusEditableScoped(editor); await jitterDelay(400); }
+      if (currentChatSendInput(context) !== input) break;
       ins = await trustedInput('insertText', safeGreeting);
       if (ins.ok) {
         const got = normalizeChatText(editor?.innerText || editor?.value || '');
-        if (got && got.includes(needle20)) break; // 已落盘 → 成功
+        if (got && got.includes(needle20)) break; // 已落盘 → 成功（发送前还会复核全文精确相等）
         ins = { ok: false }; // 被 Slate 渲染清掉 → 重试
         await jitterDelay(300);
       }
@@ -1564,36 +1755,16 @@ async function domApplyOnce({ job = {}, greeting = '' } = {}) {
       fire();
       setTimeout(fire, 200);
     } catch {}
-    // 找发送按钮（含 disable 态），等待框架把按钮切为可用后点击；点击后仍以文字气泡确认兜底。
-    const btn = sendButton(input, { allowDisabled: true });
-    if (btn) {
-      try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
-      await waitFor(() => !isDisabledish(btn), 4000, '发送按钮启用');
-      btn.click();
-    } else {
-      // 未找到按钮：弹窗 textarea 内回车是换行、不会发送，直接交人工；
-      // 其余输入（contenteditable 聊天页等）仍退回回车发送兜底。
-      const isDialogTextarea = input.matches('textarea');
-      if (!isDialogTextarea) {
-        const enter = await trustedInput('pressEnter');
-        if (!enter.ok) {
-          notify('apply-stage', { stage: 'failed', error: '未找到发送按钮且回车发送失败，已暂停' });
-          return;
-        }
-      } else {
-        notify('apply-stage', { stage: 'failed', error: '未找到可用的发送按钮（发送按钮可能未随输入内容启用），已暂停请人工发送' });
-        return;
-      }
-    }
-
-    // 文字气泡确认（安全不变量）
-    notify('apply-stage', { stage: 'verify_message', label: '确认文字已发送' });
-    const confirmed = await waitFor(() => confirmOwnMessage(safeGreeting), 8000, '文字气泡确认');
-    if (!confirmed) {
-      notify('apply-stage', { stage: 'failed', error: '未能确认文字气泡已发送，请人工核对后重试' });
+    // 唯一发送通道：可信点击 + 新增完整己方气泡确认；失败不再回车/重发。
+    const result = await sendChatMessage(context, safeGreeting, before);
+    if (!result.ok) {
+      // 已点击但未能确认新增己方气泡：证据不足（不是确定的失败），保留页面交人工核对，
+      // 由上层标记 needsReview 并暂停引擎；绝不自动重发。
+      const needsReview = result.clicked === true && result.sent !== true;
+      notify('apply-stage', { stage: 'failed', error: result.reason, sent: result.sent, needsReview });
       return;
     }
-    notify('apply-stage', { stage: 'verify_result', label: '确认投递结果', ok: true });
+    notify('apply-stage', { stage: 'verify_result', label: '确认投递结果', ok: true, sent: true });
   } catch (error) {
     const errorText = String(error?.message || error);
     if (/安全验证|验证码|频繁|限速|登录|封禁|异常/.test(errorText)) {

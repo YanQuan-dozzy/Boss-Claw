@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>BossClaw real job-detail chat panel fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 12px; }
+  .chat-conversation { width: 680px; border: 1px solid #888; }
+  .top-info-content { min-height: 44px; padding: 6px; border-bottom: 1px solid #ddd; }
+  .message-content { padding: 8px; }
+  .chat-record { min-height: 160px; }
+  .chat-message { min-height: 140px; }
+  .im-list { list-style: none; margin: 0; padding: 8px; min-height: 120px; }
+  .message-item { min-height: 28px; margin-bottom: 6px; }
+  .item-time { font-size: 11px; color: #999; }
+  .message-status { font-size: 11px; color: #999; display: block; }
+  .text-content { display: block; min-height: 20px; }
+  .editor-container { padding: 8px; border-top: 1px solid #ddd; }
+  .toolbar-btn-content { display: inline-block; padding: 4px; }
+  .chat-input { min-height: 60px; border: 1px solid #aaa; padding: 8px; margin-top: 6px; }
+  .chat-op { display: flex; align-items: center; gap: 8px; }
+  .btn-send { padding: 6px 12px; }
+  .btn-send.disabled { opacity: .5; }
+  .message-card-wrap { border: 1px solid #999; padding: 8px; }
+  [hidden] { display: none !important; }
+</style>
+<div class="chat-conversation" id="current-panel">
+  <div class="top-info-content">
+    <div class="user-info-wrap"><div class="user-info"><div class="base-info">
+      <div class="name-content">
+        <span class="name-text">程先生</span>
+        <div><span>米色科技</span><i class="vline"></i><span class="base-title">HR</span></div>
+      </div>
+    </div></div></div>
+  </div>
+  <div class="message-content">
+    <div class="chat-record">
+      <div class="chat-message">
+        <ul class="im-list" id="messages">
+          <li data-mid="408184790495747" class="message-item item-myself">
+            <div class="item-time"><span class="time">09:48</span></div>
+            <div class="message-content">
+              <div class="text"></div>
+              <i class="message-status status-delivery">送达</i>
+              <span class="text-content">历史招呼语，用于确定新增消息的起点。</span>
+            </div>
+          </li>
+          <li data-mid="408184790520320" class="message-item item-friend">
+            <div class="message-content">
+              <div class="articles-center"><div class="message-card-wrap blue">
+                <h3 class="message-card-top-title">你与该职位竞争者PK情况</h3>
+                <p class="message-card-top-sub-title">BOSS 平台 PK 卡片占位</p>
+              </div></div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="editor-container">
+    <div class="toolbar-btn-content icon btn-send" aria-label="发送图片"></div>
+    <div class="toolbar-btn-content tooltip">发简历</div>
+    <div id="chat-input" class="chat-input" contenteditable="true" role="textbox" aria-label="消息输入框"></div>
+    <div class="chat-op">
+      <span class="tip">按Enter键发送，按Ctrl+Enter键换行</span>
+      <button type="send" id="text-send" class="btn-v2 btn-sure-v2 btn-send disabled">发送</button>
+    </div>
+  </div>
+</div>
+</html>

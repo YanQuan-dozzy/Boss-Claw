@@ -797,7 +797,7 @@ export default function Workbench() {
   const onRetry = (id: string) => {
     const item = pending.find((p) => p.id === id);
     if (item?.riskBlocked) { message.warning('该岗位曾触发平台风控拦截（验证/封禁），禁止重试，请人工核对'); return; }
-    updatePending(id, { status: 'pending', retryCount: (item?.retryCount || 0) + 1, error: '', riskBlocked: false });
+    updatePending(id, { status: 'pending', retryCount: (item?.retryCount || 0) + 1, error: '', riskBlocked: false, needsReview: false });
     addLog('info', '已重置该岗位，可重新分析/投递');
   };
 
@@ -913,9 +913,10 @@ export default function Workbench() {
   };
 
   const onRetryAllFailed = () => {
-    const retryable = pending.filter((p) => p.status === 'failed' && !p.riskBlocked);
-    if (!retryable.length) { message.info('没有可重试的失败任务'); return; }
-    setPending(pending.map((p) => (p.status === 'failed' && !p.riskBlocked ? { ...p, status: 'approved_queue' as const, retryCount: (p.retryCount || 0) + 1, error: '', riskBlocked: false, approvedAt: Date.now() } : p)));
+    // needsReview（发送结果证据不足）不参与批量重试：可能其实已经发出，重试会造成重复消息。
+    const retryable = pending.filter((p) => p.status === 'failed' && !p.riskBlocked && !p.needsReview);
+    if (!retryable.length) { message.info('没有可重试的失败任务（需人工核对的岗位请单独确认后再重试）'); return; }
+    setPending(pending.map((p) => (p.status === 'failed' && !p.riskBlocked && !p.needsReview ? { ...p, status: 'approved_queue' as const, retryCount: (p.retryCount || 0) + 1, error: '', riskBlocked: false, needsReview: false, approvedAt: Date.now() } : p)));
     addLog('info', `已重新投递 ${retryable.length} 个失败任务`);
     recomputeStats();
     startDelivery();
@@ -2408,8 +2409,20 @@ export default function Workbench() {
     }
     // failed / timeout
     const errMsg = String(domResult.payload?.error || 'DOM 沟通投递失败');
-    updatePending(candidate.id, { status: 'failed', error: errMsg, retryable: true });
+    // needsReview：已点击但没确认到「本次新增的己方气泡」——证据不足，既不能算成功，
+    // 也不能当作可安全重试的失败（可能其实已发出）。保留标签与页面交人工核对，暂停引擎。
+    const needsReview = domResult.payload?.needsReview === true;
+    updatePending(candidate.id, {
+      status: 'failed', error: errMsg, retryable: !needsReview,
+      ...(needsReview ? { needsReview: true } : {}),
+    });
     addLog('error', `投递失败：${domTitle}（${errMsg}）`);
+    if (needsReview) {
+      setApplyStage(null);
+      recomputeStats();
+      pauseAssist(errMsg);
+      return;
+    }
     if (activeTabRef.current) { webviewApi.current?.closeTab(activeTabRef.current); activeTabRef.current = null; }
     setApplyStage(null);
     recomputeStats();
@@ -2572,7 +2585,7 @@ export default function Workbench() {
         return;
       }
       // 有 DOM 等待槽在途（工作台 BOSS 直投）→ 只回写终态，状态/日志由 runNext 统一处理（去重）
-      if (domWaitRef.current) { domWaitRef.current('failed', { error }, tabId); return; }
+      if (domWaitRef.current) { domWaitRef.current('failed', { error, needsReview: data.needsReview === true }, tabId); return; }
       if (!activeId) return;
       updatePending(activeId, { status: 'failed', error });
       addLog('error', `投递失败：${active?.job?.title || ''}（${error}）`);
@@ -3177,6 +3190,11 @@ export default function Workbench() {
                           {interviewModeTag(p)}
                         </div>
                       </div>
+                      {p.needsReview && (
+                        <Tooltip title="已点击发送，但页面没有出现可确认的「本次新增己方气泡」。可能已发出，请人工核对后再决定是否重试（不会自动重发）。">
+                          <Tag color="orange" style={{ margin: 0, flex: '0 0 auto' }}>需人工核对</Tag>
+                        </Tooltip>
+                      )}
                       <Tag color={st.color} style={{ margin: 0, flex: '0 0 auto' }}>{st.label}</Tag>
                     </div>
                     {isExpanded && (

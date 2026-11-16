@@ -15,7 +15,23 @@ const { chromium } = require('playwright-core');
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = await readFile(join(root, 'electron/preload/webview.cjs'), 'utf8');
 const fixture = await readFile(join(root, 'scripts/fixtures/webview-send/conversation.html'), 'utf8');
-const required = ['chatInput', 'createChatSendContext', 'currentChatSendInput', 'sendButton', 'captureOwnMessages', 'confirmOwnMessage', 'sendChatMessage', 'domApplyOnce', 'trustedClickElement', 'elementCenter'];
+// 完整聊天页（/web/geek/chat）：左侧会话列表 + 右侧主聊天区，主区容器类名与岗位页不同。
+const fullChatFixture = await readFile(join(root, 'scripts/fixtures/webview-send/full-chat.html'), 'utf8');
+// 首次沟通弹窗：只有 editor + 发送按钮，没有消息列表（issue #6 的真实结构）。
+const startChatDialogFixture = await readFile(join(root, 'scripts/fixtures/webview-send/start-chat-dialog.html'), 'utf8');
+// 真实岗位详情页聊天面板（从线上 DOM 采样的结构：.chat-conversation / .top-info-content / .im-list /
+// .message-item.item-myself > .message-content > .text(空) + .message-status + .text-content / .btn-send）。
+const realJobChatFixture = await readFile(join(root, 'scripts/fixtures/webview-send/real-job-chat.html'), 'utf8');
+// 聊天页「未选中会话」空状态（只有 .chat-no-data，没有输入框）。
+const blankChatFixture = await readFile(join(root, 'scripts/fixtures/webview-send/blank-chat.html'), 'utf8');
+const FIXTURES = {
+  conversation: fixture,
+  'full-chat': fullChatFixture,
+  'start-chat-dialog': startChatDialogFixture,
+  'real-job-chat': realJobChatFixture,
+  'blank-chat': blankChatFixture,
+};
+const required = ['chatInput', 'createChatSendContext', 'currentChatSendInput', 'sendButton', 'captureOwnMessages', 'confirmOwnMessage', 'sendChatMessage', 'sendDialogGreeting', 'confirmDialogGreeting', 'startChatDialog', 'contextMatchesJob', 'domApplyOnce', 'trustedClickElement', 'elementCenter'];
 const replaced = new Set(['notify', 'waitFor', 'trustedInput', 'trustedHoverElement', 'sleep', 'jitterDelay', 'isContinueChatEntry', 'enterChat', 'communicateButton', 'notifyDiag', 'humanize', 'lastCursor']);
 
 // AST ranges preserve the exact production declarations. Resolve helpers recursively;
@@ -106,6 +122,9 @@ async function trustedInput(action, text, extra) {
     if (!editor || (!editor.isContentEditable && !editor.matches('textarea,input'))) return { ok: false };
     if ('value' in editor) editor.value = text;
     else editor.textContent = text;
+    // 真实 BOSS 的发送按钮初始带 disabled 类，由页面框架在输入后移除；夹具模拟这一步。
+    const send = document.querySelector('#current-panel #text-send');
+    if (send) send.classList.remove('disabled');
     return { ok: true };
   }
   if (action === 'hoverAt') {
@@ -148,7 +167,11 @@ window.h = {
   context: () => createChatSendContext(document.querySelector('#current-panel #chat-input')),
   assert(value, message) { if (!value) throw new Error(message); },
   equal(actual, expected, message) { if (actual !== expected) throw new Error(message + ': actual=' + actual + ', expected=' + expected); },
-  draft(text) { this.input().textContent = text === undefined ? this.greeting : text; },
+  draft(text) {
+    this.input().textContent = text === undefined ? this.greeting : text;
+    const send = this.panel().querySelector('#text-send');
+    if (send) send.classList.remove('disabled');
+  },
   append(text, { panel = this.panel(), own = true, id = 'new-message', className = '', textClass = 'text' } = {}) {
     const row = document.createElement('li');
     row.className = 'message-item ' + (className || (own ? 'item-myself' : 'item-other'));
@@ -172,6 +195,35 @@ window.h = {
     document.body.prepend(panel);
     return panel;
   },
+  // 弹窗场景没有 .im-list：把气泡直接挂到 body，模拟发送后出现的消息记录。
+  bubble(text, { own = true, id = 'dialog-bubble', className = '' } = {}) {
+    const row = document.createElement('div');
+    row.className = 'message-item ' + (className || (own ? 'item-myself' : 'item-other'));
+    if (id) row.setAttribute('data-message-id', id);
+    const body = document.createElement('div');
+    body.className = 'text';
+    body.textContent = text;
+    row.append(body);
+    document.body.append(row);
+    return row;
+  },
+  // 真实线上结构的己方气泡：.message-content 内同时有空的 .text、状态「送达」与 .text-content 正文。
+  realBubble(text, { id = 'real-new' } = {}) {
+    const row = document.createElement('li');
+    row.className = 'message-item item-myself';
+    row.setAttribute('data-mid', id);
+    row.innerHTML = '<div class="item-time"><span class="time">09:50</span></div>'
+      + '<div class="message-content"><div class="text"></div>'
+      + '<i class="message-status status-delivery">送达</i>'
+      + '<span class="text-content"></span></div>';
+    row.querySelector('.text-content').textContent = text;
+    this.panel().querySelector('.im-list').append(row);
+    return row;
+  },
+  dialogSend: sendDialogGreeting,
+  dialogConfirm: confirmDialogGreeting,
+  startDialog: startChatDialog,
+  contextMatchesJob,
   confirm: confirmOwnMessage,
   baseline: captureOwnMessages,
   current: currentChatSendInput,
@@ -184,7 +236,8 @@ window.h = {
 `;
 
 const cases = [];
-const test = (name, fn) => cases.push({ name, fn });
+// fixture：默认岗位页「立即沟通」弹窗/右侧会话；'full-chat' = 完整聊天页双栏结构。
+const test = (name, fn, fixtureKey = 'conversation') => cases.push({ name, fn, fixtureKey });
 test('input itself .chat-input still resolves sibling text send; image is first', () => {
   const h = window.h, ctx = h.context();
   h.assert(ctx && ctx.panel === h.panel(), 'context must bind the conversation');
@@ -298,6 +351,13 @@ test('new full bubble while draft remains is not confirmation', () => {
 test('new full own bubble without a message ID can confirm by node evidence', () => {
   const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.append(h.greeting, { id: '' });
   h.equal(h.confirm(h.greeting, ctx, before), true, 'new node after baseline tail');
+});
+test('own bubble with message plus sent-status text still confirms by leaf text', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx);
+  const row = h.append(h.greeting);
+  const status = document.createElement('div'); status.className = 'message-text'; status.textContent = '已发送';
+  row.append(status);
+  h.equal(h.confirm(h.greeting, ctx, before), true, 'status leaf must not hide the message leaf');
 });
 test('short greeting requires full exact text rather than a length heuristic', () => {
   const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.append('您好');
@@ -541,11 +601,259 @@ test('domApplyOnce confirmed new own bubble produces exactly one sent:true verif
   h.equal(h.state.notifications.filter(entry => entry.data.sent === true).length, 1, 'only final result claims sent');
 });
 
+// ===== 完整聊天页（issue #22）：左侧会话列表 + 右侧主聊天区 =====
+test('full chat page resolves exactly one send context in the main pane', () => {
+  const h = window.h, ctx = h.context();
+  h.assert(ctx, 'full chat context must exist');
+  h.equal(ctx.panel, h.panel(), 'context must bind the main chat pane');
+  h.equal(h.sendButton(h.input(), { context: ctx })?.id, 'text-send', 'text send stays in main pane');
+}, 'full-chat');
+test('full chat page conversation search box does not create a second editor', () => {
+  const h = window.h;
+  h.assert(document.querySelector('#conversation-search'), 'fixture keeps the left search box');
+  h.assert(h.context(), 'search input must be excluded from chat editors');
+}, 'full-chat');
+test('full chat page left list preview text never confirms a send', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx);
+  document.querySelector('#list-preview').textContent = h.greeting;
+  h.equal(h.confirm(h.greeting, ctx, before), false, 'conversation list is not a message bubble');
+}, 'full-chat');
+test('full chat page new own bubble confirms after the editor clears', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; h.append(h.greeting); };
+  return h.send(ctx, h.greeting, before).then(result => {
+    h.equal(result.ok, true, 'confirmed send on full chat page');
+    h.equal(h.state.clicks.length, 1, 'exactly one trusted click');
+    h.equal(h.state.clicks[0].id, 'text-send', 'main pane text send');
+  });
+}, 'full-chat');
+test('full chat page draft left in editor is not delivery', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => {};
+  return h.send(ctx, h.greeting, before).then(result => {
+    h.equal(result.ok, false, 'draft is not a send');
+    h.equal(h.state.clicks.length, 1, 'no retry');
+  });
+}, 'full-chat');
+test('full chat page platform PK card only does not confirm', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; h.append(h.greeting, { own: false }); };
+  return h.send(ctx, h.greeting, before).then(result => {
+    h.equal(result.ok, false, 'opponent/PK card is not an own bubble');
+    h.equal(h.state.clicks.length, 1, 'no retry');
+  });
+}, 'full-chat');
+test('full chat page historical identical bubble blocks duplicate send', () => {
+  const h = window.h; h.append(h.greeting); const ctx = h.context(), before = h.baseline(ctx); h.draft();
+  return h.send(ctx, h.greeting, before).then(result => {
+    h.equal(result.ok, false, 'duplicate blocked');
+    h.equal(h.state.clicks.length, 0, 'no duplicate click');
+  });
+}, 'full-chat');
+test('full chat page hidden other conversation keeps context, visible one fails closed', () => {
+  const h = window.h; h.otherPanel({ hidden: true }); h.assert(h.context(), 'hidden stale panel ignored');
+  h.otherPanel(); h.equal(h.context(), null, 'two visible main panes are ambiguous');
+}, 'full-chat');
+test('full chat page own bubble inserted before baseline tail is not new-send proof', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx);
+  const row = h.append(h.greeting); ctx.messages.prepend(row);
+  h.equal(h.confirm(h.greeting, ctx, before), false, 'historic position rejected');
+}, 'full-chat');
+test('full chat page domApplyOnce confirms a new own bubble and reports sent once', async () => {
+  const h = window.h;
+  h.state.onClick = () => { h.input().textContent = ''; h.append(h.greeting); };
+  await h.apply({ greeting: h.greeting });
+  h.equal(h.state.inputs.length, 1, 'one input');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+  const success = h.state.notifications.filter(entry => entry.data.stage === 'verify_result');
+  h.equal(success.length, 1, 'one verify_result');
+  h.equal(success[0].data.sent, true, 'confirmed sent receipt');
+}, 'full-chat');
+
+// ===== 首次沟通弹窗（issue #6）：没有消息列表，但不能因此退回整页正文兜底 =====
+test('startchat dialog has no chat panel context but is detected as a dialog', () => {
+  const h = window.h;
+  h.equal(h.context(), null, 'no message list means no chat panel context');
+  h.assert(h.startDialog(h.input()), 'dialog must be detected from the editor ancestor');
+}, 'start-chat-dialog');
+test('startchat dialog send confirms only after a new own bubble appears', async () => {
+  const h = window.h; h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; h.bubble(h.greeting); };
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, true, 'confirmed dialog send');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+  h.equal(h.state.clicks[0].id, 'text-send', 'dialog text send');
+}, 'start-chat-dialog');
+test('startchat dialog draft left in the editor is not delivery', async () => {
+  const h = window.h; h.draft();
+  h.state.onClick = () => {};
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, false, 'draft is not a send');
+  h.equal(result.clicked, true, 'click happened but unconfirmed');
+  h.equal(result.sent, null, 'unconfirmed result stays unknown (not success, not definite failure)');
+}, 'start-chat-dialog');
+test('startchat dialog opponent bubble is not delivery', async () => {
+  const h = window.h; h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; h.bubble(h.greeting, { own: false }); };
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, false, 'opponent bubble is not own bubble');
+}, 'start-chat-dialog');
+test('startchat dialog existing own bubble blocks duplicate before input', async () => {
+  const h = window.h; h.bubble(h.greeting);
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, false, 'duplicate blocked');
+  h.equal(h.state.inputs.length, 0, 'no duplicate input');
+  h.equal(h.state.clicks.length, 0, 'no duplicate click');
+}, 'start-chat-dialog');
+test('startchat dialog ambiguous send buttons fail closed before click', async () => {
+  const h = window.h; const clone = h.button().cloneNode(true); clone.id = 'second-send'; h.button().after(clone);
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, false, 'ambiguous send rejected');
+  h.equal(h.state.clicks.length, 0, 'ambiguous send never clicked');
+}, 'start-chat-dialog');
+test('startchat dialog domApplyOnce confirms and reports sent once', async () => {
+  const h = window.h;
+  h.state.onClick = () => { h.input().textContent = ''; h.bubble(h.greeting); };
+  await h.apply({ greeting: h.greeting });
+  h.equal(h.state.inputs.length, 1, 'one input');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+  const success = h.state.notifications.filter(entry => entry.data.stage === 'verify_result');
+  h.equal(success.length, 1, 'one verify_result');
+  h.equal(success[0].data.sent, true, 'confirmed sent receipt');
+}, 'start-chat-dialog');
+
+// ===== 岗位详情页（非聊天 URL）：气泡确认不启用，按「编辑框已清空」收口 =====
+test('job detail dialog: cleared editor confirms without a bubble', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/fixture.html');
+  h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; };
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, true, 'cleared editor is enough on job detail');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+}, 'start-chat-dialog');
+test('job detail dialog: draft left in editor still fails', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/fixture.html');
+  h.draft();
+  h.state.onClick = () => {};
+  const result = await h.dialogSend(h.input(), h.startDialog(h.input()), h.greeting);
+  h.equal(result.ok, false, 'draft is not delivery');
+  h.equal(result.clicked, true, 'click happened');
+  h.equal(result.sent, null, 'result stays unknown');
+}, 'start-chat-dialog');
+test('job detail dialog domApplyOnce succeeds on cleared editor without bubble', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/fixture.html');
+  h.state.onClick = () => { h.input().textContent = ''; };
+  await h.apply({ greeting: h.greeting });
+  const success = h.state.notifications.filter(entry => entry.data.stage === 'verify_result');
+  h.equal(success.length, 1, 'one verify_result');
+  h.equal(success[0].data.sent, true, 'confirmed sent receipt');
+}, 'start-chat-dialog');
+test('job detail conversation: cleared editor confirms without a bubble', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/fixture.html');
+  const ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; };
+  const result = await h.send(ctx, h.greeting, before);
+  h.equal(result.ok, true, 'cleared editor is enough on job detail');
+}, 'conversation');
+test('job detail conversation: draft left in editor still fails', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/fixture.html');
+  const ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => {};
+  const result = await h.send(ctx, h.greeting, before);
+  h.equal(result.ok, false, 'draft is not delivery');
+}, 'conversation');
+
+// ===== 真实岗位详情页聊天面板（线上 DOM 采样结构）=====
+test('real job chat: context and text send resolve on sampled DOM', () => {
+  const h = window.h, ctx = h.context();
+  h.assert(ctx, 'context must resolve with .chat-conversation + .im-list');
+  h.equal(ctx.panel, h.panel(), 'panel bound to the conversation');
+  h.equal(h.sendButton(h.input(), { context: ctx, allowDisabled: true })?.id, 'text-send', 'text send found, image send excluded');
+}, 'real-job-chat');
+test('real job chat: sampled own bubble (empty .text + status + .text-content) confirms', () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx);
+  h.realBubble(h.greeting);
+  h.equal(h.confirm(h.greeting, ctx, before), true, 'greeting leaf must confirm despite empty text and status leaves');
+}, 'real-job-chat');
+test('real job chat on job detail: cleared editor confirms send', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/real.html');
+  const ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; };
+  const result = await h.send(ctx, h.greeting, before);
+  h.equal(result.ok, true, 'editor cleared is enough on job detail');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+}, 'real-job-chat');
+test('real job chat on chat URL: new sampled own bubble confirms', async () => {
+  const h = window.h, ctx = h.context(), before = h.baseline(ctx); h.draft();
+  h.state.onClick = () => { h.input().textContent = ''; h.realBubble(h.greeting); };
+  const result = await h.send(ctx, h.greeting, before);
+  h.equal(result.ok, true, 'sampled bubble confirms on chat URL');
+}, 'real-job-chat');
+test('real job chat domApplyOnce on job detail reports sent once', async () => {
+  const h = window.h; history.replaceState({}, '', '/job_detail/real.html');
+  h.state.onClick = () => { h.input().textContent = ''; };
+  await h.apply({ greeting: h.greeting });
+  h.equal(h.state.inputs.length, 1, 'one input');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+  const success = h.state.notifications.filter(entry => entry.data.stage === 'verify_result');
+  h.equal(success.length, 1, 'one verify_result');
+  h.equal(success[0].data.sent, true, 'confirmed sent receipt');
+}, 'real-job-chat');
+
+// ===== 空白聊天页（/web/geek/chat 未选中会话）=====
+test('blank chat page has no chat editor and no send context', () => {
+  const h = window.h;
+  h.equal(h.chatInput(), null, 'left search box is not a chat editor');
+  h.equal(h.context(), null, 'no context without a selected conversation');
+}, 'blank-chat');
+test('blank chat page domApplyOnce waits for the job conversation and never clicks by itself', async () => {
+  const h = window.h;
+  await h.apply({ job: { recruiterName: '程先生', company: '米色科技' }, greeting: h.greeting });
+  h.equal(h.state.inputs.length, 0, 'blank page never filled');
+  h.equal(h.state.clicks.length, 0, 'never clicks the conversation list by itself');
+  h.assert(h.state.waits.some(wait => wait.timeout === 30000), 'waits for the job conversation to load');
+  h.assert(h.state.notifications.some(entry => entry.data.stage === 'failed'), 'ends as failed, not manual review');
+  h.assert(h.state.notifications.every(entry => entry.data.stage !== 'verify_result'), 'no success receipt');
+  h.assert(h.state.notifications.every(entry => entry.data.needsReview !== true), 'no needsReview on blank page');
+}, 'blank-chat');
+
+// ===== 会话身份判定：只判定，不自行切换会话 =====
+test('context identity matches by company or non-generic HR name', () => {
+  const h = window.h, ctx = h.context();
+  h.assert(ctx, 'context');
+  h.equal(h.contextMatchesJob(ctx, { recruiterName: '测试 HR 甲' }), true, 'HR name match');
+  h.equal(h.contextMatchesJob(ctx, { company: '离线测试公司' }), true, 'company match');
+  h.equal(h.contextMatchesJob(ctx, { recruiterName: '另一位 HR', company: '另一家公司' }), false, 'mismatch rejected');
+  h.equal(h.contextMatchesJob(ctx, {}), true, 'no identity fields keeps original behaviour');
+}, 'conversation');
+test('generic HR title alone cannot prove the conversation identity', () => {
+  const h = window.h, ctx = h.context();
+  h.equal(h.contextMatchesJob(ctx, { recruiterName: 'HR', company: '另一家公司' }), false, 'generic HR must not match any header');
+}, 'conversation');
+test('domApplyOnce stops before input when the conversation does not match the job', async () => {
+  const h = window.h;
+  await h.apply({ job: { recruiterName: '另一位 HR', company: '另一家公司' }, greeting: h.greeting });
+  h.equal(h.state.inputs.length, 0, 'mismatched conversation never filled');
+  h.equal(h.state.clicks.length, 0, 'mismatched conversation never clicked');
+  h.assert(h.state.notifications.some(entry => entry.data.stage === 'failed' && String(entry.data.error).includes('会话与岗位不匹配')),
+    'explicit identity failure');
+  h.assert(h.state.notifications.every(entry => entry.data.needsReview !== true), 'not a manual-review case');
+  h.assert(h.state.notifications.every(entry => entry.data.stage !== 'verify_result'), 'no success receipt');
+}, 'conversation');
+test('domApplyOnce sends when the conversation matches the job', async () => {
+  const h = window.h;
+  h.state.onClick = () => { h.input().textContent = ''; h.append(h.greeting); };
+  await h.apply({ job: { recruiterName: '测试 HR 甲', company: '离线测试公司' }, greeting: h.greeting });
+  h.equal(h.state.inputs.length, 1, 'one input');
+  h.equal(h.state.clicks.length, 1, 'one trusted click');
+  h.assert(h.state.notifications.some(entry => entry.data.stage === 'verify_result' && entry.data.sent === true), 'confirmed sent');
+}, 'conversation');
+
 const fixtureURL = 'http://bossclaw.test/web/geek/chat?conversation=fixture';
 const browser = await chromium.launch({ headless: true, ...(process.env.BOSSCLAW_TEST_BROWSER ? { executablePath: process.env.BOSSCLAW_TEST_BROWSER } : {}) });
 let failed = 0;
 try {
-  for (const { name, fn } of cases) {
+  for (const { name, fn, fixtureKey } of cases) {
     const context = await browser.newContext({ viewport: { width: 1200, height: 1000 }, serviceWorkers: 'block' });
     const page = await context.newPage();
     await page.exposeFunction('__sendNativeClick', (x, y) => page.mouse.click(x, y));
@@ -553,7 +861,7 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     await context.route('**/*', route => {
       if (route.request().url() === fixtureURL && route.request().isNavigationRequest()) {
-        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: fixture });
+        return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: FIXTURES[fixtureKey] });
       }
       return route.abort('blockedbyclient');
     });
