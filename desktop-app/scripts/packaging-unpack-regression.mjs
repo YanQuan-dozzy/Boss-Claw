@@ -13,6 +13,10 @@
 //   2. Python 源码里以 'electron' / 'preload' / '<file>' 形式引用并 read_text 的文件，
 //      必须存在于 electron/preload/ 且被某个 asarUnpack 模式覆盖。
 //
+// build.asar=false 时 electron-builder 不产出 app.asar / app.asar.unpacked，文件本来就以
+// 明文目录分发，unpack 覆盖断言不适用（本地开发线即为此形态；公开发布线为 asar: true），
+// 此时跳过覆盖类断言，仍校验「源码引用存在」。
+//
 // 用法：node scripts/packaging-unpack-regression.mjs   （EXIT 0 = 全通过，1 = 有失败）
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
@@ -62,9 +66,14 @@ function walk(dir, ext) {
 
 try {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
-  const patterns = pkg?.build?.asarUnpack ?? [];
-  ok('package.json 存在 build.asarUnpack', Array.isArray(patterns) && patterns.length > 0,
-    `实际：${JSON.stringify(patterns)}`);
+  const asarEnabled = pkg?.build?.asar !== false;
+  const patterns = asarEnabled ? (pkg?.build?.asarUnpack ?? []) : [];
+  if (asarEnabled) {
+    ok('package.json 存在 build.asarUnpack', Array.isArray(patterns) && patterns.length > 0,
+      `实际：${JSON.stringify(patterns)}`);
+  } else {
+    console.log('[打包解包一致性] build.asar=false：未启用 asar 打包，跳过 unpack 覆盖断言');
+  }
 
   const matchers = patterns.map((p) => ({ pattern: p, re: globToRegExp(p) }));
   const covered = (relPath) => matchers.some((m) => m.re.test(relPath));
@@ -83,8 +92,10 @@ try {
   const notUnpacked = pyFiles
     .map((f) => relative(root, f).split(sep).join('/'))
     .filter((rel) => !covered(rel));
-  ok('camoufox/** 下所有 .py 均被 asarUnpack 覆盖', notUnpacked.length === 0,
-    notUnpacked.length ? `未覆盖：${notUnpacked.slice(0, 5).join(', ')}` : '');
+  if (asarEnabled) {
+    ok('camoufox/** 下所有 .py 均被 asarUnpack 覆盖', notUnpacked.length === 0,
+      notUnpacked.length ? `未覆盖：${notUnpacked.slice(0, 5).join(', ')}` : '');
+  }
 
   // 不变量 2：Python 从磁盘读的 electron/preload 文件必须存在于磁盘且被 unpack
   // 源码形态固定为：/ 'electron' / 'preload' / '<file>'
@@ -104,14 +115,18 @@ try {
   for (const [name, pys] of refs) {
     const rel = `electron/preload/${name}`;
     ok(`${rel} 存在于源码树（被 ${pys.join(', ')} 引用）`, existsSync(join(root, rel)));
-    ok(`${rel} 被 asarUnpack 覆盖`, covered(rel),
-      `当前 asarUnpack：${JSON.stringify(patterns)}\n      ` +
-      `后果：打包后 Python 在导入期 FileNotFoundError，隐身引擎起不来`);
+    if (asarEnabled) {
+      ok(`${rel} 被 asarUnpack 覆盖`, covered(rel),
+        `当前 asarUnpack：${JSON.stringify(patterns)}\n      ` +
+        `后果：打包后 Python 在导入期 FileNotFoundError，隐身引擎起不来`);
+    }
   }
 
   // issue #24 的直接回归：这个具体文件一度只打进 asar 内部
-  ok('回归 #24：electron/preload/liepin-im.cjs 被 unpack',
-    covered('electron/preload/liepin-im.cjs'));
+  if (asarEnabled) {
+    ok('回归 #24：electron/preload/liepin-im.cjs 被 unpack',
+      covered('electron/preload/liepin-im.cjs'));
+  }
 } catch (err) {
   failures.push(`执行失败：${err?.message || err}`);
 }
