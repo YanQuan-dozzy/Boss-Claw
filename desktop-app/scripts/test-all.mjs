@@ -31,6 +31,8 @@ const SUITES = [
   'jsx-key-regression.mjs',
   // issue #13：antd Select 弹层偶发停在 -1000vw/-1000vh（检测 + 补发 resize）不得误伤正常弹层
   'select-popup-align-regression.mjs',
+  // issue #15：模型服务商预设与「切换服务商」必须逐字段一致（否则表现为「选不了其他模型」）
+  'settings-provider-regression.mjs',
   'context-budget-regression.mjs',
   // issue #10：写失败必须可见（配额耗尽时数据静默不落盘 → 重启后进度回退）
   'persist-health-regression.mjs',
