@@ -26,6 +26,9 @@ const SUITES = [
   'ipc-channel-parity.mjs',
   // 共用文件（README.md / .gitignore）不得出现私有仓库口径 —— 串味不报错，只能靠断言
   'repo-hygiene.mjs',
+  // issue #24：Python 导入期从 app.asar.unpacked 读 electron/preload/liepin-im.cjs，
+  // asarUnpack 漏掉它 → 桥进程 exit 1、四个平台全部不可用
+  'packaging-unpack-regression.mjs',
   'theme-vars-regression.mjs',
   'css-guard-regression.mjs',
   'jsx-key-regression.mjs',
