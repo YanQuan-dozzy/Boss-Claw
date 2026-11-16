@@ -129,6 +129,7 @@
     },
     "asarUnpack": [
       "camoufox/**",
+      "electron/preload/liepin-im.cjs",
       "resources/icon.ico",
       "resources/icon.png",
       "node_modules/sherpa-onnx-*/**"
