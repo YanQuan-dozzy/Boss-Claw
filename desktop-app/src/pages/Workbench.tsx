@@ -23,6 +23,7 @@ import { notifyRiskPaused, notifyValidationPaused } from '@/lib/notify';
 import BrowserView, { WebviewApi } from '@/components/BrowserView';
 import GreetingEditor from '@/components/GreetingEditor';
 import PlatformChip from '@/components/PlatformChip';
+import CompanyBizPanel from '@/components/CompanyBizPanel';
 import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
@@ -38,6 +39,8 @@ import { checkBossLogin } from '@/lib/bossLogin';
 import { stageToPhase, taskStageMetaFor } from '@/lib/bossclaw/taskState';
 import { jobCardStatus, scoreChip, JOB_ACTION_TIPS } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/jobDisplay';
+// 企业工商摘要（P1-5 A 层）：卡片上只显示一行状态/注册资本，详细字段在展开区的 CompanyBizPanel
+import { bizProfileTag } from '@/lib/bossclaw/companyProfile';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
@@ -3188,6 +3191,12 @@ export default function Workbench() {
                           )}
                           {welfareTag(p)}
                           {interviewModeTag(p)}
+                          {/* 工商摘要（只读公司主页字段）：注销/吊销等状态一眼可见，正常态则显示注册资本 */}
+                          {p.job?.companyProfile && bizProfileTag(p.job.companyProfile) ? (
+                            <Tooltip title="来自招聘平台公司主页的工商信息（只读公开字段），只做提示，不影响是否投递">
+                              <span className="task-flag-badge task-flag-badge--neutral">{bizProfileTag(p.job.companyProfile)}</span>
+                            </Tooltip>
+                          ) : null}
                         </div>
                       </div>
                       {p.needsReview && (
@@ -3212,6 +3221,19 @@ export default function Workbench() {
                         ) : (
                           <Text type="secondary" style={{ fontSize: 12, padding: '4px 0' }}>暂无招呼语</Text>
                         )}
+                        {/* 企业工商（P1-5 A 层）：只读公司主页自身字段，只做提示，不参与投递判定 */}
+                        <CompanyBizPanel
+                          company={String(p.job?.company || '')}
+                          profile={p.job?.companyProfile}
+                          readPage={async () => {
+                            const api = webviewApi.current;
+                            if (!api) return { error: '内置浏览器未就绪' };
+                            if (!api.readPage) return { error: '当前浏览器通道不支持只读读取（请切换到内置浏览器）' };
+                            const tabId = api.getActiveTabId?.() || '';
+                            return await api.readPage(tabId);
+                          }}
+                          onSave={(profile) => updatePending(p.id, { job: { ...(p.job || {}), companyProfile: profile } })}
+                        />
                       </div>
                     )}
                     {p.error && <div className="job-error">⚠ {p.error}</div>}

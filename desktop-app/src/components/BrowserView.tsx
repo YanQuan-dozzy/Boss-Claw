@@ -144,6 +144,12 @@ export interface WebviewApi {
    * 避免事件序列异常时一直误判「加载中」。返回 {error} 表示探测失败（preload 未就绪等）。
    */
   pageStatus: (tabId?: string) => Promise<any>;
+  /**
+   * 只读读取当前页面正文（preload 的 page-read：URL / 标题 / bodyText 前 12k / 列表卡摘要）。
+   * 企业工商信息（P1-5 A 层）用它取公司主页正文，解析放在渲染层（companyProfile.ts）——
+   * 这样解析逻辑能离线回归，而 preload 里的代码没法单测。不滚动、不点击、不改页面。
+   */
+  readPage: (tabId?: string) => Promise<any>;
 }
 
 interface Props {
@@ -1034,6 +1040,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       bossApi,
       platformApply,
       pageStatus,
+      readPage,
       getActiveTabId: () => activeIdRef.current || '',
       getFirstTabId: () => tabsRef.current[0]?.id || '',
       // 多平台采集入口复用标签：优先 main 标签（detail 标签会被空闲回收），其次任意同平台标签
@@ -1043,7 +1050,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         return (main || list.find((t) => resolvePlatform(t.url) === platform))?.id || '';
       },
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus, readPage]);
   const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
   const runDomDump = useCallback((tabId?: string) => {
     sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });

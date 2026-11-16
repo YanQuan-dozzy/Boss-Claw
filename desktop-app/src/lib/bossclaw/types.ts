@@ -6,6 +6,8 @@
 import type { FitLevel } from './fitLevel';
 // 活跃时段 / 批次休息配置（实现与默认值在 activityWindow.ts —— 纯函数模块，无运行时循环依赖）
 import type { ActiveHoursConfig, BatchRestConfig } from './activityWindow';
+// 企业工商字段（P1-5 A 层：解析与风险提示在 companyProfile.ts，同样是纯函数模块，type-only 引用）
+import type { CompanyBizProfile } from './companyProfile';
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -428,6 +430,12 @@ export interface JobMeta {
   encryptUserId?: string;
   /** 招聘方职位（BOSS 官方接口 bossTitle） */
   recruiterTitle?: string;
+  /**
+   * 企业工商信息（P1-5 A 层，来自招聘平台公司主页自身字段，见 companyProfile.ts）。
+   * 只做展示与确定性提示：**不参与投递判定**（不改 status、不影响排序、不自动跳过）。
+   * 缺失 = 从未采集过；非空但字段缺项时用 `missing` 明确「没采到」，不要当成「企业没有」。
+   */
+  companyProfile?: CompanyBizProfile;
   [key: string]: unknown;
 }
 

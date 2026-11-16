@@ -34,6 +34,7 @@
     "test:context-budget": "node scripts/context-budget-regression.mjs",
     "test:update": "node scripts/update-check-regression.mjs",
     "test:settings-provider": "node scripts/settings-provider-regression.mjs",
+    "test:company-biz": "node scripts/company-biz-regression.mjs",
     "test:mock-interview": "node scripts/mock-interview-score-regression.mjs",
     "test:tailor-job": "node scripts/tailor-job-regression.mjs",
     "test:tailor-batch": "node scripts/tailor-batch-regression.mjs",
