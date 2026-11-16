@@ -271,6 +271,9 @@ export default function AutoChat() {
   // 依赖 queueItems.length：通知点击时队列可能还没渲染完（刚切到本页），列表就位后要再试一次。
   useEffect(() => {
     if (!conversationFocus) return;
+    // 通知一定来自「已沟通」会话：先展开已沟通，否则高亮目标被默认收起，点击后看起来没反应。
+    // showSent 变化会改变 queueItems.length，下面的依赖会再跑一次并完成滚动。
+    setShowSent(true);
     const el = queueScrollRef.current?.querySelector<HTMLElement>('.job-card.is-focus');
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     // 高亮只是「我刚提醒的是这条」，不需要常驻；用户没动过也该自己消失，避免被当成运行态高亮

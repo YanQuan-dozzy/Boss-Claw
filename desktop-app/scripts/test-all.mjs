@@ -36,6 +36,8 @@ const SUITES = [
   'select-popup-align-regression.mjs',
   // issue #15：模型服务商预设与「切换服务商」必须逐字段一致（否则表现为「选不了其他模型」）
   'settings-provider-regression.mjs',
+  // P1-4：HR 回复提醒 —— 会话聚合 / 两层开关 / 拒绝文案 / 点击回传接线
+  'notify-reply-regression.mjs',
   // P1-5 A 层：企业工商字段解析（多排版 / 金额与日期归一 / 噪声黑名单 / 只提示不评级）
   'company-biz-regression.mjs',
   // P1-5 B/C 层：负面信号（中性词共现规则）+ AI 评级（无来源依据必须丢弃）
