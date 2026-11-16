@@ -38,6 +38,8 @@ const SUITES = [
   'settings-provider-regression.mjs',
   // P1-5 A 层：企业工商字段解析（多排版 / 金额与日期归一 / 噪声黑名单 / 只提示不评级）
   'company-biz-regression.mjs',
+  // P1-5 B/C 层：负面信号（中性词共现规则）+ AI 评级（无来源依据必须丢弃）
+  'company-due-diligence-regression.mjs',
   'context-budget-regression.mjs',
   // issue #10：写失败必须可见（配额耗尽时数据静默不落盘 → 重启后进度回退）
   'persist-health-regression.mjs',

@@ -16,6 +16,8 @@ export interface PageReadResult {
   url?: string;
   title?: string;
   bodyText?: string;
+  /** 页面正文链接（preload page-read 新增）：企业背调 B 层靠它把信号挂到具体来源 */
+  links?: Array<{ text?: string; href?: string }>;
   error?: string;
 }
 

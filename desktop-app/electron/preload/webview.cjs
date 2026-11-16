@@ -2861,7 +2861,9 @@ function pageStatusData() {
 }
 
 // ===== 只读页面抽取（page-read）：供外部 agent 探索当前页面 =====
-// 返回 URL/标题/正文文本（截断）+ 列表卡摘要（仅当前页面，不滚动、不点击）。
+// 返回 URL/标题/正文文本（截断）+ 列表卡摘要 + 正文链接（仅当前页面，不滚动、不点击）。
+// links（2026-11-16 新增，企业背调 B 层用）：搜索结果页的「来源」要靠锚文本与 href 对上，
+// 正文文本里没有 href。只取可见锚点、限长、去重，且**不请求**任何地址 —— 纯 DOM 读。
 function pageReadData() {
   let cards = [];
   let count = 0;
@@ -2884,6 +2886,24 @@ function pageReadData() {
     bodyText: (() => { try { return String(document.body?.innerText || document.body?.textContent || '').slice(0, 12000); } catch { return ''; } })(),
     listCards: cards,
     listCount: count,
+    links: (() => {
+      try {
+        const out = [];
+        const seen = new Set();
+        for (const a of document.querySelectorAll('a[href]')) {
+          const href = String(a.href || '');
+          if (!/^https?:\/\//i.test(href) || href.length > 400) continue;
+          const text = String(a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+          // 短文本（「更多」「首页」）与重复链接对「结果来源」没有价值，直接丢掉
+          if (text.length < 6) continue;
+          if (seen.has(href)) continue;
+          seen.add(href);
+          out.push({ text, href });
+          if (out.length >= 80) break;
+        }
+        return out;
+      } catch { return []; }
+    })(),
   };
 }
 

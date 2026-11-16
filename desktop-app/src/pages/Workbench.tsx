@@ -24,6 +24,7 @@ import BrowserView, { WebviewApi } from '@/components/BrowserView';
 import GreetingEditor from '@/components/GreetingEditor';
 import PlatformChip from '@/components/PlatformChip';
 import CompanyBizPanel from '@/components/CompanyBizPanel';
+import CompanyDueDiligencePanel from '@/components/CompanyDueDiligencePanel';
 import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
@@ -3233,6 +3234,21 @@ export default function Workbench() {
                             return await api.readPage(tabId);
                           }}
                           onSave={(profile) => updatePending(p.id, { job: { ...(p.job || {}), companyProfile: profile } })}
+                        />
+                        {/* 企业背调 B/C 层：负面信号 + AI 评级。同样只提示，不改岗位状态与投递顺序 */}
+                        <CompanyDueDiligencePanel
+                          company={String(p.job?.company || '')}
+                          biz={p.job?.companyProfile}
+                          state={p.job?.dueDiligence}
+                          openUrl={(url, title) => webviewApi.current?.openInNewTab(url, title)}
+                          readPage={async () => {
+                            const api = webviewApi.current;
+                            if (!api) return { error: '内置浏览器未就绪' };
+                            if (!api.readPage) return { error: '当前浏览器通道不支持只读读取（请切换到内置浏览器）' };
+                            const tabId = api.getActiveTabId?.() || '';
+                            return await api.readPage(tabId);
+                          }}
+                          onSave={(dueDiligence) => updatePending(p.id, { job: { ...(p.job || {}), dueDiligence } })}
                         />
                       </div>
                     )}

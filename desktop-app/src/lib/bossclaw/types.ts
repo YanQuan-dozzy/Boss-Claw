@@ -8,6 +8,8 @@ import type { FitLevel } from './fitLevel';
 import type { ActiveHoursConfig, BatchRestConfig } from './activityWindow';
 // 企业工商字段（P1-5 A 层：解析与风险提示在 companyProfile.ts，同样是纯函数模块，type-only 引用）
 import type { CompanyBizProfile } from './companyProfile';
+// 企业背调 B/C 层（负面信号 + AI 评级）的类型与纯函数在 companyDueDiligence.ts，type-only 引用
+import type { DueDiligenceState } from './companyDueDiligence';
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -436,6 +438,12 @@ export interface JobMeta {
    * 缺失 = 从未采集过；非空但字段缺项时用 `missing` 明确「没采到」，不要当成「企业没有」。
    */
   companyProfile?: CompanyBizProfile;
+  /**
+   * 企业背调 B/C 层（负面信号 + AI 评级，见 companyDueDiligence.ts）。
+   * 与 A 层同样**只做提示**：不参与投递判定、不改 status、不影响排序与队列。
+   * 每条信号与每条 AI 依据都必须挂到具体来源（编号），挂不上的依据在解析阶段就被丢弃。
+   */
+  dueDiligence?: DueDiligenceState;
   [key: string]: unknown;
 }
 
