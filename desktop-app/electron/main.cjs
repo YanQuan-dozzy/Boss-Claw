@@ -136,21 +136,45 @@ function safeOn(channel, handler) {
 // 读取，指令正文经 jc:skills-read 读取后注入 system prompt。仅允许白名单目录，防路径穿越。
 // 内置技能（只读）位于 appPath/skills；自定义技能（用户导入/新建，可写）位于 userData/skills。
 const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
-
-/**
- * ASAR：app.asar 内的路径不能直接交给 Python / 子进程。
- * 打包后把 `app.asar` 段替换为 `app.asar.unpacked`（与 electron-builder 的 asarUnpack 对应），
- * 开发态保持原路径不变。
- */
-function unpackedResourcePath(p) {
-  if (!app.isPackaged) return p;
-  const asar = `${path.sep}app.asar${path.sep}`;
-  const unpacked = `${path.sep}app.asar.unpacked${path.sep}`;
-  return p.includes(asar) ? p.replace(asar, unpacked) : p;
-}
 const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
 const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'];
+
+// 出厂内置技能（随安装包分发、只读，不提供删除；用户可用开关停用）。
+// 其余技能（设置页导入 / 新建 → userData/skills，或用户自行放进 skills/ 目录）都视为
+// 「自行导入」，可删除。新增内置技能时需同步维护此清单。
+const SHIPPED_SKILL_IDS = new Set([
+  'resume-profile',
+  'job-analysis',
+  'greetings',
+  'tailor-cv',
+  'jd-reading',
+  'great-resume',
+  'job-match',
+  'mock-interview-question',
+  'mock-interview-report',
+]);
+
+// 只读目录（安装包 asar / Program Files）里删不掉时，把 id 记入屏蔽名单：
+// 列表不再展示、指令不再注入，效果等同删除（用户仍可重新导入以解除屏蔽）。
+const REMOVED_SKILLS_FILE = () => path.join(app.getPath('userData'), 'skills-removed.json');
+
+async function readRemovedSkillIds() {
+  try {
+    const raw = await fs.promises.readFile(REMOVED_SKILLS_FILE(), 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && SKILL_ID_RE.test(x)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeRemovedSkillIds(ids) {
+  const file = REMOVED_SKILLS_FILE();
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const unique = [...new Set(ids.filter((x) => typeof x === 'string' && SKILL_ID_RE.test(x)))];
+  await fs.promises.writeFile(file, JSON.stringify(unique, null, 2), 'utf8');
+}
 
 /** 解析 SKILL.md frontmatter（顶部成对分隔线之间的 key: value）+ 正文（frontmatter 之后的内容） */
 // 分隔线兼容 --- 与 *** / === / ___ 等常见 YAML/文档分隔符（历史文件曾用 ***/---------------------，
@@ -200,11 +224,23 @@ async function readSkillDir(dir, custom) {
 }
 
 safeHandle('jc:skills-list', async () => {
-  const [builtin, custom] = await Promise.all([
+  const [builtin, custom, blocked] = await Promise.all([
     readSkillDir(SKILLS_DIR, false),
     readSkillDir(CUSTOM_SKILLS_DIR(), true),
+    readRemovedSkillIds(),
   ]);
-  return [...builtin, ...custom];
+  // 同 id 时自定义目录优先（用户导入的覆盖内置读取）
+  const customById = new Map(custom.map((c) => [c.id, c]));
+  const builtinIds = new Set(builtin.map((b) => b.id));
+  const merged = [
+    ...builtin.map((b) => customById.get(b.id) || b),
+    ...custom.filter((c) => !builtinIds.has(c.id)),
+  ];
+  // 屏蔽名单里的技能不再展示（只读目录删除后的降级效果）
+  const blockedSet = new Set(blocked);
+  return merged
+    .filter((s) => !blockedSet.has(s.id))
+    .map((s) => ({ ...s, removable: s.custom || !SHIPPED_SKILL_IDS.has(s.id) }));
 });
 
 /** 读取技能正文：优先自定义目录（用户导入的会覆盖同 id 读取路径），再回退内置目录 */
@@ -314,11 +350,20 @@ safeHandle('jc:skills-import', async (_event, payload) => {
     return { ok: false, error: `作用域非法：${scope}（可选：${SKILL_SCOPES.join(' / ')}）。` };
   }
 
-  const id = await uniqueSkillId(name);
+  // 若同名技能曾被「删除并屏蔽」，重新导入时沿用原 ID 并解除屏蔽（而不是生成 -2 新技能）
+  const baseId = slugifyId(name);
+  const blockedIds = await readRemovedSkillIds();
+  const reuseBlockedId = Boolean(baseId && blockedIds.includes(baseId));
+  const id = reuseBlockedId ? baseId : await uniqueSkillId(name);
   try {
     await writeCustomSkill({ id, name, description, scope, instructions: body });
   } catch (err) {
     return { ok: false, error: '写入失败：' + (err?.message || String(err)) };
+  }
+  if (reuseBlockedId) {
+    try {
+      await writeRemovedSkillIds(blockedIds.filter((x) => x !== baseId));
+    } catch { /* 解除屏蔽失败不影响导入结果 */ }
   }
   dlog('info', `custom skill imported: ${id} (scope=${scope})`);
   return { ok: true, skill: { id, name, description, scope, defaultEnabled: true, custom: true } };
@@ -327,18 +372,60 @@ safeHandle('jc:skills-import', async (_event, payload) => {
 safeHandle('jc:skills-delete', async (_event, id) => {
   const skillId = String(id || '');
   if (!SKILL_ID_RE.test(skillId)) return { ok: false, error: '非法技能 ID。' };
-  // 内置目录存在同名 → 拒绝（只允许删除自定义技能）
-  try {
-    await fs.promises.access(path.join(SKILLS_DIR, skillId, 'SKILL.md'));
-    return { ok: false, error: '内置技能不可删除。' };
-  } catch { /* 内置不存在，继续 */ }
-  try {
-    await fs.promises.rm(path.join(CUSTOM_SKILLS_DIR(), skillId), { recursive: true, force: true });
-  } catch (err) {
-    return { ok: false, error: '删除失败：' + (err?.message || String(err)) };
+  // 出厂内置技能只读：提示用户改用开关停用，避免误删导致核心能力缺失
+  if (SHIPPED_SKILL_IDS.has(skillId)) {
+    return {
+      ok: false,
+      error: '出厂内置技能不可删除，可在列表中关闭开关停用。',
+    };
   }
-  dlog('info', `custom skill deleted: ${skillId}`);
-  return { ok: true };
+
+  let removed = false;
+  const failures = [];
+  for (const dir of [CUSTOM_SKILLS_DIR(), SKILLS_DIR]) {
+    const target = path.join(dir, skillId);
+    try {
+      await fs.promises.access(path.join(target, 'SKILL.md'));
+    } catch {
+      continue; // 该目录下没有这个技能
+    }
+    try {
+      await fs.promises.rm(target, { recursive: true, force: true });
+      removed = true;
+    } catch (err) {
+      failures.push(err?.message || String(err));
+    }
+  }
+
+  // 复核是否真的删掉了：安装包 asar / Program Files 下目录只读时删除会失败
+  let stillThere = false;
+  for (const dir of [CUSTOM_SKILLS_DIR(), SKILLS_DIR]) {
+    try {
+      await fs.promises.access(path.join(dir, skillId, 'SKILL.md'));
+      stillThere = true;
+    } catch { /* 已不存在 */ }
+  }
+
+  let blocked = false;
+  try {
+    const ids = await readRemovedSkillIds();
+    if (stillThere) {
+      // 降级为屏蔽：列表不再展示、指令不再注入（重新导入会解除屏蔽）
+      if (!ids.includes(skillId)) await writeRemovedSkillIds([...ids, skillId]);
+      blocked = true;
+    } else if (ids.includes(skillId)) {
+      await writeRemovedSkillIds(ids.filter((x) => x !== skillId));
+    }
+  } catch (err) {
+    return { ok: false, error: '删除失败：' + (failures[0] || err?.message || String(err)) };
+  }
+
+  if (!removed && !blocked) {
+    // 磁盘上本来就不存在：按幂等成功处理（用户看到的就是「列表里没了」）
+    return { ok: true, removed: false, blocked: false };
+  }
+  dlog('info', `skill deleted: ${skillId}${blocked ? ' (blocked: read-only dir)' : ''}`);
+  return { ok: true, removed, blocked };
 });
 
 // CloakBrowser 隐身浏览器（可选增强，默认关闭；用户在设置页切换）
@@ -351,6 +438,19 @@ const DEV_URL = 'http://localhost:5173';
 const APP_ID = 'com.bossclaw.desktop';
 
 app.setName('BossClaw');
+
+/**
+ * ASAR：app.asar 内的路径不能直接交给 Python / 子进程。
+ * 打包后把 `app.asar` 段替换为 `app.asar.unpacked`（与 electron-builder 的 asarUnpack 对应），
+ * 开发态保持原路径不变。
+ */
+function unpackedResourcePath(p) {
+  if (!app.isPackaged) return p;
+  const asar = `${path.sep}app.asar${path.sep}`;
+  const unpacked = `${path.sep}app.asar.unpacked${path.sep}`;
+  return p.includes(asar) ? p.replace(asar, unpacked) : p;
+}
+
 // 主窗口图标（nativeImage 加载 .ico，可同时作为大/小图标源：
 // Windows 任务栏缩略图/右键预览小窗取的是窗口 ICON_SMALL，仅设 exe 资源不足，需在此显式设置）。
 const APP_ICON_ICO = unpackedResourcePath(path.join(__dirname, '..', 'resources', 'icon.ico'));
@@ -1869,8 +1969,20 @@ safeHandle('jc:save-qualified-jobs', async (_event, defaultName, jsonText, dirOp
   }
   if (!json) return { ok: false, error: '无有效达标岗位数据' };
   let filePath;
+  // 审查 2026-10-21 B-3：dirOpt 只认「设置页登记过的导出目录」。
+  // 旧实现直接 path.join(dirOpt, name) 静默落盘——渲染层传哪个目录就写哪个目录，且不弹框，
+  // 等于开放了「在任意位置覆盖同名 .json」的写入口。现在与功能本意对齐：
+  //   · 与已持久化目录一致 → 静默写（用户当初就是在设置页显式选了这个目录）；
+  //   · 未设置 / 不一致 → 退回系统保存对话框，写入前由用户确认。
   const dir = String(dirOpt || '').trim();
-  if (dir && path.isAbsolute(dir)) {
+  const configuredDir = (() => { try { return qualJobsDirCtl().readPointer(); } catch { return ''; } })();
+  const sameDir = (a, b) => {
+    if (!a || !b) return false;
+    const na = path.resolve(a);
+    const nb = path.resolve(b);
+    return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+  };
+  if (dir && path.isAbsolute(dir) && sameDir(dir, configuredDir)) {
     filePath = path.join(dir, name);
   } else {
     const res = await dialog.showSaveDialog(mainWindow, {
@@ -2221,6 +2333,28 @@ safeHandle('jc:mock-interview-export', async (event) => {
 safeHandle('jc:mock-interview-usage', async () => {
   try {
     return mockInterviewRepo.usage();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// 单场报告导出 Markdown：渲染层生成内容（纯函数，可在回归脚本里断言），主进程只负责落盘。
+// 与 exportAll 的区别：那个是「备份全部会话」的 JSON，这个是「这一场的复盘」的可读文档。
+safeHandle('jc:mock-interview-export-md', async (event, payload) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const markdown = String((payload && payload.markdown) || '');
+    if (!markdown.trim()) return { ok: false, error: '报告内容为空' };
+    const rawName = String((payload && payload.fileName) || '模拟面试报告.md').replace(/[\\/:*?"<>|\r\n\t]/g, '').trim();
+    const fileName = (rawName || '模拟面试报告').endsWith('.md') ? (rawName || '模拟面试报告.md') : `${rawName || '模拟面试报告'}.md`;
+    const r = await dialog.showSaveDialog(win, {
+      title: '导出报告（Markdown）',
+      defaultPath: path.join(app.getPath('documents'), fileName),
+      filters: [{ name: 'Markdown 文件', extensions: ['md'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(r.filePath, markdown, 'utf8');
+    return { ok: true, filePath: r.filePath };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
