@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>BossClaw first-contact startchat dialog fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 16px; }
+  .startchat-content { border: 1px solid #888; width: 520px; padding: 12px; }
+  .startchat-title { min-height: 24px; }
+  .chat-editor { padding: 8px; }
+  .chat-input { min-height: 60px; border: 1px solid #aaa; padding: 8px; }
+  .send-message { display: inline-block; padding: 8px; margin: 8px; }
+  .message-item { list-style: none; min-height: 24px; }
+  [hidden] { display: none !important; }
+</style>
+<div class="startchat-content" id="current-panel">
+  <div class="startchat-title">与 测试 HR 甲 沟通</div>
+  <div class="chat-editor">
+    <div id="chat-input" class="chat-input" contenteditable="true" role="textbox" aria-label="消息输入框"></div>
+    <div class="send-message" id="image-send" role="button" aria-label="发送图片"><span>图片</span></div>
+    <button class="send-message" id="text-send" type="button">发送</button>
+  </div>
+</div>
+</html>

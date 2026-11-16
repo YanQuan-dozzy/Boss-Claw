@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>BossClaw blank chat page fixture</title>
+<style>
+  body { font: 16px sans-serif; margin: 12px; }
+  .chat-user { width: 260px; padding: 8px; border-right: 1px solid #ddd; float: left; }
+  .boss-search-input { width: 100%; box-sizing: border-box; padding: 6px; }
+  .chat-conversation { width: 680px; min-height: 320px; border: 1px solid #888; float: left; }
+  .chat-no-data { padding: 60px 20px; text-align: center; color: #666; }
+  .empty-icon { width: 80px; height: 80px; margin: 0 auto 12px; background: #eee; }
+  [hidden] { display: none !important; }
+</style>
+<div class="chat-user">
+  <input class="boss-search-input" id="search" type="text" placeholder="搜索30天内的联系人" />
+</div>
+<div class="chat-conversation" id="current-panel">
+  <div class="chat-no-data">
+    <div class="content">
+      <div class="empty-icon"></div>
+      <div class="no-data-text">与您进行过沟通的 Boss 都会在左侧列表中显示</div>
+    </div>
+  </div>
+</div>
+</html>

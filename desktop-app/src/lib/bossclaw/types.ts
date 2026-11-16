@@ -469,6 +469,8 @@ export interface PendingItem {
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */
   riskBlocked?: boolean;
+  /** 发送后未能确认「本次新增己方气泡」：证据不足，保留页面/标签交人工核对（不自动重发） */
+  needsReview?: boolean;
 }
 
 /** 达标岗位导出记录：从工作台队列收集评分≥最低分的岗位，按「日期 → 该日已导出的达标岗位」持久化。
