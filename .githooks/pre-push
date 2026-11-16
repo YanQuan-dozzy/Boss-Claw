@@ -1,0 +1,42 @@
+#!/bin/sh
+# pre-push 护栏：阻止把「仅应存在于私有仓库」的内容推到公开仓库。
+#
+# 背景：BossClaw 有两个远端 —— origin（公开）/ private（内部）。
+#   1) desktop-app/.local/ 是隐藏内容的源数据，随**私有仓库**分发（新机器 clone 即可构建完整版）；
+#   2) docs/ 是内部文档（代码审查报告、发布口径、隐藏彩蛋、修复记录），2026-10-27 起同样只随私有仓库分发；
+#   3) README.private.md 是私有仓库专属的维护说明，公开版只有 README.md。
+# 三者都绝不能进公开仓库。这个 hook 在推送前拦一道，避免手滑。
+#
+# 注意：README.md / .gitignore 是**共用**文件，本身允许推公开仓库，但内容必须是公开口径 ——
+# 那一条由 desktop-app/scripts/repo-hygiene.mjs 断言（内容检查，不是路径检查）。
+#
+# 放行规则：目标 URL 含 Boss-Claw-private 才允许带上述路径。
+# 确有需要时可用 `git push --no-verify` 绕过。
+#
+# 生效方式（clone 后需执行一次）：
+#   git config core.hooksPath .githooks
+
+remote="$1"
+url="$2"
+
+# 私有仓库直接放行
+case "$url" in
+  *Boss-Claw-private*) exit 0 ;;
+esac
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # 删除分支时 local_sha 全 0，无需检查
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  hits=$(git ls-tree -r --name-only "$local_sha" 2>/dev/null | grep -E '^(desktop-app/\.local/|docs/|README\.private\.md$)' || true)
+  if [ -n "$hits" ]; then
+    echo "✗ 已阻止推送到 $remote ($url)：待推提交含内部内容" >&2
+    echo "$hits" | sed 's/^/    /' >&2
+    echo "" >&2
+    echo "  这些文件只应存在于私有仓库 private。" >&2
+    echo "  确认要公开时，用：git push --no-verify" >&2
+    status=1
+  fi
+done
+
+exit $status

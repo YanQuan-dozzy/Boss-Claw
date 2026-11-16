@@ -472,6 +472,17 @@ export const electronApi = {
       }
     },
 
+    /** 单场报告导出 Markdown（内容由渲染层生成，主进程只落盘） */
+    exportMd: async (payload: { markdown: string; fileName: string }): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }> => {
+      try {
+        const fn = api().mockInterviewExportMd;
+        if (!fn) return { ok: false, error: '模拟面试导出仅桌面端可用' };
+        return (await fn(payload)) as { ok: boolean; canceled?: boolean; filePath?: string; error?: string };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+
     // ===== 题库（P3：内置库随包只读，用户库写 userData）=====
     bankList: async (): Promise<{ ok: boolean; banks: BankMeta[]; error?: string }> => {
       try {

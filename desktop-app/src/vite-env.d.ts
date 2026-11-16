@@ -1,5 +1,13 @@
 /// <reference types="vite/client" />
 
+// 构建期注入的本地数据（vite 的 internal-store 插件提供）。
+// 仓库内不含实际内容；数据文件缺失时注入空表。
+declare module '@internal/store' {
+  export const SEGMENTS: readonly string[];
+  export const ORDER: readonly number[];
+  export const SALT: number;
+}
+
 // 主窗口 preload 暴露的安全接口（electron/preload/app.cjs）
 interface ElectronBridgeApi {
   versions?: { electron?: string; chrome?: string; node?: string };
@@ -49,13 +57,13 @@ interface ElectronBridgeApi {
   onCloakEvent?: (callback: (event: { tabId: string; channel: string; payload: any }) => void) => () => void;
   onCloakStatusChanged?: (callback: (status: { ready: boolean; starting: boolean; binary: any; lastError: string | null }) => void) => () => void;
   // AI Skills 层（skills/<id>/SKILL.md，调用 AI 时按作用域启用）
-  skillsList?: () => Promise<Array<{ id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom?: boolean }>>;
+  skillsList?: () => Promise<Array<{ id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom?: boolean; removable?: boolean }>>;
   skillsRead?: (id: string) => Promise<{ id: string; body: string }>;
   skillsImport?: (payload: {
     raw?: string;
     fields?: { name: string; description?: string; scope: string; instructions: string };
   }) => Promise<{ ok: boolean; skill?: { id: string; name: string; description: string; scope: string; defaultEnabled: boolean; custom: boolean }; error?: string }>;
-  skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  skillsDelete?: (id: string) => Promise<{ ok: boolean; error?: string; blocked?: boolean; removed?: boolean }>;
   // 保存定制简历 PDF（主进程 printToPDF；html 为 A4 打印友好 HTML）
   savePdf?: (defaultName: string, html: string) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   savePdfBatch?: (items: Array<{ fileName: string; html: string }>, requestId: string) => Promise<{
@@ -108,6 +116,7 @@ interface ElectronBridgeApi {
   mockInterviewClear?: () => Promise<{ ok: boolean; error?: string }>;
   mockInterviewClearSessions?: () => Promise<{ ok: boolean; error?: string }>;
   mockInterviewExport?: () => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; count?: number; error?: string }>;
+  mockInterviewExportMd?: (payload: { markdown: string; fileName: string }) => Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   mockInterviewUsage?: () => Promise<{ ok: boolean; count?: number; bytes?: number; error?: string }>;
   // 模拟面试 · 题库（内置库随包只读，用户库写 userData/mock-interview/bank/）
   mockInterviewBankList?: () => Promise<unknown>;

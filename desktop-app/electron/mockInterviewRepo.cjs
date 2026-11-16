@@ -170,7 +170,14 @@ function upsertIndex(entry) {
 }
 
 function removeFromIndex(id) {
-  if (!indexCache) return;
+  // 审查 2026-10-21 A-1：缓存未初始化时不能直接 return —— remove() 在这种情况下会删掉会话文件
+  // 却把条目留在 index.json 里，重启后列表出现「点进去提示会话不存在」的幽灵条目。
+  // 这里退化为「读盘一次」，没有索引文件（从未写过 / 刚被清空）则确实无需维护。
+  if (!indexCache) {
+    const parsed = readJsonFile(indexPath(), null);
+    if (!Array.isArray(parsed)) return;
+    indexCache = parsed;
+  }
   indexCache = indexCache.filter((e) => e.id !== id);
   scheduleIndexFlush();
 }
@@ -264,6 +271,39 @@ async function flushSlot(id, slot) {
 }
 
 // ===== 对外能力 =====
+const DISPOSED_RESULT = { ok: false, canceled: true, error: '写队列已取消' };
+
+/**
+ * 销毁单个写槽：清定时器 + 结算未完成的等待者。
+ *
+ * 为什么必须有（审查 2026-10-21 A-1）：
+ *   · 只清 Map **不会取消已排队的 setTimeout** —— 200ms 后定时器照常触发 flushSlot，
+ *     把「刚被删除 / 刚被清空」的那场会话重新写回磁盘并重建索引（数据复活）；
+ *   · 只清 Map 会让 slot.waiters 里的 resolve 再无人调用 —— 渲染层
+ *     `await saveMockSession()` 永不 settle（并发保存时表现为「点了没反应、后续写入卡住」）。
+ *
+ * 结算结果标 canceled：调用方据此知道「这次没写进去，但不是数据损坏」。
+ */
+function disposeSlot(id, result = DISPOSED_RESULT) {
+  const slot = writeSlots.get(id);
+  if (!slot) return;
+  if (slot.timer) {
+    clearTimeout(slot.timer);
+    slot.timer = null;
+  }
+  slot.latest = null;
+  const waiters = slot.waiters.splice(0);
+  writeSlots.delete(id);
+  waiters.forEach((w) => {
+    try { w(result); } catch { /* 单个等待者抛错不影响其它 */ }
+  });
+}
+
+/** 销毁所有写槽（clear / clearSessions 用）。 */
+function disposeSlots(result = DISPOSED_RESULT) {
+  for (const id of [...writeSlots.keys()]) disposeSlot(id, result);
+}
+
 function list() {
   const items = readIndex().map((e) => {
     const { _attemptCount, ...rest } = e;
@@ -308,6 +348,8 @@ async function write(session, opts) {
 }
 
 async function remove(id) {
+  // 先取消该会话排队中的写入：否则「删除」后 200ms 的落盘会把它写回来（A-1）
+  disposeSlot(assertId(id, 'sessionId'));
   const file = sessionFile(id);
   if (fs.existsSync(file)) fs.unlinkSync(file);
   removeFromIndex(id);
@@ -315,14 +357,25 @@ async function remove(id) {
 }
 
 async function clear() {
-  // 面试记录 + 语音模型/音色/缓存一并删除（P2 起 speech 目录才存在；这里统一清理）
-  for (const dir of [baseDir(), path.join(app.getPath('userData'), 'speech')]) {
+  // 先停写队列再删目录：否则排队中的 200ms 落盘会在删除后把会话写回来（A-1）
+  disposeSlots();
+  if (indexTimer) { clearTimeout(indexTimer); indexTimer = null; }
+  // 面试记录 + 语音模型/音色/缓存一并删除（P2 起 speech 目录才存在；这里统一清理）。
+  // 语音目录的唯一权威是 speechInstall.rootDir()：开发期它可能指向项目内 tmp/speech，或被
+  // BOSSCLAW_SPEECH_DIR 覆盖。那种目录是开发机手动准备的模型（本次实测 834MB，要重新下载），
+  // 「清空数据」不该连带删掉 —— 只有落在 userData 下时才纳入清理，打包版行为不变。
+  const speechDirs = new Set([path.join(app.getPath('userData'), 'speech')]);
+  try {
+    const resolved = require('./speechInstall.cjs').rootDir();
+    const userData = path.resolve(app.getPath('userData')) + path.sep;
+    if (resolved && path.resolve(resolved).startsWith(userData)) speechDirs.add(resolved);
+  } catch { /* 语音模块不在或解析失败：只清 userData 下的默认目录 */ }
+  for (const dir of [baseDir(), ...speechDirs]) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch { /* 目录不存在或占用中，忽略 */ }
   }
   indexCache = null;
-  writeSlots.clear();
   lastWrittenSeq.clear();
   return { ok: true };
 }
@@ -340,10 +393,12 @@ function usage() {
 
 /** 删除全部面试记录（保留题库与语音，P3 起题库有独立入口） */
 async function clearSessions() {
+  // 同 clear()：先停写队列，避免「清空后最后一场被写回」（A-1）
+  disposeSlots();
+  if (indexTimer) { clearTimeout(indexTimer); indexTimer = null; }
   try { fs.rmSync(sessionsDir(), { recursive: true, force: true }); } catch { /* ignore */ }
   try { fs.rmSync(indexPath(), { force: true }); } catch { /* ignore */ }
   indexCache = null;
-  writeSlots.clear();
   lastWrittenSeq.clear();
   return { ok: true };
 }

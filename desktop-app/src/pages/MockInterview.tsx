@@ -29,6 +29,8 @@ import {
   BulbOutlined,
   DeleteOutlined,
   ExportOutlined,
+  FileTextOutlined,
+  ImportOutlined,
   PlusOutlined,
   ReloadOutlined,
   RocketOutlined,
@@ -51,6 +53,8 @@ import {
   MOCK_CATEGORY_LABELS,
   MOCK_DIFFICULTY_LABELS,
   MOCK_EVIDENCE_LABELS,
+  MOCK_MIN_JD_CHARS,
+  MOCK_PROBE_INTENT_LABELS,
   MOCK_ROLE_LABELS,
   MOCK_STATUS_LABELS,
 } from '@/lib/bossclaw/mockInterviewTypes';
@@ -82,6 +86,10 @@ import { VoiceRecorder } from '@/lib/bossclaw/mockInterviewRecorder';
 import { transcribeRecording, warmupAsr } from '@/lib/bossclaw/mockInterviewAsr';
 import { paceLabel, type DeliveryMetrics } from '@/lib/bossclaw/mockInterviewDelivery';
 import MockBankPanel, { MockBankRail } from '@/components/MockBankPanel';
+import MockJobPicker, { type MockJobPick } from '@/components/MockJobPicker';
+import MockScoreRadar from '@/components/MockScoreRadar';
+import { formatDelta } from '@/lib/bossclaw/mockInterviewCompare';
+import { formatDuration, interviewTiming } from '@/lib/bossclaw/mockInterviewInsights';
 import { useBankStore } from '@/store/useBankStore';
 import { formatBytes } from '@/lib/bossclaw/mockInterviewRepo';
 
@@ -109,6 +117,12 @@ function bandColor(key: string | null | undefined): string {
   return 'default';
 }
 
+/** 场次对比的变化色：涨用绿、跌用红（这是「进步 / 退步」的语义色，不是行情涨跌色） */
+function deltaColor(delta: number | null | undefined): string {
+  if (delta == null || !Number.isFinite(delta) || delta === 0) return 'var(--fg-muted)';
+  return delta > 0 ? 'var(--status-success-strong)' : 'var(--status-danger-strong)';
+}
+
 export default function MockInterview({ isVisible = false }: { isVisible?: boolean }) {
   const session = useMockInterviewStore((s) => s.session);
   const list = useMockInterviewStore((s) => s.list);
@@ -118,6 +132,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   const error = useMockInterviewStore((s) => s.error);
   const notice = useMockInterviewStore((s) => s.notice);
   const rewrites = useMockInterviewStore((s) => s.rewrites);
+  const compare = useMockInterviewStore((s) => s.compare);
+  const compareLoading = useMockInterviewStore((s) => s.compareLoading);
+  const insights = useMockInterviewStore((s) => s.insights);
 
   const setTab = useMockInterviewStore((s) => s.setTab);
   const clearError = useMockInterviewStore((s) => s.clearError);
@@ -128,6 +145,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   const openSession = useMockInterviewStore((s) => s.openSession);
   const removeSession = useMockInterviewStore((s) => s.removeSession);
   const exportAll = useMockInterviewStore((s) => s.exportAll);
+  const exportReportMarkdown = useMockInterviewStore((s) => s.exportReportMarkdown);
+  const drillNext = useMockInterviewStore((s) => s.drillNext);
+  const clearDrill = useMockInterviewStore((s) => s.clearDrill);
   const clearAllSessions = useMockInterviewStore((s) => s.clearAllSessions);
 
   const updateJob = useMockInterviewStore((s) => s.updateJob);
@@ -162,6 +182,8 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   const [jobTitle, setJobTitle] = useState('');
   const [company, setCompany] = useState('');
   const [jdDraft, setJdDraft] = useState('');
+  /** 从投递岗位导入的弹窗（数据源 = 工作台采集队列） */
+  const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [answer, setAnswer] = useState('');
   const [reverseInput, setReverseInput] = useState('');
   const [elapsed, setElapsed] = useState(0);
@@ -421,6 +443,42 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
     newDraft({ jobTitle: '', company: '', jdText: '' });
   }, [newDraft]);
 
+  /**
+   * 从投递岗位导入：名称 / 公司 / JD 一次写进会话快照，随后本地输入框同步跟随。
+   * capturedAt 以导入时刻为准 —— 工作台的达标岗位缓存只留 7 天，报告要能说清这份 JD 是什么时候取的。
+   */
+  const onImportJob = useCallback((pick: MockJobPick) => {
+    setJobPickerOpen(false);
+    const s = useMockInterviewStore.getState().session;
+    if (!s) {
+      // 空态直接导入：先建草稿，字段一并带进去
+      newDraft({ jobId: pick.jobId, jobTitle: pick.jobTitle, company: pick.company, jdText: pick.jdText });
+    } else {
+      updateJob({
+        jobId: pick.jobId,
+        jobTitle: pick.jobTitle,
+        company: pick.company,
+        jdText: pick.jdText,
+        capturedAt: Date.now(),
+      });
+      if (s.questions.length > 0) {
+        message.info('现有题目仍是按上一份 JD 生成的，要按新 JD 出题请点「重新出题」');
+      }
+    }
+    // 先落到本地输入框，避免等主进程写盘回来才看到内容
+    setJobTitle(pick.jobTitle);
+    setCompany(pick.company);
+    setJdDraft(pick.jdText);
+    const name = pick.jobTitle || '该岗位';
+    if (pick.jdQuality === 'none') {
+      message.warning(`已导入「${name}」，但这个岗位只采到基本信息、没有 JD 正文，需要自己粘贴岗位描述才能出题`);
+    } else if (pick.chars < MOCK_MIN_JD_CHARS) {
+      message.warning(`已导入「${name}」，但只采到 ${pick.chars} 字 JD，补全到 ${MOCK_MIN_JD_CHARS} 字以上才能出题`);
+    } else {
+      message.success(`已导入「${name}」的 JD（${pick.chars} 字）`);
+    }
+  }, [newDraft, updateJob]);
+
   const onSubmit = async () => {
     if (recording) { message.warning('还在录音，先「停止并转写」再提交'); return; }
     if (!answer.trim()) { message.warning('先写点什么，或点「跳过这题」'); return; }
@@ -637,7 +695,41 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
           />
         )}
 
-        <Card size="small" title="岗位与 JD" className="mi-card">
+        {s.drill ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`这是一场追练 · 缺口来自 ${fmtDate(s.drill.fromFinishedAt)} 那一场`}
+            description={
+              <div className="mi-drill-desc">
+                {s.drill.gaps.length ? (
+                  <div>上一场没答到的点：{s.drill.gaps.join('；')}</div>
+                ) : null}
+                {s.drill.weakDimensions.length ? (
+                  <div>偏弱的维度：{s.drill.weakDimensions.join('、')}</div>
+                ) : null}
+                <div>阶段一至少有 2 道题会落在这些缺口上，但会换场景问，不会直接问缺口原文。评分口径与普通场一致，方便和上一场对比。</div>
+              </div>
+            }
+            action={
+              <Button size="small" onClick={clearDrill}>取消追练</Button>
+            }
+          />
+        ) : null}
+
+        <Card
+          size="small"
+          title="岗位与 JD"
+          className="mi-card"
+          extra={
+            <Tooltip title="从工作台已采集 / 已投递的岗位里选一个，自动带入岗位名称、公司与 JD 原文">
+              <Button size="small" icon={<ImportOutlined />} onClick={() => setJobPickerOpen(true)}>
+                从投递岗位导入
+              </Button>
+            </Tooltip>
+          }
+        >
           <div className="mi-form-row">
             <label>岗位名称</label>
             <Input
@@ -667,7 +759,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
             />
           </div>
           <div className="mi-form-hint">
-            {jdDraft.trim().length} 字{jdDraft.trim().length > 0 && jdDraft.trim().length < 30 ? '（少于 30 字，无法出针对性题目）' : ''}
+            {jdDraft.trim().length} 字{jdDraft.trim().length > 0 && jdDraft.trim().length < MOCK_MIN_JD_CHARS ? `（少于 ${MOCK_MIN_JD_CHARS} 字，无法出针对性题目）` : ''}
+            {jdDraft.trim().length === 0 ? ' · 可点右上角「从投递岗位导入」，直接带入工作台采集到的 JD 原文' : ''}
+            {s.job.jobId ? ` · 已绑定工作台岗位（JD 快照 ${fmtDate(s.job.capturedAt)}）` : ''}
           </div>
         </Card>
 
@@ -943,7 +1037,11 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
 
           {inProbe && s.pendingProbe ? (
             <div className="mi-probe">
-              <div className="mi-probe-title">面试官追问（{probes + 1}/2）</div>
+              <div className="mi-probe-title">
+                面试官追问
+                {s.pendingProbe.intent ? ` · ${MOCK_PROBE_INTENT_LABELS[s.pendingProbe.intent]}` : ''}
+                （{probes + 1}/2）
+              </div>
               <div>{s.pendingProbe.question}</div>
             </div>
           ) : null}
@@ -1113,6 +1211,8 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
   // ===== 报告 =====
   const renderReport = (s: MockSession) => {
     const report = s.report;
+    // 作答用时来自 attempt.durationMs（本地记录，不参与内容分）
+    const timing = interviewTiming(s);
     if (!report) {
       return (
         <div className="mi-scroll">
@@ -1129,8 +1229,16 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
               {[s.job.company, fmtDate(s.finishedAt || s.updatedAt), `评分口径 v${report.rubricVersion}`].filter(Boolean).join(' · ')}
             </Text>
           </div>
-          <Space>
-            <Button icon={<ExportOutlined />} onClick={() => void exportAll()}>导出记录</Button>
+          <Space wrap>
+            <Tooltip title="把这一场的复盘导出为 Markdown，可直接贴进笔记或打印">
+              <Button icon={<FileTextOutlined />} onClick={() => void exportReportMarkdown()}>导出报告</Button>
+            </Tooltip>
+            <Tooltip title="导出全部会话的 JSON 备份">
+              <Button icon={<ExportOutlined />} onClick={() => void exportAll()}>导出全部记录</Button>
+            </Tooltip>
+            <Tooltip title="用本场报告里的缺口再开一场：出题会围着这些缺口换场景问，不直接问缺口原文">
+              <Button icon={<RocketOutlined />} onClick={() => drillNext()}>按缺口追练</Button>
+            </Tooltip>
             <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>再练一场</Button>
           </Space>
         </div>
@@ -1159,32 +1267,113 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
         )}
 
         <Card size="small" title="维度分" className="mi-card">
-          {report.dimensions.map((d: MockDimensionResult) => (
-            <div className="mi-dim-row" key={d.key}>
-              <div className="mi-dim-label">
-                {d.label}
-                <span className="mi-dim-weight">{Math.round(d.weight * 100)}%</span>
-              </div>
-              <div className="mi-dim-bar">
-                <Progress
-                  percent={d.na ? 0 : (d.score as number)}
-                  showInfo={false}
-                  strokeColor={toneColor(d.score)}
-                  trailColor="var(--border)"
-                  size="small"
+          <div className="mi-dim-wrap">
+            {/* 评不出分时（AI 不可用）不画雷达图：五维全 N/A 的雷达图只会是一张空图 */}
+            {report.total != null ? (
+              <div className="mi-dim-radar">
+                <MockScoreRadar
+                  dims={report.dimensions.map((d) => ({ key: d.key, label: d.label, score: d.na ? null : d.score }))}
+                  prev={compare ? compare.prev.dimensions.map((d) => ({ key: d.key, label: d.label, score: d.score })) : null}
                 />
+                <div className="mi-radar-legend">
+                  <span className="mi-radar-legend-item mi-radar-legend-item--cur">本场</span>
+                  {compare ? <span className="mi-radar-legend-item mi-radar-legend-item--prev">上一场</span> : null}
+                </div>
               </div>
-              <div className="mi-dim-score" style={{ color: toneColor(d.score) }}>
-                {d.na ? '不适用' : d.score}
+            ) : null}
+            <div className="mi-dim-bars">
+              {report.dimensions.map((d: MockDimensionResult) => (
+                <div className="mi-dim-row" key={d.key}>
+                  <div className="mi-dim-label">
+                    {d.label}
+                    <span className="mi-dim-weight">{Math.round(d.weight * 100)}%</span>
+                  </div>
+                  <div className="mi-dim-bar">
+                    <Progress
+                      percent={d.na ? 0 : (d.score as number)}
+                      showInfo={false}
+                      strokeColor={toneColor(d.score)}
+                      trailColor="var(--border)"
+                      size="small"
+                    />
+                  </div>
+                  <div className="mi-dim-score" style={{ color: toneColor(d.score) }}>
+                    {d.na ? '不适用' : d.score}
+                  </div>
+                </div>
+              ))}
+              <div className="mi-caption" style={{ marginTop: 8 }}>
+                N/A（不适用 / 未作答）的维度不参与加权，剩余权重按比例归一化，不按 0 分处理。雷达图里 N/A 画在圆心，只是占位，不代表 0 分。
               </div>
             </div>
-          ))}
-          <div className="mi-caption" style={{ marginTop: 8 }}>
-            N/A（不适用 / 未作答）的维度不参与加权，剩余权重按比例归一化，不按 0 分处理。
           </div>
         </Card>
 
+        {/* ===== 与上一场对比：只比同岗位、已完成、有分的上一场 ===== */}
+        {compareLoading ? (
+          <Card size="small" title="与上一场对比" className="mi-card" loading />
+        ) : compare && report.total != null ? (
+          <Card size="small" title="与上一场对比" className="mi-card">
+            {!compare.comparable ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="这一场和上一场的条件不一样，差值只能参考"
+                description={`${compare.notes.join('；')}。要严格比较，请把面试官类型、难度和评分口径调成一致再练一场。`}
+              />
+            ) : null}
+            <div className="mi-cmp-head">
+              <div>
+                <div className="mi-cmp-prev-label">上一场 · {fmtDate(compare.prev.finishedAt)}</div>
+                <div className="mi-cmp-prev-score">
+                  {compare.prev.total == null ? '无分' : compare.prev.total}
+                  {compare.prev.band ? <span className="mi-cmp-prev-band">{compare.prev.band}</span> : null}
+                </div>
+              </div>
+              <div className="mi-cmp-delta" style={{ color: deltaColor(compare.totalDelta) }}>
+                {formatDelta(compare.totalDelta)}
+                <span className="mi-cmp-delta-unit">总分变化</span>
+              </div>
+            </div>
+            <div className="mi-cmp-dims">
+              {compare.dims.map((d) => (
+                <div className="mi-cmp-row" key={d.key}>
+                  <span className="mi-cmp-name">{d.label}</span>
+                  <span className="mi-cmp-vals">
+                    <em>{d.prev == null ? 'N/A' : d.prev}</em>
+                    <span className="mi-cmp-arrow">→</span>
+                    <b>{d.cur == null ? 'N/A' : d.cur}</b>
+                  </span>
+                  <span className="mi-cmp-d" style={{ color: deltaColor(d.delta) }}>{formatDelta(d.delta)}</span>
+                </div>
+              ))}
+            </div>
+            {compare.weakDimensions.length > 0 ? (
+              <div className="mi-caption" style={{ marginTop: 8 }}>
+                最该补的是{compare.weakDimensions.map((w) => w.label).join('、')}
+                —— 本场没有提升。想针对它们练，点上方「按缺口追练」。
+              </div>
+            ) : (
+              <div className="mi-caption" style={{ marginTop: 8 }}>
+                各维度都没有退步。想继续压难度，可以在配置里把难度调到「压力」再练一场。
+              </div>
+            )}
+          </Card>
+        ) : null}
+
         <Card size="small" title="表达（不计入内容分）" className="mi-card">
+          {timing.answered > 0 ? (
+            <div className="mi-timing-row">
+              <span>
+                作答用时 <b>{formatDuration(timing.totalMs)}</b>（{timing.answered} 题）
+              </span>
+              <span>
+                平均每题 <b>{formatDuration(timing.avgMs)}</b>
+              </span>
+              <span className="mi-caption">用时只描述节奏，不参与内容分，也不代表答得好不好。</span>
+            </div>
+          ) : null}
           {report.delivery ? (
             <>
               <div className="mi-delivery-grid">
@@ -1281,7 +1470,9 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
                   <div className="mi-past-probes">
                     {r.probes.map((p, pi) => (
                       <div key={`${r.questionId}-p-${pi}`} className="mi-past-probe">
-                        <div className="mi-past-probe-q">追问：{p.question}</div>
+                        <div className="mi-past-probe-q">
+                          追问{p.intent ? `（${MOCK_PROBE_INTENT_LABELS[p.intent]}）` : ''}：{p.question}
+                        </div>
                         <div className="mi-past-probe-a">补答：{p.answer}</div>
                       </div>
                     ))}
@@ -1423,6 +1614,68 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
             <div className="mi-caption">本场没有生成总结。</div>
           ) : null}
         </Card>
+
+        {/* ===== 长期弱项：同岗位近几场「至少两场都漏」的点（本地统计，不是 AI 结论） ===== */}
+        {insights && insights.sessionCount > 1 ? (
+          <Card size="small" title={`长期弱项（同岗位近 ${insights.sessionCount} 场）`} className="mi-card">
+            {insights.points.length ? (
+              <>
+                <ul className="mi-weak-list">
+                  {insights.points.slice(0, 5).map((p) => (
+                    <li key={p.key}>
+                      <span className="mi-weak-text">{p.text}</span>
+                      <span className="mi-weak-meta">{p.sessions} 场都漏</span>
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  size="small"
+                  icon={<RocketOutlined />}
+                  style={{ marginTop: 4 }}
+                  onClick={() =>
+                    drillNext({
+                      gaps: insights.points.slice(0, 3).map((p) => p.text),
+                      weakDimensions: insights.dims
+                        .filter((d) => {
+                          const cur = report.dimensions.find((x) => x.key === d.key);
+                          return d.avg != null && cur && !cur.na && cur.score != null && Number(cur.score) < d.avg;
+                        })
+                        .slice(0, 2)
+                        .map((d) => d.label),
+                    })
+                  }
+                >
+                  按长期弱项追练
+                </Button>
+              </>
+            ) : (
+              <div className="mi-caption">
+                近 {insights.sessionCount} 场里没有重复出现的漏答要点。要么是题都不一样，要么是这些点你已经答到了。
+              </div>
+            )}
+
+            <div className="mi-weak-dims">
+              {insights.dims.map((d) => {
+                const cur = report.dimensions.find((x) => x.key === d.key);
+                const curVal = cur && !cur.na && cur.score != null ? Number(cur.score) : null;
+                const below = curVal != null && d.avg != null && curVal < d.avg;
+                return (
+                  <div className="mi-weak-dim-row" key={d.key}>
+                    <span className="mi-weak-dim-name">{d.label}</span>
+                    <em>长期 {d.avg == null ? 'N/A' : d.avg}</em>
+                    <b style={{ color: below ? 'var(--status-danger-strong)' : 'var(--fg)' }}>
+                      本场 {curVal == null ? 'N/A' : curVal}
+                    </b>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mi-caption" style={{ marginTop: 8 }}>
+              只统计同岗位、且至少两场都出现的漏答要点（同一场里重复提到只算一次场次）；跳过的题不算漏答。
+              这是本地统计，不是 AI 判断。
+            </div>
+          </Card>
+        ) : null}
       </div>
     );
   };
@@ -1447,7 +1700,10 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
       return (
         <div className="mi-center">
           <Empty description="还没有面试记录">
-            <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>新建一场</Button>
+            <Space>
+              <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>新建一场</Button>
+              <Button icon={<ImportOutlined />} onClick={() => setJobPickerOpen(true)}>从投递岗位导入</Button>
+            </Space>
           </Empty>
         </div>
       );
@@ -1504,6 +1760,13 @@ export default function MockInterview({ isVisible = false }: { isVisible?: boole
     <div className="mock-interview-page">
       {renderRail()}
       <section className="mi-main">{renderMain()}</section>
+      {/* 从投递岗位导入：只在配置态用，挂在页面根节点避免随主区切换重建 */}
+      <MockJobPicker
+        open={jobPickerOpen}
+        onClose={() => setJobPickerOpen(false)}
+        onPick={onImportJob}
+        activeJobId={session?.job.jobId || null}
+      />
     </div>
   );
 }

@@ -28,6 +28,11 @@ export interface BossSkill {
   instructions: string;
   /** 是否用户自定义技能（true=存储在 userData/skills，可删除；false=内置只读） */
   custom?: boolean;
+  /**
+   * 是否允许删除：用户自行导入 / 新建的技能，以及用户自己放进 skills/ 目录的非出厂技能；
+   * 出厂内置技能为 false（只能停用）。未提供时按 custom 判断。
+   */
+  removable?: boolean;
 }
 
 // ===== 内置技能注册表（IPC 不可用 / 未加载完成时的兜底，与 SKILL.md 正文一致） =====
@@ -107,6 +112,7 @@ interface LoadedSkill {
   scope: SkillScope;
   defaultEnabled: boolean;
   custom: boolean;
+  removable: boolean;
   body: string;
 }
 
@@ -146,6 +152,7 @@ export async function ensureSkillsLoaded(): Promise<void> {
             scope: (['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
             defaultEnabled: s.defaultEnabled !== false,
             custom: Boolean(s.custom),
+            removable: s.removable === undefined ? Boolean(s.custom) : Boolean(s.removable),
             body,
           } as LoadedSkill;
         })
@@ -224,6 +231,7 @@ export function allSkillsWithState(): (BossSkill & { enabled: boolean })[] {
     defaultEnabled: s.defaultEnabled,
     instructions: 'body' in s ? s.body : s.instructions,
     custom: 'custom' in s ? s.custom : false,
+    removable: 'removable' in s ? Boolean(s.removable) : Boolean(('custom' in s ? s.custom : false)),
     enabled: state[s.id] ?? s.defaultEnabled,
   }));
 }
@@ -242,7 +250,14 @@ export interface CustomSkillFields {
   instructions: string;
 }
 
-type SkillOpResult = { ok: boolean; error?: string };
+type SkillOpResult = {
+  ok: boolean;
+  error?: string;
+  /** 删除时目录只读（安装包 asar / Program Files）→ 已改为屏蔽：列表不展示、指令不注入 */
+  blocked?: boolean;
+  /** 删除时是否真的移除了磁盘目录 */
+  removed?: boolean;
+};
 
 /** 导入 SKILL.md 全文（frontmatter + 正文），成功后在下次访问时重载技能列表 */
 export async function importSkillFromRaw(raw: string): Promise<SkillOpResult> {
@@ -266,12 +281,24 @@ export async function createCustomSkill(fields: CustomSkillFields): Promise<Skil
   }
 }
 
-/** 删除自定义技能（内置技能主进程会拒绝），成功后重载技能列表 */
+/** 停用并清除某技能的启用状态记录（技能被删除后调用，避免同 id 重新导入时沿用旧状态） */
+export function forgetSkillState(id: string): void {
+  const state = loadState();
+  if (!(id in state)) return;
+  delete state[id];
+  saveState(state);
+}
+
+/**
+ * 删除自行导入的技能（出厂内置技能主进程会拒绝），成功后重载技能列表。
+ * 磁盘目录只读时主进程降级为「屏蔽」，返回 blocked=true，列表同样不再展示。
+ */
 export async function deleteCustomSkill(id: string): Promise<SkillOpResult> {
   try {
     const r = (await window.electron?.skillsDelete?.(id)) || { ok: false, error: 'IPC 不可用' };
     if (r.ok) invalidateSkills();
-    return { ok: Boolean(r.ok), error: r.error };
+    // 类型已在 vite-env.d.ts 的 skillsDelete 上声明 blocked/removed，这里不再用 as any 兜底
+    return { ok: Boolean(r.ok), error: r.error, blocked: Boolean(r.blocked), removed: r.removed };
   } catch (e: any) {
     return { ok: false, error: e?.message || String(e) };
   }

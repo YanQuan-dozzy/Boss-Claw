@@ -111,6 +111,19 @@ export async function mockInterviewUsage(): Promise<{ ok: boolean; count: number
   return electronApi.mockInterview.usage();
 }
 
+/**
+ * 导出单场报告为 Markdown（用户在系统保存对话框里选路径）。
+ * 内容由渲染层纯函数生成，主进程只落盘——这样报告口径只有一份，可被回归脚本断言。
+ */
+export async function exportMarkdownReport(
+  markdown: string,
+  fileName: string,
+): Promise<{ ok: boolean; canceled?: boolean; filePath?: string; error?: string }> {
+  const fn = electronApi.mockInterview.exportMd;
+  if (typeof fn !== 'function') return { ok: false, error: '当前版本不支持 Markdown 导出，请重启应用后重试' };
+  return fn({ markdown, fileName });
+}
+
 /** 字节数 → 人类可读（栏②目录占用展示） */
 export function formatBytes(bytes: number): string {
   const n = Number(bytes) || 0;

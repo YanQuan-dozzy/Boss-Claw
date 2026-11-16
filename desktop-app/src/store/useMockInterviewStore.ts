@@ -16,6 +16,7 @@ import { classifyQuestion, type BankCandidate, type BankDirection } from '@/lib/
 import type { JobMeta } from '@/lib/bossclaw/types';
 import {
   MOCK_DIFFICULTY_LABELS,
+  MOCK_MIN_JD_CHARS,
   MOCK_ROLE_LABELS,
   type MockDeliveryMetrics,
   type MockIndexEntry,
@@ -44,12 +45,28 @@ import {
   clearMockSessions,
   createDraftSession,
   deleteMockSession,
+  exportMarkdownReport,
   exportMockSessions,
   listMockSessions,
   mockInterviewUsage,
   readMockSession,
   saveMockSession,
 } from '@/lib/bossclaw/mockInterviewRepo';
+import {
+  compareSideOf,
+  diffSessions,
+  isSameJob,
+  pickPreviousEntry,
+  type MockCompareResult,
+} from '@/lib/bossclaw/mockInterviewCompare';
+import {
+  aggregateWeakPoints,
+  averageDimensions,
+  type DimensionAverage,
+  type InsightReport,
+  type WeakPointStat,
+} from '@/lib/bossclaw/mockInterviewInsights';
+import { buildReportMarkdown, reportFileName } from '@/lib/bossclaw/mockInterviewReportMd';
 
 // ===== 题库召回（P3）：本地 BM25 → 候选池拼进同一次出题调用 =====
 
@@ -141,6 +158,22 @@ function hasApiKey(): boolean {
 
 export type MockInterviewTab = 'interview' | 'bank';
 
+/**
+ * 长期弱项聚合时，除本场外最多再取几场（本场恒计入，合计 = 该值 + 1）。
+ * 单源常量：UI 文案的「近 N 场」直接读 `insights.sessionCount`，不另写数字。
+ */
+export const MOCK_INSIGHT_PEER_LIMIT = 3;
+
+/** 报告页的跨场次洞察（同岗位近几场） */
+export interface MockInsights {
+  /** 实际统计到的场次数（含本场） */
+  sessionCount: number;
+  /** 至少两场都漏的要点，按出现场次降序 */
+  points: WeakPointStat[];
+  /** 跨场维度均分 */
+  dims: DimensionAverage[];
+}
+
 interface MockInterviewState {
   list: MockIndexEntry[];
   usage: { count: number; bytes: number };
@@ -152,18 +185,33 @@ interface MockInterviewState {
   notice: string;
   /** 最近一次改写结果（按题目 id），只存在内存，不写盘 */
   rewrites: Record<string, { text: string; gaps: string[]; blocked: boolean }>;
+  /** 同岗位上一场的对比（报告页用；没有可比场次时为 null） */
+  compare: MockCompareResult | null;
+  compareLoading: boolean;
+  /** 同岗位近几场的弱项聚合（报告页用） */
+  insights: MockInsights | null;
 
   refreshList: () => Promise<void>;
   refreshUsage: () => Promise<void>;
   setTab: (t: MockInterviewTab) => void;
   clearError: () => void;
   clearNotice: () => void;
+  /** 读同岗位上一场已完成会话，算总分 / 维度差值 */
+  loadCompare: () => Promise<void>;
+  /** 读同岗位近几场报告，聚合「总在漏的点」与维度均分 */
+  loadInsights: () => Promise<void>;
 
   newDraft: (job?: Partial<MockJobRef> & { jobMeta?: JobMeta }) => void;
   openSession: (id: string) => Promise<void>;
   removeSession: (id: string) => Promise<void>;
   clearAllSessions: () => Promise<void>;
   exportAll: () => Promise<void>;
+  /** 导出当前场报告为 Markdown（用户选路径） */
+  exportReportMarkdown: () => Promise<void>;
+  /** 按本场报告的缺口开一场追练（同岗位、同配置）；seed 可传跨场次弱项 */
+  drillNext: (seed?: { gaps?: string[]; weakDimensions?: string[] }) => void;
+  /** 取消追练标记（配置页误点后回到普通一场） */
+  clearDrill: () => void;
 
   updateJob: (patch: Partial<MockJobRef>) => void;
   updateConfig: (patch: Partial<MockInterviewConfig>) => void;
@@ -279,7 +327,7 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
         ...s,
         attempts,
         questions,
-        pendingProbe: { question: res.probe, askedAt: Date.now() },
+        pendingProbe: { question: res.probe, askedAt: Date.now(), intent: res.intent },
         status: 'running',
       });
       return;
@@ -304,11 +352,101 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
     error: '',
     notice: '',
     rewrites: {},
+    compare: null,
+    compareLoading: false,
+    insights: null,
 
     refreshList: async () => {
       const r = await listMockSessions();
       if (r.ok) set({ list: r.sessions });
       else set({ error: r.error || '读取面试记录失败' });
+    },
+
+    /**
+     * 加载「同岗位上一场」的对比。
+     * 失败一律静默置空：对比是增强信息，读不到旧场次不该让报告页报错。
+     *
+     * 会话守卫（审查 2026-10-21 B-1）：本方法是 fire-and-forget 调用（openSession / finishInterview /
+     * 重答后各触发一次），内部要 `await` 多个 IPC。若期间用户切到别的场次，迟到的结果会写进**新场次**的
+     * compare —— 报告页显示上一场次的差值，导出 Markdown 时更会把别场的对比结论写进本场报告。
+     * 因此每次 set 前都确认「当前会话仍是发起时那一个」，否则直接丢弃。
+     */
+    loadCompare: async () => {
+      const s = get().session;
+      const cur = compareSideOf(s);
+      if (!s || !cur) { set({ compare: null, compareLoading: false }); return; }
+      const sid = s.id;
+      const alive = () => get().session?.id === sid;
+      set({ compareLoading: true });
+      try {
+        const listed = await listMockSessions();
+        if (!alive()) return;
+        const list = listed.ok ? listed.sessions : get().list;
+        const prevEntry = pickPreviousEntry(list, s);
+        if (!prevEntry) { if (alive()) set({ compare: null }); return; }
+        const r = await readMockSession(prevEntry.id);
+        if (!alive()) return;
+        const prevSide = compareSideOf(r.ok ? r.session : null);
+        set({ compare: diffSessions(prevSide, cur) });
+      } catch {
+        if (alive()) set({ compare: null });
+      } finally {
+        if (alive()) set({ compareLoading: false });
+      }
+    },
+
+    /**
+     * 跨场次弱项聚合：同岗位最近 3 场 + 本场 = 恒定 4 场（与 UI 文案「近 N 场」口径一致）。
+     * 只读已有报告文件，不调 AI、不改任何会话——弱项是「算出来的观察」，不是新数据。
+     */
+    loadInsights: async () => {
+      const s = get().session;
+      if (!s?.report) { set({ insights: null }); return; }
+      const sid = s.id;
+      const alive = () => get().session?.id === sid;
+      try {
+        const listed = await listMockSessions();
+        if (!alive()) return;
+        const list = listed.ok ? listed.sessions : get().list;
+        // 审查 2026-10-21 B-7：先排除本场，再取最近 3 场，拼上本场正好 4 场。
+        // 旧实现先 slice(0,4) 再补本场 → 可能是 5 场，与文案「近 4 场」不符（分母悄悄变化）。
+        const peer = list
+          .filter((e) => e.id !== sid)
+          .filter((e) => e.status === 'finished')
+          .filter((e) => isSameJob(
+            { jobId: s.job.jobId, jobTitle: s.job.jobTitle, company: s.job.company },
+            { jobId: e.jobId, jobTitle: e.jobTitle, company: e.company },
+          ))
+          .sort((a, b) => Number(b.finishedAt || 0) - Number(a.finishedAt || 0))
+          .slice(0, MOCK_INSIGHT_PEER_LIMIT);
+
+        const reports: InsightReport[] = [];
+        for (const e of peer) {
+          const r = await readMockSession(e.id);
+          if (!alive()) return;
+          if (r.ok && r.session?.report) {
+            reports.push({
+              id: e.id,
+              finishedAt: Number(r.session.finishedAt || r.session.updatedAt || 0),
+              report: r.session.report,
+            });
+          }
+        }
+        // 本场恒计入：即使刚重答、finishedAt 没变旧，也不能被「最近 3 场」排除掉
+        reports.push({ id: sid, finishedAt: Number(s.finishedAt || s.updatedAt || 0), report: s.report });
+
+        // 「长期」均分不含本场，否则拿本场跟「含本场的均值」比，差异会被自己稀释
+        const prevOnly = reports.filter((x) => x.id !== sid);
+        set({
+          insights: {
+            sessionCount: reports.length,
+            points: aggregateWeakPoints(reports),
+            dims: averageDimensions(prevOnly.length ? prevOnly : reports),
+          },
+        });
+      } catch {
+        if (alive()) set({ insights: null });
+      }
     },
 
     refreshUsage: async () => {
@@ -328,7 +466,7 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
         company: job?.company ?? jm?.company ?? '',
         jdText: job?.jdText ?? jm?.description ?? '',
       });
-      set({ session: draft, tab: 'interview', error: '', notice: '', rewrites: {} });
+      set({ session: draft, tab: 'interview', error: '', notice: '', rewrites: {}, compare: null, insights: null });
     },
 
     openSession: async (id) => {
@@ -339,16 +477,69 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
           set({ error: r.error || '会话不存在或已损坏' });
           return;
         }
-        set({ session: r.session, tab: 'interview', error: '', notice: '', rewrites: {} });
+        set({ session: r.session, tab: 'interview', error: '', notice: '', rewrites: {}, compare: null, insights: null });
       } finally {
         set({ busy: '' });
       }
+      // 报告页需要同岗位上一场来算进步；读失败不影响主流程
+      if (get().session?.status === 'finished') {
+        void get().loadCompare();
+        void get().loadInsights();
+      }
+    },
+
+    /**
+     * 按本场缺口开一场追练：同岗位、同配置（面试官类型 / 难度 / 音色都沿用），
+     * 只额外带上 drill —— 阶段一出题会围着这些缺口换场景问，而不是把缺口原文当题干。
+     */
+    drillNext: (seed) => {
+      const s = get().session;
+      if (!s || !s.report) { set({ error: '这场还没有报告，无法按缺口追练' }); return; }
+      // seed 来自「长期弱项」（跨场次），优先于本场单场缺口——用户点了长期弱项就是要练那个
+      const gaps = (seed?.gaps?.length ? seed.gaps : s.report.summary.gaps.map((g) => g.text))
+        .filter(Boolean)
+        .slice(0, 4);
+      const cmpWeak = (seed?.weakDimensions?.length ? seed.weakDimensions : (get().compare?.weakDimensions || []).map((w) => w.label));
+      const weak = cmpWeak.length
+        ? cmpWeak.slice(0, 3)
+        : s.report.dimensions
+          .filter((d) => !d.na && d.score != null)
+          .sort((a, b) => Number(a.score) - Number(b.score))
+          .slice(0, 2)
+          .map((d) => d.label);
+      if (!gaps.length && !weak.length) {
+        set({ error: '本场报告没有提取到具体缺口，直接「再练一场」即可' });
+        return;
+      }
+      const draft = createDraftSession({
+        jobId: s.job.jobId,
+        jobTitle: s.job.jobTitle,
+        company: s.job.company,
+        jdText: s.job.jdText,
+      });
+      const next: MockSession = {
+        ...draft,
+        config: { ...s.config },
+        drill: {
+          fromSessionId: s.id,
+          fromFinishedAt: Number(s.finishedAt || s.updatedAt || Date.now()),
+          gaps,
+          weakDimensions: weak,
+        },
+      };
+      set({ session: next, tab: 'interview', error: '', notice: '', rewrites: {}, compare: null, insights: null });
+    },
+
+    clearDrill: () => {
+      const s = get().session;
+      if (!s || !s.drill) return;
+      void persist({ ...s, drill: null });
     },
 
     removeSession: async (id) => {
       const r = await deleteMockSession(id);
       if (!r.ok) { set({ error: r.error || '删除失败' }); return; }
-      if (get().session?.id === id) set({ session: null });
+      if (get().session?.id === id) set({ session: null, compare: null, insights: null });
       await get().refreshList();
       await get().refreshUsage();
     },
@@ -356,7 +547,7 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
     clearAllSessions: async () => {
       const r = await clearMockSessions();
       if (!r.ok) { set({ error: r.error || '清空失败' }); return; }
-      set({ session: null, list: [], usage: { count: 0, bytes: 0 }, notice: '已清空全部面试记录' });
+      set({ session: null, compare: null, insights: null, list: [], usage: { count: 0, bytes: 0 }, notice: '已清空全部面试记录' });
       await get().refreshList();
       await get().refreshUsage();
     },
@@ -368,6 +559,27 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
         return;
       }
       set({ notice: `已导出 ${r.count || 0} 场面试记录` });
+    },
+
+    exportReportMarkdown: async () => {
+      const s = get().session;
+      if (!s || !s.report) { set({ error: '报告尚未生成，暂时无法导出' }); return; }
+      try {
+        const markdown = buildReportMarkdown(s, {
+          rewrites: get().rewrites,
+          compare: get().compare,
+          insights: get().insights,
+          drillFrom: s.drill?.fromFinishedAt ?? null,
+        });
+        const r = await exportMarkdownReport(markdown, reportFileName(s));
+        if (!r.ok) {
+          if (!r.canceled) set({ error: r.error || '导出失败' });
+          return;
+        }
+        set({ notice: '报告已导出为 Markdown' });
+      } catch (e) {
+        set({ error: `生成报告失败：${String((e as Error)?.message || e)}` });
+      }
     },
 
     updateJob: (patch) => {
@@ -394,8 +606,8 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
         return;
       }
       if (!String(s.job.jobTitle || '').trim()) { set({ error: '请先填写岗位名称' }); return; }
-      if (String(s.job.jdText || '').trim().length < 30) {
-        set({ error: 'JD 太短（少于 30 字）。模拟面试需要 JD 才能出针对性题目，可直接粘贴岗位描述。' });
+      if (String(s.job.jdText || '').trim().length < MOCK_MIN_JD_CHARS) {
+        set({ error: `JD 太短（少于 ${MOCK_MIN_JD_CHARS} 字）。模拟面试需要 JD 才能出针对性题目，可直接粘贴岗位描述。` });
         return;
       }
       set({ busy: 'recall', error: '' });
@@ -495,6 +707,9 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
           set({ busy: '' });
         }
         await get().refreshList();
+        // 重答会改总分，上一场对比必须跟着重算，否则显示的是重答前的差值
+        void get().loadCompare();
+        void get().loadInsights();
         return;
       }
 
@@ -513,7 +728,14 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
             last.answer = text;
             last.answeredAt = Date.now();
           } else {
-            probes.push({ id: uid('prb'), question: s.pendingProbe.question, answer: text, askedAt: s.pendingProbe.askedAt, answeredAt: Date.now() });
+            probes.push({
+              id: uid('prb'),
+              question: s.pendingProbe.question,
+              answer: text,
+              askedAt: s.pendingProbe.askedAt,
+              answeredAt: Date.now(),
+              intent: s.pendingProbe.intent,
+            });
           }
           const attempts = s.attempts.map((a) => (a.id === att.id ? { ...a, probes } : a));
           const base: MockSession = { ...s, attempts, pendingProbe: null };
@@ -625,6 +847,9 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
       }
       await get().refreshList();
       await get().refreshUsage();
+      // 报告刚生成，立刻算一次「跟上一场比」——用户最先想知道的往往就是这句话
+      void get().loadCompare();
+      void get().loadInsights();
     },
 
     retryQuestion: (questionId) => {
@@ -667,13 +892,13 @@ export const useMockInterviewStore = create<MockInterviewState>()((set, get) => 
       if (s.status !== 'draft' && s.attempts.length > 0) {
         await get().removeSession(s.id);
       }
-      set({ session: null, rewrites: {} });
+      set({ session: null, rewrites: {}, compare: null, insights: null });
     },
 
     clearAllData: async () => {
       const r = await clearMockInterviewAll();
       if (!r.ok) { set({ error: r.error || '清空失败' }); return; }
-      set({ session: null, list: [], usage: { count: 0, bytes: 0 } });
+      set({ session: null, compare: null, insights: null, list: [], usage: { count: 0, bytes: 0 } });
     },
   };
 });

@@ -121,6 +121,13 @@ export const MOCK_MAX_FOLLOWUPS = 2;
 /** 评分口径版本：提示词或 LEVEL_SCORE 变更时 +1，旧报告按旧版本解释 */
 export const MOCK_RUBRIC_VERSION = 1;
 
+/**
+ * 可出题的最短 JD（字符数）。
+ * **单源常量**（审查 2026-10-21 C-10）：startInterview 的硬门槛、导入弹窗的「JD 质量」提示、
+ * 配置态的字数提示三处共用，改一处即全局生效 —— 此前是两份字面量 + 一句「改一处必须改两处」的注释。
+ */
+export const MOCK_MIN_JD_CHARS = 30;
+
 /** 开场白（报告与朗读共用；不进 AI 调用） */
 export const MOCK_OPENING_LINE = '你好，我是今天的面试官。我们会围绕这个岗位聊 7 到 10 个问题，中间可能会追问，请尽量用具体的事例回答。准备好了我们就开始。';
 
@@ -244,6 +251,24 @@ export interface MockQuestion {
   keyPointsFrom: MockKeyPointsFrom;
 }
 
+/**
+ * 追问意图（借鉴 iFaceoff 的 Next Action 分类）：决定这一轮追问在做什么。
+ * 为什么不是只存一句追问原话：用户需要知道「他为什么又问一句」——
+ * 是在澄清听不懂、在核对数字、在要细节，还是在加压。报告与导出都按这个标签展示。
+ */
+export type MockProbeIntent = 'clarify' | 'verify' | 'deepen' | 'challenge' | 'transfer';
+
+export const MOCK_PROBE_INTENT_LABELS: Record<MockProbeIntent, string> = {
+  clarify: '澄清',
+  verify: '核对',
+  deepen: '深挖',
+  challenge: '加压',
+  transfer: '迁移',
+};
+
+/** 合法的追问意图列表（解析 AI 输出时做白名单校验，非法值一律丢弃） */
+export const MOCK_PROBE_INTENTS: MockProbeIntent[] = ['clarify', 'verify', 'deepen', 'challenge', 'transfer'];
+
 /** 追问记录：问答对计入该题评分（上限 2 轮） */
 export interface MockProbe {
   id: string;
@@ -251,6 +276,8 @@ export interface MockProbe {
   answer: string;
   askedAt: number;
   answeredAt?: number;
+  /** 这一轮追问的意图（旧数据可能没有） */
+  intent?: MockProbeIntent;
   evidenceState?: MockEvidenceState;
   evidenceSource?: MockEvidenceSource;
 }
@@ -291,6 +318,8 @@ export interface MockAdvanceResult {
   action: 'followup' | 'advance';
   evidenceState: MockEvidenceState;
   evidenceSource: MockEvidenceSource;
+  /** 这一轮追问的意图（澄清 / 核对 / 深挖 / 加压 / 迁移）；推进时为空 */
+  intent?: MockProbeIntent;
   /** action=followup 时的追问原话 */
   probe?: string;
   /** 动态插题（每阶段 ≤1、全场 ≤2）；不插时为 null */
@@ -321,7 +350,7 @@ export interface MockQuestionResult {
   questionText: string;
   phase: 1 | 2;
   answer: string;
-  probes: { question: string; answer: string }[];
+  probes: { question: string; answer: string; intent?: MockProbeIntent }[];
   dimensionScores: Partial<Record<MockDimensionKey, number | null>>;
   dimensionEvidence: Partial<Record<MockDimensionKey, string>>;
   evidenceState: MockEvidenceState;
@@ -361,10 +390,26 @@ export interface MockReport {
   generatedAt: number;
 }
 
+/**
+ * 追练种子：本场是从上一场报告里「最该补的缺口」开出来的。
+ * 只影响阶段一出题（把缺口写进提示词），不参与评分——追练场的分数照样按统一口径算，
+ * 否则「追练场更容易得高分」会让历史对比失去意义。
+ */
+export interface MockDrillSeed {
+  fromSessionId: string;
+  fromFinishedAt: number;
+  /** 上一场报告里的「最该补的缺口」原文，最多 4 条 */
+  gaps: string[];
+  /** 上一场对比出的薄弱维度标签，最多 3 个 */
+  weakDimensions: string[];
+}
+
 export interface MockSession {
   id: string;
   version: 1;
   job: MockJobRef;
+  /** 追练种子（可选，旧会话没有这个字段） */
+  drill?: MockDrillSeed | null;
   config: MockInterviewConfig;
   status: MockSessionStatus;
   /** 当前所处阶段：1=阶段一，2=阶段二，3=反问/收尾 */
@@ -373,7 +418,7 @@ export interface MockSession {
   attempts: MockAttempt[];
   currentQuestionId: string | null;
   /** 当前题待作答的追问（有值时作答区切到追问模式） */
-  pendingProbe: { question: string; askedAt: number } | null;
+  pendingProbe: { question: string; askedAt: number; intent?: MockProbeIntent } | null;
   reverse: MockReverseTurn | null;
   report: MockReport | null;
   /** 报告态「重答此题」的临时标记：有值时作答区回到该题，提交后只重算该题 */

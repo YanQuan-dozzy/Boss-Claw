@@ -43,6 +43,8 @@ const SUITES = [
   'delivery-throttle-regression.mjs',
   'score-regression.mjs',
   'mock-interview-score-regression.mjs',
+  'mock-interview-report-regression.mjs',
+  'mock-interview-prompt-regression.mjs',
   'mock-interview-delivery-regression.mjs',
   'bank-recall-regression.mjs',
   'bank-repo-smoke.mjs',

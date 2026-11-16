@@ -98,6 +98,12 @@ interface AppState {
   /** 各平台登录态（boss/猎聘/智联/51job），运行时探测结果，不持久化；null = 检测中 */
   platformLogins: PlatformLogins;
   sidebarCollapsed: boolean;
+  /**
+   * 首次启动的「请把使用说明读完」弹窗是否已处理过（看过就算，不询问是否真读完）。
+   * 持久化：只在第一次启动出现一次，关掉或点「去读文档」后置 true。
+   */
+  docIntroSeen: boolean;
+  markDocIntroSeen: () => void;
   /** 侧边栏底部动态动作状态（与 StatusBar 的 OpenClaw 状态区分开） */
   currentAction: { text: string; source: string | null };
   setTheme: (t: ThemeMode) => void;
@@ -152,6 +158,8 @@ export const useAppStore = create<AppState>()(
         bossLoggedIn: null,
         platformLogins: Object.fromEntries(PLATFORM_IDS.map((p) => [p, null])) as PlatformLogins,
         sidebarCollapsed: false,
+        docIntroSeen: false,
+        markDocIntroSeen: () => set({ docIntroSeen: true }),
         engineStatus: 'stopped',
         currentAction: { text: '等待中', source: null },
         browserLoginRequest: null,
@@ -173,7 +181,18 @@ export const useAppStore = create<AppState>()(
             engineStatus: deriveEngineStatus(state.autoAssist),
           })),
         setBossLoggedIn: (v) => set({ bossLoggedIn: v }),
-        setPlatformLogins: (m) => set({ platformLogins: m }),
+        // 审查 2026-10-21 C-6：App.tsx 每 10s 心跳一次会传**新对象**，而 zustand 的订阅用
+        // Object.is 判定 —— 值没变也会让 StatusBar 等订阅方每 10s 重渲染一次。
+        // 这里做一次浅比较：内容相同就不 set（心跳照跑，只是不再制造无意义的渲染）。
+        setPlatformLogins: (m) =>
+          set((state) => {
+            const prev = (state.platformLogins || {}) as Record<string, unknown>;
+            const next = (m || {}) as Record<string, unknown>;
+            const changed = [...new Set([...Object.keys(prev), ...Object.keys(next)])]
+              .some((k) => prev[k] !== next[k]);
+            // 内容未变 → 返回原 state（zustand 的 Object.is 判定会跳过通知，订阅方不重渲染）
+            return changed ? { platformLogins: m } : state;
+          }),
         setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
         toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
         setCurrentAction: (source, text) =>

@@ -22,6 +22,7 @@ import type {
   MockEvidenceState,
   MockInterviewConfig,
   MockKeyPointsFrom,
+  MockProbeIntent,
   MockQuestion,
   MockQuestionCategory,
   MockQuestionResult,
@@ -36,6 +37,7 @@ import {
   MOCK_EVIDENCE_SCORE_CAP,
   MOCK_MAX_FOLLOWUPS,
   MOCK_MIN_EVIDENCE_CHARS,
+  MOCK_PROBE_INTENTS,
   MOCK_RUBRIC_VERSION,
   bandForScore,
   levelToScore,
@@ -300,15 +302,18 @@ const DIFFICULTY_HINT: Record<MockInterviewConfig['difficulty'], string> = {
 
 // ===== 阶段一：通用题 =====
 
-const PHASE1_SYSTEM = `你是求职者的模拟面试官，正在为一场真实岗位面试做练习。你只负责提问，不评价、不给分、不解释。
+const PHASE1_SYSTEM = `你是这个岗位的资深面试官，正在为一场真实面试做练习。你只负责提问，不评价、不给分、不解释。
 规则：
 1. 只输出 json：{"questions":[{"category":"icebreak|fundamental|project|behavior|closing","text":"题干","jdRef":"对应 JD 原文片段（可为空）","focus":["考察点"],"rubric":["评分要点"],"probeDirections":["可能追问的方向"],"sourceQuestionId":"采用的候选题 id 或 null"}]}
 2. 阶段一只按岗位方向与面试官类型出题，**不要针对简历里的具体项目细节**（简历还没给你）；目的是先听候选人怎么说。
-3. 每题必须能对应该岗位的一条真实要求，jdRef 填 JD 原文里的短句（不超过 40 字），不要编造 JD 没有的要求。
-4. 题干用口语化的面试官口吻，不要书面语、不要「请列举三点」这类考试腔，不要出现「候选人」。
-5. 至少 1 道行为题（过去怎么做的）、至少 1 道开放式专业题；题干之间不得重复或近似。
-6. focus 2–4 条（这道题在听什么），rubric 2–4 条（答到什么算好），probeDirections 1–2 条。
-7. 不得询问年龄、婚育、户籍、健康、政治面貌等与岗位无关的个人信息。`;
+3. **一道题只问一个问题**：不用「①②③」「1. 2. 3.」这类编号，不用分号并列几个子问题，不用「以及 / 另外 / 同时」再接一问；题干 **60 字以内**。超过 60 字或含两个问号，说明没聚焦，重写。
+4. 顺序由浅入深：破冰（自我介绍/动机）→ 专业基础 → 项目与行为 → 收尾。最难的不要放第一题。
+5. 每题必须能对应该岗位的一条真实要求，jdRef 填 JD 原文里的短句（不超过 40 字），不要编造 JD 没有的要求。
+6. 题干用口语化的面试官口吻，不要书面语、不要「请列举三点」这类考试腔，不要出现「候选人」；**也不要在题干里透露考察点或评分维度**（如「我想看看你的数据敏感度」）。
+7. 至少 1 道行为题（过去怎么做的）、至少 1 道开放式专业题；题干之间不得重复或近似。
+8. focus 2–4 条（这道题在听什么），rubric 2–4 条（答到什么算好），probeDirections 1–2 条；focus/rubric 不允许只写「表达清晰」这种无法判定的词。
+9. 不得询问年龄、婚育、户籍、健康、政治面貌等与岗位无关的个人信息。
+10. 出完后逐题自检，四条任一不合格就换掉再输出：① 是否只有一个问句？② 是否与前面某题重复或近似？③ 是否能用「会 / 不会」一句话答完（是则改成要事例）？④ 是否泄露了考察点？`;
 
 export async function generatePhase1(
   session: MockSession,
@@ -318,10 +323,23 @@ export async function generatePhase1(
   const want = Math.min(6, Math.max(4, Number(session.config.phase1Count) || 4));
   const jd = fitParts(ctx, { jd: { text: session.job.jdText || '', weight: 1 } }, 4000).jd || '';
   const brief = profileBrief(ctx.profile);
+  // 追练场：缺口写进提示词，让出题直接压在上一场没答好的地方。
+  // 注意不要让模型照抄缺口原文当题干——缺口是「没答到什么」，直接问会变成送分题。
+  const drill = session.drill;
+  const drillBlock = drill && (drill.gaps.length || drill.weakDimensions.length)
+    ? [
+      '【本场针对上一场暴露的缺口追练】',
+      drill.gaps.length ? `上一场没答到的点：${drill.gaps.slice(0, 4).join('；')}` : '',
+      drill.weakDimensions.length ? `上一场偏弱的维度：${drill.weakDimensions.slice(0, 3).join('、')}` : '',
+      '要求：至少 2 道题必须落在上述缺口上，但**题干要换一个具体场景来问**，不要把缺口原文直接当问题；',
+      '其余题目照常按岗位出，不要全场都绕着缺口转。',
+    ].filter(Boolean).join('\n')
+    : '';
   const user = [
     `岗位：${session.job.jobTitle || '未填写'}${session.job.company ? ` · ${session.job.company}` : ''}`,
     `面试官类型：${ROLE_HINT[session.config.role]}`,
     `难度：${DIFFICULTY_HINT[session.config.difficulty]}`,
+    drillBlock,
     `请出 ${want} 道阶段一题目。`,
     brief ? `（候选人背景摘要，仅用于判断岗位语境，不要据此追问细节）${brief}` : '',
     '【JD 原文】',
@@ -398,15 +416,18 @@ function localPhase1Questions(config: MockInterviewConfig, want: number): MockQu
 
 // ===== 阶段二：针对简历与阶段一回答的深挖题 =====
 
-const PHASE2_SYSTEM = `你是求职者的模拟面试官。现在你已经听完候选人的第一轮回答，要针对简历与刚才的回答出深挖题。
+const PHASE2_SYSTEM = `你是这个岗位的资深面试官。现在你已经听完候选人的第一轮回答，要针对简历与刚才的回答出深挖题。
 只输出 json：{"questions":[{"category":"project|fundamental|behavior","text":"题干","jdRef":"对应 JD 原文片段","resumeRef":"锚定的简历事实（原文短句）","focus":["考察点"],"rubric":["评分要点"],"probeDirections":["追问方向"],"sourceQuestionId":"采用的候选题 id 或 null"}]}
 规则：
 1. 必须针对简历里真实存在的项目/经历，或阶段一回答里出现过的原话；**不得引入简历与回答里没有的公司、项目、数字**。
-2. 追问优先级（从高到低）：① 指标口径与定义（这个数怎么算的、分母是什么）② 方法与工具细节 ③ 业务价值与影响 ④ 量化结果的真实性与推导过程。
-3. 每题必须带 resumeRef（简历或回答里的原文短句，20 字以内）；找不到可锚定的事实时，改问「如果让你做你会怎么做」，并把 resumeRef 留空。
-4. 至少 2 题直接对应 JD 的硬性要求，jdRef 填 JD 原文短句。
-5. 题干口语化、不重复、不出现「请列举三点」这类书面语；不得询问与岗位无关的个人信息。
-6. focus 2–4 条，rubric 2–4 条，probeDirections 1–2 条。`;
+2. **每道题都要接住对方说过的一个具体词或数字**：先用半句复述（「你说的留存从 32% 提到 41%」），再问那一点；不要出「能详细说说吗」这种没有抓手的题。
+3. 追问优先级（从高到低）：① 指标口径与定义（这个数怎么算的、分母是什么）② 方法与工具细节 ③ 业务价值与影响 ④ 量化结果的真实性与推导过程。
+4. 每题必须带 resumeRef（简历或回答里的原文短句，20 字以内）；找不到可锚定的事实时，改问「如果让你做你会怎么做」，并把 resumeRef 留空。
+5. **阶段一某题若已答得很完整（数字、口径、归属都清楚），不要重复问细节，改问边界或迁移**：「如果数据量 / 团队规模 / 预算翻十倍，你这套做法哪一步先崩？」
+6. 至少 2 题直接对应 JD 的硬性要求，jdRef 填 JD 原文短句。
+7. **一道题只问一个问题**：不用编号、不用分号并列几个子问题，题干 **70 字以内**；口语化、不重复、不出现「请列举三点」这类书面语；不得询问与岗位无关的个人信息。
+8. focus 2–4 条，rubric 2–4 条，probeDirections 1–2 条。
+9. 出完后逐题自检：① 是否接住了对方的具体词或数字？② 是否只有一个问句？③ 是否与阶段一重复？④ resumeRef 是否真的在简历或回答里出现过？不合格就换掉再输出。`;
 
 export async function generatePhase2(
   session: MockSession,
@@ -563,13 +584,29 @@ export function localFollowupRule(answer: string, resumeText: string): LocalRule
   return null;
 }
 
-const ADVANCE_SYSTEM = `你是模拟面试官，刚听完候选人对一道题的回答。只输出 json：
-{"action":"followup|advance","evidenceState":"insufficient|vague|partial|solid|strong|conflict","reasoning":"先写判断理由","probe":"若要追问，追问的原话；否则空字符串","inject":{"text":"临时追加的题目（仅在允许时给，否则 null）","category":"project|fundamental|behavior","focus":["考察点"],"jdRef":"JD 短句","resumeRef":"简历短句"}}
-判定口径：
-- insufficient 不足（基本没答到/答非所问）、vague 模糊（只有关键词没展开）、partial 部分（答到一部分考察点）、solid 扎实（基本覆盖）、strong 强（覆盖且有余量）、conflict 矛盾（与简历事实或前文冲突）。
-- 只有前四种里的不足/模糊/部分才追问；扎实/强一律推进；矛盾必须追问澄清。
-- **追问只问一个最关键的点**，口语化，20–40 字，不要一次问三件事；不要重复候选人已经说过的内容。
-- reasoning 必须写在 evidenceState 之前（先分析再判定）。
+/**
+ * 本地规则 → 追问意图。
+ * 规则命中时不调 AI，但报告里仍要说明「这一问在干什么」，所以在这里补一个确定性的映射。
+ */
+export function intentForRule(reason: string): MockProbeIntent {
+  if (reason === '数字冲突') return 'verify';
+  if (reason === '回答过短' || reason === '无个人贡献') return 'clarify';
+  return 'deepen';
+}
+
+const ADVANCE_SYSTEM = `你是这个岗位的面试官，刚听完候选人对一道题的回答。只输出 json：
+{"action":"followup|advance","evidenceState":"insufficient|vague|partial|solid|strong|conflict","probeIntent":"clarify|verify|deepen|challenge|transfer","reasoning":"先写判断理由","probe":"若要追问，追问的原话；否则空字符串","inject":{"text":"临时追加的题目（仅在允许时给，否则 null）","category":"project|fundamental|behavior","focus":["考察点"],"jdRef":"JD 短句","resumeRef":"简历短句"}}
+证据状态口径：
+- insufficient 不足（基本没答到 / 答非所问）、vague 模糊（只有关键词没展开）、partial 部分（答到一部分考察点）、solid 扎实（基本覆盖）、strong 强（覆盖且有余量）、conflict 矛盾（与简历事实或前文冲突）。
+证据状态决定追问意图（按这张表选，不要自由发挥）：
+- insufficient / vague → clarify（澄清）：把问题问小、换一种他能答上来的问法。
+- partial → deepen（深挖）：专攻没覆盖到的那部分考察点，不是把整题重问一遍。
+- conflict → verify（核对）：把两个数字或两种说法摆在一起，问他哪个准、口径是否一样。
+- solid / strong → 默认 advance（推进）；**只有难度为「压力」时**，才可以再用一轮 challenge（加压：给一个反例或边界）或 transfer（迁移：换个规模 / 场景），且必须本轮仍允许追问。
+其它硬约束：
+- **追问只问一个最关键的点**，口语化，20–40 字，不要一次问三件事。
+- 追问必须接住对方原话里的**一个具体词或数字**（「你说下沉了 9 个点」），不要问「能具体说说吗」「还有吗」这种没有抓手的空题；不要重复他已经说过的内容。
+- reasoning 必须写在 evidenceState 之前（先分析再判定），20–60 字。
 - 允许临时追加题目时最多 1 道，且必须来自候选人上一段回答里出现的高价值线索；不允许时 inject 为 null。`;
 
 export async function advance(
@@ -587,6 +624,7 @@ export async function advance(
       action: 'followup',
       evidenceState: 'partial',
       evidenceSource: 'rule',
+      intent: intentForRule(rule.reason),
       probe: rule.probe,
       usedAI: false,
     };
@@ -603,6 +641,7 @@ export async function advance(
   );
   const user = [
     `岗位：${session.job.jobTitle || ''}${session.job.company ? ` · ${session.job.company}` : ''}`,
+    `难度：${DIFFICULTY_HINT[session.config.difficulty]}`,
     `题目：${question.text}`,
     `考察点：${question.focus.join('；') || '（未提供）'}`,
     question.rubric && question.rubric.length ? `评分要点：${question.rubric.join('；')}` : '',
@@ -630,12 +669,27 @@ export async function advance(
     ].includes(state) ? state : 'partial';
     const probe = str(obj.probe, 200);
     const cappedOut = probes.length >= MOCK_MAX_FOLLOWUPS;
-    const wantFollow = str(obj.action, 12) === 'followup' && Boolean(probe) && !cappedOut;
+    const strongish = evidenceState === 'solid' || evidenceState === 'strong';
+    const stress = session.config.difficulty === 'stress';
+    // 「扎实 / 强」只有在压力面才允许再追一轮（加压 / 迁移）；其余难度一律推进——
+    // 这是方案 5.3 的硬口径，靠提示词约束不够，必须在代码里兜一次。
+    const wantFollow = str(obj.action, 12) === 'followup' && Boolean(probe) && !cappedOut && (!strongish || stress);
+    let intent: MockProbeIntent | undefined;
+    if (wantFollow) {
+      const rawIntent = str(obj.probeIntent, 20) as MockProbeIntent;
+      intent = MOCK_PROBE_INTENTS.includes(rawIntent) ? rawIntent : undefined;
+      if (!intent) {
+        intent = evidenceState === 'conflict' ? 'verify' : evidenceState === 'partial' ? 'deepen' : strongish ? 'challenge' : 'clarify';
+      }
+      // 加压 / 迁移属于压力面专用；非压力面降级为深挖，避免口味突然变重
+      if ((intent === 'challenge' || intent === 'transfer') && !stress) intent = 'deepen';
+    }
     const inject = opts.allowInject && !wantFollow ? normalizeInjected(obj.inject, question.phase, question.id) : null;
     return {
       action: wantFollow ? 'followup' : 'advance',
       evidenceState,
       evidenceSource: 'ai',
+      intent: wantFollow ? intent : undefined,
       probe: wantFollow ? probe : undefined,
       inject,
       usedAI: true,
@@ -654,13 +708,19 @@ const REPORT_SYSTEM = `你是面试复盘教练，要给一场模拟面试做结
 1. **不要给分数**，也不要给总分或档位；每维只给 level（1–4 档）与 pos（该档内 1 低 / 2 中 / 3 高）。
    4 强：有事实、有数量、归属清晰且说清口径；3 扎实：有事实与数量，归属或口径之一模糊；
    2 部分：有具体做法，缺数量或缺结果；1 不足：只有概括、名词或泛泛而谈。
+   空答、跳过、答非所问同样落在 1 档（不要给 0，也不要用 na 逃开）。
 2. 五个维度：relevance 相关性 / evidence 证据具体性 / structure 思路结构 / depth 专业深度 / reflection 复盘与权衡。
-3. **每个维度必须引用候选人回答原句作 evidence**（逐字摘录，不得改写、不得润色、不得编造）；回答里确实找不到可引用原句时，evidence 留空字符串。
+3. **每个维度必须引用候选人回答原句作 evidence**（逐字摘录，10–60 字，不得改写、不得润色、不得编造）。
+   **只能引用候选人自己说的话**：不要拿面试官追问里的措辞当 evidence（那是面试官说的，不在回答里）；
+   回答里确实找不到可引用原句时，evidence 留空字符串。
 4. **回答长不等于答得好**：冗余、重复、绕圈子不加分，反而在相关性上扣分。
 5. 某维度对该题不适用（如行为题无技术深度）时输出 {"na":true,"reasoning":"为什么"}，不要给 0 分；**不要为了省事把所有维度标 na**。
-6. hitPoints / missedPoints 对着该题考察点与 JD 要求逐条比，各 0–4 条；missedPoints 只列真正该答而没答的，不要凑数。
+6. hitPoints / missedPoints 对着该题考察点与 JD 要求逐条比，各 0–4 条。
+   missedPoints 只列**题目考察点或 JD 明确要求、而回答确实没覆盖**的点；不许把「更高级的做法」「别的公司怎么做的」算成漏答，也不要凑数。
+   **题目若给了「题库要点」，就以这些要点为准逐条判**，不要自己另加要点；没给时按考察点与 JD 推。
 7. 不得评价人格、情绪、诚实、健康、外貌等与工作能力无关的内容；不得预测录用概率。
-8. questionId 必须原样使用输入中的 id。`;
+8. questionId 必须原样使用输入中的 id。
+9. 输出前逐题自检：① 每维 evidence 是否能在回答里原样找到？② reasoning 与 level 是否一致（不要理由说「很完整」却给 1 档）？③ missedPoints 是否都是题目要求过的点？`;
 
 interface AIQuestionScore {
   questionId: string;
@@ -786,7 +846,7 @@ export function buildQuestionResult(
 ): MockQuestionResult {
   const skipped = !attempt || attempt.skipped;
   const answer = attempt?.answer || '';
-  const probes = (attempt?.probes || []).map((p) => ({ question: p.question, answer: p.answer }));
+  const probes = (attempt?.probes || []).map((p) => ({ question: p.question, answer: p.answer, intent: p.intent }));
   const source = attempt ? answerSource(attempt) : '';
   const dimensionScores: Partial<Record<MockDimensionKey, number | null>> = {};
   const dimensionEvidence: Partial<Record<MockDimensionKey, string>> = {};
@@ -954,6 +1014,10 @@ export async function buildReport(
     return [
       `[id:${q.id}] 题目：${q.text}`,
       `题型：${q.category}｜考察点：${q.focus.join('；') || '（无）'}${q.jdRef ? `｜JD 要求：${q.jdRef}` : ''}`,
+      // 题库要点必须送进评分输入：报告里标了「题库要点」，模型却看不到要点，那个标注就没有依据
+      q.keyPointsFrom === 'bank' && q.rubric && q.rubric.length
+        ? `题库要点（判命中/漏答以这些为准）：${q.rubric.slice(0, 6).join('；')}`
+        : '',
       `回答：${clip(a.answer, 900)}`,
       probes ? `追问记录：\n${probes}` : '',
     ].filter(Boolean).join('\n');
@@ -1235,5 +1299,22 @@ export function dimensionTone(score: number | null): 'ok' | 'warn' | 'bad' | 'na
   if (score >= 50) return 'warn';
   return 'bad';
 }
+
+/**
+ * 提示词契约（导出供离线回归断言）。
+ *
+ * 为什么要把提示词暴露出来：这些 SYSTEM 提示里的每一条硬约束（只问一个问题、不得引用追问句、
+ * 不给分数、反问白名单…）都是产品口径，删掉一句不会让 typecheck 或构建失败，只会在线上
+ * 悄悄变成「模型开始给总分」「追问开始一次问三件事」。`scripts/mock-interview-prompt-regression.mjs`
+ * 对这张表做关键词断言，改提示词时能当场发现约束被误删。
+ */
+export const MOCK_PROMPTS = {
+  phase1: PHASE1_SYSTEM,
+  phase2: PHASE2_SYSTEM,
+  advance: ADVANCE_SYSTEM,
+  report: REPORT_SYSTEM,
+  reverse: REVERSE_SYSTEM,
+  rewrite: REWRITE_SYSTEM,
+};
 
 export { MOCK_DIMENSION_KEYS, LEVEL_SCORE, levelToScore, bandForScore };

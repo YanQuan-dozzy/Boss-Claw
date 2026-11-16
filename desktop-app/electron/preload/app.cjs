@@ -20,7 +20,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:cloak-status-changed', 'jc:cloak-stop',
   'jc:fetch-url', 'jc:llm-proxy', 'jc:material-pick', 'jc:material-read', 'jc:open-external',
   'jc:mock-interview-clear', 'jc:mock-interview-clear-sessions', 'jc:mock-interview-delete',
-  'jc:mock-interview-export', 'jc:mock-interview-list', 'jc:mock-interview-read',
+  'jc:mock-interview-export', 'jc:mock-interview-export-md', 'jc:mock-interview-list', 'jc:mock-interview-read',
   'jc:mock-interview-usage', 'jc:mock-interview-write',
   'jc:mock-interview-bank-add-question', 'jc:mock-interview-bank-cache-clear',
   'jc:mock-interview-bank-cache-read', 'jc:mock-interview-bank-cache-write',
@@ -136,6 +136,7 @@ const api = {
   mockInterviewClear: () => ipcRenderer.invoke('jc:mock-interview-clear'),
   mockInterviewClearSessions: () => ipcRenderer.invoke('jc:mock-interview-clear-sessions'),
   mockInterviewExport: () => ipcRenderer.invoke('jc:mock-interview-export'),
+  mockInterviewExportMd: (payload) => ipcRenderer.invoke('jc:mock-interview-export-md', payload),
   mockInterviewUsage: () => ipcRenderer.invoke('jc:mock-interview-usage'),
 
   // ===== 模拟面试 · 题库（内置库随包只读，用户库写 <userData>/mock-interview/bank/）=====
