@@ -219,5 +219,40 @@ class LiepinDeliveryRegression(unittest.TestCase):
         self.assertEqual((self.page.entries, self.page.writes, self.page.sends), (1, 0, 0))
 
 
+class LiepinImSourceLoading(unittest.TestCase):
+    """issue #24：投递脚本按需加载 —— 导入期不得读文件，缺失时给出可定位的错误。
+
+    打包层面的根因由 asarUnpack + packaging-unpack-regression 守（见 PR #25）；
+    这里守的是失败域：脚本缺失时只有「猎聘投递」报错，桥进程不该在导入 platforms 时就死掉。
+    """
+
+    def tearDown(self):
+        liepin._IM_SOURCE_CACHE = None
+        liepin._JS_DELIVERY_SNAPSHOT_CACHE = None
+
+    def test_default_path_loads_repo_file(self):
+        source = liepin._load_im_source()
+        self.assertIn('snapshotLiepinDelivery', source)
+        self.assertIn('snapshotLiepinDelivery', liepin._delivery_snapshot_script())
+
+    def test_missing_file_error_names_path(self):
+        missing = Path('missing') / 'liepin-im.cjs'
+        with patch.object(liepin, '_im_source_path', return_value=missing):
+            with self.assertRaises(RuntimeError) as ctx:
+                liepin._load_im_source()
+        self.assertIn('liepin-im.cjs', str(ctx.exception))
+        self.assertIn('missing', str(ctx.exception))
+
+    def test_import_does_not_read_file_at_module_load(self):
+        """回归防线：源文件里不得再出现模块级的 read_text（导入期崩溃会带走四个平台）。"""
+        src = Path(liepin.__file__).read_text(encoding='utf-8')
+        module_level = [
+            line for line in src.splitlines()
+            # 只认真正的模块级语句：注释与缩进块（函数体内）都不算
+            if 'read_text(' in line and not line.lstrip().startswith('#') and not line.startswith((' ', '\t'))
+        ]
+        self.assertEqual(module_level, [], f'模块级 read_text 会让导入期读盘：{module_level}')
+
+
 if __name__ == '__main__':
     unittest.main()

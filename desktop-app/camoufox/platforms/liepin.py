@@ -218,8 +218,48 @@ JS_FIND_CHAT_BTN = r"""(pat) => {
 }"""
 
 # 与 Electron 共用 DOM 范围、编辑器、发送按钮和消息确认，避免两通道各猜一套选择器。
-_IM_SOURCE = (Path(__file__).resolve().parents[2] / 'electron' / 'preload' / 'liepin-im.cjs').read_text(encoding='utf-8')
-JS_DELIVERY_SNAPSHOT = '(args) => { const module = {exports:{}}; ' + _IM_SOURCE + '; return module.exports.snapshotLiepinDelivery(document, args); }'
+#
+# issue #24：这个脚本**不能在导入期读**（原实现是模块级 `_IM_SOURCE = (...).read_text()`）。
+# 打包态若 electron/preload/liepin-im.cjs 只进了 app.asar 而没有落盘，导入期读取会抛
+# FileNotFoundError —— 而这段导入位于 platforms/__init__ → registry 的链路上，
+# 等于**四个平台一起不可用**、桥进程直接退出，UI 只看到一句模糊的「引擎未就绪」。
+#
+# 打包层面的根因已由 asarUnpack（PR #25）+ packaging-unpack-regression 修掉，这里做的是**失败域收敛**：
+# 改成首次投递时按需加载，万一将来打包配置又漂移，坏的只是「猎聘投递」这一条动作，
+# 而不是整个隐身引擎起不来；报错也带上实际尝试的路径，便于用户直接贴给我们。
+_IM_SOURCE_CACHE = None
+_JS_DELIVERY_SNAPSHOT_CACHE = None
+
+
+def _im_source_path() -> Path:
+    """投递脚本在源码树 / 解包目录中的位置（camoufox/ 与 electron/ 同级）。"""
+    return Path(__file__).resolve().parents[2] / 'electron' / 'preload' / 'liepin-im.cjs'
+
+
+def _load_im_source() -> str:
+    global _IM_SOURCE_CACHE
+    if _IM_SOURCE_CACHE is not None:
+        return _IM_SOURCE_CACHE
+    path = _im_source_path()
+    try:
+        source = path.read_text(encoding='utf-8')
+    except OSError as exc:
+        raise RuntimeError(
+            f'猎聘投递脚本缺失（{path}）：{exc}. '
+            '打包版请确认 electron/preload/liepin-im.cjs 已随 asarUnpack 落盘（issue #24）。'
+        ) from exc
+    if not source.strip():
+        raise RuntimeError(f'猎聘投递脚本为空（{path}），请检查打包是否完整。')
+    _IM_SOURCE_CACHE = source
+    return source
+
+
+def _delivery_snapshot_script() -> str:
+    global _JS_DELIVERY_SNAPSHOT_CACHE
+    if _JS_DELIVERY_SNAPSHOT_CACHE is None:
+        _JS_DELIVERY_SNAPSHOT_CACHE = ('(args) => { const module = {exports:{}}; ' + _load_im_source()
+                                       + '; return module.exports.snapshotLiepinDelivery(document, args); }')
+    return _JS_DELIVERY_SNAPSHOT_CACHE
 
 # 投递成功后的收尾：关闭聊天窗口（① get_jobs 的 IM 面板关闭图标 → ② 通用关闭按钮兜底）
 JS_CLOSE_CHAT = r"""() => {
@@ -300,7 +340,7 @@ class LiepinCollector(CollectorBase):
         return False
 
     def before_action(self, page):
-        return page.evaluate(JS_DELIVERY_SNAPSHOT, {'phase': 'before'})
+        return page.evaluate(_delivery_snapshot_script(), {'phase': 'before'})
 
     def finish_action(self, page, greeting: str, before=None) -> dict:
         text = ' '.join(str(greeting or '').split())
@@ -313,7 +353,7 @@ class LiepinCollector(CollectorBase):
                 return {'ok': False, 'code': 32, 'sent': False, 'message': self.limit_message()}
             return None
         def snapshot():
-            return page.evaluate(JS_DELIVERY_SNAPSHOT, {'greeting': text})
+            return page.evaluate(_delivery_snapshot_script(), {'greeting': text})
         def marked_locator(attribute):
             hits = [frame.locator(f'[{attribute}="active"]') for frame in page.frames]
             hits = [hit for hit in hits if hit.count() == 1]
