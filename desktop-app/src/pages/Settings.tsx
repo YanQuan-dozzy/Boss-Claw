@@ -795,6 +795,15 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   const llmReady = isLLMConfigured();
 
+  // ===== 模型名称下拉选项（预设 ∪ 网关探测列表）=====
+  // 自定义 / 本地网关端点的预设列表为空（PROVIDER_DEFAULTS.custom.models = []），
+  // 动态探测（/v1/models）已拿到网关全部模型 id —— 合并进下拉，让用户可点选而非只能手输。
+  // 探测未完成 / 失败时只剩预设列表（退化为现状）。去重保持顺序：预设在前，探测结果在后。
+  const modelOptions = [
+    ...(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []),
+    ...(probeResult?.ok ? probeResult.models : []),
+  ].filter((v, i, arr) => arr.indexOf(v) === i);
+
   // ===== 思考强度（唯一判据见 lib/bossclaw/thinkingCapability.ts）=====
   // 能力只由「服务商 + 模型名」决定：未验证支持的模型恒为关闭，且请求侧也不会发任何思考参数
   // —— 即使 localStorage 里残留 enabled:true，UI 与实际请求都按关闭处理（开关不可用）。
@@ -1727,7 +1736,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                   value={config.model.model}
                   onChange={(v) => { setModel({ model: v }); setTestResult(null); }}
-                  options={(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []).map((m) => ({
+                  options={modelOptions.map((m) => ({
                     value: m,
                     label: m,
                   }))}

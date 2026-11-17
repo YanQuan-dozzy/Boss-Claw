@@ -219,9 +219,11 @@ try {
   ok('探测：成功', r1.ok && r1.capability !== null, JSON.stringify(r1));
   eq('探测：剥前缀找到能力', r1.capability?.reasoning, true);
   ok('探测：调用次数为 1（首次真实探测）', globalThis.__probeCalls.length === 1);
+  ok('探测：models 携带网关全部模型 id', r1.models.includes('auto/model-a') && r1.models.length === 1, `实际 ${JSON.stringify(r1.models)}`);
   const r1again = await probeModelCapabilities('http://127.0.0.1:11434/v1', 'model-a', '');
   ok('探测：缓存命中（不重复调用）', globalThis.__probeCalls.length === 1, `实际 ${globalThis.__probeCalls.length} 次`);
   ok('探测：二次返回与首次一致', r1again.ok && r1again.capability?.reasoning === true);
+  ok('探测：缓存命中时 models 仍可用', r1again.models.includes('auto/model-a'));
   ok('探测：缓存能力经 getCachedCapability 可读', getCachedCapability('http://127.0.0.1:11434/v1', 'model-a')?.reasoning === true);
 
   invalidateCapabilitiesCache('http://127.0.0.1:11434/v1', 'model-a');
@@ -229,6 +231,7 @@ try {
   globalThis.__probeConfig.fail = true;
   const rFail = await probeModelCapabilities('http://127.0.0.1:11434/v1', 'model-a', '');
   ok('探测：网络失败 → ok=false', rFail.ok === false);
+  ok('探测：失败时 models 为空数组', Array.isArray(rFail.models) && rFail.models.length === 0);
   ok('探测：失败后缓存不可读（可重试）', getCachedCapability('http://127.0.0.1:11434/v1', 'model-a') === null);
   globalThis.__probeCalls.length = 0;
   globalThis.__probeConfig.fail = false;
@@ -292,6 +295,9 @@ try {
     const mod2 = require(outfile);
     const cached = mod2.getCachedCapability('http://127.0.0.1:11434/v1', 'model-a');
     ok('持久化：重载后从 localStorage 恢复（不发网络请求）', cached?.reasoning === true && globalThis.__probeCalls.length === 0);
+    // 重载后再次探测：走缓存路径，models 依旧携带
+    const rReloaded = await mod2.probeModelCapabilities('http://127.0.0.1:11434/v1', 'model-a', '');
+    ok('持久化：重载后探测仍返回 models（缓存命中）', rReloaded.ok && rReloaded.models.includes('auto/model-a'));
   }
 } finally {
   try { rmSync(dir, { recursive: true, force: true }); } catch {}

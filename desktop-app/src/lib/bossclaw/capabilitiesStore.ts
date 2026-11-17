@@ -26,6 +26,8 @@ import {
 export interface CapabilityProbeResult {
   ok: boolean;
   capability: ModelCapability | null;
+  /** 网关 /v1/models 返回的模型 id 列表（原文 id，含 auto/ 等路由前缀；探测失败/未解析为空数组） */
+  models: string[];
   count: number;
   status: number;
   error: string;
@@ -39,6 +41,8 @@ interface CapCacheEntry {
   ts: number;
   ok: boolean;
   capability: ModelCapability | null;
+  /** 网关 /v1/models 返回的模型 id 列表（原文 id，含路由前缀；探测失败/未解析为空数组） */
+  models: string[];
   count: number;
   status: number;
   error: string;
@@ -76,6 +80,7 @@ function hydrate(): void {
         ts: Number(e.ts) || 0,
         ok: e.ok === true,
         capability: e.capability || null,
+        models: Array.isArray(e.models) ? (e.models as unknown[]).map((x) => String(x)) : [],
         count: Number(e.count) || 0,
         status: Number(e.status) || 0,
         error: String(e.error || ''),
@@ -101,6 +106,7 @@ function persist(): void {
         ts: e.ts,
         ok: true,
         capability: e.capability,
+        models: e.models,
         count: e.count,
         status: e.status,
         error: e.error,
@@ -140,6 +146,7 @@ export async function probeModelCapabilities(
     return {
       ok: true,
       capability: hit.capability,
+      models: hit.models,
       count: hit.count,
       status: hit.status,
       error: hit.error,
@@ -174,6 +181,7 @@ export async function probeModelCapabilities(
       ts: Date.now(),
       ok: Boolean(parsed?.ok) && capability !== null,
       capability,
+      models: parsed ? [...parsed.byId.keys()] : [],
       count,
       status: Number(r.status || 0),
       error: r.error || '',
@@ -199,6 +207,7 @@ export async function probeModelCapabilities(
     return {
       ok: false,
       capability: null,
+      models: [],
       count: 0,
       status: 0,
       error: String((e as Error)?.message || e),
@@ -211,6 +220,7 @@ function toProbeResult(entry: CapCacheEntry): CapabilityProbeResult {
   return {
     ok: entry.ok,
     capability: entry.capability,
+    models: entry.models,
     count: entry.count,
     status: entry.status,
     error: entry.error,
