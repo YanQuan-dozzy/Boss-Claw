@@ -134,6 +134,37 @@ export function getCachedCapability(baseUrl: string, modelName: string): ModelCa
   return hit && hit.ok ? hit.capability : null;
 }
 
+/** baseUrl 级模型列表缓存（不依赖已填模型名，仅内存；重启后由能力缓存或首屏探测恢复）。 */
+const modelsByBaseUrl = new Map<string, string[]>();
+
+/**
+ * 只拉网关的模型 id 列表 —— 供设置页模型候选使用，不要求已填模型名。
+ * 优先复用能力缓存（任一模型键命中都带全量列表），其次内存列表缓存，最后才发请求。
+ * 失败/未解析返回空数组（调用方保持既有候选即可，不打断输入）。
+ */
+export async function listGatewayModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const b = String(baseUrl || '').trim();
+  if (!b) return [];
+  const prefix = `${b.toLowerCase()}|`;
+  for (const [key, entry] of cache) {
+    if (entry.ok && entry.models.length > 0 && key.startsWith(prefix)) return entry.models;
+  }
+  const hit = modelsByBaseUrl.get(prefix);
+  if (hit) return hit;
+
+  try {
+    const url = `${b.replace(/\/+$/, '')}/models`;
+    const r = await electronApi.modelsProbe(url, apiKey, MODELS_PROBE_TIMEOUT_MS);
+    if (!r.ok || r.status !== 200) return [];
+    const parsed = parseModelCapabilitiesResponse(r.text);
+    const list = parsed ? [...parsed.byId.keys()] : [];
+    if (list.length > 0) modelsByBaseUrl.set(prefix, list);
+    return list;
+  } catch {
+    return [];
+  }
+}
+
 /** 探测指定 baseUrl+model 的能力。成功结果写入缓存与持久化；失败可随时重试。 */
 export async function probeModelCapabilities(
   baseUrl: string,

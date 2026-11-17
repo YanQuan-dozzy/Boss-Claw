@@ -114,6 +114,7 @@ import {
 } from '@/lib/bossclaw/thinkingCapability';
 import {
   getCachedCapability,
+  listGatewayModels,
   probeModelCapabilities,
   invalidateCapabilitiesCache,
   type CapabilityProbeResult,
@@ -635,6 +636,36 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   }, [config.model.baseUrl, config.model.model]);
   // eslint-enable react-hooks/exhaustive-deps
 
+  // ===== 模型候选列表：与能力探测解耦 =====
+  // 能力探测要求「baseUrl + 模型名」都非空；但模型候选必须反向先拿到（否则「先填名才能选」死锁）。
+  // 这里只依赖 baseUrl：端点一填好就去拉 /v1/models，把网关模型灌进下拉。
+  // apiKey 不入依赖（通常无需鉴权或宽松放行，逐键重探是浪费）；输入停顿 450ms 再拉。
+  const [gatewayModels, setGatewayModels] = useState<string[]>([]);
+  // apiKey 经 ref 读取：不触发重探测（/v1/models 通常无需鉴权），也避免 exhaustive-deps 噪音。
+  const apiKeyRef = useRef('');
+  useEffect(() => {
+    apiKeyRef.current = config.model.apiKey || '';
+  }, [config.model.apiKey]);
+  useEffect(() => {
+    const b = config.model.baseUrl || '';
+    setGatewayModels([]);
+    if (!b.trim()) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      listGatewayModels(b, apiKeyRef.current)
+        .then((list) => {
+          if (!cancelled) setGatewayModels(list);
+        })
+        .catch(() => {
+          /* 拉取失败保持空候选：用户仍可手输，不影响保存 */
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [config.model.baseUrl]);
+
   const onExport = () => {
     const json = exportData();
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
@@ -801,6 +832,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   // 探测未完成 / 失败时只剩预设列表（退化为现状）。去重保持顺序：预设在前，探测结果在后。
   const modelOptions = [
     ...(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []),
+    ...gatewayModels,
     ...(probeResult?.ok ? probeResult.models : []),
   ].filter((v, i, arr) => arr.indexOf(v) === i);
 

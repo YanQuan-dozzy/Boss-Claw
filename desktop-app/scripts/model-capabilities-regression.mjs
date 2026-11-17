@@ -104,6 +104,7 @@ try {
     resolveThinkingProfile,
     getCachedCapability,
     probeModelCapabilities,
+    listGatewayModels,
     invalidateCapabilitiesCache,
   } = mod;
 
@@ -247,6 +248,36 @@ try {
   ok('探测：列表内未找到 → ok=false', rMiss.ok === false);
   ok('探测：未找到有说明', rMiss.notes.some((n) => n.includes('未找到')));
   ok('探测：未找到不缓存', getCachedCapability('http://127.0.0.1:11434/v1', 'model-b') === null);
+
+  // ===== E2. listGatewayModels：候选列表不依赖已填模型名（修复「先填名才能选」死锁）=====
+  {
+    const fresh = 'http://127.0.0.1:1111/v1';
+    globalThis.__probeConfig.ok = true;
+    globalThis.__probeConfig.status = 200;
+    globalThis.__probeConfig.fail = false;
+    globalThis.__probeConfig.text = JSON.stringify({ data: [{ id: 'auto/model-a' }, { id: 'auto/model-c' }] });
+    globalThis.__probeCalls.length = 0;
+    const list = await listGatewayModels(fresh, '');
+    ok('列表：空模型名也能拉到候选', list.length === 2 && list.includes('auto/model-c'), JSON.stringify(list));
+    ok('列表：首次真实请求 1 次', globalThis.__probeCalls.length === 1);
+    const listAgain = await listGatewayModels(fresh, '');
+    ok('列表：内存缓存命中（不重复请求）', globalThis.__probeCalls.length === 1 && listAgain.length === 2);
+
+    // 同 baseUrl 已成功探测过能力 → 直接复用能力缓存里的全量列表，不发请求
+    globalThis.__probeCalls.length = 0;
+    const listCached = await listGatewayModels('http://127.0.0.1:11434/v1', '');
+    ok('列表：复用能力缓存的全量 models', listCached.includes('auto/model-a'), JSON.stringify(listCached));
+    ok('列表：复用缓存时不再发请求', globalThis.__probeCalls.length === 0);
+
+    // 失败 → 空数组（保持手输可用），失败不缓存、可重试
+    globalThis.__probeConfig.fail = true;
+    globalThis.__probeCalls.length = 0;
+    const listFail = await listGatewayModels('http://127.0.0.1:2222/v1', '');
+    ok('列表：网络失败 → 空数组', Array.isArray(listFail) && listFail.length === 0);
+    globalThis.__probeConfig.fail = false;
+    const listRetry = await listGatewayModels('http://127.0.0.1:2222/v1', '');
+    ok('列表：失败后重试成功', listRetry.length >= 1, JSON.stringify(listRetry));
+  }
 
   // ===== F. 思考判定联动：探测结果替代硬编码 =====
   {
