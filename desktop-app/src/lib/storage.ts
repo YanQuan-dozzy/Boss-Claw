@@ -59,6 +59,43 @@ export const BACKUP_KEYS = keysWhere((s) => s.backup);
 /** 同时识别老 key（v1 历史版本），仅导出、不参与导入，避免误删后无法恢复 */
 const LEGACY_KEYS = ['bossclaw-settings'] as const;
 
+/**
+ * P3：老备份里简历还在 bossclaw-data，而队列虚拟键（v1）里没有 resume 字段。
+ * 导入/恢复时把旧简历合并进队列载荷，避免「导入成功但简历丢了」。
+ */
+export function mergeLegacyResumeIntoQueueText(queueText: string, legacyDataText: string | null | undefined): string {
+  try {
+    const q = JSON.parse(queueText) as Record<string, unknown>;
+    if (typeof q.resumeText === 'string') return queueText;
+    if (!legacyDataText) return queueText;
+    const legacy = JSON.parse(legacyDataText) as { state?: Record<string, unknown> };
+    const st = legacy?.state;
+    if (!st) return queueText;
+    const hasResume = typeof st.resumeText === 'string' || Array.isArray(st.imageResumes);
+    if (!hasResume) return queueText;
+    q.resumeText = typeof st.resumeText === 'string' ? st.resumeText : '';
+    q.resumeFileName = typeof st.resumeFileName === 'string' ? st.resumeFileName : '';
+    q.imageResumes = Array.isArray(st.imageResumes) ? st.imageResumes : [];
+    return JSON.stringify(q);
+  } catch {
+    return queueText;
+  }
+}
+
+/** 文件模式下从 bossclaw-data 副本里剥离简历字段（已并入 resume.json，避免双源） */
+export function stripResumeFromLegacyDataText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { state?: Record<string, unknown>; version?: number };
+    if (!parsed?.state) return text;
+    delete parsed.state.resumeText;
+    delete parsed.state.resumeFileName;
+    delete parsed.state.imageResumes;
+    return JSON.stringify(parsed);
+  } catch {
+    return text;
+  }
+}
+
 export function exportData(): string {
   const data: Record<string, string | null> = {};
   for (const k of EXPORT_KEYS) {
@@ -88,14 +125,39 @@ export async function importData(json: string): Promise<{ ok: boolean; error?: s
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-  // 队列在文件模式下先落文件：写失败就整体中止，避免「设置/简历已导入、队列还停在旧值」的半截状态
-  if (isQueueFileMode() && QUEUE_STORE_KEY in data) {
-    const queueText = data[QUEUE_STORE_KEY];
-    if (typeof queueText === 'string' && queueText.trim()) {
-      const r = await importQueueData(queueText);
-      if (!r.ok) return { ok: false, error: `岗位队列导入失败：${r.error || '未知错误'}` };
-    } else if (queueText == null) {
-      await clearQueueStore();
+  // 队列/简历在文件模式下先落文件：写失败就整体中止，避免「设置/简历已导入、队列还停在旧值」的半截状态
+  if (isQueueFileMode()) {
+    // 旧备份的简历在 bossclaw-data 里，队列虚拟键（v1）没有 resume 字段 —— 导入前先合并。
+    const legacyText = typeof data['bossclaw-data'] === 'string'
+      ? data['bossclaw-data']
+      : localStorage.getItem('bossclaw-data');
+    if (QUEUE_STORE_KEY in data) {
+      const queueText = data[QUEUE_STORE_KEY];
+      if (typeof queueText === 'string' && queueText.trim()) {
+        const merged = mergeLegacyResumeIntoQueueText(queueText, legacyText);
+        const r = await importQueueData(merged);
+        if (!r.ok) return { ok: false, error: `岗位队列导入失败：${r.error || '未知错误'}` };
+      } else if (queueText == null) {
+        await clearQueueStore();
+        // 队列被清空但旧备份里有简历：简历仍应导入，不能被一并丢掉
+        if (legacyText) {
+          const emptyPayload = JSON.stringify({ version: 2, seq: 1, updatedAt: Date.now(), pending: [], qualifiedExports: {} });
+          const r = await importQueueData(mergeLegacyResumeIntoQueueText(emptyPayload, legacyText));
+          if (!r.ok) return { ok: false, error: `简历导入失败：${r.error || '未知错误'}` };
+        }
+      }
+    } else if (legacyText) {
+      // 备份没有队列键，但可能有旧简历：用「当前队列 + 导入的简历」重写一次
+      const snap = getQueueSnapshotText();
+      const merged = mergeLegacyResumeIntoQueueText(snap, legacyText);
+      if (merged !== snap) {
+        const r = await importQueueData(merged);
+        if (!r.ok) return { ok: false, error: `简历导入失败：${r.error || '未知错误'}` };
+      }
+    }
+    // 简历已并入 resume.json：写回 localStorage 前剥离，避免形成双源
+    if (typeof data['bossclaw-data'] === 'string') {
+      data['bossclaw-data'] = stripResumeFromLegacyDataText(data['bossclaw-data']);
     }
   } else if (QUEUE_STORE_KEY in data) {
     // 回滚模式（BOSSCLAW_QUEUE_STORE=localstorage）：队列必须并回 bossclaw-data，
@@ -103,7 +165,13 @@ export async function importData(json: string): Promise<{ ok: boolean; error?: s
     const queueText = data[QUEUE_STORE_KEY];
     if (typeof queueText === 'string' && queueText.trim()) {
       try {
-        const q = JSON.parse(queueText) as { pending?: unknown; qualifiedExports?: unknown };
+        const q = JSON.parse(queueText) as {
+          pending?: unknown;
+          qualifiedExports?: unknown;
+          resumeText?: unknown;
+          resumeFileName?: unknown;
+          imageResumes?: unknown;
+        };
         const legacyRaw = data['bossclaw-data'] ?? localStorage.getItem('bossclaw-data');
         const legacy = legacyRaw ? (JSON.parse(legacyRaw) as { state?: Record<string, unknown>; version?: number }) : { state: {}, version: 2 };
         legacy.state = {
@@ -111,6 +179,10 @@ export async function importData(json: string): Promise<{ ok: boolean; error?: s
           pending: Array.isArray(q.pending) ? q.pending : [],
           qualifiedExports: q.qualifiedExports && typeof q.qualifiedExports === 'object' ? q.qualifiedExports : {},
         };
+        // P3：v2 队列载荷里的简历要并回 bossclaw-data（回滚模式只读这个键）
+        if (typeof q.resumeText === 'string') legacy.state.resumeText = q.resumeText;
+        if (typeof q.resumeFileName === 'string') legacy.state.resumeFileName = q.resumeFileName;
+        if (Array.isArray(q.imageResumes)) legacy.state.imageResumes = q.imageResumes;
         data['bossclaw-data'] = JSON.stringify(legacy);
       } catch {
         return { ok: false, error: '备份里的岗位队列结构非法' };

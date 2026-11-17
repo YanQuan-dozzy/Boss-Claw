@@ -148,14 +148,18 @@ export default function Tasks() {
     () =>
       rerankPending(pending, config).filter((p) => {
         if (filter !== 'all') return p.status === filter;
+        // 「全部」只展示尚未投递的岗位（与工作台同口径）：sent 是终态，混进总览会让列表越用越长。
+        // 已投递记录完整保留，可通过「已投递」筛选单独查看、逐条删除或一次清理。
+        if (p.status === 'sent') return false;
         return showIgnored || !isHiddenStatus(p.status);
       }),
     [pending, config, filter, showIgnored]
   );
 
   const counts = useMemo(() => {
+    const active = pending.filter((p) => p.status !== 'sent');
     return {
-      all: pending.length,
+      all: showIgnored ? active.length : active.filter((p) => !isHiddenStatus(p.status)).length,
       pending: pending.filter((p) => p.status === 'pending').length,
       approved: pending.filter((p) => p.status === 'approved').length,
       approved_queue: pending.filter((p) => p.status === 'approved_queue').length,
@@ -163,7 +167,7 @@ export default function Tasks() {
       failed: pending.filter((p) => p.status === 'failed').length,
       ignored: pending.filter((p) => ['skipped', 'ignored'].includes(p.status)).length,
     };
-  }, [pending]);
+  }, [pending, showIgnored]);
 
   // 终态守卫：已投递(sent) / 投递中(approved_queue) 不允许被打回「待确认」或标记忽略 / 跳过，
   // 否则会造成状态机倒流、污染投递漏斗与统计口径（Workbench 侧已对 sent 做同类防御，此处对齐）。
@@ -207,12 +211,15 @@ export default function Tasks() {
     recomputeStats();
   };
 
-  // ===== 已投递岗位删除（终态清理）=====
-  // 已投递是终态，重试/忽略/跳过对它均禁用，此前没有任何出口，记录只增不减。
+  // ===== 终态岗位删除（终态清理）=====
+  // sent / failed / skipped / ignored 都是终态：重试/忽略/跳过对它们无意义或无入口，
+  // 此前只有「已投递」能删除，失败与已忽略/已跳过只能永久留存。
   // 删除仅移除本地记录，不影响已发出的招呼语与平台上的真实投递。
-  const onDeleteSent = (p: PendingItem) => {
+  const DELETABLE_STATUSES = ['sent', 'failed', 'skipped', 'ignored'];
+  const onDeleteItem = (p: PendingItem) => {
+    if (!DELETABLE_STATUSES.includes(p.status)) { message.warning('仅终态岗位（已投递 / 失败 / 已忽略 / 已跳过）支持删除'); return; }
     removePending(p.id);
-    addLog('warn', `已删除已投递岗位：${cleanTitle(p.job?.title, p.job?.salary)}${p.job?.company ? ` @ ${p.job.company}` : ''}`);
+    addLog('warn', `已删除岗位记录（${STATUS_COLOR[p.status]?.label || p.status}）：${cleanTitle(p.job?.title, p.job?.salary)}${p.job?.company ? ` @ ${p.job.company}` : ''}`);
     message.success('已删除该岗位记录');
     recomputeStats();
   };
@@ -426,7 +433,7 @@ export default function Tasks() {
               显示已忽略 / 已跳过
             </Checkbox>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              当前显示 <Text strong>{list.length}</Text> / {pending.length} 个岗位
+              当前显示 <Text strong>{list.length}</Text> 个岗位
             </Text>
           </Space>
         </div>
@@ -734,7 +741,22 @@ export default function Tasks() {
                       okText="确认删除"
                       cancelText="取消"
                       okButtonProps={{ danger: true }}
-                      onConfirm={() => onDeleteSent(p)}
+                      onConfirm={() => onDeleteItem(p)}
+                    >
+                      <Button size="small" danger className="task-ghost-btn" icon={<DeleteOutlined />}>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  )}
+                  {/* 失败 / 已忽略 / 已跳过：重试之外再给删除出口，避免长期堆积（与工作台同口径） */}
+                  {['failed', 'skipped', 'ignored'].includes(p.status) && (
+                    <Popconfirm
+                      title="删除该岗位记录？"
+                      description="仅删除本地记录，不影响平台上的实际投递；删除后相关计数同步减少。"
+                      okText="确认删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => onDeleteItem(p)}
                     >
                       <Button size="small" danger className="task-ghost-btn" icon={<DeleteOutlined />}>
                         删除

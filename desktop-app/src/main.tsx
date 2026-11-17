@@ -89,11 +89,15 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
  *      否则首帧会用 localStorage 的旧队列画出 0 条、再跳变）
  */
 async function boot(): Promise<void> {
+  // 只有**队列迁移失败**才阻断文件读取（文件可能只写了一半，此时 localStorage 仍保留队列）。
+  // 简历迁移失败不影响队列水合：文件里的队列仍可信，简历继续从 localStorage 用，下次启动重试。
   let migrationError: string | undefined;
   try {
-    const { migrateQueueFromLocalStorageIfNeeded } = await import('./lib/bossclaw/queueMigrate');
+    const { migrateQueueFromLocalStorageIfNeeded, migrateResumeFromLocalStorageIfNeeded } = await import('./lib/bossclaw/queueMigrate');
     const r = await migrateQueueFromLocalStorageIfNeeded();
     migrationError = r.error;
+    const rr = await migrateResumeFromLocalStorageIfNeeded();
+    if (rr.error) console.error('[boot] 简历迁移失败（下次启动重试）', rr.error);
   } catch (e) {
     migrationError = String((e as Error)?.message || e);
     console.error('[boot] 队列迁移异常', e);
@@ -118,13 +122,21 @@ async function boot(): Promise<void> {
     useRuntimeLogsStore.getState().addLog('error', `本地队列读取失败：${hydrated.error || '未知错误'}`);
   }
   if (hydrated.ok && hydrated.hasData) {
-    useDataStore.getState().hydrateFromFile(hydrated.pending, hydrated.qualifiedExports);
+    useDataStore.getState().hydrateFromFile(hydrated.pending, hydrated.qualifiedExports, {
+      resumeText: hydrated.resumeText,
+      resumeFileName: hydrated.resumeFileName,
+      imageResumes: hydrated.imageResumes,
+    });
   } else if (mayReadFile) {
     // 对应旧行为「无 localStorage 数据时从本地备份回签」：队列文件被删/损坏时兜底
     const restored = await queueRepo.restoreQueueFromBackupIfEmpty();
     if (restored) {
       const again = await queueRepo.hydrateQueue();
-      useDataStore.getState().hydrateFromFile(again.pending, again.qualifiedExports);
+      useDataStore.getState().hydrateFromFile(again.pending, again.qualifiedExports, {
+        resumeText: again.resumeText,
+        resumeFileName: again.resumeFileName,
+        imageResumes: again.imageResumes,
+      });
       useRuntimeLogsStore.getState().addLog('info', '已从本地备份恢复岗位队列');
     } else if (hydrated.ok && isQueueFileMode()) {
       // 文件模式下「文件里就是没有队列」也要灌一次空值：让 stats 与 queue 对齐，

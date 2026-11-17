@@ -394,6 +394,17 @@ export const electronApi = {
         return { ok: false, error: (e as Error).message };
       }
     },
+    /** P3：只提交变化条目（upserts / deletes / order / resume），避免整包序列化与传输 */
+    savePatch: async (text: string, seq: number): Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; error?: string }> => {
+      try {
+        const fn = api().queueSavePatch;
+        if (!fn) return { ok: false, error: '队列文件存储仅桌面端可用' };
+        const r = (await fn(text, seq)) as { ok?: boolean; stale?: boolean; seq?: number; bytes?: number; error?: string };
+        return { ok: Boolean(r?.ok), stale: r?.stale, seq: r?.seq, bytes: r?.bytes, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
     clear: async (): Promise<{ ok: boolean; error?: string }> => {
       try {
         const fn = api().queueClear;
@@ -404,12 +415,42 @@ export const electronApi = {
         return { ok: false, error: (e as Error).message };
       }
     },
-    usage: async (): Promise<{ ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string }> => {
+    usage: async (): Promise<{
+      ok: boolean;
+      bytes?: number;
+      bakBytes?: number;
+      totalBytes?: number;
+      queueBytes?: number;
+      queueBakBytes?: number;
+      resumeBytes?: number;
+      resumeBakBytes?: number;
+      snapshotBytes?: number;
+      snapshotCount?: number;
+      items?: number;
+      error?: string;
+    }> => {
       try {
         const fn = api().queueUsage;
         if (!fn) return { ok: false };
-        const r = (await fn()) as { ok?: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string };
-        return { ok: Boolean(r?.ok), bytes: r?.bytes, bakBytes: r?.bakBytes, totalBytes: r?.totalBytes, error: r?.error };
+        const r = (await fn()) as {
+          ok?: boolean; bytes?: number; bakBytes?: number; totalBytes?: number;
+          queueBytes?: number; queueBakBytes?: number; resumeBytes?: number; resumeBakBytes?: number;
+          snapshotBytes?: number; snapshotCount?: number; items?: number; error?: string;
+        };
+        return {
+          ok: Boolean(r?.ok),
+          bytes: r?.bytes,
+          bakBytes: r?.bakBytes,
+          totalBytes: r?.totalBytes,
+          queueBytes: r?.queueBytes,
+          queueBakBytes: r?.queueBakBytes,
+          resumeBytes: r?.resumeBytes,
+          resumeBakBytes: r?.resumeBakBytes,
+          snapshotBytes: r?.snapshotBytes,
+          snapshotCount: r?.snapshotCount,
+          items: r?.items,
+          error: r?.error,
+        };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

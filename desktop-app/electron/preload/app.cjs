@@ -42,7 +42,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:mock-interview-voice-pack-preview', 'jc:mock-interview-voice-remove',
   'jc:mock-interview-voice-rename', 'jc:mock-interview-voice-usage',
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
-  'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-usage',
+  'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-save-patch', 'jc:queue-usage',
   'jc:save-file', 'jc:save-pdf', 'jc:save-pdf-batch', 'jc:save-pdf-batch-cancel',
   'jc:save-pdf-batch-progress', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
   'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
@@ -215,11 +215,12 @@ const api = {
   backupRead: () => ipcRenderer.invoke('jc:backup-read'),
   backupDelete: () => ipcRenderer.invoke('jc:backup-delete'),
 
-  // ===== 岗位队列文件仓储（issue #10）=====
+  // ===== 岗位队列文件仓储（issue #10 / 存储迁移 P3）=====
   // load/save 走主进程 <userData>/queue/；save 交「已序列化字符串 + 单调 seq」，
-  // 主进程负责校验、轮转 .bak 与原子写。
+  // savePatch 只交通常变化条目（P3 per-item 写入）。
   queueLoad: () => ipcRenderer.invoke('jc:queue-load'),
   queueSave: (text, seq, opts) => ipcRenderer.invoke('jc:queue-save', text, seq, opts),
+  queueSavePatch: (text, seq) => ipcRenderer.invoke('jc:queue-save-patch', text, seq),
   queueClear: () => ipcRenderer.invoke('jc:queue-clear'),
   queueUsage: () => ipcRenderer.invoke('jc:queue-usage'),
 

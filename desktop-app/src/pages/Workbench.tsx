@@ -25,6 +25,7 @@ import GreetingEditor from '@/components/GreetingEditor';
 import PlatformChip from '@/components/PlatformChip';
 import CompanyBizPanel from '@/components/CompanyBizPanel';
 import CompanyDueDiligencePanel from '@/components/CompanyDueDiligencePanel';
+import ProgressStageSelect from '@/components/ProgressStageSelect';
 import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
@@ -42,6 +43,8 @@ import { jobCardStatus, scoreChip, JOB_ACTION_TIPS } from '@/lib/bossclaw/status
 import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/jobDisplay';
 // 企业工商摘要（P1-5 A 层）：卡片上只显示一行状态/注册资本，详细字段在展开区的 CompanyBizPanel
 import { bizProfileTag } from '@/lib/bossclaw/companyProfile';
+// 企业背调摘要（B/C 层）：只有中/高风险才在卡片上出提示标签，且明示「非权威、不拦截」
+import { dueDiligenceTag } from '@/lib/bossclaw/companyDueDiligence';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
@@ -835,21 +838,23 @@ export default function Workbench() {
     if (useAppStore.getState().autoAssist) requestRunNext();
   };
 
-  // ===== 已投递岗位删除（终态清理）=====
-  // 已投递（sent）是终态，重试/忽略/跳过对它恒禁用，此前没有任何出口，「已投递」列表只增不减。
+  // ===== 终态岗位删除（终态清理）=====
+  // sent / failed / skipped / ignored 都是终态：重试/忽略/跳过对它们无意义，此前只有 sent 有出口，
+  // 其余状态只能靠「显示已忽略/跳过」查看、无法清理，长期累积。
   // 删除仅移除本地岗位记录：不影响已发出的消息，也不影响平台上的真实投递；
-  // 「已投递」计数随 pending 一起重算（数据源只有 pending 一处）。
-  const onDeleteDelivered = (id: string) => {
+  // 相关计数随 pending 一起重算（数据源只有 pending 一处）。
+  const DELETABLE_STATUSES = ['sent', 'failed', 'skipped', 'ignored'];
+  const onDeleteTerminal = (id: string) => {
     const item = useDataStore.getState().pending.find((p) => p.id === id);
     if (!item) return;
-    if (item.status !== 'sent') { message.warning('仅「已投递」岗位支持删除'); return; }
+    if (!DELETABLE_STATUSES.includes(item.status)) { message.warning('仅终态岗位（已投递 / 失败 / 已忽略 / 已跳过）支持删除'); return; }
     removePending(id);
     // 防御：极端情况下引擎仍指向该卡（如刚投递完成即被删除），一并释放，避免残留 activeId 指向已删数据
     if (id === activeId) {
       setActiveId(null);
       setApplyStage(null);
     }
-    addLog('warn', `已删除已投递岗位：${cleanTitle(item.job?.title, item.job?.salary)}`);
+    addLog('warn', `已删除岗位记录（${STATUS_TAG[item.status]?.label || item.status}）：${cleanTitle(item.job?.title, item.job?.salary)}`);
     message.success('已删除该岗位记录');
     recomputeStats();
   };
@@ -3122,6 +3127,7 @@ export default function Workbench() {
               {(jobsExpanded ? ranked : ranked.slice(0, 5)).map((p: PendingItem) => {
                 const chip = scoreChip(p.analysis?.score);
                 const st = STATUS_TAG[p.status] || { color: 'default', label: p.status };
+                const dd = dueDiligenceTag(p.job?.dueDiligence);
                 const isPending = p.status === 'pending';
                 const isExpanded = expandedIds.has(p.id);
                 // 元信息行只展示真实解析到的「公司 · 地点 · 薪资」；缺字段时整行不渲染，绝不显示占位/裸链接占位，
@@ -3138,6 +3144,20 @@ export default function Workbench() {
                   });
                   st.setRoute('mockInterview');
                 };
+                // 终态岗位统一删除入口（已投递 / 失败 / 已忽略 / 已跳过）：这些状态没有其他出口，
+                // 不给删除就只能永久堆积在「已投递」标签或「显示已忽略/跳过」里。
+                const deleteTerminalButton = (statusLabel: string) => (
+                  <Popconfirm
+                    title={`删除该${statusLabel}岗位？`}
+                    description="仅删除本地岗位记录，不影响已发出的消息与平台上的实际投递；删除后相关计数同步减少。"
+                    okText="确认删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => onDeleteTerminal(p.id)}
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                );
                 return (
                   <div key={p.id} className={'job-card ' + jobCardStatus(p) + (p.id === activeId ? ' is-active' : '')}>
                     <div className="job-header" role="button" tabIndex={0} aria-expanded={isExpanded}
@@ -3198,6 +3218,12 @@ export default function Workbench() {
                               <span className="task-flag-badge task-flag-badge--neutral">{bizProfileTag(p.job.companyProfile)}</span>
                             </Tooltip>
                           ) : null}
+                          {/* 背调摘要（B/C 层）：只在中/高风险时出现；评级非权威，绝不自动跳过岗位 */}
+                          {dd ? (
+                            <Tooltip title={`AI 背调评级：${dd.label}（非权威，仅提示，不影响是否投递）。${dd.stale ? '负面信号已变化，建议展开重新评估；' : ''}${dd.summary || '展开岗位卡可查看依据与来源。'}`}>
+                              <span className="task-flag-badge task-flag-badge--neutral">{dd.text}</span>
+                            </Tooltip>
+                          ) : null}
                         </div>
                       </div>
                       {p.needsReview && (
@@ -3209,6 +3235,13 @@ export default function Workbench() {
                     </div>
                     {isExpanded && (
                       <div className="job-body" onClick={(e) => e.stopPropagation()}>
+                        {/* 求职进展（P1-6）：与投递状态正交，只做 HR 侧流程跟踪；未投递的岗位不展示 */}
+                        {(p.status === 'sent' || p.progressStage) && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0 8px' }}>
+                            <span style={{ fontSize: 12, color: 'var(--fg-subtle)' }}>求职进展</span>
+                            <ProgressStageSelect value={p.progressStage} onChange={(patch) => updatePending(p.id, patch)} />
+                          </div>
+                        )}
                         {p.analysis?.reason && <div className="job-reason">{p.analysis.reason}</div>}
                         {p.analysis?.aiNote && <div className="job-ainote">{p.analysis.aiNote}</div>}
                         {p.deliveryGreeting || p.analysis?.greeting ? (
@@ -3299,23 +3332,16 @@ export default function Workbench() {
                             <Tooltip title={JOB_ACTION_TIPS.mockInterview}><Button size="small" onClick={openMockInterview}>面试</Button></Tooltip>
                             {p.status === 'sent' ? (
                               // 已投递是终态：忽略/跳过对它无意义（此前两个按钮恒灰），替换为可用的「删除」
-                              <Popconfirm
-                                title="删除该已投递岗位？"
-                                description="仅删除本地记录，不影响已发出的招呼语与平台上的实际投递；删除后「已投递」计数同步减少。"
-                                okText="确认删除"
-                                cancelText="取消"
-                                okButtonProps={{ danger: true }}
-                                onConfirm={() => onDeleteDelivered(p.id)}
-                              >
-                                <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
-                              </Popconfirm>
+                              deleteTerminalButton('已投递')
                             ) : p.status === 'skipped' || p.status === 'ignored' ? (
                               // 已跳过 / 已忽略本就收口，再给「忽略 / 跳过」是同义重复；要恢复请用左侧「重试」
-                              null
+                              deleteTerminalButton(p.status === 'skipped' ? '已跳过' : '已忽略')
                             ) : (
-                              // 失败等未收口终态只留「跳过」一个出口：失败已说明这次投递没成，
-                              // 再并排一个「忽略」是同义分支，只会让用户在两枚按钮之间犹豫。
-                              <Tooltip title={JOB_ACTION_TIPS.skip}><Button size="small" onClick={() => onSkip(p.id)}>跳过</Button></Tooltip>
+                              // 失败等未收口终态：保留「跳过」出口，同时允许直接删除不再需要的记录
+                              <>
+                                <Tooltip title={JOB_ACTION_TIPS.skip}><Button size="small" onClick={() => onSkip(p.id)}>跳过</Button></Tooltip>
+                                {deleteTerminalButton('失败')}
+                              </>
                             )}
                           </div>
                         </>

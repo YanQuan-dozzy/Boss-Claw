@@ -23,7 +23,7 @@ import {
   getLatestPersistSnapshot,
   onPersistFailure,
 } from './persistSafe';
-import { BACKUP_KEYS } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
+import { BACKUP_KEYS, mergeLegacyResumeIntoQueueText, stripResumeFromLegacyDataText } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表
 import { isQueueFileMode } from './bossclaw/queueMode';
 import {
   QUEUE_STORE_KEY,
@@ -184,6 +184,9 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
     // 一份被篡改/损坏的备份文件可写入任意键（如注入伪造的配置/数据键）。
     const allowed = new Set<string>(BACKUP_KEYS);
     let legacyQueueText: string | null = null;
+    // P3：旧备份的简历在 bossclaw-data 里，队列虚拟键（v1）没有 resume 字段
+    const legacyDataText = typeof r.bundle.keys['bossclaw-data'] === 'string' ? r.bundle.keys['bossclaw-data'] : null;
+    let queueRestoredFromBundle = false;
     for (const [k, v] of Object.entries(r.bundle.keys)) {
       try {
         if (!allowed.has(k)) continue;
@@ -197,11 +200,12 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
           if (v == null) {
             await clearQueueStore();
           } else if (typeof v === 'string') {
-            const w = await importQueueData(v);
+            const w = await importQueueData(mergeLegacyResumeIntoQueueText(v, legacyDataText));
             if (!w.ok) throw new Error(w.error || '队列写入失败');
           } else {
             continue;
           }
+          queueRestoredFromBundle = true;
           restoredCount += 1;
           continue;
         }
@@ -209,17 +213,35 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
           localStorage.removeItem(k); // 与备份一致：备份时该键缺失则删除
         } else if (typeof v !== 'string') {
           continue; // 非字符串值一律忽略
-        } else if (localStorage.getItem(k) !== v) {
-          localStorage.setItem(k, v);
-          restoredCount += 1;
+        } else {
+          // P3：文件模式下简历已并入 resume.json，bossclaw-data 里的旧简历字段剥离后再写回
+          const next = k === 'bossclaw-data' && isQueueFileMode() ? stripResumeFromLegacyDataText(v) : v;
+          if (localStorage.getItem(k) !== next) {
+            localStorage.setItem(k, next);
+            restoredCount += 1;
+          }
         }
       } catch {
         failedKeys.push(k); // 单个键恢复失败：记录后继续处理其余键
       }
     }
+    // P3：备份里没有队列键、但有旧简历 → 用当前队列 + 备份简历重写一次
+    if (isQueueFileMode() && !queueRestoredFromBundle && legacyDataText) {
+      try {
+        const snap = getQueueSnapshotText();
+        const merged = mergeLegacyResumeIntoQueueText(snap, legacyDataText);
+        if (merged !== snap) {
+          const w = await importQueueData(merged);
+          if (!w.ok) throw new Error(w.error || '简历写入失败');
+          restoredCount += 1;
+        }
+      } catch {
+        failedKeys.push(QUEUE_STORE_KEY);
+      }
+    }
     if (legacyQueueText) {
       try {
-        const q = JSON.parse(legacyQueueText) as { pending?: unknown; qualifiedExports?: unknown };
+        const q = JSON.parse(legacyQueueText) as { pending?: unknown; qualifiedExports?: unknown; resumeText?: unknown; resumeFileName?: unknown; imageResumes?: unknown };
         const raw = localStorage.getItem('bossclaw-data');
         const legacy = raw ? (JSON.parse(raw) as { state?: Record<string, unknown>; version?: number }) : { state: {}, version: 2 };
         legacy.state = {
@@ -227,6 +249,10 @@ export async function restoreFromLocalBackup(): Promise<{ restored: boolean; err
           pending: Array.isArray(q.pending) ? q.pending : [],
           qualifiedExports: q.qualifiedExports && typeof q.qualifiedExports === 'object' ? q.qualifiedExports : {},
         };
+        // P3：v2 队列载荷里的简历要并回 bossclaw-data（回滚模式只读这个键）
+        if (typeof q.resumeText === 'string') legacy.state.resumeText = q.resumeText;
+        if (typeof q.resumeFileName === 'string') legacy.state.resumeFileName = q.resumeFileName;
+        if (Array.isArray(q.imageResumes)) legacy.state.imageResumes = q.imageResumes;
         localStorage.setItem('bossclaw-data', JSON.stringify(legacy));
         restoredCount += 1;
       } catch {

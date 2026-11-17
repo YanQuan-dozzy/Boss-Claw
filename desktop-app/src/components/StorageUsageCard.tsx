@@ -26,7 +26,7 @@ const { Paragraph, Text } = Typography;
 
 /** 存储键的人类可读名（未登记的键直接显示原名） */
 const KEY_LABELS: Record<string, string> = {
-  'bossclaw-data': '简历 / 画像 / 达标岗位缓存（队列已移出）',
+  'bossclaw-data': '画像 / 设置缓存（队列与简历已移出）',
   'bossclaw-settings-v2': '基础求职条件与模型配置',
   'bossclaw-app': '界面偏好（主题、侧栏、路由）',
   'bossclaw-schedule': '定时采集 / 投递任务',
@@ -45,16 +45,23 @@ const KEY_LABELS: Record<string, string> = {
 export default function StorageUsageCard() {
   const failures = usePersistFailures();
   const [usage, setUsage] = useState<StorageUsage>(() => measureStorageUsage());
-  // 队列已迁到 <userData>/queue/（issue #10）：它不占上文的 50MB localStorage 额度，
-  // 因此单独一行展示磁盘占用，避免用户误把「额度快满了」与「队列很大」画等号。
-  const [queueBytes, setQueueBytes] = useState<number | null>(null);
+  // 队列 / 简历已迁到 <userData>/queue/（issue #10 + P3）：不占上文的 50MB localStorage 额度，
+  // 因此单独分行展示磁盘占用，避免用户误把「额度快满了」与「队列很大」画等号。
+  const [fileUsage, setFileUsage] = useState<{ queue: number; resume: number; total: number; items: number } | null>(null);
   const refreshQueue = useCallback(async () => {
     if (!isQueueFileMode()) {
-      setQueueBytes(null);
+      setFileUsage(null);
       return;
     }
     const r = await electronApi.queue.usage();
-    if (r.ok) setQueueBytes(r.totalBytes ?? 0);
+    if (r.ok) {
+      setFileUsage({
+        queue: r.queueBytes ?? 0,
+        resume: r.resumeBytes ?? 0,
+        total: r.totalBytes ?? 0,
+        items: r.items ?? 0,
+      });
+    }
   }, []);
   const refresh = useCallback(() => {
     setUsage(measureStorageUsage());
@@ -109,7 +116,7 @@ export default function StorageUsageCard() {
       />
 
       <div className="storage-usage-list">
-        {rows.length === 0 && queueBytes == null ? (
+        {rows.length === 0 && fileUsage == null ? (
           <Text type="secondary" style={{ fontSize: 13 }}>当前没有已持久化的数据。</Text>
         ) : (
           rows.map((r) => (
@@ -122,14 +129,23 @@ export default function StorageUsageCard() {
             </div>
           ))
         )}
-        {queueBytes != null && (
-          <div className="storage-usage-row" key="queue-file">
-            <span className="storage-usage-row__name" title="岗位队列（含达标岗位缓存），存于主进程文件，不占 localStorage 额度">
-              岗位队列（文件）
-            </span>
-            <span className="storage-usage-row__key">&lt;userData&gt;/queue/</span>
-            <span className="storage-usage-row__size">{formatStorageSize(queueBytes)}</span>
-          </div>
+        {fileUsage != null && (
+          <>
+            <div className="storage-usage-row" key="queue-file">
+              <span className="storage-usage-row__name" title={`岗位队列（${fileUsage.items} 条，per-item 文件 + 索引；含最近 24 份索引快照），不占 localStorage 额度`}>
+                岗位队列（文件）
+              </span>
+              <span className="storage-usage-row__key">&lt;userData&gt;/queue/</span>
+              <span className="storage-usage-row__size">{formatStorageSize(fileUsage.queue)}</span>
+            </div>
+            <div className="storage-usage-row" key="resume-file">
+              <span className="storage-usage-row__name" title="简历正文与图片简历（P3 已从 localStorage 迁出），不占 localStorage 额度">
+                简历数据（文件）
+              </span>
+              <span className="storage-usage-row__key">&lt;userData&gt;/queue/resume.json</span>
+              <span className="storage-usage-row__size">{formatStorageSize(fileUsage.resume)}</span>
+            </div>
+          </>
         )}
       </div>
 
@@ -141,7 +157,7 @@ export default function StorageUsageCard() {
 
       <SettingsNote
         text="上限 50 MB（Chromium 按字符计费、所有键合计），写满后含「基础求职条件」都会写不进去"
-        detail="自 issue #10 起岗位队列已迁到主进程文件（<userData>/queue/，不占上述额度），localStorage 里只剩简历、画像与设置等小数据；若上方仍提示写入失败，请先导出备份再检查磁盘权限。"
+        detail="岗位队列与简历已迁到主进程文件（<userData>/queue/：per-item 条目 + 索引 + 最近 24 份索引快照 + resume.json，均不占上述额度）；若上方仍提示写入失败，请先导出备份再检查磁盘权限。"
       />
     </div>
   );

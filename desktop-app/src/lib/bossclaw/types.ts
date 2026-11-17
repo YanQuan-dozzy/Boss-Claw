@@ -458,6 +458,18 @@ export type PendingStatus =
   | 'rejected'
   | 'ignored';
 
+/**
+ * 求职流程进展（P1-6）。**与 PendingStatus 正交**：
+ * status 描述「投递到哪一步」，progressStage 描述「HR 那边到哪一步」。
+ * 刻意不扩 PendingStatus 枚举 —— 全仓 40+ 处按 status 分支渲染 / 统计，加值会静默架空它们。
+ */
+export type ProgressStage =
+  | 'replied'
+  | 'interview_scheduled'
+  | 'interviewed'
+  | 'offer'
+  | 'rejected_by_hr';
+
 export interface PendingItem {
   id: string;
   runId?: string;
@@ -481,6 +493,14 @@ export interface PendingItem {
   hrRepliedFingerprint?: string;
   /** AI 跟聊：HR 明确拒绝的时间戳（>0 时该会话停止继续跟聊） */
   hrRejectedAt?: number;
+  /**
+   * 求职流程进展（P1-6）：只做流程跟踪，**不改 status、不进投递队列、不影响排序与过滤**。
+   * 写入点：AI 跟聊识别到面试邀约 → interview_scheduled；HR 明确拒绝 → rejected_by_hr；
+   * 其余（已回复 / 已面试 / 已获 Offer）由用户手动标记。缺失 = 未标记（统计归「未标记」）。
+   */
+  progressStage?: ProgressStage;
+  /** 求职流程进展最后一次更新时间（仅展示；手动清除时一并清空） */
+  progressUpdatedAt?: number;
   /** 已打开沟通窗口时间戳（工作台「点击立即沟通」后、尚未发送文字） */
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */

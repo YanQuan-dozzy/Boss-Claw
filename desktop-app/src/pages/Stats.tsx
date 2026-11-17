@@ -70,6 +70,7 @@ import {
 } from '@/lib/bossclaw/statsAggregate';
 import { buildDetailRows, buildSummaryRows, exportFilename, toCsv, type ExportKind } from '@/lib/bossclaw/statsExport';
 import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
+import { PROGRESS_STAGE_META } from '@/lib/bossclaw/progressStage';
 import { STATUS_COLORS } from '@/theme';
 import { revealFile, saveCsvFile, saveReportPdf, type ExportOutcome } from '@/lib/bossclaw/statsExportRun';
 
@@ -644,11 +645,52 @@ export default function Stats() {
                 <HBar label="已投递" hint={snapshot.funnel.sent > 0 ? `占采集 ${pct(snapshot.funnel.sent, snapshot.funnel.discovered)}%` : '尚未投递'} value={snapshot.funnel.sent} total={snapshot.funnel.discovered || 1} color={STATUS_COLORS.success} />
                 <HBar label="已打开沟通" hint={snapshot.funnel.opened > 0 ? `占采集 ${pct(snapshot.funnel.opened, snapshot.funnel.discovered)}%` : '尚未打开沟通窗'} value={snapshot.funnel.opened} total={snapshot.funnel.discovered || 1} color="#A78BFA" />
                 <HBar label="已回复" hint={snapshot.funnel.replied > 0 ? `AI 回复成功，占采集 ${pct(snapshot.funnel.replied, snapshot.funnel.discovered)}%` : '暂无回复'} value={snapshot.funnel.replied} total={snapshot.funnel.discovered || 1} color={STATUS_COLORS.warning} />
-                <HBar label="面试" hint="暂无采集来源" value={snapshot.funnel.interviewCount} total={snapshot.funnel.discovered || 1} color="#CBD5E1" />
+                <HBar
+                  label="面试"
+                  hint={snapshot.funnel.interviewCount > 0
+                    ? `已约面 / 已面试 / 已获 Offer，占采集 ${pct(snapshot.funnel.interviewCount, snapshot.funnel.discovered)}%`
+                    : '暂无面试进展（可在岗位卡「求职进展」标记，AI 跟聊识别到约面会自动记录）'}
+                  value={snapshot.funnel.interviewCount}
+                  total={snapshot.funnel.discovered || 1}
+                  color={snapshot.funnel.interviewCount > 0 ? STATUS_COLORS.success : '#CBD5E1'}
+                />
               </div>
               <p className="stats-note">
-                转化链路「采集入队 → 已投递 → 已打开沟通 → 已回复」；「已回复」按 AI 跟聊回复成功（replySentAt）计数、
-                仍属「已投递」（回复率不重复统计）；「面试」暂无采集来源，留 0 占位。
+                转化链路「采集入队 → 已投递 → 已打开沟通 → 已回复 → 面试」；「已回复」按 AI 跟聊回复成功（replySentAt）计数、
+                仍属「已投递」（回复率不重复统计）；「面试」按求职进展（progressStage）统计，旧数据无该字段时显示 0。
+              </p>
+            </Card>
+          </div>
+
+          {/* 求职进展分布（P1-6）：与投递状态正交，未标记（含旧数据）单列 */}
+          <div className="stats-block">
+            <Card
+              size="small"
+              title="求职进展"
+              extra={<Text type="secondary" style={{ fontSize: 12 }}>已标记 {snapshot.progressStages.marked} / {snapshot.total} 条</Text>}
+            >
+              <div className="status-hbar-list">
+                {PROGRESS_STAGE_META.map((m) => (
+                  <HBar
+                    key={m.key}
+                    label={m.label}
+                    hint={m.hint}
+                    value={snapshot.progressStages.counts[m.key] ?? 0}
+                    total={snapshot.total}
+                    color={m.color}
+                  />
+                ))}
+                <HBar
+                  label="未标记"
+                  hint="尚未记录 HR 侧进展（旧数据与未跟进岗位）"
+                  value={snapshot.progressStages.unknown}
+                  total={snapshot.total}
+                  color="#CBD5E1"
+                />
+              </div>
+              <p className="stats-note">
+                「已约面 / HR 已拒绝」由 AI 跟聊识别后自动写入，其余阶段可在岗位卡「求职进展」手动标记；
+                进展与投递状态正交（不改投递状态、不影响投递成功率），仅用于流程跟踪。
               </p>
             </Card>
           </div>

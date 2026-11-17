@@ -26,9 +26,22 @@ import { generateReply } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { platformEnabled, platformLabel, platformPriority, platformSupports } from '@/lib/bossclaw/platforms';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
-import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
+import { nextStageOnInterview } from '@/lib/bossclaw/progressStage';
+import type { PendingItem, ImageResume, JobPlatform, ProgressStage } from '@/lib/bossclaw/types';
 
 type ChatJobOutcome = 'success' | 'failed' | 'stop' | 'continue';
+
+/**
+ * 自动推进求职进展（P1-6）：只写 progressStage / progressUpdatedAt，绝不动 status。
+ * 读 store 里的**当前值**而不是调用方手里的快照 —— 跟聊期间用户可能已手动改成更靠后的阶段。
+ */
+function markProgress(id: string, stage: ProgressStage): void {
+  const { pending, updatePending } = useDataStore.getState();
+  const cur = pending.find((p) => p.id === id)?.progressStage;
+  const next = stage === 'rejected_by_hr' ? stage : nextStageOnInterview(cur);
+  if (!next || next === cur) return;
+  updatePending(id, { progressStage: next, progressUpdatedAt: Date.now() });
+}
 
 /** 从岗位元信息中提取纯 encryptJobId */
 function extractJobId(job: PendingItem['job']): string {
@@ -178,6 +191,8 @@ async function aiReplyAndSend(args: {
   // HR 明确拒绝：不再回复，收口该会话（记录指纹 + 拒绝时间，避免下一轮重复生成）
   if (reply.outcome === 'hr_rejected') {
     updatePending(item.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: hrMessage });
+    // 求职进展：HR 拒绝是终态，总是覆盖（即使此前已到「已约面 / 已面试」）
+    markProgress(item.id, 'rejected_by_hr');
     addChatLog({
       level: 'warn', stage: 'ai_reply', jobId, jobTitle: title, company,
       msg: 'AI 判断 HR 已明确拒绝，结束该会话（不再回复）', errorDetail: hrPreview,
@@ -202,6 +217,8 @@ async function aiReplyAndSend(args: {
     errorDetail: reply.text,
   });
   if (reply.interview) {
+    // 求职进展：AI 识别到面试邀约 → 已约面（只前进，不覆盖更靠后的阶段）
+    markProgress(item.id, 'interview_scheduled');
     addChatLog({
       level: 'info', stage: 'ai_reply', jobId, jobTitle: title, company,
       msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',
@@ -663,7 +680,10 @@ async function watchCycle(run: WatchRun): Promise<void> {
       // HR 明确拒绝：收口该会话，不再回复
       if (reply.outcome === 'hr_rejected') {
         watchHandled.set(convName, fp);
-        if (matched) useDataStore.getState().updatePending(matched.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: fp });
+        if (matched) {
+          useDataStore.getState().updatePending(matched.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: fp });
+          markProgress(matched.id, 'rejected_by_hr');
+        }
         addChatLog({
           level: 'warn', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
           msg: `AI 判断「${convName}」已明确拒绝，结束该会话（不再回复）`,
@@ -689,6 +709,7 @@ async function watchCycle(run: WatchRun): Promise<void> {
         errorDetail: reply.text,
       });
       if (reply.interview) {
+        if (matched) markProgress(matched.id, 'interview_scheduled');
         addChatLog({
           level: 'info', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
           msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',

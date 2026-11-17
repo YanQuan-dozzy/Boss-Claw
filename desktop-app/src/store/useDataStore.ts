@@ -112,10 +112,15 @@ interface DataState {
   recomputeStats: () => void;
   resetDailyStats: () => void;
   /**
-   * 启动水合：把主进程队列文件里读回的 pending / qualifiedExports 灌入 store（issue #10）。
+   * 启动水合：把主进程数据文件里读回的 pending / qualifiedExports / 简历灌入 store（issue #10 / P3）。
    * 仅在启动阶段调用一次；调用后立刻重算 stats，保证持久化的统计与文件队列一致。
+   * resume 缺省时保持 store 当前值（迁移失败的老数据仍从 localStorage 水合而来）。
    */
-  hydrateFromFile: (pending: PendingItem[], qualifiedExports: Record<string, QualifiedJobExport[]>) => void;
+  hydrateFromFile: (
+    pending: PendingItem[],
+    qualifiedExports: Record<string, QualifiedJobExport[]>,
+    resume?: { resumeText?: string; resumeFileName?: string; imageResumes?: ImageResume[] },
+  ) => void;
 }
 
 export const useDataStore = create<DataState>()(
@@ -268,11 +273,18 @@ export const useDataStore = create<DataState>()(
         set({ stats: next });
       },
       resetDailyStats: () => set({ stats: { ...DEFAULT_STATS, date: today() } }),
-      hydrateFromFile: (pending, qualifiedExports) => {
-        set({
+      hydrateFromFile: (pending, qualifiedExports, resume) => {
+        const patch: Partial<DataState> = {
           pending: Array.isArray(pending) ? pending : [],
           qualifiedExports: qualifiedExports && typeof qualifiedExports === 'object' ? qualifiedExports : {},
-        });
+        };
+        // P3：简历已迁到 <userData>/queue/resume.json；缺省字段不覆盖（兼容迁移失败 / 旧文件）
+        if (resume) {
+          if (typeof resume.resumeText === 'string') patch.resumeText = resume.resumeText;
+          if (typeof resume.resumeFileName === 'string') patch.resumeFileName = resume.resumeFileName;
+          if (Array.isArray(resume.imageResumes)) patch.imageResumes = resume.imageResumes;
+        }
+        set(patch);
         // 文件队列是唯一事实来源，统计需立即对齐（否则持久化的 stats 会停留在 localStorage 旧值）
         get().recomputeStats();
       },
@@ -317,12 +329,20 @@ export const useDataStore = create<DataState>()(
         // 重启后需用户重新选择，避免应用内长期留存素材内容副本。
         const { resumeImage, experienceMaterials: _materials, ...rest } = s;
         if (isQueueFileMode()) {
-          // issue #10：队列已由 main 进程文件承载（lib/bossclaw/queueRepo.ts）。
-          // 这里必须把 pending / qualifiedExports 从 localStorage 载荷里剔除：
+          // issue #10 / P3：队列与简历已由主进程文件承载（lib/bossclaw/queueRepo.ts）。
+          // 这里必须把 pending / qualifiedExports / resumeText / resumeFileName / imageResumes
+          // 从 localStorage 载荷里剔除：
           //   · 它们是 bossclaw-data 体积与写入频率的绝对大头（旧数据 5MB+）；
           //   · 继续留在 localStorage 会和文件形成双源，一旦两边不一致就会出现「重启后回退」。
           // 迁移失败/环境变量回滚时 isQueueFileMode() 为 false，行为自动退回旧路径。
-          const { pending: _pending, qualifiedExports: _qualified, ...queueFree } = rest;
+          const {
+            pending: _pending,
+            qualifiedExports: _qualified,
+            resumeText: _resumeText,
+            resumeFileName: _resumeFileName,
+            imageResumes: _imageResumes,
+            ...queueFree
+          } = rest;
           return queueFree as DataState;
         }
         return rest as DataState;

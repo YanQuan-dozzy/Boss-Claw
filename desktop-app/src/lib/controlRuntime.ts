@@ -479,7 +479,7 @@ const handlers: Record<string, Handler> = {
     if (!b) return { applied: false, message: '浏览器控制不可用（需 webview 引擎运行）' };
     if (!/^https?:\/\//.test(u)) return { applied: false, message: `URL 必须是 http(s) 绝对地址` };
     // 审查 M-35：仅校验协议会让 agent 把已登录的 webview 导航到任意站点（钓鱼/外泄登录态）。
-    // 复用内置浏览器导航白名单（唯一权威 browserWhitelist.ts，仅招聘平台域名）。
+    // 复用内置浏览器导航白名单（唯一权威 browserWhitelist.ts，招聘平台 + 背调核查站点）。
     if (!isWhitelistedUrl(u)) {
       return { applied: false, message: `拒绝导航：${whitelistHostOf(u) || u} 不在内置浏览器招聘平台白名单内` };
     }

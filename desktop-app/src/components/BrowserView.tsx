@@ -703,12 +703,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return tab.id;
   }, []);
 
-  // 白名单拦截：非招聘平台网址不允许在内置浏览器访问，可转系统浏览器
+  // 白名单拦截：非白名单网址不允许在内置浏览器访问，可转系统浏览器
   const confirmOpenExternal = useCallback((url: string) => {
     const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
     Modal.confirm({
-      title: '该网址不在招聘平台白名单内',
-      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台，可在系统浏览器中打开。`,
+      title: '该网址不在内置浏览器白名单内',
+      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台与背调核查站点，可在系统浏览器中打开。`,
       okText: '在系统浏览器打开',
       cancelText: '取消',
       onOk: () => { electronApi.external.open(url); },
@@ -731,7 +731,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // ===== 在新标签打开 URL：默认 detail（沟通详情页，完成后自动关闭）；非白名单网址拦截 =====
   const openInNewTab = useCallback((url?: string, title?: string, kind: 'main' | 'detail' = 'detail'): string => {
     const target = url || BOSS_HOME;
-    // 白名单约束：仅招聘平台网址允许在内置浏览器新建标签（其余可转系统浏览器）
+    // 白名单约束：仅招聘平台与背调核查站点允许在内置浏览器新建标签（其余可转系统浏览器）
     if (url && !isWhitelistedUrl(target)) {
       confirmOpenExternal(target);
       return '';

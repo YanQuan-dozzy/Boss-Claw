@@ -3,14 +3,15 @@
  * 子模块：
  * - 页头状态栏（执行模式 / 隐身引擎就绪 / 风控冷却 三个 status-pill）
  * - 隐身引擎投递控制卡（开始批量沟通 / 停止 / 检测状态 + 待沟通/已沟通/失败指标 + 各平台登录态与扫码登录 autochat-platform-grid）
- * - 待沟通岗位队列卡（job-card 列表：平台/岗位/优先级/状态，招呼语可编辑，选中进行沟通）
+ * - 待沟通岗位队列卡（job-card 列表：平台/岗位/优先级/状态，招呼语可编辑，选中进行沟通；
+ *   已沟通岗位默认收起，可展开查看并逐条删除，避免长期累积把待沟通岗位挤出可视区）
  * - 沟通与附件设置卡（打招呼语非空红线、附件开关与水印、图片简历上传、AI 跟聊监听开关）
  * - 沟通信息卡（AI 跟聊引用：薪资期望/面试时间/到岗时间等人工填写）
  * - 防封号节奏限制卡（岗位间隔 / 每分动作 / 冷却 / 每日上限等 Rate Limit）
  */
 import { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import {
-  Alert, Button, Card, Input, InputNumber, Space, Switch, Tag, Tooltip, Typography, Upload, message, Progress,
+  Alert, Button, Card, Input, InputNumber, Popconfirm, Space, Switch, Tag, Tooltip, Typography, Upload, message, Progress,
 } from 'antd';
 import {
   MessageOutlined, QrcodeOutlined,
@@ -47,6 +48,7 @@ import type { PendingItem, ImageResume } from '@/lib/bossclaw/types';
 import { EmptyState } from '@/components/feedback';
 import { ChatLogPanel } from '@/components/ChatLogPanel';
 import PlatformChip from '@/components/PlatformChip';
+import ProgressStageSelect from '@/components/ProgressStageSelect';
 
 const { Text, Paragraph } = Typography;
 
@@ -72,7 +74,9 @@ export default function AutoChat() {
   const updatePending = useDataStore((s) => s.updatePending);
   const chatLogs = useRuntimeLogsStore(useShallow((s) => s.chatLogs));
   const clearChatLogs = useRuntimeLogsStore((s) => s.clearChatLogs);
+  const addLog = useRuntimeLogsStore((s) => s.addLog);
   const recomputeStats = useDataStore((s) => s.recomputeStats);
+  const removePending = useDataStore((s) => s.removePending);
   const imageResumes = useDataStore(useShallow((s) => s.imageResumes));
   const addImageResume = useDataStore((s) => s.addImageResume);
   const removeImageResume = useDataStore((s) => s.removeImageResume);
@@ -186,11 +190,14 @@ export default function AutoChat() {
   }, [imageResumes.length, addImageResume]);
 
   // ===== 派生计算与队列过滤缓存 =====
+  // 「已沟通」默认从队列收起：sent 是终态，长期累积会把待沟通岗位挤出可视区。
+  // 需要查看或清理时用卡片右上角的「显示已沟通」展开（记录仍在工作台/任务进度里）。
+  const [showSent, setShowSent] = useState(false);
   const queueItems = useMemo(() => {
-    return rerankPending(pending, config).filter((p) =>
-      ['pending', 'approved', 'approved_queue', 'opened', 'failed', 'sent'].includes(p.status)
-    );
-  }, [pending, config]);
+    return rerankPending(pending, config)
+      .filter((p) => ['pending', 'approved', 'approved_queue', 'opened', 'failed', 'sent'].includes(p.status))
+      .filter((p) => showSent || p.status !== 'sent');
+  }, [pending, config, showSent]);
 
   const batchQueue = useMemo(() => {
     // 与后台引擎分工：本控制台只处理「已批准待沟通(approved)」与「已打开未发打招呼语(opened)」；
@@ -208,6 +215,17 @@ export default function AutoChat() {
   );
   const sentCount = useMemo(() => pending.filter((p) => p.status === 'sent').length, [pending]);
   const failedCount = useMemo(() => pending.filter((p) => p.status === 'failed').length, [pending]);
+
+  // ===== 终态岗位删除（已沟通 / 失败）=====
+  // 自动沟通此前没有删除出口（工作台 / 任务进度均已支持），sent 会无限堆积；
+  // 失败记录同样会一直留在队列里。删除仅移除本地记录，不影响已发出的消息与平台上的实际投递。
+  const onDeleteTerminal = useCallback((p: PendingItem) => {
+    if (!['sent', 'failed'].includes(p.status)) { message.warning('仅「已沟通 / 失败」岗位支持删除'); return; }
+    removePending(p.id);
+    addLog('warn', `已删除岗位记录（${p.status === 'sent' ? '已沟通' : '失败'}）：${cleanTitle(p.job?.title, p.job?.salary)}${p.job?.company ? ` @ ${p.job.company}` : ''}`);
+    message.success('已删除该岗位记录');
+    recomputeStats();
+  }, [addLog, recomputeStats, removePending]);
 
   // ===== 队列滚动展示：卡片撑满列高（底边与右列对齐），超出部分在容器内滚动 =====
   // 高度不再由 JS 量测卡片并按「固定 3 张」写死 max-height —— 那种做法一旦量到的卡片高度偏小
@@ -469,16 +487,33 @@ export default function AutoChat() {
                   <MessageOutlined style={{ color: 'var(--brand)', marginRight: 8 }} />
                   待沟通岗位队列
                 </span>
-                <Tag color="cyan" style={{ margin: 0, borderRadius: 10, fontWeight: 600 }}>
-                  {queueCount} 个岗位
-                </Tag>
+                <Space size={8}>
+                  {(sentCount > 0 || showSent) && (
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<EyeOutlined />}
+                      onClick={() => setShowSent((v) => !v)}
+                      title={showSent
+                        ? '收起已沟通岗位（记录仍保留在工作台 / 任务进度）'
+                        : '已沟通岗位默认收起，避免长期累积把待沟通岗位挤出可视区'}
+                    >
+                      {showSent ? '收起已沟通' : `显示已沟通（${sentCount}）`}
+                    </Button>
+                  )}
+                  <Tag color="cyan" style={{ margin: 0, borderRadius: 10, fontWeight: 600 }}>
+                    {queueCount} 个岗位
+                  </Tag>
+                </Space>
               </div>
             }
           >
             {queueItems.length === 0 ? (
               <EmptyState
                 title="暂无待沟通岗位"
-                description="请先在工作台搜索采集岗位并确认加入队列。"
+                description={sentCount > 0
+                  ? `已沟通 ${sentCount} 个岗位已从队列收起，可点右上角「显示已沟通」查看或删除。`
+                  : '请先在工作台搜索采集岗位并确认加入队列。'}
               />
             ) : (
               <>
@@ -511,6 +546,13 @@ export default function AutoChat() {
                           </Tag>
                         </div>
                         <div className="job-body" style={{ paddingTop: 10 }}>
+                          {/* 求职进展（P1-6）：与投递状态正交，只做 HR 侧流程跟踪；未沟通的岗位不展示 */}
+                          {(p.status === 'sent' || p.progressStage) && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                              <span style={{ fontSize: 12, color: 'var(--fg-subtle)' }}>求职进展</span>
+                              <ProgressStageSelect value={p.progressStage} onChange={(patch) => updatePending(p.id, patch)} />
+                            </div>
+                          )}
                           <div className="job-greeting-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                             <span>
                               <MessageOutlined style={{ color: 'var(--brand)', marginRight: 4 }} />
@@ -553,6 +595,20 @@ export default function AutoChat() {
                             <Button size="small" icon={<EyeOutlined />} onClick={() => p.job?.url && electronApi.external.open(p.job.url)} style={{ borderRadius: 6 }}>
                               打开岗位
                             </Button>
+                            {(p.status === 'sent' || p.status === 'failed') && (
+                              <Popconfirm
+                                title={`删除该${p.status === 'sent' ? '已沟通' : '失败'}岗位？`}
+                                description="仅删除本地记录，不影响已发出的消息与平台上的实际投递；删除后相关计数同步减少。"
+                                okText="确认删除"
+                                cancelText="取消"
+                                okButtonProps={{ danger: true }}
+                                onConfirm={() => onDeleteTerminal(p)}
+                              >
+                                <Button size="small" danger icon={<DeleteOutlined />} style={{ borderRadius: 6 }}>
+                                  删除
+                                </Button>
+                              </Popconfirm>
+                            )}
                             {canChat && (
                               <Button
                                 size="small"

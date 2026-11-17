@@ -40,6 +40,8 @@ const SUITES = [
   'company-biz-regression.mjs',
   // P1-5 B/C 层：负面信号（中性词共现规则）+ AI 评级（无来源依据必须丢弃）
   'company-due-diligence-regression.mjs',
+  // P1-6：求职进展（与 status 正交）—— 脏值归一 / 约面只前进 / 统计分布与漏斗面试数
+  'progress-stage-regression.mjs',
   'context-budget-regression.mjs',
   // issue #10：写失败必须可见（配额耗尽时数据静默不落盘 → 重启后进度回退）
   'persist-health-regression.mjs',

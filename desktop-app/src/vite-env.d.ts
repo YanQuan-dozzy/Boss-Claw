@@ -101,13 +101,18 @@ interface ElectronBridgeApi {
   backupWrite?: (bundle: unknown) => Promise<{ ok?: boolean; file?: string; size?: number; error?: string }>;
   backupRead?: () => Promise<{ ok?: boolean; file?: string | null; bundle?: { updatedAt?: number; keys?: Record<string, string | null> } | null; error?: string }>;
   backupDelete?: () => Promise<{ ok?: boolean; error?: string }>;
-  // 岗位队列文件仓储（issue #10）：pending / qualifiedExports 存于 <userData>/queue/
+  // 岗位/简历文件仓储（issue #10 / P3）：存于 <userData>/queue/（per-item + index + resume）
   // 'localstorage' 表示已通过 BOSSCLAW_QUEUE_STORE 环境变量回滚到旧路径
   queueStoreMode?: 'file' | 'localstorage';
   queueLoad?: () => Promise<{ ok: boolean; data?: unknown; source?: string; recovered?: boolean; corrupt?: boolean; error?: string }>;
   queueSave?: (text: string, seq: number, opts?: { migrationSnapshot?: boolean }) => Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; at?: number; error?: string }>;
+  queueSavePatch?: (text: string, seq: number) => Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; at?: number; error?: string }>;
   queueClear?: () => Promise<{ ok: boolean; error?: string }>;
-  queueUsage?: () => Promise<{ ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string }>;
+  queueUsage?: () => Promise<{
+    ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number;
+    queueBytes?: number; queueBakBytes?: number; resumeBytes?: number; resumeBakBytes?: number;
+    snapshotBytes?: number; snapshotCount?: number; items?: number; error?: string;
+  }>;
   // 模拟面试：会话文件存于 <userData>/mock-interview/（主进程持有，不进 localStorage）
   mockInterviewList?: () => Promise<{ ok: boolean; sessions?: unknown[]; error?: string }>;
   mockInterviewRead?: (id: string) => Promise<{ ok: boolean; session?: unknown; error?: string }>;

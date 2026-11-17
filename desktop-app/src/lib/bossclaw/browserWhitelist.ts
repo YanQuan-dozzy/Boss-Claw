@@ -1,9 +1,9 @@
-// 内置浏览器「可访问 URL 白名单」—— 仅招聘平台。
+// 内置浏览器「可访问 URL 白名单」—— 招聘平台 + 企业背调核查站点。
 // 唯一权威实现。BrowserView（webview）/ CloakView（隐身）共用此模块做导航拦截。
 // 口径：hostname 域名后缀匹配（host === domain || host.endsWith('.' + domain)）。
 import { PLATFORM_META, type JobPlatform } from './platforms';
 
-export type WhitelistGroup = 'platform' | 'comprehensive' | 'fresh' | 'bluecollar';
+export type WhitelistGroup = 'platform' | 'dueDiligence' | 'comprehensive' | 'fresh' | 'bluecollar';
 
 export interface BrowserSite {
   /** hostname 匹配用，含后缀，如 'zhipin.com' */
@@ -25,9 +25,19 @@ const PLATFORM_SITES: BrowserSite[] = (
   groupLabel: '平台',
 }));
 
-/** 白名单全表（平台 + 综合/中高端 + 应届生/实习 + 蓝领/兼职/生活） */
+/** 白名单全表（平台 + 背调核查 + 综合/中高端 + 应届生/实习 + 蓝领/兼职/生活） */
 export const BROWSER_WHITELIST: BrowserSite[] = [
   ...PLATFORM_SITES,
+  // —— 背调核查：负面搜索 + 官方公示 ——
+  // 这些站点由企业背调面板生成链接后在内置浏览器打开，用户自己搜索/查公示；
+  // 不做自动抓取、不绕过验证码。官方站点都有验证码或 JS 表单，所以只给入口页。
+  { domain: 'bing.com', label: '必应搜索', homeUrl: 'https://www.bing.com', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'baidu.com', label: '百度搜索', homeUrl: 'https://www.baidu.com', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'sogou.com', label: '搜狗搜索', homeUrl: 'https://www.sogou.com', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'gsxt.gov.cn', label: '国家企业信用信息公示系统', homeUrl: 'https://www.gsxt.gov.cn/index.html', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'creditchina.gov.cn', label: '信用中国', homeUrl: 'https://www.creditchina.gov.cn/', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'zxgk.court.gov.cn', label: '中国执行信息公开网', homeUrl: 'https://zxgk.court.gov.cn/', group: 'dueDiligence', groupLabel: '背调·官方核查' },
+  { domain: 'wenshu.court.gov.cn', label: '中国裁判文书网', homeUrl: 'https://wenshu.court.gov.cn/', group: 'dueDiligence', groupLabel: '背调·官方核查' },
   // —— 综合 / 中高端 ——
   { domain: 'chinahr.com', label: '中华英才网', homeUrl: 'https://www.chinahr.com', group: 'comprehensive', groupLabel: '综合·中高端' },
   { domain: 'lagou.com', label: '拉勾网', homeUrl: 'https://www.lagou.com', group: 'comprehensive', groupLabel: '综合·中高端' },
@@ -74,7 +84,7 @@ export function isWhitelistedUrl(url: string): boolean {
 }
 
 /** 非「平台」分组的白名单分组顺序（供便签页展示；「平台」分组由调用方按启用状态组装） */
-export const WHITELIST_GROUPS = (['comprehensive', 'fresh', 'bluecollar'] as WhitelistGroup[]).map((g) => ({
+export const WHITELIST_GROUPS = (['dueDiligence', 'comprehensive', 'fresh', 'bluecollar'] as WhitelistGroup[]).map((g) => ({
   group: g,
   label: BROWSER_WHITELIST.find((s) => s.group === g)?.groupLabel || g,
 }));

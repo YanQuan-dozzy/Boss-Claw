@@ -2261,6 +2261,16 @@ safeHandle('jc:queue-save', async (_event, text, seq, opts) => {
   }
 });
 
+// P3 per-item：日常自动保存只提交变化条目（upserts/deletes/order…），
+// 避免每次变更都在渲染侧 stringify 整包 25MB。
+safeHandle('jc:queue-save-patch', async (_event, text, seq) => {
+  try {
+    return await queueStore.savePatch(text, seq);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
 safeHandle('jc:queue-clear', async () => {
   try {
     return await queueStore.clear();

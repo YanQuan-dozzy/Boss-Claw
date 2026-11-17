@@ -300,12 +300,12 @@ export default function CloakView(props: Props) {
 
   const activeTab = tabs.find((t) => t.id === activeId) || tabs[0];
 
-  // 白名单拦截：非招聘平台网址不允许在内置隐身浏览器访问，可转系统浏览器
+  // 白名单拦截：非白名单网址不允许在内置隐身浏览器访问，可转系统浏览器
   const confirmOpenExternal = useCallback((url: string) => {
     const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
     Modal.confirm({
-      title: '该网址不在招聘平台白名单内',
-      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台，可在系统浏览器中打开。`,
+      title: '该网址不在内置浏览器白名单内',
+      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台与背调核查站点，可在系统浏览器中打开。`,
       okText: '在系统浏览器打开',
       cancelText: '取消',
       onOk: () => { e.openExternal?.(url); },

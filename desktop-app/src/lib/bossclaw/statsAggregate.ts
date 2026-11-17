@@ -28,6 +28,7 @@ import type {
   JobPlatform,
   PendingItem,
   PendingStatus,
+  ProgressStage,
   TaskRun,
 } from './types';
 import { cleanCompanyName } from './jobDisplay';
@@ -35,6 +36,7 @@ import { platformLabel, platformEnabled } from './platforms';
 import { effectiveDailyCap } from './safety';
 import { selectedDirectionItems } from './directions';
 import { fitLevelFromScore, type FitLevel } from './fitLevel';
+import { normalizeProgressStage } from './progressStage';
 import { STATUS_COLORS } from '../../theme';
 
 /* ============================ 时间范围 ============================ */
@@ -209,7 +211,7 @@ export interface StatsSnapshot {
    * 投递漏斗（转化看板）：采集 → 投递 → 打开沟通窗 → 收到回复 → 面试。
    * - discovered：范围内岗位数（已入队视角的采集量）
    * - sent / opened / replied：同上的状态与 replySentAt 派生；**replied ⊆ sent**（回复条目 status 仍为 sent）
-   * - interviewCount：无采集来源（PendingItem 无面试态字段），恒为 0，仅占位展示
+   * - interviewCount：progressStage 为已约面 / 已面试 / 已获 Offer 的岗位数（P1-6 起有真实来源）
    * - replyRate：replied / sent（最核心的转化指标，分母 0 时为 null）
    * - openRate：opened / sent
    */
@@ -221,6 +223,18 @@ export interface StatsSnapshot {
     interviewCount: number;
     replyRate: number | null;
     openRate: number | null;
+  };
+
+  /**
+   * 求职流程进展分布（P1-6）：与 status 正交，分母为范围内岗位总数；
+   * 缺失 / 非法值（含旧数据）统一归入 `unknown`，不报错。
+   */
+  progressStages: {
+    counts: Record<ProgressStage, number>;
+    unknown: number;
+    total: number;
+    /** 已标记（非 unknown）的条数 */
+    marked: number;
   };
 
   companyTop: [string, number][];
@@ -468,6 +482,16 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
   let analyzed = 0;
   // 漏斗末环「已回复」计数：见下方 PendingItem.replySentAt 判定处。
   let replied = 0;
+  // 漏斗「面试」与进展分布（P1-6）：progressStage 是唯一来源，旧数据无该字段归入 unknown。
+  let interviews = 0;
+  let progressMarked = 0;
+  const progressCounts: Record<ProgressStage, number> = {
+    replied: 0,
+    interview_scheduled: 0,
+    interviewed: 0,
+    offer: 0,
+    rejected_by_hr: 0,
+  };
   let scored = 0;
   let scoreSum = 0;
   let scoreNone = 0;
@@ -522,6 +546,14 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     // 已回复（漏斗最后一环）：HR 来消息后 AI 跟聊回复成功即有 replySentAt。
     // 该条 status 仍为 'sent'，故 replied ⊆ sent，天然构成漏斗而不重复计数。
     if (p.replySentAt) replied += 1;
+
+    // 求职进展（P1-6）：缺失 / 脏数据不报错，统一按「未标记」处理。
+    const stage = normalizeProgressStage(p.progressStage);
+    if (stage) {
+      progressCounts[stage] += 1;
+      progressMarked += 1;
+      if (stage === 'interview_scheduled' || stage === 'interviewed' || stage === 'offer') interviews += 1;
+    }
 
     if (p.analysis?.decision && decisions[p.analysis.decision] !== undefined) decisions[p.analysis.decision] += 1;
 
@@ -684,11 +716,18 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
       sent: counts.sent,
       opened: counts.opened,
       replied,
-      // 无采集来源：PendingItem 无面试态字段（只有 sentAt / replySentAt / openedAt）。
-      // 留 0 而非删字段，是为了让看板有「面试」这一环的占位，后续接真实数据源时不必改 UI。
-      interviewCount: 0,
+      // P1-6：来自 progressStage（已约面 / 已面试 / 已获 Offer）。旧数据无该字段时为 0，
+      // 属「暂无记录」而非「没有面试」—— 页面提示已注明来源。
+      interviewCount: interviews,
       replyRate: rate(replied, counts.sent),
       openRate: rate(counts.opened, counts.sent),
+    },
+
+    progressStages: {
+      counts: progressCounts,
+      unknown: Math.max(0, total - progressMarked),
+      total,
+      marked: progressMarked,
     },
 
     companyTop: topN(companyMap, 8),
@@ -727,7 +766,8 @@ function buildNotes(range: StatsRangeMeta, gran: TrendGranularity): string[] {
     `趋势${granText}归桶：「新增」按加入日期、「已投递」按投递成功时间，两者归桶依据不同。`,
     '「今日目标」按投递成功时间统计今日已投递数，与每日投递上限同口径，不随时间范围变化。',
     '平均匹配分只统计已有 AI 分数的岗位，未分析岗位不计入分母。',
-    '投递漏斗「已回复」按 AI 跟聊回复成功时间（replySentAt）计数，已回复条目仍属「已投递」；「面试」暂无采集来源。',
+    '投递漏斗「已回复」按 AI 跟聊回复成功时间（replySentAt）计数，已回复条目仍属「已投递」；',
+    '「面试」按求职进展（progressStage）为已约面 / 已面试 / 已获 Offer 的岗位数统计；进展缺失的旧数据归「未标记」。',
   ];
 }
 

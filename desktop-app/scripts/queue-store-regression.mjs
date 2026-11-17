@@ -1,9 +1,10 @@
-// 岗位队列文件仓储回归（issue #10 / docs/存储迁移方案.md §7）
+// 岗位/简历文件仓储回归（issue #10 / docs/存储迁移方案.md §6、P3）
 // ---------------------------------------------------------
 // 覆盖三层：
-//   1. 主进程 electron/queueStore.cjs：原子写、seq 迟到包拒绝、.bak 轮转、损坏回退、清空、用量、迁移快照；
-//   2. 渲染侧 queueRepo：800ms 防抖合批、单飞串行、失败上报 persist 健康、导入/清空；
-//   3. 一次性迁移 queueMigrate：先写文件验真再剥离 localStorage；写失败时保持 localStorage 原样。
+//   1. 主进程 electron/queueStore.cjs：per-item 条目文件 + index 索引 + 24 份索引轮转、
+//      seq 迟到包拒绝、条目 .bak 回退、v1 单文件自动迁移、resume 文件、清空、用量；
+//   2. 渲染侧 queueRepo：800ms 防抖合批、单飞串行、增量 patch、失败上报 persist 健康、导入/清空；
+//   3. 一次性迁移 queueMigrate：队列 + 简历「先写文件验真再剥离 localStorage」；写失败保持原样。
 //
 // 离线可跑：主进程模块用 Module._load 替身注入 electron.app；渲染侧模块用 esbuild 打包，
 // 注入假的 window / document / localStorage / window.electron（内存版 IPC）。
@@ -38,63 +39,109 @@ Module._load = function patched(request, parent, isMain) {
 const queueStore = require('../electron/queueStore.cjs');
 Module._load = origLoad;
 
-const payload = (seq, pending = [], qualifiedExports = {}) =>
-  JSON.stringify({ version: 1, seq, updatedAt: Date.now(), pending, qualifiedExports });
+const fullPayload = (seq, pending = [], qualifiedExports = {}, resume = null) =>
+  JSON.stringify({
+    version: 2,
+    seq,
+    updatedAt: Date.now(),
+    pending,
+    qualifiedExports,
+    ...(resume ? {
+      resumeText: resume.resumeText ?? '',
+      resumeFileName: resume.resumeFileName ?? '',
+      imageResumes: resume.imageResumes ?? [],
+    } : {}),
+  });
+const patchPayload = (seq, upserts = [], deletes = [], extra = {}) =>
+  JSON.stringify({ version: 2, seq, updatedAt: Date.now(), upserts, deletes, ...extra });
 
-console.log('[1] queueStore.cjs（主进程文件仓储）');
+console.log('[1] queueStore.cjs（per-item + index + 轮转 + resume）');
 {
-  const r1 = await queueStore.save(payload(1, [{ id: 'a' }]), 1);
-  check('首次写入成功', r1.ok === true, JSON.stringify(r1));
+  const r1 = await queueStore.save(fullPayload(1, [{ id: 'a', v: 1 }]), 1);
+  check('首次全量写入成功', r1.ok === true, JSON.stringify(r1));
   const loaded = queueStore.load();
   check('读回 seq 与 pending 一致', loaded.ok && loaded.data.seq === 1 && loaded.data.pending.length === 1);
+  check('per-item：条目文件已落盘', fs.existsSync(queueStore._paths.itemPath('a')));
+  check('per-item：索引文件已落盘', fs.existsSync(queueStore._paths.indexPath()));
+  check('索引不含全量条目（只存 ids）', !fs.readFileSync(queueStore._paths.indexPath(), 'utf8').includes('"v":1'));
 
-  const stale = await queueStore.save(payload(1, [{ id: 'old' }]), 1);
+  const stale = await queueStore.savePatch(patchPayload(1, [{ id: 'old' }]), 1);
   check('seq 迟到包被拒绝（stale）', stale.ok === true && stale.stale === true);
   const afterStale = queueStore.load();
-  check('迟到包未覆盖文件', afterStale.data.pending[0].id === 'a');
+  check('迟到包未覆盖数据', afterStale.data.pending[0].id === 'a');
 
-  await queueStore.save(payload(2, [{ id: 'b' }]), 2);
-  const bak = JSON.parse(fs.readFileSync(queueStore._paths.bakPath(), 'utf8'));
-  check('.bak 轮转为上一份完好数据', bak.pending[0].id === 'a');
+  const added = await queueStore.savePatch(patchPayload(2, [{ id: 'b', v: 2 }], [], { order: ['b', 'a'] }), 2);
+  check('增量新增条目成功', added.ok === true, JSON.stringify(added));
+  const afterAdd = queueStore.load();
+  check('增量后顺序按 order 生效', afterAdd.data.pending.map((p) => p.id).join(',') === 'b,a');
 
-  // 主文件损坏 → 退回 .bak（此时 .bak 是 seq=1 的 a）
-  fs.writeFileSync(queueStore._paths.storePath(), '{ broken json', 'utf8');
-  const recovered = queueStore.load();
-  check('主文件损坏时从 .bak 回退', recovered.ok === true && recovered.recovered === true && recovered.data.pending[0].id === 'a');
+  await queueStore.savePatch(patchPayload(3, [{ id: 'a', v: 9 }]), 3);
+  const afterUpdate = queueStore.load();
+  check('只更新变化的条目', afterUpdate.data.pending.find((p) => p.id === 'a').v === 9 && afterUpdate.data.pending.find((p) => p.id === 'b').v === 2);
+  check('条目 .bak 保留上一份完好数据', JSON.parse(fs.readFileSync(queueStore._paths.itemBakPath('a'), 'utf8')).v === 1);
 
-  const bad = await queueStore.save(JSON.stringify({ version: 1, pending: 'x' }), 9);
-  check('非法载荷被拒绝', bad.ok === false);
-  const overVersion = await queueStore.save(JSON.stringify({ version: 9, pending: [], qualifiedExports: {} }), 9);
-  check('未知版本被拒绝', overVersion.ok === false);
+  await queueStore.savePatch(patchPayload(4, [], ['b']), 4);
+  const afterDelete = queueStore.load();
+  check('删除条目后索引与文件同步', afterDelete.data.pending.length === 1 && !fs.existsSync(queueStore._paths.itemPath('b')));
 
-  const snap = await queueStore.save(payload(10, [{ id: 'm' }]), 10, { migrationSnapshot: true });
-  const snaps = fs.readdirSync(queueStore._paths.baseDir()).filter((f) => f.startsWith('queue-migration-'));
-  check('迁移快照写入成功', snap.ok && snaps.length === 1);
+  // 条目文件损坏 → 从 .bak 回退
+  fs.writeFileSync(queueStore._paths.itemPath('a'), '{ broken', 'utf8');
+  const recItem = queueStore.load();
+  check('条目损坏时从 .bak 回退', recItem.ok && recItem.recovered === true && recItem.data.pending[0].v === 1);
+
+  // 索引损坏 → index.bak
+  fs.writeFileSync(queueStore._paths.indexPath(), '{ broken', 'utf8');
+  const recIndex = queueStore.load();
+  check('索引损坏时从 index.bak 回退', recIndex.ok && recIndex.recovered === true && recIndex.data.pending.length === 1);
+
+  // resume（P3）
+  await queueStore.save(fullPayload(5, [{ id: 'a', v: 1 }], {}, { resumeText: '我的简历', resumeFileName: 'cv.pdf', imageResumes: [{ id: 'img1' }] }), 5);
+  const withResume = queueStore.load();
+  check('resume 随全量写入并可读回', withResume.data.resumeText === '我的简历' && withResume.data.imageResumes.length === 1);
+  await queueStore.savePatch(patchPayload(6, [], [], { resume: { resumeText: '新简历', resumeFileName: 'cv2.pdf', imageResumes: [] } }), 6);
+  const resume2 = queueStore.load();
+  check('resume 可单独增量更新', resume2.data.resumeText === '新简历' && resume2.data.resumeFileName === 'cv2.pdf');
+  check('resume .bak 保留上一份', JSON.parse(fs.readFileSync(queueStore._paths.resumeBakPath(), 'utf8')).resumeText === '我的简历');
+
+  // 索引轮转：连续写 30 次，快照最多保留 24 份
+  for (let i = 0; i < 30; i += 1) {
+    await queueStore.savePatch(patchPayload(100 + i), 100 + i);
+  }
+  const snaps = fs.readdirSync(queueStore._paths.snapshotsDir()).filter((f) => /^index-.*\.json$/.test(f));
+  check('索引时间轮转保留 24 份', snaps.length === queueStore.SNAPSHOT_KEEP, `实际 ${snaps.length}`);
+
+  const bad = await queueStore.savePatch(JSON.stringify({ version: 2, seq: 200, upserts: [{ id: '' }] }), 200);
+  check('非法增量载荷被拒绝', bad.ok === false);
+  const overVersion = await queueStore.save(JSON.stringify({ version: 9, pending: [], qualifiedExports: {} }), 201);
+  check('未知版本全量包被拒绝', overVersion.ok === false);
 
   const usage = queueStore.usage();
-  check('用量统计为正数', usage.ok && usage.totalBytes > 0, JSON.stringify(usage));
+  check('用量统计包含队列与简历明细', usage.ok && usage.queueBytes > 0 && usage.resumeBytes > 0 && usage.items >= 1, JSON.stringify(usage));
 
+  // 清空：条目 / 索引 / 快照 / resume 全删；迁移兜底副本保留
   await queueStore.clear();
   const cleared = queueStore.load();
   check('清空后读回为空', cleared.ok && cleared.data === null);
+  check('清空后条目与索引目录已删除', !fs.existsSync(queueStore._paths.itemsDir()));
 
-  // 并发串行化（审查 #2）：主进程侧写入必须按调用顺序串行，否则「在途写」会在清空之后落盘、
-  // 把队列复活；两笔并发 save 也可能让较小 seq 后完成并把内容覆盖回旧值。
-  const inFlight = queueStore.save(payload(30, [{ id: 'late' }]), 30);
+  // v1 单文件自动迁移
+  fs.mkdirSync(queueStore._paths.baseDir(), { recursive: true });
+  fs.writeFileSync(
+    queueStore._paths.legacyPath(),
+    JSON.stringify({ version: 1, seq: 7, updatedAt: Date.now(), pending: [{ id: 'l1' }, { id: 'l2' }], qualifiedExports: {} }),
+    'utf8'
+  );
+  const migrated = queueStore.load();
+  check('v1 单文件自动迁移为 per-item', migrated.ok && migrated.migrated === true && migrated.data.pending.length === 2);
+  check('迁移后旧文件改名保留', !fs.existsSync(queueStore._paths.legacyPath())
+    && fs.readdirSync(queueStore._paths.baseDir()).some((f) => /^queue-store\.v1-.*\.json$/.test(f)));
+
+  // 并发串行化：清空与在途写并发，最终必须为空
+  const inFlight = queueStore.save(fullPayload(300, [{ id: 'late' }]), 300);
   const clearedAgain = queueStore.clear();
   await Promise.all([inFlight, clearedAgain]);
   const afterRace = queueStore.load();
-  check('清空与在途写并发：最终状态为空（在途写不得复活队列）', afterRace.ok && afterRace.data === null);
-
-  const s1 = queueStore.save(payload(41, [{ id: 'seq41' }]), 41);
-  const s2 = queueStore.save(payload(40, [{ id: 'seq40' }]), 40);
-  await Promise.all([s1, s2]);
-  const afterOrder = queueStore.load();
-  check(
-    '较小 seq 迟到包在并发下也被拒绝',
-    afterOrder.ok && afterOrder.data.seq === 41 && afterOrder.data.pending[0].id === 'seq41',
-    JSON.stringify(afterOrder.data && { seq: afterOrder.data.seq, id: afterOrder.data.pending[0] && afterOrder.data.pending[0].id })
-  );
+  check('清空与在途写并发：最终状态为空', afterRace.ok && afterRace.data === null);
 }
 
 // ===== 2/3. 渲染侧（esbuild 打包 + 假环境）=====
@@ -136,16 +183,42 @@ globalThis.localStorage = {
   },
 };
 
-/** 内存版队列文件 + 可注入延迟/失败，模拟主进程 IPC */
+/** 内存版本地数据文件 + 可注入延迟/失败，模拟主进程 IPC */
 function makeFakeFile() {
-  return { text: null, seq: 0, delay: 0, failNext: 0, saves: [] };
+  return {
+    seq: 0,
+    pending: [],
+    qualifiedExports: {},
+    resumeText: '',
+    resumeFileName: '',
+    imageResumes: [],
+    saves: [],
+    patches: [],
+    delay: 0,
+    failNext: 0,
+  };
 }
 const fakeFile = makeFakeFile();
+function fakeSnapshot() {
+  const hasAny = fakeFile.seq > 0;
+  return hasAny
+    ? {
+        version: 2,
+        seq: fakeFile.seq,
+        updatedAt: Date.now(),
+        pending: fakeFile.pending,
+        qualifiedExports: fakeFile.qualifiedExports,
+        resumeText: fakeFile.resumeText,
+        resumeFileName: fakeFile.resumeFileName,
+        imageResumes: fakeFile.imageResumes,
+      }
+    : null;
+}
 const fakeElectron = {
   queueStoreMode: 'file',
   queueLoad: async () => {
     if (fakeFile.delay) await sleep(fakeFile.delay);
-    return { ok: true, data: fakeFile.text ? JSON.parse(fakeFile.text) : null, source: 'main' };
+    return { ok: true, data: fakeSnapshot(), source: 'main' };
   },
   queueSave: async (text, seq) => {
     fakeFile.saves.push({ seq, text, at: Date.now() });
@@ -155,16 +228,53 @@ const fakeElectron = {
       return { ok: false, error: '模拟磁盘写入失败' };
     }
     if (seq <= fakeFile.seq) return { ok: true, stale: true };
+    const data = JSON.parse(text);
     fakeFile.seq = seq;
-    fakeFile.text = text;
+    fakeFile.pending = Array.isArray(data.pending) ? data.pending : [];
+    fakeFile.qualifiedExports = data.qualifiedExports && typeof data.qualifiedExports === 'object' ? data.qualifiedExports : {};
+    fakeFile.resumeText = typeof data.resumeText === 'string' ? data.resumeText : '';
+    fakeFile.resumeFileName = typeof data.resumeFileName === 'string' ? data.resumeFileName : '';
+    fakeFile.imageResumes = Array.isArray(data.imageResumes) ? data.imageResumes : [];
+    return { ok: true, seq };
+  },
+  queueSavePatch: async (text, seq) => {
+    fakeFile.patches.push({ seq, text, at: Date.now() });
+    if (fakeFile.delay) await sleep(fakeFile.delay);
+    if (fakeFile.failNext > 0) {
+      fakeFile.failNext -= 1;
+      return { ok: false, error: '模拟磁盘写入失败' };
+    }
+    if (seq <= fakeFile.seq) return { ok: true, stale: true };
+    const p = JSON.parse(text);
+    const byId = new Map(fakeFile.pending.map((x) => [String(x.id), x]));
+    for (const item of p.upserts || []) byId.set(String(item.id), item);
+    for (const id of p.deletes || []) byId.delete(String(id));
+    let order;
+    if (Array.isArray(p.order)) {
+      order = p.order.map(String).filter((id) => byId.has(id));
+      for (const id of byId.keys()) if (!order.includes(id)) order.push(id);
+    } else {
+      order = fakeFile.pending.map((x) => String(x.id)).filter((id) => byId.has(id));
+      for (const id of byId.keys()) if (!order.includes(id)) order.push(id);
+    }
+    fakeFile.seq = seq;
+    fakeFile.pending = order.map((id) => byId.get(id));
+    if (p.qualifiedExports !== undefined) fakeFile.qualifiedExports = p.qualifiedExports;
+    if (p.resume) {
+      fakeFile.resumeText = p.resume.resumeText ?? '';
+      fakeFile.resumeFileName = p.resume.resumeFileName ?? '';
+      fakeFile.imageResumes = p.resume.imageResumes ?? [];
+    }
     return { ok: true, seq };
   },
   queueClear: async () => {
-    fakeFile.text = null;
-    fakeFile.seq = 0;
+    Object.assign(fakeFile, makeFakeFile());
     return { ok: true };
   },
-  queueUsage: async () => ({ ok: true, bytes: fakeFile.text ? fakeFile.text.length : 0, totalBytes: fakeFile.text ? fakeFile.text.length : 0 }),
+  queueUsage: async () => {
+    const bytes = fakeFile.pending.length * 100 + fakeFile.resumeText.length;
+    return { ok: true, bytes, totalBytes: bytes, queueBytes: fakeFile.pending.length * 100, resumeBytes: fakeFile.resumeText.length, items: fakeFile.pending.length };
+  },
   backupRead: async () => ({ ok: true, bundle: { updatedAt: Date.now(), keys: {} } }),
 };
 globalThis.window = {
@@ -186,90 +296,144 @@ const {
   clearQueueStore,
   getQueueSnapshotText,
   migrateQueueFromLocalStorageIfNeeded,
+  migrateResumeFromLocalStorageIfNeeded,
   useDataStore,
   listPersistFailures,
   setQueueFileMode,
 } = mod;
 
-console.log('[2] queueRepo.ts（渲染侧封送）');
+console.log('[2] queueRepo.ts（渲染侧增量封送）');
 {
-  // 起始：文件有 1 条，水合后 store 应与之对齐
-  fakeFile.text = JSON.stringify({ version: 1, seq: 3, updatedAt: Date.now(), pending: [{ id: 'q1' }], qualifiedExports: {} });
-  fakeFile.seq = 3;
+  // 起始：文件有 1 条 + 简历，水合后 store 应与之对齐
+  Object.assign(fakeFile, makeFakeFile(), {
+    seq: 3,
+    pending: [{ id: 'q1', status: 'pending' }],
+    resumeText: '旧简历',
+  });
   const h = await hydrateQueue();
-  check('水合读回文件队列', h.ok && h.pending.length === 1 && h.pending[0].id === 'q1');
-  useDataStore.getState().hydrateFromFile(h.pending, h.qualifiedExports);
+  check('水合读回文件队列与简历', h.ok && h.pending.length === 1 && h.pending[0].id === 'q1' && h.resumeText === '旧简历');
+  useDataStore.getState().hydrateFromFile(h.pending, h.qualifiedExports, {
+    resumeText: h.resumeText,
+    resumeFileName: h.resumeFileName,
+    imageResumes: h.imageResumes,
+  });
   startQueueAutoSave();
 
-  // 防抖：短窗口内连续 5 次 set 只落 1 次盘
-  const before = fakeFile.saves.length;
+  // 防抖：短窗口内连续 5 次 set 只落 1 个增量包
+  const before = fakeFile.patches.length;
   for (let i = 0; i < 5; i += 1) {
     useDataStore.getState().addPendingItem({ id: `d${i}`, status: 'pending' });
   }
   await sleep(1200);
-  check('800ms 防抖内多次变更合并为一次写盘', fakeFile.saves.length - before === 1, `实际 ${fakeFile.saves.length - before} 次`);
+  check('800ms 防抖内多次变更合并为一次写盘', fakeFile.patches.length - before === 1, `实际 ${fakeFile.patches.length - before} 次`);
+  const firstPatch = JSON.parse(fakeFile.patches[before].text);
+  check('增量包只含变化的条目（不是整包）', firstPatch.upserts.length === 5 && !('pending' in firstPatch));
+
+  // 未变化时 flush 零写入（引用比较，不做深比较）
+  const beforeNoop = fakeFile.patches.length;
+  await flushQueueNow();
+  check('无变化时 flush 不产生写入', fakeFile.patches.length === beforeNoop);
 
   // 单飞：写盘在途期间的新变更，等上一笔完成后用最新状态补写一次（不丢最新）
   fakeFile.delay = 250;
-  const beforeSingle = fakeFile.saves.length;
+  const beforeSingle = fakeFile.patches.length;
   useDataStore.getState().addPendingItem({ id: 's1', status: 'pending' });
   await sleep(900); // 第一笔在途
   useDataStore.getState().addPendingItem({ id: 's2', status: 'pending' });
   await sleep(1600);
   fakeFile.delay = 0;
-  const lastSaved = JSON.parse(fakeFile.text || '{}');
-  check('单飞补写后文件包含最新条目', Array.isArray(lastSaved.pending) && lastSaved.pending.some((p) => p.id === 's2'));
-  check('写序号单调递增', fakeFile.saves.slice(beforeSingle).every((s, i, arr) => i === 0 || s.seq > arr[i - 1].seq));
+  check('单飞补写后文件包含最新条目', fakeFile.pending.some((p) => p.id === 's2'));
+  check('写序号单调递增', fakeFile.patches.slice(beforeSingle).every((s, i, arr) => i === 0 || s.seq > arr[i - 1].seq));
+
+  // 简历变更只提交 resume，不重传队列
+  const beforeResume = fakeFile.patches.length;
+  useDataStore.getState().setResumeText('新的简历正文', 'cv.pdf');
+  await flushQueueNow();
+  const resumePatch = JSON.parse(fakeFile.patches[beforeResume].text);
+  check('简历变更走独立字段', resumePatch.resume.resumeText === '新的简历正文' && resumePatch.upserts.length === 0);
+  check('简历已写入文件', fakeFile.resumeText === '新的简历正文');
 
   // 失败上报：写入失败 → persist 失败列表出现队列键；恢复后自动清除
   fakeFile.failNext = 1;
   useDataStore.getState().addPendingItem({ id: 'f1', status: 'pending' });
   await flushQueueNow();
-  check('队列写入失败进入 persist 健康列表', listPersistFailures().some((f) => f.name === QUEUE_STORE_KEY));
+  check('写入失败进入 persist 健康列表', listPersistFailures().some((f) => f.name === QUEUE_STORE_KEY));
   await flushQueueNow();
   check('后续写入成功后清除失败标记', !listPersistFailures().some((f) => f.name === QUEUE_STORE_KEY));
 
-  // 导入：外部 JSON → 文件
-  const imp = await importQueueData(JSON.stringify({ version: 1, seq: 1, updatedAt: Date.now(), pending: [{ id: 'imp' }], qualifiedExports: {} }));
+  // 导入：外部 JSON → 文件（全量替换）
+  const imp = await importQueueData(JSON.stringify({
+    version: 2, seq: 1, updatedAt: Date.now(), pending: [{ id: 'imp' }], qualifiedExports: {}, resumeText: '导入简历',
+  }));
   check('导入队列写入文件成功', imp.ok === true);
-  check('导入后文件内容已更新', JSON.parse(fakeFile.text).pending[0].id === 'imp');
+  check('导入后队列与简历已更新', fakeFile.pending.length === 1 && fakeFile.pending[0].id === 'imp' && fakeFile.resumeText === '导入简历');
 
   const snapText = JSON.parse(getQueueSnapshotText());
-  check('同步快照结构合法且反映 store 当前队列', snapText.version === 1 && Array.isArray(snapText.pending) && typeof snapText.qualifiedExports === 'object');
+  check(
+    '同步快照结构合法且包含队列与简历字段',
+    snapText.version === 2 && Array.isArray(snapText.pending) && typeof snapText.qualifiedExports === 'object'
+    && typeof snapText.resumeText === 'string' && Array.isArray(snapText.imageResumes)
+  );
 
   await clearQueueStore();
-  check('清空后文件为空', fakeFile.text === null);
+  check('清空后文件为空', fakeFile.seq === 0 && fakeFile.pending.length === 0 && fakeFile.resumeText === '');
 }
 
-console.log('[3] queueMigrate.ts（一次性迁移）');
+console.log('[3] queueMigrate.ts（队列 + 简历一次性迁移）');
 function resetForMigration() {
   localStorageMap.clear();
-  fakeFile.text = null;
-  fakeFile.seq = 0;
-  fakeFile.failNext = 0;
+  Object.assign(fakeFile, makeFakeFile());
   setQueueFileMode(true);
 }
 {
-  // 成功路径：localStorage 有队列 → 写文件 → 读回校验 → 剥离
+  // 成功路径：localStorage 有队列 + 简历 → 写文件 → 读回校验 → 剥离
   resetForMigration();
   localStorageMap.set(
     'bossclaw-data',
-    JSON.stringify({ state: { pending: [{ id: 'm1' }, { id: 'm2' }], qualifiedExports: { '2026-10-27': [{ id: 'x' }] }, resumeText: 'keep' }, version: 2 })
+    JSON.stringify({
+      state: {
+        pending: [{ id: 'm1' }, { id: 'm2' }],
+        qualifiedExports: { '2026-10-27': [{ id: 'x' }] },
+        resumeText: '迁移简历',
+        resumeFileName: 'cv.pdf',
+        imageResumes: [{ id: 'img1' }],
+        profile: 'keep',
+      },
+      version: 2,
+    })
   );
   const r = await migrateQueueFromLocalStorageIfNeeded();
-  check('迁移执行成功', r.migrated === true, JSON.stringify(r));
-  const migrated = JSON.parse(fakeFile.text);
-  check('队列已写入文件', migrated.pending.length === 2 && migrated.migratedFrom === 'localstorage');
+  check('队列迁移执行成功', r.migrated === true, JSON.stringify(r));
+  check('队列已写入文件', fakeFile.pending.length === 2);
+  check('简历同批写入文件', fakeFile.resumeText === '迁移简历' && fakeFile.imageResumes.length === 1);
   const legacy = JSON.parse(localStorageMap.get('bossclaw-data'));
-  check('localStorage 已剥离队列字段', !('pending' in legacy.state) && !('qualifiedExports' in legacy.state));
-  check('localStorage 其余字段保留', legacy.state.resumeText === 'keep');
-  check('迁移标记已写入', localStorageMap.has('bossclaw-queue-migration-v1'));
+  check('localStorage 已剥离队列与简历字段',
+    !('pending' in legacy.state) && !('qualifiedExports' in legacy.state)
+    && !('resumeText' in legacy.state) && !('imageResumes' in legacy.state));
+  check('localStorage 其余字段保留', legacy.state.profile === 'keep');
+  check('队列/简历迁移标记已写入', localStorageMap.has('bossclaw-queue-migration-v1') && localStorageMap.has('bossclaw-resume-migration-v1'));
 
   const again = await migrateQueueFromLocalStorageIfNeeded();
   check('重复调用被跳过', again.migrated === false && again.skipped === true);
 }
 {
-  // 真实体量：800 条队列（约 2~7K 字符/条）→ 迁移后 localStorage 体积应骤降
+  // 老用户：队列已迁（v1 标记），简历仍在 localStorage → 单独迁移
+  resetForMigration();
+  fakeFile.seq = 5;
+  fakeFile.pending = [{ id: 'old-q1' }];
+  localStorageMap.set('bossclaw-queue-migration-v1', String(Date.now()));
+  localStorageMap.set('bossclaw-data', JSON.stringify({
+    state: { resumeText: '遗留简历', imageResumes: [{ id: 'old-img' }], profile: 'keep' },
+    version: 2,
+  }));
+  const r = await migrateResumeFromLocalStorageIfNeeded();
+  check('老用户简历单独迁移成功', r.migrated === true, JSON.stringify(r));
+  check('队列保持不变、简历写入文件', fakeFile.pending.length === 1 && fakeFile.resumeText === '遗留简历');
+  check('迁移后简历字段已剥离', !('resumeText' in JSON.parse(localStorageMap.get('bossclaw-data')).state));
+  check('简历迁移标记已写入', localStorageMap.has('bossclaw-resume-migration-v1'));
+}
+{
+  // 真实体量：800 条队列 → 迁移后 localStorage 体积应骤降
   resetForMigration();
   const items = Array.from({ length: 800 }, (_, i) => ({
     id: `bulk-${i}`,
@@ -285,7 +449,7 @@ function resetForMigration() {
   const bulk = await migrateQueueFromLocalStorageIfNeeded();
   const cost = Date.now() - t0;
   const after = localStorageMap.get('bossclaw-data') || '';
-  check('800 条队列迁移成功', bulk.migrated === true && JSON.parse(fakeFile.text).pending.length === 800);
+  check('800 条队列迁移成功', bulk.migrated === true && fakeFile.pending.length === 800);
   check('迁移后 bossclaw-data 体积骤降', after.length < before.length / 2, `${before.length} → ${after.length}`);
   console.log(`    迁移 800 条耗时 ${cost}ms，bossclaw-data ${(before.length / 1024).toFixed(0)}KB → ${(after.length / 1024).toFixed(0)}KB`);
 }
