@@ -74,6 +74,8 @@ const SUITES = [
   'voice-pack-regression.mjs',
   'tts-stream-regression.mjs',
   'tts-pcm-regression.mjs',
+  // 网关动态能力探测：/v1/models 解析（上下文/思考等级/模态/工具）与缓存、思考开关联动
+  'model-capabilities-regression.mjs',
 ];
 
 /** 需外部运行时的用例：file → 原因（改这里之前先确认环境真的具备） */

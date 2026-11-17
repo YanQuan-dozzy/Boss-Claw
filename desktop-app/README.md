@@ -316,6 +316,7 @@ release/
 | `jc:material-pick` / `jc:material-read` | 经历补充材料：选文件、读正文（不缓存、不持久化正文）          |
 | `jc:skills-*`                 | AI 技能库列出 / 读取 / 导入 / 删除（防路径穿越）                  |
 | `jc:llm-proxy`                | 主进程代发用户配置模型的 HTTP 请求（统一出口）                      |
+| `jc:models-probe`             | 网关模型能力探测（/v1/models，GET）：上下文 / 思考等级 / 模态能力（回环放行、公网强制 https） |
 | `jc:webview-diag` / `jc:webview-source` | webview 诊断信息 / 页面源码（复制用）                    |
 | `jc:mock-interview-*`（48 条） | 模拟面试：会话 CRUD / 导出（JSON 全量 + 单场 Markdown）、题库与题目、语音包安装与状态 / 朗读模型切换、ASR / TTS |
 

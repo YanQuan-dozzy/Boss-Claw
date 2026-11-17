@@ -23,9 +23,10 @@ import type { ModelProvider } from './types';
  *   · OpenAI（GPT-5.6 家族 / GPT-6 Astra）
  *       没有独立 thinking 字段，只有 `reasoning_effort`；GPT-5.6 可用 `none` 关闭，
  *       Astra 只提供 low…max（无法关闭）→ 记为 always-on。
- *   · 硅基流动 / 自定义端点：**模型名前缀与真实能力无法离线确认 → 一律判不支持**。
- *     与「基础求职条件」的既有约定一致：**未验证的码一律不附加**，
- *     宁可少发一个可选参数，也不能凭猜测发出一个可能 400 的字段。
+ *   · 硅基流动 / 自定义端点（含本地网关）：旧口径是**模型名前缀与真实能力无法离线确认 → 一律判不支持**。
+ *     现支持**动态探测**（见 modelCapabilities.ts / capabilitiesStore.ts）：对 OpenAI 兼容网关拉取 /v1/models，
+ *     用网关声明的 reasoning / reasoning_levels 在线判定思考能力。探测失败或网关不返回这些字段时，
+ *     仍按旧口径 fail-safe —— **未验证的码一律不附加，宁可少发一个可选参数，也不能凭猜测发出一个可能 400 的字段**。
  */
 
 /** unsupported：不发送任何思考参数（UI 强制关闭）；toggleable：可显式开关；always-on：服务侧固定开启，无法关闭 */
@@ -136,11 +137,14 @@ const OPENAI_ASTRA: ThinkingProfile = {
 /**
  * 解析某模型的思考能力。**未知模型一律返回 unsupported**（fail-safe）。
  * 匹配按「服务商 + 模型名前缀」：服务商已知时优先用其专属规则，避免同名模型跨服务商误判。
+ * 传入 `discoveredCapability`（来自 /v1/models 动态探测）时，前缀规则未命中的模型
+ * 会改用网关声明的能力判定，不再一概判不支持。
  */
 export function resolveThinkingProfile(
   provider: ModelProvider | string | undefined,
   modelName: string | undefined,
   baseUrl?: string,
+  discoveredCapability?: { reasoning?: boolean; reasoningLevels?: string[] },
 ): ThinkingProfile {
   const name = String(modelName || '').trim().toLowerCase();
   if (!name) return UNSUPPORTED;
@@ -167,7 +171,41 @@ export function resolveThinkingProfile(
   if (name.startsWith('doubao-seed')) return DOUBAO_SEED;
 
   // 其余（硅基流动的 组织/模型 全名、自定义模型、已退役名等）一律不做猜测
+  // —— 但若已通过 /v1/models 动态探测确认能力，则用探测结果（见 capabilitiesStore.ts）
+  if (discoveredCapability) {
+    return thinkingProfileFromDiscovered(discoveredCapability);
+  }
   return UNSUPPORTED;
+}
+
+/** 由网关 /v1/models 探测结果构造思考档案。能力未被网关声明时返回 unsupported（fail-safe）。 */
+export function thinkingProfileFromDiscovered(
+  cap: { reasoning?: boolean; reasoningLevels?: string[] },
+): ThinkingProfile {
+  if (cap.reasoning !== true) return UNSUPPORTED;
+  const levels = Array.isArray(cap.reasoningLevels) ? cap.reasoningLevels : [];
+  const efforts = levels.filter((x) => typeof x === 'string' && x.length > 0);
+  if (efforts.length === 0) {
+    // 网关声明了 reasoning 但没给等级：仍可开关思考（OpenAI 风格无 thinking 字段时给不了关闭写法）
+    return {
+      mode: 'toggleable',
+      on: { thinking: { type: 'enabled' } },
+      off: { thinking: { type: 'disabled' } },
+      effortField: 'reasoning_effort',
+      efforts: [],
+      defaultEffort: undefined,
+      note: '网关声明支持思考（未提供等级档位），开关已可用',
+    };
+  }
+  return {
+    mode: 'toggleable',
+    on: { thinking: { type: 'enabled' } },
+    off: { thinking: { type: 'disabled' } },
+    effortField: 'reasoning_effort',
+    efforts,
+    defaultEffort: efforts.includes('medium') ? 'medium' : efforts[0],
+    note: `网关声明支持思考（等级：${efforts.join(' / ')}）`,
+  };
 }
 
 /** 该模型当前**实际生效**的思考状态：不支持的模型恒为关闭（UI 与请求侧共用同一判据）。 */

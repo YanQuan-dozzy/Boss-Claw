@@ -2854,6 +2854,42 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
   }
 });
 
+// 网关模型能力探测（/v1/models，GET）—— 供设置页「大模型接入」动态判定上下文/思考等级/模态能力。
+// 与 llm-proxy 同护栏：允许本机地址（本地模型网关），公网强制 https；响应体受 32MB 上限保护。
+// 不校验 apiKey 形式：网关可能用占位令牌，Bearer 头统一带上，缺失则留空。
+safeHandle('jc:models-probe', async (_event, url, apiKey, timeoutMs = 10000) => {
+  try {
+    const chk = outboundUrlCheck(url, { allowLoopback: true, requireHttpsOffLoopback: true });
+    if (!chk.ok) return { ok: false, status: 0, text: '', error: chk.error };
+    const key = String(apiKey || '').trim();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 10000));
+    try {
+      const res = await fetch(chk.url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+          Accept: 'application/json',
+        },
+        signal: ctrl.signal,
+      });
+      const text = await readResponseTextCapped(res);
+      return { ok: res.ok, status: res.status, text };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    const timedOut = /aborted?|timeout/i.test(msg);
+    return {
+      ok: false, status: 0, text: '',
+      error: timedOut ? 'timeout' : msg,
+      hint: timedOut ? '模型列表请求超时：请检查网关是否在线' : '网络请求失败：请检查网关地址或连通性',
+    };
+  }
+});
+
 // 窗口控制（frame:false 自绘标题栏按钮用）
 ipcMain.on('jc:window-minimize', () => mainWindow?.minimize());
 ipcMain.on('jc:window-maximize', () => {

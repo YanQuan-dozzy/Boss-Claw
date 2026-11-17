@@ -19,6 +19,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:cloak-page-new', 'jc:cloak-page-reload', 'jc:cloak-page-send', 'jc:cloak-start', 'jc:cloak-status',
   'jc:cloak-status-changed', 'jc:cloak-stop',
   'jc:fetch-url', 'jc:llm-proxy', 'jc:material-pick', 'jc:material-read', 'jc:open-external',
+  'jc:models-probe',
   'jc:mock-interview-clear', 'jc:mock-interview-clear-sessions', 'jc:mock-interview-delete',
   'jc:mock-interview-export', 'jc:mock-interview-export-md', 'jc:mock-interview-list', 'jc:mock-interview-read',
   'jc:mock-interview-usage', 'jc:mock-interview-write',
@@ -126,6 +127,9 @@ const api = {
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
   llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
+
+  // 网关模型能力探测（/v1/models）：设置页「大模型接入」动态判定上下文/思考等级/模态能力
+  modelsProbe: (url, apiKey, timeoutMs) => ipcRenderer.invoke('jc:models-probe', url, apiKey, timeoutMs),
 
   // ===== 模拟面试（会话文件存于 <userData>/mock-interview/，不进 localStorage）=====
   // 列表 / 读取 / 写入 / 删除 / 清空 / 导出 / 目录占用。写入带 seq，主进程拒绝更旧的迟到包。

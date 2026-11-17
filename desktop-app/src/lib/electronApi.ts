@@ -183,6 +183,29 @@ export const electronApi = {
     }
   },
 
+  // 网关模型能力探测（/v1/models，GET）—— 设置页「大模型接入」动态判定上下文/思考等级/模态能力
+  modelsProbe: async (
+    url: string,
+    apiKey: string,
+    timeoutMs?: number
+  ): Promise<{ ok: boolean; status: number; text: string; error?: string }> => {
+    try {
+      const fn = (api() as Record<string, unknown>).modelsProbe as
+        | ((u: string, k: string, t?: number) => Promise<unknown>)
+        | undefined;
+      if (!fn) return { ok: false, status: 0, text: '', error: 'modelsProbe 不可用' };
+      const r = (await fn(url, apiKey, timeoutMs)) as { ok?: boolean; status?: number; text?: string; error?: string };
+      return {
+        ok: Boolean(r?.ok),
+        status: Number(r?.status || 0),
+        text: String(r?.text || ''),
+        error: r?.error || undefined,
+      };
+    } catch (e) {
+      return { ok: false, status: 0, text: '', error: (e as Error).message };
+    }
+  },
+
   camoufox: {
     status: async () => {
       const fn = api().camoufoxStatus;
