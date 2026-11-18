@@ -6,6 +6,7 @@ import { electronApi } from '@/lib/electronApi';
 import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
+import { getCachedCapability } from './capabilitiesStore'; // 已探测的网关能力（上下文/思考等级/模态）
 import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
 import { contextBudgetSignature } from './contextBudget'; // 缓存 key 需含上下文预算口径（见 cachedCallModel）
 
@@ -486,7 +487,10 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   //   · unsupported（未验证支持的模型）→ 不发送任何思考参数（用户开着开关也不发，fail-safe）；
   //   · toggleable → 按 config.thinking.enabled 发开启/关闭片段；
   //   · always-on（如 glm-5.3 / GPT-6 Astra）→ 只发开启片段，且不发关闭片段（传 disabled 会 400）。
-  const thinkingProfile = resolveThinkingProfile(config.provider, config.model, config.baseUrl);
+  // 思考能力：先按服务商+模型名前缀（thinkingCapability.ts），前缀未命中且已探测到网关能力时
+  // 用 /v1/models 声明的能力判定（见 capabilitiesStore.ts），否则 fail-safe 判 unsupported。
+  const discoveredCapability = getCachedCapability(config.baseUrl, config.model);
+  const thinkingProfile = resolveThinkingProfile(config.provider, config.model, config.baseUrl, discoveredCapability ?? undefined);
   const thinkingActive = isThinkingActive(thinkingProfile, config.thinking);
   const thinkingEffort = String(config.thinking?.effort || thinkingProfile.defaultEffort || '');
   const timeoutMs = Number(options.timeoutMs || 90000);

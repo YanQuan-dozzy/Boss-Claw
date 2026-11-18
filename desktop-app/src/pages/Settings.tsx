@@ -113,6 +113,13 @@ import {
   thinkingEffortLabel,
 } from '@/lib/bossclaw/thinkingCapability';
 import {
+  getCachedCapability,
+  listGatewayModels,
+  probeModelCapabilities,
+  invalidateCapabilitiesCache,
+  type CapabilityProbeResult,
+} from '@/lib/bossclaw/capabilitiesStore';
+import {
   CONTEXT_USAGE_LABELS,
   CONTEXT_WINDOW_MIN,
   CONTEXT_WINDOW_MAX,
@@ -585,6 +592,80 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     }
   };
 
+  // ===== 网关能力动态探测（modelCapabilities.ts / capabilitiesStore.ts）=====
+  // 本地网关 / 自定义 OpenAI 兼容端点：思考开关、上下文窗口、文本/图像/工具能力无法离线猜测，
+  // 拉一次 GET {baseUrl}/models 拿网关声明。探测结果持久化到 localStorage（跨重启有效），
+  // 失败不缓存 —— 模型名/端点改了就重新探测。
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<CapabilityProbeResult | null>(null);
+  // 模型名 / Base URL 变更 → 作废旧探测结果 + 缓存（防旧能力误用），并静默重探（缓存命中则不发请求）。
+  // ref 初始为 ''：组件挂载即触发一次探测（已配置时），让思考开关/上下文/能力徽标立即反映网关声明。
+  // apiKey 不入依赖：/v1/models 通常无需鉴权或宽松放行，且随密码框逐键重探是浪费。
+  const baseUrlRef = useRef('');
+  const modelRef = useRef('');
+  const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 依赖只列 baseUrl / model：apiKey 故意不入 —— /v1/models 通常无需鉴权或宽松放行，
+  // 且随密码框逐键重探是浪费（重新探测可在下次改动 baseUrl/model 或重启时触发）。
+  // eslint-disable react-hooks/exhaustive-deps
+  useEffect(() => {
+    const b = config.model.baseUrl || '';
+    const m = config.model.model || '';
+    if (b === baseUrlRef.current && m === modelRef.current) return;
+    baseUrlRef.current = b;
+    modelRef.current = m;
+    if (!b || !m) {
+      invalidateCapabilitiesCache(b, m);
+      setProbeResult(null);
+      return;
+    }
+    // 输入停顿 ~450ms 后再探测：AutoComplete 每键都触发 onChange，本地网关虽快，
+    // 也不该让每次击键都打一次 /v1/models（失败不缓存，避免疯狂重试）
+    invalidateCapabilitiesCache(b, m);
+    setProbeResult(null);
+    if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
+    probeTimerRef.current = setTimeout(() => {
+      setProbing(true);
+      probeModelCapabilities(b, m, config.model.apiKey || '')
+        .then((r) => setProbeResult(r))
+        .catch(() => {})
+        .finally(() => setProbing(false));
+    }, 450);
+    return () => {
+      if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
+    };
+  }, [config.model.baseUrl, config.model.model]);
+  // eslint-enable react-hooks/exhaustive-deps
+
+  // ===== 模型候选列表：与能力探测解耦 =====
+  // 能力探测要求「baseUrl + 模型名」都非空；但模型候选必须反向先拿到（否则「先填名才能选」死锁）。
+  // 这里只依赖 baseUrl：端点一填好就去拉 /v1/models，把网关模型灌进下拉。
+  // apiKey 不入依赖（通常无需鉴权或宽松放行，逐键重探是浪费）；输入停顿 450ms 再拉。
+  const [gatewayModels, setGatewayModels] = useState<string[]>([]);
+  // apiKey 经 ref 读取：不触发重探测（/v1/models 通常无需鉴权），也避免 exhaustive-deps 噪音。
+  const apiKeyRef = useRef('');
+  useEffect(() => {
+    apiKeyRef.current = config.model.apiKey || '';
+  }, [config.model.apiKey]);
+  useEffect(() => {
+    const b = config.model.baseUrl || '';
+    setGatewayModels([]);
+    if (!b.trim()) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      listGatewayModels(b, apiKeyRef.current)
+        .then((list) => {
+          if (!cancelled) setGatewayModels(list);
+        })
+        .catch(() => {
+          /* 拉取失败保持空候选：用户仍可手输，不影响保存 */
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [config.model.baseUrl]);
+
   const onExport = () => {
     const json = exportData();
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
@@ -745,13 +826,29 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
 
   const llmReady = isLLMConfigured();
 
+  // ===== 模型名称下拉选项（预设 ∪ 网关探测列表）=====
+  // 自定义 / 本地网关端点的预设列表为空（PROVIDER_DEFAULTS.custom.models = []），
+  // 动态探测（/v1/models）已拿到网关全部模型 id —— 合并进下拉，让用户可点选而非只能手输。
+  // 探测未完成 / 失败时只剩预设列表（退化为现状）。去重保持顺序：预设在前，探测结果在后。
+  const modelOptions = [
+    ...(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []),
+    ...gatewayModels,
+    ...(probeResult?.ok ? probeResult.models : []),
+  ].filter((v, i, arr) => arr.indexOf(v) === i);
+
   // ===== 思考强度（唯一判据见 lib/bossclaw/thinkingCapability.ts）=====
   // 能力只由「服务商 + 模型名」决定：未验证支持的模型恒为关闭，且请求侧也不会发任何思考参数
   // —— 即使 localStorage 里残留 enabled:true，UI 与实际请求都按关闭处理（开关不可用）。
+  // 自定义 / 本地网关端点：优先用 /v1/models 动态探测的能力（probeResult / 缓存），
+  // 探测未完成或失败时回落到静态前缀判定。
+  const discoveredCapability = probeResult?.ok && probeResult.capability
+    ? { reasoning: probeResult.capability.reasoning, reasoningLevels: probeResult.capability.reasoningLevels }
+    : getCachedCapability(config.model.baseUrl, config.model.model);
   const thinkingProfile = resolveThinkingProfile(
     config.model.provider,
     config.model.model,
     config.model.baseUrl,
+    discoveredCapability || undefined,
   );
   const thinkingSupported = thinkingProfile.mode !== 'unsupported';
   const thinkingOn = isThinkingActive(thinkingProfile, config.model.thinking);
@@ -1671,7 +1768,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                   value={config.model.model}
                   onChange={(v) => { setModel({ model: v }); setTestResult(null); }}
-                  options={(PROVIDER_DEFAULTS[config.model.provider as LLMProvider]?.models || []).map((m) => ({
+                  options={modelOptions.map((m) => ({
                     value: m,
                     label: m,
                   }))}
@@ -1826,6 +1923,55 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 showIcon
                 message={testResult.ok ? 'LLM 接口连接成功' : 'LLM 接口连接失败'}
                 description={testResult.msg}
+              />
+            )}
+
+            {/* 网关能力探测结果：本地 / 自定义 OpenAI 兼容端点经 /v1/models 动态判定能力。
+                徽标展示思考 / 上下文 / 文本 / 图像 / 工具；探测失败时给一行轻提示（不打断配置）。 */}
+            {probing && !probeResult && (
+              <div className="llm-probe-hint" style={{ marginTop: 14 }}>
+                <span className="llm-probe-hint__spinner" aria-hidden />
+                正在探测网关模型能力…
+              </div>
+            )}
+            {!probing && probeResult && probeResult.ok && probeResult.capability && (
+              <div className="llm-probe-result" style={{ marginTop: 14 }}>
+                <span className="llm-probe-result__model">
+                  {probeResult.capability.displayName || probeResult.capability.id}
+                </span>
+                <span className="llm-cap-badge">
+                  {probeResult.capability.reasoning ? '思考' : '无思考'}
+                  {probeResult.capability.reasoningLevels.length > 0
+                    ? `（${probeResult.capability.reasoningLevels.join('/')}）`
+                    : ''}
+                </span>
+                {probeResult.capability.contextWindow > 0 && (
+                  <span className="llm-cap-badge">
+                    上下文 {formatTokenCount(probeResult.capability.contextWindow)}
+                  </span>
+                )}
+                <span className="llm-cap-badge">
+                  {probeResult.capability.inputModalities.includes('image') ? '图' : '文'}
+                  {' → '}
+                  {probeResult.capability.outputModalities.join('/') || '文本'}
+                </span>
+                <span className="llm-cap-badge">
+                  {probeResult.capability.toolCall ? '支持工具调用' : '不支持工具'}
+                </span>
+              </div>
+            )}
+            {!probing && probeResult && !probeResult.ok && (
+              <Alert
+                style={{ marginTop: 14, borderRadius: 8 }}
+                type="warning"
+                showIcon
+                message="网关能力探测未完成"
+                description={
+                  probeResult.notes.join('；') ||
+                  (probeResult.error
+                    ? `探测失败：${probeResult.error}`
+                    : '模型名在网关返回的模型列表中未找到，思考开关将按未验证处理')
+                }
               />
             )}
 

@@ -2185,6 +2185,61 @@ html[data-theme='dark'] .direction-tag {
   text-wrap: initial;
 }
 
+/* ===== 网关能力探测结果行（设置页 · 大模型服务商与 API 接入）=====
+   经 /v1/models 动态判定：徽标逐项展示思考 / 上下文 / 模态 / 工具能力。
+   一行放不下时自然换行（flex-wrap），不设固定高度。 */
+.llm-probe-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
+
+.llm-probe-result__model {
+  font-weight: 600;
+  color: var(--fg);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-cap-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--brand);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* 探测进行中的轻提示：小号转圈 + 文案 */
+.llm-probe-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.llm-probe-hint__spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--brand);
+  animation: llm-probe-spin 0.8s linear infinite;
+}
+
+@keyframes llm-probe-spin {
+  to { transform: rotate(360deg); }
+}
+
 
 /* ===== 统一控制面板与工具栏 (Control Panel Toolbar) ===== */
 .ctrl-panel {
