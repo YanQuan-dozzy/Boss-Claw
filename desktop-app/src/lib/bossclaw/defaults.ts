@@ -47,6 +47,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   closeToTray: true,
   // 系统通知：首次投递验收 / 风控暂停 / 定时任务完成时弹一条，用户不必一直盯着窗口
   systemNotify: true,
+  // HR 回复提醒：AI 跟聊扫到 HR 新消息时弹一条（同会话 10 分钟内聚合一次）。
+  // 默认开 —— 「HR 回了什么」用户完全看不到，是通知基建最该补的洞；嫌吵可在设置页单独关掉。
+  hrReplyNotify: true,
   betweenJobsSeconds: 20,
   // 活跃时段（模拟真人作息）：时段外自动暂停投递。
   // 依据：操作时间戳分布是**服务端可见的账号级长期统计**，指纹补丁掩盖不了「24 小时无睡眠」；

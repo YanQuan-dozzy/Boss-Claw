@@ -1007,10 +1007,14 @@ function showMainWindow() {
 }
 
 /**
- * 发一条系统通知。渲染层用 `window.electron.notify({title, body})` 调用。
+ * 发一条系统通知。渲染层用 `window.electron.notify({title, body, clickAction})` 调用。
  * 失败一律返回 { ok:false }，不抛错 —— 通知属锦上添花，不能因为系统不支持就中断业务流程。
+ *
+ * clickAction：点击通知后回传给渲染层的动作（如 { kind:'open-autochat', conversation:'HR 名' }）。
+ * 主进程只做「唤回窗口 + 原样转发」，**不解释业务语义** —— 跳哪个页面由渲染层决定，
+ * 避免主进程再长出一套路由知识。
  */
-function showSystemNotification(title, body) {
+function showSystemNotification(title, body, clickAction) {
   try {
     if (!Notification.isSupported()) return { ok: false, error: 'notification-unsupported' };
     const n = new Notification({
@@ -1019,7 +1023,27 @@ function showSystemNotification(title, body) {
       icon: APP_ICON.isEmpty() ? undefined : APP_ICON,
     });
     // 点通知 = 回到应用（用户看到「投递已暂停，待核对」时的下一步就是来界面确认）
-    n.on('click', () => showMainWindow());
+    n.on('click', () => {
+      showMainWindow();
+      if (!clickAction || !clickAction.kind) return;
+      const payload = {
+        kind: String(clickAction.kind),
+        conversation: String(clickAction.conversation || ''),
+      };
+      const send = () => {
+        try {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('jc:notify-action', payload);
+        } catch (e) {
+          dlog('warn', 'notify click action failed', { message: e?.message });
+        }
+      };
+      // 窗口刚被创建 / 还在加载时渲染层尚未挂载订阅，直接 send 会丢；等首帧加载完再发一次。
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.isLoading()) {
+        mainWindow.webContents.once('did-finish-load', send);
+      } else {
+        send();
+      }
+    });
     n.show();
     return { ok: true };
   } catch (e) {
@@ -2927,7 +2951,7 @@ ipcMain.on('jc:tray-prefs-set', (_event, prefs) => {
 // 主进程侧再校验一次 notify：偏好推送有延迟（设置页刚关就触发通知时不能漏拦）。
 ipcMain.handle('jc:notify', (_event, payload) => {
   if (!trayPrefs.notify) return { ok: false, skipped: 'disabled' };
-  return showSystemNotification(payload?.title, payload?.body);
+  return showSystemNotification(payload?.title, payload?.body, payload?.clickAction);
 });
 
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。

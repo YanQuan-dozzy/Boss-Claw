@@ -85,6 +85,17 @@ export default function App() {
     });
   }, [closeToTray, systemNotify]);
 
+  // 通知点击回传的动作（P1-4「HR 回复提醒」）：主进程只负责唤回窗口并原样转发 clickAction，
+  // 跳哪个页面、高亮哪条会话都由渲染层解释 —— 这里只认已知 kind，未知 kind 一律忽略（不做兜底跳转）。
+  useEffect(() => {
+    const off = window.electron?.onNotifyAction?.((action) => {
+      if (!action || action.kind !== 'open-autochat') return;
+      useAutoChatStore.getState().focusConversation(String(action.conversation || ''));
+      useAppStore.getState().setRoute('autochat');
+    });
+    return () => { off?.(); };
+  }, []);
+
   // 侧边栏按窗口宽度自适应：窗口窄于断点（主窗口 minWidth 960）自动收起为图标栏，
   // 恢复宽度自动展开。跨断点翻转时才改状态，避免覆盖用户在同一侧的手动切换。
   // 页面缩放依赖原生窗口拖拽调整大小（BrowserWindow 默认可拖拽边缘）。

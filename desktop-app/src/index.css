@@ -3032,6 +3032,12 @@ html[data-theme='dark'] .direction-tag {
   box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15);
 }
 
+/* 通知点击聚焦（HR 回复提醒）：与「正在沟通」的 is-active 区分 —— 只标位置，不表示运行态 */
+.job-card.is-focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.28);
+}
+
 /* 各种状态对应的边框色条 */
 .job-card.st-approved { border-left-color: var(--brand); }
 .job-card.st-opened { border-left-color: #8B5CF6; }

@@ -68,6 +68,11 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
   ignored: { color: 'default', label: '已忽略' },
 };
 
+/** 会话身份归一：去全部空白 + 转小写（通知聚焦、会话匹配共用同一口径） */
+function normConvKey(v: unknown): string {
+  return String(v || '').replace(/\s+/g, '').toLowerCase();
+}
+
 export default function AutoChat() {
   // ===== Store 订阅（按字段选择并使用 useShallow 避免全量重渲染） =====
   const pending = useDataStore(useShallow((s) => s.pending));
@@ -92,6 +97,8 @@ export default function AutoChat() {
   const activeChatId = useAutoChatStore((s) => s.activeChatId);
   const watchRunning = useAutoChatStore((s) => s.watchRunning);
   const watchActiveId = useAutoChatStore((s) => s.watchActiveId);
+  const conversationFocus = useAutoChatStore((s) => s.conversationFocus);
+  const clearConversationFocus = useAutoChatStore((s) => s.clearConversationFocus);
   const progress = useAutoChatStore((s) => s.progress);
   const chatOne = useAutoChatStore((s) => s.chatOne);
   const start = useAutoChatStore((s) => s.start);
@@ -259,6 +266,17 @@ export default function AutoChat() {
       window.removeEventListener('resize', measure);
     };
   }, [queueItems]);
+
+  // 通知点击 → 聚焦会话（HR 回复提醒）：滚动到对应岗位卡，并在 10 秒后自动撤掉高亮。
+  // 依赖 queueItems.length：通知点击时队列可能还没渲染完（刚切到本页），列表就位后要再试一次。
+  useEffect(() => {
+    if (!conversationFocus) return;
+    const el = queueScrollRef.current?.querySelector<HTMLElement>('.job-card.is-focus');
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // 高亮只是「我刚提醒的是这条」，不需要常驻；用户没动过也该自己消失，避免被当成运行态高亮
+    const timer = window.setTimeout(() => clearConversationFocus(), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [conversationFocus, queueItems.length, clearConversationFocus]);
 
   const handleStartBatch = useCallback(async () => {
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return; }
@@ -524,11 +542,15 @@ export default function AutoChat() {
                     const isActive = p.id === activeChatId
                       || (!!watchActiveId && [p.job?.recruiterName, p.job?.company]
                         .some((v) => String(v || '').replace(/\s+/g, '') === String(watchActiveId).replace(/\s+/g, '')));
+                    // 通知点击聚焦：「HR 名 / 公司名」按去空白小写归一比对（与浏览器端会话匹配口径一致）
+                    const focusKey = conversationFocus ? normConvKey(conversationFocus.key) : '';
+                    const isFocused = !!focusKey && [p.job?.recruiterName, p.job?.company]
+                      .some((v) => normConvKey(v) === focusKey);
                     const canChat = p.status !== 'sent';
                     // 薪资：cleanSalary 已还原 BOSS 直聘的字体混淆（PUA 数字），并过滤无效/占位值
                     const salaryText = cleanSalary(p.job?.salary);
                     return (
-                      <div key={p.id} className={'job-card' + (isActive ? ' is-active' : '')} style={{ marginBottom: 12 }}>
+                      <div key={p.id} className={'job-card' + (isActive ? ' is-active' : '') + (isFocused ? ' is-focus' : '')} style={{ marginBottom: 12 }}>
                         <div className="job-header">
                           <div className="job-header-main" style={{ minWidth: 0 }}>
                             <div className="job-title-row">

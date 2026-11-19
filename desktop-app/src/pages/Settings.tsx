@@ -64,6 +64,7 @@ import {
   ArrowUpOutlined,
   ArrowDownOutlined,
   SwapOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -1027,6 +1028,45 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
               开启后，Windows 登录时将自动启动 BossClaw（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
+            </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <BellOutlined />
+                </div>
+                后台运行与通知
+              </div>
+              {config.closeToTray !== false ? <Tag color="green">托盘常驻</Tag> : <Tag>关窗即退出</Tag>}
+            </div>
+            <div className="safety-grid">
+              <div className="sg-item">
+                <span className="field-label">关闭窗口时收进系统托盘</span>
+                <Switch
+                  checked={config.closeToTray !== false}
+                  onChange={(v) => setConfig({ closeToTray: v })}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">关键事件发送系统通知</span>
+                <Switch
+                  checked={config.systemNotify !== false}
+                  onChange={(v) => setConfig({ systemNotify: v })}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">HR 回复提醒</span>
+                <Switch
+                  checked={config.hrReplyNotify !== false}
+                  disabled={config.systemNotify === false}
+                  onChange={(v) => setConfig({ hrReplyNotify: v })}
+                />
+              </div>
+            </div>
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+              关窗只是收进托盘，定时任务与投递继续；关掉即「关窗退出」，定时任务只在窗口打开时生效。右键托盘图标可真正退出。系统通知仅在首次投递验收、风控暂停、定时任务完成时发送，不会逐条播报每次投递。「HR 回复提醒」单独控制 AI 跟聊扫到 HR 新消息时的提醒：同一会话 10 分钟内只提醒一次，HR 明确拒绝会立即提醒；主开关关闭时本项一并静默。
             </Paragraph>
           </div>
 

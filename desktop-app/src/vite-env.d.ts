@@ -34,8 +34,15 @@ interface ElectronBridgeApi {
   winAlwaysOnTopSet?: (value: boolean) => void;
   onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
   // 系统通知 / 托盘常驻（设置页开关；主进程按同一份偏好再拦截一次）
-  notify?: (payload: { title?: string; body?: string }) => Promise<{ ok: boolean; skipped?: string; error?: string }>;
+  notify?: (payload: {
+    title?: string;
+    body?: string;
+    /** 点击通知后回传给渲染层的动作（主进程原样转发，业务语义由渲染层解释） */
+    clickAction?: { kind: string; conversation?: string };
+  }) => Promise<{ ok: boolean; skipped?: string; error?: string }>;
   setTrayPrefs?: (prefs: { closeToTray?: boolean; notify?: boolean }) => void;
+  /** 订阅「通知被点击后回传的动作」，返回取消订阅函数 */
+  onNotifyAction?: (callback: (action: { kind?: string; conversation?: string }) => void) => () => void;
   // Camoufox 隐身引擎（可选增强，Python 桥）——platform 参数（boss/liepin/zhaopin/job51）
   camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;  camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;

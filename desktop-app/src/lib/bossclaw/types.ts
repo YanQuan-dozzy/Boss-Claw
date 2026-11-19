@@ -82,6 +82,13 @@ export interface AppConfig {
   closeToTray?: boolean;
   /** 关键事件发系统通知（首次投递验收 / 风控暂停 / 定时任务完成），默认 true；关掉即静默 */
   systemNotify?: boolean;
+  /**
+   * HR 回复提醒（默认 true）：AI 跟聊扫到 HR 新消息时弹一条系统通知。
+   * 与 systemNotify 是两层开关 —— 两者同时为 false 才静默；关掉本项只关「HR 新消息」，
+   * 首次投递验收 / 风控暂停等关键事件仍会提醒（它们的口径强于普通新消息）。
+   * 同一会话 10 分钟内只提醒一次（连发多条不刷屏），HR 明确拒绝绕过聚合且文案不同。
+   */
+  hrReplyNotify?: boolean;
   betweenJobsSeconds: number;
   /**
    * 活跃时段（模拟真人作息）：时段外**自动暂停投递**。
