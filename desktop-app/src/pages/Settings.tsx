@@ -86,7 +86,6 @@ import { clearMockInterviewAll, exportMockSessions } from '@/lib/bossclaw/mockIn
 import { formatSpeechBytes } from '@/lib/bossclaw/mockInterviewVoice';
 import { useDataStore } from '@/store/useDataStore';
 import SpeechSettingsCard from '@/components/SpeechSettingsCard';
-import SettingsNote from '@/components/SettingsNote';
 import StorageUsageCard from '@/components/StorageUsageCard';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { electronApi } from '@/lib/electronApi';
@@ -1052,10 +1051,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
             </div>
-            <SettingsNote
-              text="开机自动启动（仅打包安装版生效）"
-              detail="配合「定时任务」，应用常驻时可按设定时刻自动投递 / 采集 / 备份。"
-            />
+            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+              开启后，Windows 登录时将自动启动 BossClaw（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
+            </Paragraph>
           </div>
 
           <div className="settings-section-card">
@@ -1066,7 +1064,6 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 </div>
                 后台运行与通知
               </div>
-              {config.closeToTray !== false ? <Tag color="green">托盘常驻</Tag> : <Tag>关窗即退出</Tag>}
             </div>
             <div className="safety-grid">
               <div className="sg-item">
@@ -1092,10 +1089,6 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 />
               </div>
             </div>
-            <SettingsNote
-              text="关窗只是收进托盘，定时任务与投递继续；关掉即「关窗退出」，定时任务只在窗口打开时生效"
-              detail="右键托盘图标可真正退出。系统通知仅在首次投递验收、风控暂停、定时任务完成时发送，不会逐条播报每次投递。「HR 回复提醒」单独控制 AI 跟聊扫到 HR 新消息时的提醒：同一会话 10 分钟内只提醒一次，HR 明确拒绝会立即提醒；主开关关闭时本项一并静默。"
-            />
           </div>
 
           <div className="settings-section-card">
@@ -1106,7 +1099,6 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 </div>
                 版本与更新
               </div>
-              {appVersion ? <Tag color="blue">{`v${appVersion}`}</Tag> : null}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <span className="field-label">当前版本 {appVersion || '读取中…'}</span>
@@ -1127,7 +1119,6 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 type="warning"
                 showIcon
                 message={updateResult.error || '检查更新失败'}
-                description="GitHub 在部分网络环境下不可直连。可稍后重试，或手动打开发布页下载最新版。"
               />
             ) : null}
             {updateResult?.ok && !updateResult.hasUpdate ? (
@@ -1135,10 +1126,6 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                 已是最新版本（v{updateResult.current}）。
               </Paragraph>
             ) : null}
-            <SettingsNote
-              text="只检查版本号并给出下载入口，不会自动下载或替换程序"
-              detail="本应用未做代码签名，静默替换容易被系统拦截，也不利于回退到上一版。应用每天首次进入时会自动检查一次；手动检查结果缓存 6 小时。"
-            />
           </div>
 
           <div className="settings-section-card">
