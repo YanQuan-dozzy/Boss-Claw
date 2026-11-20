@@ -370,6 +370,19 @@ release/
 
 ## 变更记录
 
+* **v2.6.4（2026-11-20 发布）** — 企业背调 + 本地存储重构 + HR 回复提醒：
+  * **企业工商信息（A 层）**：新增 `src/lib/companyProfile.ts`，按标签驱动解析公司主页 —— 同行 / 分行 / 全角冒号 / 同一行多组混排都能取到；注册资本统一按万元归一（外币不折算）、成立日期兼容三种写法、经营状态「吊销」优先于「注销」；「暂无」「查看详情」这类占位文案进黑名单，整页一个有效字段都没有时返回 `null`，不产空壳。`bizRiskHints` 只做**能直接从字段推出的**提示（注销 / 吊销、成立不足半年、注册资本偏小、参保人数为 0），**不评级、不自动跳过、不改 status**。`CompanyBizPanel` + 岗位卡摘要标签复用既有 page-read 读当前页，未新增 preload / 主进程代码；结果落 `JobMeta.companyProfile`。
+  * **企业背调（B/C 层）**：`src/lib/companyDueDiligence.ts` 生成搜索链接（默认 Bing，可切百度 / 搜狗，**不自动抓取**）；负面信号提取要求「裁员」「罚款」等中性词与强语境**同段共现**才算命中，避免误报。评级铁律：每条依据必须挂来源编号（A / S1…），挂不上来源的直接丢弃，一条都不剩就报错、不给评级；prompt 明确禁止替代用户判断「要不要投」。`page-read` 增返 `links`，让信号能挂到单条搜索结果而不是整页；结果落 `job.dueDiligence`。
+  * **队列按条落盘**：岗位队列从「整表重写」改为 `queue/items/<sha1(id)>.json` + `index.json`，日常保存只提交变化条目（`jc:queue-save-patch`），索引保留最近 24 份快照；`resumeText` / `resumeFileName` / `imageResumes` 迁到 `queue/resume.json`，不再吃 `localStorage` 配额。备份恢复兼容 v1 / v2 队列载荷与旧 `bossclaw-data` 简历字段（自动合并 / 剥离），存储页分别展示队列与简历的磁盘占用。
+  * **求职进展**：新增 `progressStage`（与投递 `status` 正交），AI 跟聊识别到约面 / 拒绝时自动写入，任务页可手动标记，统计页补漏斗面试数与分布。
+  * **HR 回复提醒**：`notifySystem` 支持 `clickAction`；HR 回复按 **10 分钟聚合**推送，HR 明确拒绝则立即提醒（绕过聚合）；点击通知回跳自动沟通页并聚焦、高亮该会话。设置页相应补「后台运行与通知」卡。
+  * **网关模型能力探测**：自定义 OpenAI 兼容端点不再一律按「未验证支持思考」处理，改为拉 `GET {baseUrl}/models` 动态发现上下文窗口（`context_length` / `context_window` / `max_input_tokens` 三种写法）、思考支持与等级、输入 / 输出模态、工具调用；`stripOrgPrefix` 剥掉路由分组，用户填 `model-a` 也能对上网关 id `auto/model-a`。失败或未命中一律 fail-safe 回落静态判定，成功结果持久化跨重启生效；设置页防抖 450ms 自动探测。
+  * **每日检查更新**：`checkForUpdatesDaily` 按本地自然日每天最多请求一次 GitHub Releases，读不到版本号不占当天额度、异常不抛出；启动延迟 2 秒触发，发现新版本给右上角通知与「前往下载」入口，**仍不自动下载或替换程序文件**。
+  * **模拟面试报告二期**：报告页补齐雷达图、场次对比与导出，追练入口接回公开侧实现（剥离私有覆盖层）。
+  * **修复**：完整聊天页「假成功」（发送确认改为只认真实己方气泡）、猎聘投递脚本按需加载（缺失只降级本平台，修隐身引擎启动即退出 #24）、asar 关闭时跳过 unpack 覆盖断言、模型候选列表与能力探测解耦（空模型名也能发现网关模型）。
+  * 回归：新增 `company-biz-regression`（75 项）、`company-due-diligence-regression`（58 项）、`model-capabilities-regression`（69 项）、`notify-reply-regression`、`progress-stage` 等套件，`test-all.mjs` 共 48 套。
+  * 门禁：`npm run verify`（typecheck + lint + build）+ `npm run test:all` 全绿。
+
 * **v2.6.2（2026-11-08 发布）** — 后台常驻 + 系统通知 + 更新检查 + 语音模型可切换：
   * **关窗收进托盘**：原来的 `window-all-closed → app.quit()` 让「定时任务」只在窗口开着时生效，误关（或点标题栏 ×）会直接停掉在途投递。现在主进程增加 `Tray`，`close` 事件只有在「非退出中 + 用户开启常驻 + 托盘创建成功」**三条同时成立**时才 `preventDefault()` 并 `hide()`；真正退出只走托盘菜单 / 系统退出（`before-quit` 置 `isQuitting` 放行）。任一条不满足就照常关窗 —— 宁可退出，也不能出现「窗口藏了但唤不回」。偏好为 `AppConfig.closeToTray`（默认开），渲染层启动与变更时经 `jc:tray-prefs-set` 推镜像。
   * **系统通知**：新增 `src/lib/notify.ts` 作为唯一入口（主进程 `jc:notify` → `Notification`，点击唤回窗口）。只在这三处发：首次投递验收暂停、风控命中暂停、定时任务触发 / 备份完成；`AppConfig.systemNotify` 可关，主进程侧按同一份镜像二次拦截。不做「每条投递成功都弹」。
