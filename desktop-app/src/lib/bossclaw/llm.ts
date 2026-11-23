@@ -7,6 +7,7 @@ import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import { AgentAnswerError, requestAgentAnswer, AGENT_ANSWER_MIN_WAIT_MS } from './agentAnswer';
 import { resolveThinkingProfile, isThinkingActive } from './thinkingCapability';
 import { getCachedCapability } from './capabilitiesStore'; // 已探测的网关能力（上下文/思考等级/模态）
+import { adaptPayloadToError, modelParamKey, resolveModelParamPlan, type OutputTokenField } from './modelParams';
 import { DEFAULT_MODEL_NAME } from './providerPresets'; // P1-10：兜底模型名单源
 import { contextBudgetSignature } from './contextBudget'; // 缓存 key 需含上下文预算口径（见 cachedCallModel）
 
@@ -393,17 +394,27 @@ async function repairJsonViaModel(
   const content = String(brokenContent || '').trim();
   if (content.length < 12 || !/[[{]/.test(content)) return null; // 太短/不像 JSON，不值得二次调用
   const schemaHint = String(opts.systemPrompt || '').trim();
-  const requested = Number(opts.maxTokens ?? originalPayload.max_tokens ?? 600);
-  const payload = {
+  // 输出长度字段名沿用「刚刚成功/正在使用」的那个请求体的口径（issue #28）：
+  // gpt-5.x 起只认 max_completion_tokens，这里若写死 max_tokens，补齐调用必然 400 →
+  // repairJsonViaModel 按约定返回 null，整条 AI 结果就此静默作废。
+  const tokenField: OutputTokenField = Object.prototype.hasOwnProperty.call(originalPayload || {}, 'max_completion_tokens')
+    ? 'max_completion_tokens'
+    : 'max_tokens';
+  const requested = Number(opts.maxTokens ?? originalPayload?.[tokenField] ?? 600);
+  const payload: any = {
     ...originalPayload,
     messages: [
       { role: 'system', content: schemaHint ? `${schemaHint}\n\n${REPAIR_JSON_SYSTEM}` : REPAIR_JSON_SYSTEM },
       { role: 'user', content: content.slice(0, 8000) },
     ],
-    temperature: 0,
-    max_tokens: Math.min(Math.max(600, requested), MODEL_MAX_OUTPUT_TOKENS),
     response_format: { type: 'json_object' },
   };
+  // temperature 同理：上一次请求体里带着才发（推理模型不接受自定义温度，纠偏时已被剔除）
+  if (Object.prototype.hasOwnProperty.call(originalPayload || {}, 'temperature')) payload.temperature = 0;
+  else delete payload.temperature;
+  delete payload.max_tokens;
+  delete payload.max_completion_tokens;
+  payload[tokenField] = Math.min(Math.max(600, requested), MODEL_MAX_OUTPUT_TOKENS);
   delete payload.thinking; // 修复不需要思考模式
   try {
     const r = await requestModel(url, payload, apiKey, timeoutMs);
@@ -495,6 +506,8 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
   const thinkingEffort = String(config.thinking?.effort || thinkingProfile.defaultEffort || '');
   const timeoutMs = Number(options.timeoutMs || 90000);
   const temperature = Number(options.temperature ?? config.temperature ?? 0.1);
+  // 参数口径的会话记忆键（见 modelParams.ts）：纠偏结论按「服务商|模型|端点」记住
+  const paramKey = modelParamKey(config.provider, config.model, config.baseUrl);
 
   // 服务端提示词缓存（DeepSeek 等 provider 的 context caching）用量：命中时输入价约为未命中的 1/10。
   // 多轮尝试（重试/补齐）时逐次累计到会话统计（设置页可见）。
@@ -513,14 +526,18 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
     llmUsageSession.cacheMissTokens += miss;
   };
 
-  /** 单次往返：发请求 → 网关不支持 response_format 时降级重发 → 取出 content / finish_reason。 */
+  /** 单次往返：发请求 → 4xx 参数/格式不兼容时按服务端提示改写请求体重发 → 取出 content / finish_reason。 */
   const requestOnce = async (over: { maxTokens?: number; nudge?: string } = {}) => {
-    const payload: any = {
+    // 参数口径（输出长度字段名 / 能否发 temperature）每次重建：上一轮纠偏学到的结论要立刻生效。
+    const plan = resolveModelParamPlan(config.provider, config.model, config.baseUrl);
+    const tokenField: OutputTokenField = plan.tokenField;
+    let payload: any = {
       model: config.model || DEFAULT_MODEL_NAME, // P1-10：兜底模型名引用 providerPresets 单源
       messages: over.nudge ? withNudge(effectiveMessages, over.nudge) : effectiveMessages,
-      temperature,
-      max_tokens: over.maxTokens ?? baseMaxTokens,
     };
+    // issue #28：gpt-5.x 起输出长度字段改名为 max_completion_tokens；推理模型也不接受自定义 temperature
+    if (plan.supportsTemperature) payload.temperature = temperature;
+    payload[tokenField] = over.maxTokens ?? baseMaxTokens;
     if (jsonMode) payload.response_format = { type: 'json_object' };
     // 思考参数：仅当模型被判定为支持思考时才附加；开启思考时同时带上强度档位。
     if (thinkingProfile.mode !== 'unsupported') {
@@ -538,10 +555,21 @@ export async function callModel(messages: ChatMessage[], config: AppConfig['mode
 
     let response = await requestModel(url, payload, apiKey, timeoutMs);
     let bodyText = await response.text();
-    if (!response.ok && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
-      const retryPayload = { ...payload };
-      delete retryPayload.response_format;
-      response = await requestModel(url, retryPayload, apiKey, timeoutMs);
+    // 4xx 的两条自适应重试（每次只改一处、总次数有界，避免反复改写把请求刷成死循环）：
+    //   ① 参数口径不符 → 按服务端点名的字段改写（issue #28：max_tokens ⇄ max_completion_tokens、
+    //      省略推理模型不接受的 temperature）；结论由 modelParams.ts 在会话内记住；
+    //   ② 网关不支持 response_format → 去掉该字段重发（既有降级路径）。
+    for (let round = 0; round < 2 && !response.ok; round++) {
+      let next: Record<string, any> | null = adaptPayloadToError(payload, response.status, bodyText, paramKey);
+      // 参数纠偏已处理过的报错不会再走到这里（next 非空），故保留原有的宽松匹配不影响新路径
+      if (!next && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
+        const withoutFormat: Record<string, any> = { ...payload };
+        delete withoutFormat.response_format;
+        next = withoutFormat;
+      }
+      if (!next) break;
+      payload = next; // 记下「真正成功的那份请求体」，供 JSON 补齐调用沿用同一参数口径
+      response = await requestModel(url, next, apiKey, timeoutMs);
       bodyText = await response.text();
     }
     if (!response.ok) {

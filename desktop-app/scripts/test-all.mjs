@@ -60,6 +60,9 @@ const SUITES = [
   'bank-recall-regression.mjs',
   'bank-repo-smoke.mjs',
   'llm-json-regression.mjs',
+  // issue #28：输出长度字段名（max_tokens / max_completion_tokens）与 temperature 的模型口径 ——
+  // gpt-5.x 起只认新字段，写死旧字段会让「测试连接」直接 400
+  'llm-params-regression.mjs',
   // 版本更新检查：版本比较用字符串会静默判错（2.10.0 < 2.9.0），必须断言
   'update-check-regression.mjs',
   'material-path-regression.mjs',

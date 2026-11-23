@@ -34,6 +34,7 @@
     "test:context-budget": "node scripts/context-budget-regression.mjs",
     "test:update": "node scripts/update-check-regression.mjs",
     "test:settings-provider": "node scripts/settings-provider-regression.mjs",
+    "test:llm-params": "node scripts/llm-params-regression.mjs",
     "test:notify-reply": "node scripts/notify-reply-regression.mjs",
     "test:company-biz": "node scripts/company-biz-regression.mjs",
     "test:company-dd": "node scripts/company-due-diligence-regression.mjs",
